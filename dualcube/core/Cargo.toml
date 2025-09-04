@@ -1,0 +1,20 @@
+[package]
+name = "dualcube"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+mehsh = { path = "../../utils/mehsh", features = ["bevy", "obj", "stl", "petgraph"] }
+grapff = { path = "../../utils/grapff" }
+log = "0.4.27"
+rayon = "1.8.1"
+itertools = "0.14.0"
+slotmap = "1.0.7"
+ordered-float = "5.0.0"
+bimap = "0.6.3"
+rand = "0.9.1"
+faer = "0.22.6"
+faer_gmres = "0.3.1"
+
+[lints]
+workspace = true

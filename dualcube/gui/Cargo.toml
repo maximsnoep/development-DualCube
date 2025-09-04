@@ -1,0 +1,28 @@
+[package]
+name = "gui"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+dualcube = { path = "../core" }
+io = {path = "../io" }
+mehsh = { path = "../../utils/mehsh", features = ["bevy", "obj", "stl", "petgraph"] }
+grapff = { path = "../../utils/grapff" }
+
+bevy = "0.16.1"
+bevy_egui = "0.34.1"
+egui_dock = "0.16.0"
+smooth-bevy-cameras = "0.14.0"
+
+rayon = "1.8.1"
+itertools = "0.14.0"
+ordered-float = "5.0.0"
+log = "0.4.27"
+rand = "0.9.1"
+winit = "0.30.11"
+image = "0.25.6"
+rfd = "0.15.3"
+enum-iterator = "2.1.0"
+
+[lints]
+workspace = true
