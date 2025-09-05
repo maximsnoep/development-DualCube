@@ -37,7 +37,7 @@ impl Quad {
     }
 
     #[must_use]
-    pub fn from_layout(layout: &Layout, polycube: &Polycube, omega: usize) -> Self {
+    pub fn from_layout(layout: &Layout, polycube: &Polycube, omega: usize) -> Option<Self> {
         let mut triangle_mesh_polycube = layout.granulated_mesh.clone();
 
         let mut edges_done: HashMap<EdgeKey<POLYCUBE>, Vec<usize>> = HashMap::new();
@@ -242,8 +242,12 @@ impl Quad {
             let faer_triplets = triplets.into_iter().map(|(i, j, v)| Triplet::new(i, j, v)).collect::<Vec<_>>();
             let a = SparseColMat::<usize, f64>::try_new_from_triplets(n, n, &faer_triplets).unwrap();
             if !interior_verts.is_empty() {
-                gmres(a.as_ref(), b_u.as_ref(), x_u.as_mut(), 1000, 1e-8, None).unwrap();
-                gmres(a.as_ref(), b_v.as_ref(), x_v.as_mut(), 1000, 1e-8, None).unwrap();
+                if let Err(_) = gmres(a.as_ref(), b_u.as_ref(), x_u.as_mut(), 1000, 1e-8, None) {
+                    return None;
+                }
+                if let Err(_) = gmres(a.as_ref(), b_v.as_ref(), x_v.as_mut(), 1000, 1e-8, None) {
+                    return None;
+                }
             }
 
             for &v in &all_verts {
@@ -511,13 +515,13 @@ impl Quad {
                 quad_mesh.set_position(vert_id, new_position);
             }
 
-            Self {
+            Some(Self {
                 triangle_mesh_polycube,
                 quad_mesh_polycube,
                 quad_mesh,
                 face_to_verts,
                 edge_to_verts,
-            }
+            })
         } else {
             panic!("Failed to create quad mesh from faces and vertex positions");
         }
