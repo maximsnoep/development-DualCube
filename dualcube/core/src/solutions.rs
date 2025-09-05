@@ -479,7 +479,7 @@ impl Solution {
 
         log::info!("The constructed solution has quality: {:?}", self.get_quality());
 
-        self.quad = Some(Quad::from_layout(self.layout.as_ref().unwrap(), self.polycube.as_ref().unwrap(), omega));
+        self.quad = Quad::from_layout(self.layout.as_ref().unwrap(), self.polycube.as_ref().unwrap(), omega);
 
         Ok(())
     }
