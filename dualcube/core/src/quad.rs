@@ -569,22 +569,51 @@ impl Quad {
                     //     }
                     // }
 
-                    let neighbors = self.quad_mesh.neighbors(vert_id);
-                    if neighbors.is_empty() {
-                        return None;
-                    }
-                    let avg_pos = neighbors.iter().map(|&n| self.quad_mesh.position(n)).sum::<Vector3D>() / neighbors.len() as f64;
+                    let mut p_i = self.quad_mesh.position(vert_id);
 
-                    // find closest triangle to this position in original mesh
-                    let nearest_triangle = triangle_lookup.nearest(&[avg_pos.x, avg_pos.y, avg_pos.z]);
+                    let neighbors = self.quad_mesh.neighbors(vert_id);
+                    // if neighbors.is_empty() {
+                    //     return None;
+                    // }
+
+                    let sum = neighbors.iter().map(|&n| self.quad_mesh.position(n)).sum::<Vector3D>();
+                    let avg = sum / neighbors.len() as f64;
+                    let delta_p_i = avg - p_i;
+
+                    // inflate factor, > 0
+                    let lambda = 0.33;
+                    // shrink factor, < 0
+                    let mu = -0.34;
+
+                    if i % 2 == 0 {
+                        // shrink
+                        p_i += lambda * delta_p_i;
+                    } else {
+                        // inflate
+                        p_i += mu * delta_p_i;
+                    }
+
+                    // let avg_pos = neighbors.iter().map(|&n| self.quad_mesh.position(n)).sum::<Vector3D>() / neighbors.len() as f64;
+                    // // vector from current position to average neighbor position:
+                    // let direction = avg_pos - self.quad_mesh.position(vert_id);
+                    // // go in the direction of the average position
+                    // let omega = 0.05;
+                    // let step = direction * omega;
+                    // let new_position = self.quad_mesh.position(vert_id) + step;
+
+                    // // find closest triangle to this position in original mesh
+                    // let nearest_triangle = triangle_lookup.nearest(&[new_position.x, new_position.y, new_position.z]);
 
                     // compute closest point on this triangle
-                    let corners = reference.vertices(nearest_triangle);
-                    let closest_point = mehsh::utils::geom::point_on_triangle(
-                        avg_pos,
-                        (reference.position(corners[0]), reference.position(corners[1]), reference.position(corners[2])),
-                    );
-                    Some((vert_id, closest_point))
+                    // let corners = reference.vertices(nearest_triangle);
+                    // let closest_point = mehsh::utils::geom::point_on_triangle(
+                    //     new_position,
+                    //     (reference.position(corners[0]), reference.position(corners[1]), reference.position(corners[2])),
+                    // );
+
+                    // let closest_point = avg_pos;
+
+                    Some((vert_id, p_i))
                 })
                 .collect::<Vec<_>>();
 

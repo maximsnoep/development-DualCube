@@ -512,7 +512,7 @@ pub fn refresh(solution: &Solution) -> RenderObjectStore {
                     render_object_store.add_object(
                         object,
                         RenderObject::default()
-                            .mesh(&quad.quad_mesh, &default_color_map, "default", false)
+                            // .mesh(&quad.quad_mesh, &default_color_map, "default", false)
                             .mesh(&quad.quad_mesh, &color_map, "colored", true)
                             .gizmo(quad.quad_mesh.gizmos(colors::GRAY), 1.0, -0.001, "wireframe", false)
                             .gizmo(gizmos_paths, 4., -0.0001, "paths", true)
@@ -591,7 +591,7 @@ pub fn refresh(solution: &Solution) -> RenderObjectStore {
                     black_color_map.insert(face_id, colors::BLACK);
                 }
                 let mut color_map_segmentation = HashMap::new();
-                let mut color_map_alignment = HashMap::new();
+                // let mut color_map_alignment = HashMap::new();
 
                 let color = colors::GRAY;
                 let c = bevy::color::Color::srgb(color[0], color[1], color[2]);
@@ -647,11 +647,11 @@ pub fn refresh(solution: &Solution) -> RenderObjectStore {
                         }
                     }
 
-                    for &triangle_id in &granulated_mesh.face_ids() {
-                        let score = *solution.alignment_per_triangle.get_or_panic(triangle_id);
-                        let color = colors::map(score as f32, &colors::SCALE_MAGMA);
-                        color_map_alignment.insert(triangle_id, color);
-                    }
+                    // for &triangle_id in &granulated_mesh.face_ids() {
+                    //     let score = *solution.alignment_per_triangle.get_or_panic(triangle_id);
+                    //     let color = colors::map(score as f32, &colors::SCALE_MAGMA);
+                    //     color_map_alignment.insert(triangle_id, color);
+                    // }
                 }
 
                 let mut color_map_flag = HashMap::new();

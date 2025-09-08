@@ -6,14 +6,15 @@ use bevy::tasks::{AsyncComputeTaskPool, Task};
 use dualcube::prelude::*;
 use dualcube::solutions::{Loop, LoopID};
 use io::Export;
+use itertools::Itertools;
+use mehsh::prelude::HasEdges;
 use ordered_float::OrderedFloat;
 use std::collections::HashMap;
-use std::ops::Deref;
 use std::path::PathBuf;
 
 async fn run_job(job: Job) -> Option<JobResult> {
     match job {
-        Job::Hex { solution } => None,
+        Job::Hex { .. } => None,
         Job::Import { path } => Some(JobResult::Imported(io::import_solution(path))),
         Job::Export { solution, path } => {
             if solution.mesh_ref.vert_ids().is_empty() {
@@ -83,8 +84,41 @@ async fn run_job(job: Job) -> Option<JobResult> {
         Job::Refresh { solution } => Some(JobResult::Refreshed(render::refresh(&solution))),
         Job::SmoothenQuad { solution } => {
             let mut solution_clone = solution.clone();
-            if let Some(quad) = solution_clone.quad.as_mut() {
-                quad.smoothing(10, &solution_clone.mesh_ref, false);
+            // if let Some(quad) = solution_clone.quad.as_mut() {
+            //     quad.smoothing(10, &solution_clone.mesh_ref, false);
+
+            //     Some(JobResult::Recomputed(solution_clone))
+            // } else {
+            //     None
+            // }
+
+            if let Ok(layout) = solution_clone.layout.as_mut() {
+                let verts = layout
+                    .dual_ref
+                    .loop_structure
+                    .face_ids()
+                    .iter()
+                    .map(|f| layout.polycube_ref.region_to_vertex.get_by_left(f).unwrap().to_owned())
+                    // .filter(|&v| layout.polycube_ref.structure.edges(v).len() == 4)
+                    .collect_vec();
+
+                for vert in verts {
+                    let edges_to_be_replaced = layout.polycube_ref.structure.edges(vert);
+                    for &edge in &edges_to_be_replaced {
+                        layout.edge_to_path.remove(&edge);
+                        layout.edge_to_path.remove(&layout.polycube_ref.structure.twin(edge));
+                    }
+
+                    layout.optimize_corner(vert);
+
+                    for &edge in &edges_to_be_replaced {
+                        layout.place_path(edge).unwrap();
+                    }
+                }
+                // layout.place_paths();
+                layout.verify_paths();
+                layout.assign_patches();
+
                 Some(JobResult::Recomputed(solution_clone))
             } else {
                 None
@@ -196,7 +230,7 @@ fn submit_jobs(mut ev_reader: EventReader<JobRequest>, mut job_state: ResMut<Job
                 let task = AsyncComputeTaskPool::get().spawn(async { run_job(*job).await });
                 job_state.current = Some(task);
             }
-            (JobRequest::Cancel, Some(request)) => {
+            (JobRequest::Cancel, Some(_)) => {
                 //
             }
             _ => {}

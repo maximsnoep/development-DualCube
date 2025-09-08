@@ -1,4 +1,4 @@
-use crate::dual::{Dual, PropertyViolationError};
+use crate::dual::{Dual, PropertyViolationError, LOOPSTRUCTURE};
 use crate::polycube::{Polycube, POLYCUBE};
 use crate::prelude::*;
 use bimap::BiHashMap;
@@ -268,9 +268,210 @@ impl Layout {
         }
     }
 
+    pub fn place_path(&mut self, edge_id: EdgeKey<POLYCUBE>) -> Result<(), PropertyViolationError> {
+        let primal = &self.polycube_ref;
+        let mut occupied_vertices = HashSet::new();
+        let mut occupied_edges = HashSet::new();
+
+        let normal_on_left = primal.structure.normal(primal.structure.face(edge_id));
+        let normal_on_right = primal.structure.normal(primal.structure.face(primal.structure.twin(edge_id)));
+
+        let primal_vertices = primal
+            .structure
+            .vert_ids()
+            .iter()
+            .map(|&x| self.vert_to_corner.get_by_left(&x).unwrap().to_owned())
+            .collect_vec();
+
+        for path in self.edge_to_path.values() {
+            for &v_id in path {
+                occupied_vertices.insert(v_id);
+            }
+
+            for edgepair in path.windows(2) {
+                let (u, v) = (edgepair[0], edgepair[1]);
+                occupied_edges.insert((u, v));
+                occupied_edges.insert((v, u));
+            }
+        }
+
+        let endpoints = primal.structure.vertices(edge_id);
+
+        let (u, v) = (
+            self.vert_to_corner.get_by_left(&endpoints[0]).unwrap().to_owned(),
+            self.vert_to_corner.get_by_left(&endpoints[1]).unwrap().to_owned(),
+        );
+
+        // shortest path from u to v
+        let n_function = |node: NodeType| match node {
+            NodeType::Face(f_id) => {
+                let f_neighbors: Vec<NodeType> = {
+                    // Only allowed if the edge between the two faces is not occupied.
+                    let blocked = |f1: FaceID, f2: FaceID| {
+                        let (edge_id, _) = self.granulated_mesh.edge_between_faces(f1, f2).unwrap();
+                        let endpoints = self.granulated_mesh.vertices(edge_id);
+                        occupied_edges.contains(&(endpoints[0], endpoints[1]))
+                    };
+                    self.granulated_mesh
+                        .neighbors(f_id)
+                        .into_iter()
+                        .filter(|&n_id| !blocked(f_id, n_id))
+                        .map(NodeType::Face)
+                        .collect_vec()
+                };
+                let v_neighbors = self.granulated_mesh.vertices(f_id).into_iter().map(NodeType::Vertex).collect_vec();
+                [v_neighbors, f_neighbors].concat()
+            }
+            NodeType::Vertex(v_id) => {
+                // Only allowed if the vertex is not occupied
+                if (occupied_vertices.contains(&v_id) || primal_vertices.contains(&v_id)) && v_id != u && v_id != v {
+                    return vec![];
+                }
+                let v_neighbors = self.granulated_mesh.neighbors(v_id).into_iter().map(NodeType::Vertex).collect_vec();
+                let f_neighbors = self.granulated_mesh.faces(v_id).into_iter().map(NodeType::Face).collect_vec();
+                [v_neighbors, f_neighbors].concat()
+            }
+        };
+        // neighbors of u using n_function
+        let nodetype_to_pos = |node: NodeType| match node {
+            NodeType::Face(f_id) => self.granulated_mesh.position(f_id),
+            NodeType::Vertex(v_id) => self.granulated_mesh.position(v_id),
+        };
+
+        let ridge_function = |a: NodeType, b: NodeType| {
+            let (normal1, normal2) = match (a, b) {
+                (NodeType::Vertex(a), NodeType::Vertex(b)) => {
+                    let (edge1, edge2) = self.granulated_mesh.edge_between_verts(a, b).unwrap();
+                    let normal1 = self.granulated_mesh.normal(self.granulated_mesh.face(edge1));
+                    let normal2 = self.granulated_mesh.normal(self.granulated_mesh.face(edge2));
+                    (normal1, normal2)
+                }
+                (NodeType::Face(f), NodeType::Face(_)) => {
+                    let normal = self.granulated_mesh.normal(f);
+                    (normal, normal)
+                }
+                (NodeType::Face(f), NodeType::Vertex(_)) => {
+                    let normal = self.granulated_mesh.normal(f);
+                    (normal, normal)
+                }
+                (NodeType::Vertex(_), NodeType::Face(f)) => {
+                    let normal = self.granulated_mesh.normal(f);
+                    (normal, normal)
+                }
+            };
+
+            let angle1 = normal1.angle(&normal_on_left);
+            let angle2 = normal2.angle(&normal_on_right);
+
+            if angle1 + angle2 < std::f64::consts::PI / 4.0 {
+                // If the angles are small, we can use a simpler function
+                0.5
+            } else {
+                1.5
+            }
+        };
+
+        let w_function = |(a, b)| OrderedFloat(ridge_function(a, b) * nodetype_to_pos(a).metric_distance(&nodetype_to_pos(b)));
+
+        let mut granulated_path = vec![];
+
+        let pp = {
+            let nn = grapff::fluid::FluidGraph::new(n_function);
+            nn.shortest_path(NodeType::Vertex(u), NodeType::Vertex(v), w_function)
+        };
+
+        if let Some((path, _)) = pp {
+            let mut last_f_ids_maybe: Option<[FaceID; 3]> = None;
+            for node in path {
+                match node {
+                    NodeType::Vertex(v_id) => {
+                        granulated_path.push((v_id, false));
+                        last_f_ids_maybe = None;
+                    }
+                    NodeType::Face(f_id) => {
+                        let new_v_pos = self.granulated_mesh.position(f_id);
+                        let (new_v_id, new_f_ids) = self.granulated_mesh.split_face(f_id);
+                        self.granulated_mesh.set_position(new_v_id, new_v_pos);
+
+                        if let Some(last_f_ids) = last_f_ids_maybe {
+                            for last_f_id in last_f_ids {
+                                for new_f_id in new_f_ids {
+                                    if let Some((edge_id, _)) = self.granulated_mesh.edge_between_faces(last_f_id, new_f_id) {
+                                        let endpoints = self.granulated_mesh.vertices(edge_id);
+                                        let u = endpoints[0];
+                                        let v = endpoints[1];
+                                        let c1 = self.granulated_mesh.vertices(last_f_id).into_iter().find(|&c| c != u && c != v).unwrap();
+                                        let c2 = self
+                                            .granulated_mesh
+                                            .vertices(new_f_id)
+                                            .into_iter()
+                                            .find(|&c| c != u && c != v && c != c1)
+                                            .unwrap();
+
+                                        let mut smallest_distance = f64::MAX;
+                                        let mut smallest_pos = Vector3D::new(0., 0., 0.);
+                                        let samples = 10;
+                                        for s in 1..samples {
+                                            let dir_vec = self.granulated_mesh.vector(edge_id);
+                                            let pos = self.granulated_mesh.position(u) + dir_vec * (f64::from(s) / f64::from(samples));
+                                            let distance_c1 = pos.metric_distance(&self.granulated_mesh.position(c1));
+                                            let distance_c2 = pos.metric_distance(&self.granulated_mesh.position(c2));
+                                            let distance = distance_c1 + distance_c2;
+                                            if distance < smallest_distance {
+                                                smallest_distance = distance;
+                                                smallest_pos = pos;
+                                            }
+                                        }
+                                        let (mid_v_id, _) = self.granulated_mesh.split_edge(edge_id);
+                                        self.granulated_mesh.set_position(mid_v_id, smallest_pos);
+                                        granulated_path.push((mid_v_id, false));
+                                    }
+                                }
+                            }
+                        }
+
+                        last_f_ids_maybe = Some(new_f_ids);
+                        granulated_path.push((new_v_id, true));
+                    }
+                }
+            }
+        };
+
+        let granulated_path = granulated_path.into_iter().map(|(v_id, _)| v_id).collect_vec();
+
+        if granulated_path.is_empty() {
+            return Err(PropertyViolationError::PathEmpty);
+        }
+
+        for &v_id in &granulated_path {
+            occupied_vertices.insert(v_id);
+        }
+
+        for edgepair in granulated_path.windows(2) {
+            let (u, v) = (edgepair[0], edgepair[1]);
+            occupied_edges.insert((u, v));
+            occupied_edges.insert((v, u));
+        }
+        self.edge_to_path.insert(edge_id, granulated_path.clone());
+
+        // for the twin, we insert the reverse
+        let mut rev_path = granulated_path;
+        rev_path.reverse();
+        self.edge_to_path.insert(primal.structure.twin(edge_id), rev_path);
+
+        Ok(())
+    }
+
     // TODO: Make this robust
     pub fn place_paths(&mut self) -> Result<(), PropertyViolationError> {
         let primal = &self.polycube_ref;
+
+        self.edge_to_path.clear();
+
+        for vert in primal.structure.vert_ids() {
+            println!("vert: {vert:?}");
+            assert!(self.vert_to_corner.get_by_left(&vert).is_some());
+        }
 
         let primal_vertices = primal
             .structure
@@ -531,11 +732,15 @@ impl Layout {
                     }
                 };
 
-                let angle1 = normal1.angle(&normal_on_left).powi(3);
-                let angle2 = normal2.angle(&normal_on_right).powi(3);
+                let angle1 = normal1.angle(&normal_on_left);
+                let angle2 = normal2.angle(&normal_on_right);
 
-                1. + angle1 + angle2
-
+                if angle1 + angle2 < std::f64::consts::PI / 4.0 {
+                    // If the angles are small, we can use a simpler function
+                    0.5
+                } else {
+                    1.5
+                }
             };
 
             let w_function = |(a, b)| OrderedFloat(ridge_function(a, b) * nodetype_to_pos(a).metric_distance(&nodetype_to_pos(b)));
@@ -629,6 +834,60 @@ impl Layout {
             counter = 0;
         }
         Ok(())
+    }
+
+    pub fn optimize_corner(&mut self, polycube_vert: VertKey<POLYCUBE>) {
+        // INVARIANT: ALL CORNERS AND PATHS MUST ALREADY BE PLACED
+
+        // LaPlacian optimization of specific corner:
+        // 1. place corner in the average position of its neighbors (and constrained by region formed by existing paths)
+        // 2. find new paths (constrained by existing paths)
+
+        let polycube_neighbors = self.polycube_ref.structure.neighbors(polycube_vert);
+
+        println!("Optimizing corner for polycube vertex: {polycube_vert:?}, neighbors: {polycube_neighbors:?}");
+
+        // grab all vertices in the corresponding patches (they are candidates)
+        let polycube_faces = self.polycube_ref.structure.faces(polycube_vert);
+        let patches = polycube_faces.iter().map(|&face| self.face_to_patch.get(&face).unwrap()).collect_vec();
+        let candidate_vertices = patches
+            .into_iter()
+            .flat_map(|patch| patch.faces.clone())
+            .flat_map(|f| self.granulated_mesh.vertices(f))
+            .filter(|&v| !self.vert_to_corner.contains_right(&v)) // filter out already occupied vertices
+            .filter(|&v| !self.edge_to_path.values().any(|path| path.contains(&v))) // filter out vertices that are part of a path
+            .collect_vec();
+
+        // Map polycube to mesh
+        let mesh_vert = self.vert_to_corner.get_by_left(&polycube_vert).unwrap().to_owned();
+        let mesh_neighbors = polycube_neighbors
+            .into_iter()
+            .filter_map(|neighbor| self.vert_to_corner.get_by_left(&neighbor))
+            .collect_vec();
+
+        let sum = mesh_neighbors.iter().map(|&&v| self.granulated_mesh.position(v)).sum::<Vector3D>();
+        let avg = sum / mesh_neighbors.len() as f64;
+
+        // Find vertex on mesh with smallest distance to avg
+        // let vert_lookup = self.granulated_mesh.kdtree();
+        // let nearest_vert = vert_lookup.nearest(&[avg.x, avg.y, avg.z]).1;
+        let nearest_vert = candidate_vertices
+            .iter()
+            .min_by_key(|&&v| {
+                let pos = self.granulated_mesh.position(v);
+                OrderedFloat(pos.metric_distance(&avg))
+            })
+            .unwrap()
+            .to_owned();
+
+        println!("Optimizing corner for polycube vertex: {polycube_vert:?}, nearest mesh vertex: {nearest_vert:?}");
+
+        if self.vert_to_corner.contains_right(&nearest_vert) {
+            println!("Vertex already occupied, skipping optimization");
+            return;
+        }
+
+        self.vert_to_corner.insert(polycube_vert, nearest_vert);
     }
 
     pub fn assign_patches(&mut self) {

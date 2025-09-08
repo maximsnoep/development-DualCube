@@ -48,7 +48,7 @@ pub fn system(
         );
     }
 
-    if configuration.ui_is_hovered.iter().any(|&x| x) || keyboard.pressed(KeyCode::ControlLeft) || mouse.pressed(MouseButton::Right) {
+    if keyboard.pressed(KeyCode::ControlLeft) || mouse.pressed(MouseButton::Right) {
         return Ok(());
     }
 
