@@ -1,6 +1,6 @@
 use crate::jobs::{Job, JobRequest, JobState};
 use crate::render::{CameraFor, Objects, RenderFlag, RenderObjectStore};
-use crate::{colors, ActionEvent, CameraHandles, Configuration, HexMeshStatus, InputResource, Perspective, PrincipalDirection, SolutionResource};
+use crate::{colors, ActionEvent, CameraHandles, Configuration, InputResource, Perspective, PrincipalDirection, SolutionResource};
 use bevy::diagnostic::{DiagnosticsStore, FrameTimeDiagnosticsPlugin, SystemInformationDiagnosticsPlugin};
 use bevy::prelude::*;
 use bevy_egui::egui::*;
@@ -307,29 +307,29 @@ fn header(
 
                     ui.add_space(5.);
 
-                    ui.with_layout(Layout::left_to_right(Align::TOP), |ui| {
-                        if sleek_button(ui, "Hex mesh: Run 'RobustPolycube'") && !matches!(&configuration.hex_mesh_status, HexMeshStatus::Loading) {
-                            ev_w.write(ActionEvent::ToHexmesh);
-                        };
-                        if matches!(configuration.hex_mesh_status, HexMeshStatus::Loading) {
-                            ui.add_space(5.);
-                            ui.label(text(&timer_animation(time)));
-                        }
-                    });
+                    // ui.with_layout(Layout::left_to_right(Align::TOP), |ui| {
+                    //     if sleek_button(ui, "Hex mesh: Run 'RobustPolycube'") && !matches!(&configuration.hex_mesh_status, HexMeshStatus::Loading) {
+                    //         ev_w.write(ActionEvent::ToHexmesh);
+                    //     };
+                    //     if matches!(configuration.hex_mesh_status, HexMeshStatus::Loading) {
+                    //         ui.add_space(5.);
+                    //         ui.label(text(&timer_animation(time)));
+                    //     }
+                    // });
 
-                    if let HexMeshStatus::Done(score) = &configuration.hex_mesh_status {
-                        ui.add_space(5.);
-                        ui.label("Hex-meshing results:");
-                        ui.add_space(5.);
-                        ui.label(format!(
-                            "hd: {hd:.3}\nsJ: {sj:.3} ({sjmin:.3}-{sjmax:.3})\nirr: {irr:.3}",
-                            hd = score.hausdorff,
-                            sj = score.avg_jacob,
-                            sjmin = score.min_jacob,
-                            sjmax = score.max_jacob,
-                            irr = score.irregular,
-                        ));
-                    }
+                    // if let HexMeshStatus::Done(score) = &configuration.hex_mesh_status {
+                    //     ui.add_space(5.);
+                    //     ui.label("Hex-meshing results:");
+                    //     ui.add_space(5.);
+                    //     ui.label(format!(
+                    //         "hd: {hd:.3}\nsJ: {sj:.3} ({sjmin:.3}-{sjmax:.3})\nirr: {irr:.3}",
+                    //         hd = score.hausdorff,
+                    //         sj = score.avg_jacob,
+                    //         sjmin = score.min_jacob,
+                    //         sjmax = score.max_jacob,
+                    //         irr = score.irregular,
+                    //     ));
+                    // }
                 });
             });
         });
@@ -552,8 +552,6 @@ fn footer(
             });
         });
 
-        conf.ui_is_hovered[1] = ui.ui_contains_pointer();
-
         ui.add_space(5.);
     });
 }
@@ -617,7 +615,6 @@ pub fn update(
                                 conf.automatic = true;
                                 conf.interactive = false;
                             }
-                            conf.should_continue = false;
                         };
 
                         let rt: RichText = RichText::new("|").color(Color32::GRAY);
@@ -634,7 +631,6 @@ pub fn update(
                                 conf.interactive = true;
                                 conf.automatic = false;
                             }
-                            conf.should_continue = false;
                         };
 
                         ui.add_space(15.);
@@ -708,8 +704,6 @@ pub fn update(
                 ui.add_space(5.);
             });
         });
-
-        conf.ui_is_hovered[0] = ui.ui_contains_pointer();
     });
 
     footer(&mut egui_ctx, &mut conf, &solution, &diagnostics, &job_state, &mut jobs, &time);

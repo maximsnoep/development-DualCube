@@ -1,6 +1,5 @@
 pub mod dual;
 pub mod layout;
-pub mod TODO_loops;
 pub mod polycube;
 pub mod quad;
 pub mod solutions;

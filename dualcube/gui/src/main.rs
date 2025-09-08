@@ -1,4 +1,3 @@
-mod TODO_eval;
 mod colors;
 mod controls;
 mod jobs;
@@ -6,11 +5,9 @@ mod render;
 mod ui;
 
 use crate::ui::UiResource;
-use crate::TODO_eval::HexEval;
 use bevy::diagnostic::{FrameTimeDiagnosticsPlugin, SystemInformationDiagnosticsPlugin};
 use bevy::prelude::*;
 use bevy::render::render_resource::AsBindGroup;
-use bevy::tasks::Task;
 use bevy::time::common_conditions::on_timer;
 use bevy::window::WindowMode;
 use bevy::winit::WinitWindows;
@@ -41,37 +38,17 @@ pub struct Configuration {
 
     pub omega: usize,
 
-    pub should_continue: bool,
-
     pub raycasted: Option<[EdgeID; 2]>,
     pub selected: Option<[EdgeID; 2]>,
 
     pub automatic: bool,
     pub interactive: bool,
 
-    pub ui_is_hovered: [bool; 32],
     pub window_shows_object: [Objects; 2],
-    pub window_has_size: [f32; 4],
-    pub window_has_position: [(f32, f32); 4],
-
-    pub hex_mesh_status: HexMeshStatus,
-
-    pub show_gizmos_mesh: bool,
-    pub show_gizmos_mesh_granulated: bool,
-    pub show_gizmos_loops: [bool; 3],
-    pub show_gizmos_paths: bool,
-    pub show_gizmos_flat_edges: bool,
 
     pub clear_color: [u8; 3],
 
     pub unit_cubes: bool,
-}
-
-#[derive(Clone, Debug)]
-pub enum HexMeshStatus {
-    None,
-    Loading,
-    Done(HexEval),
 }
 
 impl Default for Configuration {
@@ -79,37 +56,17 @@ impl Default for Configuration {
         Self {
             direction: PrincipalDirection::X,
             alpha: 0.5,
-            should_continue: false,
             omega: 10,
             raycasted: None,
             selected: None,
             automatic: false,
             interactive: false,
-            ui_is_hovered: [false; 32],
             window_shows_object: [Objects::PolycubeMap, Objects::QuadMesh],
-            window_has_size: [256., 256., 256., 0.],
-            window_has_position: [(0., 0.); 4],
-            hex_mesh_status: HexMeshStatus::None,
-            show_gizmos_mesh: false,
-            show_gizmos_mesh_granulated: false,
-            show_gizmos_loops: [true, true, true],
-            show_gizmos_paths: true,
-            show_gizmos_flat_edges: false,
-            clear_color: [27, 27, 27],
-            // clear_color: [255, 255, 255],
+            // clear_color: [27, 27, 27],
+            clear_color: [255, 255, 255],
             unit_cubes: false,
         }
     }
-}
-
-#[derive(Resource, Default)]
-pub struct Tasks {
-    generating_chunks: HashMap<ActionEvent, Task<Option<Solution>>>,
-}
-
-#[derive(Resource, Default)]
-pub struct HexTasks {
-    generating_chunks: HashMap<usize, Task<Option<HexEval>>>,
 }
 
 #[derive(Resource, Default)]
@@ -266,8 +223,6 @@ fn main() {
         .init_resource::<SolutionResource>()
         .init_resource::<Configuration>()
         .init_resource::<RenderObjectStore>()
-        .init_resource::<Tasks>()
-        .init_resource::<HexTasks>()
         .init_resource::<CameraHandles>()
         .insert_resource(AmbientLight {
             color: bevy::color::Color::WHITE,
