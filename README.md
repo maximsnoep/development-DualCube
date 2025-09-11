@@ -4,7 +4,7 @@
 **DualCube** is a research-driven implementation of robust algorithms for polycube map construction[^1][^2].
 
 [^1]: SNOEP M., SPECKMANN B., VERBEEK K.: Polycubes via dual loops. In _Proceedings of the 2025 SIAM International Meshing Roundtable (IMR)_ (2025). [doi:10.1137/1.9781611978575.7](https://doi.org/10.1137/1.9781611978575.7)
-[^2]: SNOEP M., SPECKMANN B., VERBEEK K.: Robust construction of polycube segmentations via dual loops. In _Proceedings of the 2025 Symposium on Geometry Processing (SGP)_ (2025). To Appear.
+[^2]: SNOEP M., SPECKMANN B., VERBEEK K.: Robust construction of polycube segmentations via dual loops. In _Proceedings of the 2025 Symposium on Geometry Processing (SGP)_ (2025). [doi:10.1111/cgf.70195](https://doi.org/10.1111/cgf.70195)
 
 ## 🚀 Getting Started
 
