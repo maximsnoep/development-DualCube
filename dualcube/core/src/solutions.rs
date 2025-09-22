@@ -1,3 +1,4 @@
+use crate::polycube::POLYCUBE;
 use crate::prelude::*;
 use crate::{
     dual::{Dual, PropertyViolationError},
@@ -98,6 +99,19 @@ pub struct Solution {
 }
 
 impl Solution {
+    pub fn clear(&mut self) {
+        self.dual = Err(PropertyViolationError::default());
+        self.polycube = None;
+        self.layout = Err(PropertyViolationError::default());
+        self.alignment_per_triangle.clear();
+        self.alignment = None;
+    }
+
+    // ***
+    // STEPS OF A SOLUTION
+    // ***
+
+    // Create new solution
     pub fn new(mesh_ref: Arc<Mesh<INPUT>>) -> Self {
         Self {
             mesh_ref,
@@ -113,13 +127,240 @@ impl Solution {
         }
     }
 
-    pub fn clear(&mut self) {
-        self.dual = Err(PropertyViolationError::default());
-        self.polycube = None;
-        self.layout = Err(PropertyViolationError::default());
-        self.alignment_per_triangle.clear();
-        self.alignment = None;
+    // Initialize loop structure
+    pub fn initialize(&mut self, flow_graphs: &[grapff::fixed::FixedGraph<EdgeID, f64>; 3]) {
+        let m = |b: f64| OrderedFloat(b.powi(10));
+        let s = |(p, _): (&[EdgeID], f64)| -(p.len() as f64);
+
+        let samples = 3;
+        let x_loops = self.sample_loops(samples, PrincipalDirection::X, flow_graphs, m, s);
+        let y_loops = self.sample_loops(samples, PrincipalDirection::Y, flow_graphs, m, s);
+        let z_loops = self.sample_loops(samples, PrincipalDirection::Z, flow_graphs, m, s);
+
+        // Compute all n^3 combinations
+        let combinations = x_loops
+            .into_iter()
+            .cartesian_product(y_loops)
+            .cartesian_product(z_loops)
+            .map(|((x, y), z)| (x, y, z))
+            .collect_vec();
+
+        let candidate_solutions = combinations
+            .into_par_iter()
+            .filter_map(|(x_loop, y_loop, z_loop)| {
+                let mut solution = self.clone();
+                solution.add_loop(Loop {
+                    edges: x_loop,
+                    direction: PrincipalDirection::X,
+                });
+                solution.add_loop(Loop {
+                    edges: y_loop,
+                    direction: PrincipalDirection::Y,
+                });
+                solution.add_loop(Loop {
+                    edges: z_loop,
+                    direction: PrincipalDirection::Z,
+                });
+                if solution.reconstruct_solution(false, 1).is_err() {
+                    None
+                } else {
+                    Some(solution)
+                }
+            })
+            .collect::<Vec<_>>();
+
+        // Get the best solution based on quality
+        if let Some(best_solution) = candidate_solutions
+            .into_iter()
+            .max_by_key(|solution| OrderedFloat(solution.get_quality().unwrap()))
+        {
+            *self = best_solution;
+        }
     }
+
+    // Evolve loop structure
+    pub fn evolve(&self, iterations: usize, pool1_size: usize, pool2_size: usize, flowgraphs: &[grapff::fixed::FixedGraph<EdgeID, f64>; 3]) -> Option<Self> {
+        let flowgraphs_clone = flowgraphs.clone();
+        let mut pool1 = vec![(self.clone(), self.get_quality().unwrap()); pool1_size];
+        for _ in 0..iterations {
+            let pool2 = (0..pool2_size)
+                .into_par_iter()
+                .map(|_| {
+                    // Grab a random solution from pool1
+                    let index = rand::Rng::random_range(&mut rand::rng(), 0..pool1.len());
+                    pool1[index].clone()
+                })
+                .filter_map(|(sol, _)| {
+                    // Mutate the solution
+                    sol.mutation(&flowgraphs_clone).map_or_else(
+                        || None,
+                        |mutation| {
+                            let quality = mutation.get_quality().unwrap_or(0.0);
+                            // Compute quality
+                            Some((mutation, quality))
+                        },
+                    )
+                })
+                .collect::<Vec<_>>()
+                .into_iter()
+                .sorted_by(|(_, a), (_, b)| a.partial_cmp(b).unwrap())
+                .rev();
+
+            for (_, quality) in pool2.clone() {
+                println!("Generated solution with quality: {quality}");
+            }
+
+            // overwrite pool1 with top 5 solutions of pool1 and top 5 solutions of pool2
+
+            pool1 = pool1
+                .into_iter()
+                .take(5)
+                .chain(pool2.take(5))
+                .sorted_by(|(_, a), (_, b)| a.partial_cmp(b).unwrap())
+                .rev()
+                .collect();
+
+            for (_, quality) in &pool1 {
+                println!("PICKED solution with quality: {quality}");
+            }
+        }
+
+        if pool1.is_empty() {
+            println!("No valid solutions generated.");
+            return None;
+        }
+
+        // Log all qualities of generated solutions
+        for (_, quality) in &pool1 {
+            println!("Generated solution with quality: {quality}");
+        }
+
+        // Grab the best solution
+        let (sol, quality) = pool1.into_iter().max_by(|(_, a), (_, b)| a.partial_cmp(b).unwrap()).unwrap();
+        println!("Picked solution with quality: {quality}");
+        Some(sol)
+    }
+
+    // Construct dual and polycube
+    pub fn construct_dual_and_polycube(&mut self) -> Result<(), PropertyViolationError> {
+        self.dual = Dual::from(self.mesh_ref.clone(), &self.loops);
+        if let Err(e) = &self.dual {
+            return Err(e.clone());
+        }
+
+        self.polycube = Some(Polycube::from_dual(self.dual.as_ref().unwrap()));
+
+        // check all faces of the polycube have a normal
+        for face in self.polycube.as_ref().unwrap().structure.face_ids() {
+            let normal = self.polycube.as_ref().unwrap().structure.normal(face);
+            if normal.x.is_nan() || normal.y.is_nan() || normal.z.is_nan() {
+                return Err(PropertyViolationError::UnknownError);
+            }
+        }
+
+        Ok(())
+    }
+
+    // Place all corners
+    pub fn place_corners(&mut self) -> Result<(), PropertyViolationError> {
+        self.layout = Ok(Layout::new(self.dual.as_ref().unwrap(), self.polycube.as_ref().unwrap()));
+        if let Ok(layout) = self.layout.as_mut() {
+            layout.place_corners();
+            Ok(())
+        } else {
+            Err(PropertyViolationError::UnknownError)
+        }
+    }
+
+    // Move a corner
+    pub fn move_corner(&mut self, corner: VertKey<POLYCUBE>, new_vertex: VertID) -> Result<(), PropertyViolationError> {
+        if let Ok(layout) = self.layout.as_mut() {
+            layout.move_corner(corner, new_vertex);
+            Ok(())
+        } else {
+            Err(PropertyViolationError::UnknownError)
+        }
+    }
+
+    // Place all paths
+    pub fn place_paths(&mut self) -> Result<(), PropertyViolationError> {
+        if let Ok(layout) = self.layout.as_mut() {
+            layout.place_paths()?;
+            layout.verify_paths();
+            layout.assign_patches();
+            self.compute_quality();
+            Ok(())
+        } else {
+            Err(PropertyViolationError::UnknownError)
+        }
+    }
+
+    // Optimize corners
+    pub fn optimize_corners(&mut self) -> Result<(), PropertyViolationError> {
+        let dual = self.layout.as_ref().unwrap().dual_ref.clone();
+        let polycube = self.layout.as_ref().unwrap().polycube_ref.clone();
+
+        let verts = dual
+            .loop_structure
+            .face_ids()
+            .iter()
+            .map(|f| polycube.region_to_vertex.get_by_left(f).unwrap().to_owned())
+            // .filter(|&v| layout.polycube_ref.structure.edges(v).len() == 4)
+            .collect_vec();
+
+        let mut solution_backup = self.clone();
+
+        let mut solution_clone = self.clone();
+        solution_clone.compute_quality();
+        let mut current_quality = self.get_quality().unwrap();
+
+        for vert in verts {
+            solution_backup = solution_clone.clone();
+            solution_clone.layout.as_mut().unwrap().optimize_corner(vert);
+            solution_clone.compute_quality();
+            let quality = solution_clone.get_quality().unwrap();
+            if quality >= current_quality {
+                current_quality = quality;
+            } else {
+                solution_clone = solution_backup.clone();
+            }
+            println!("Current quality: {:?}", current_quality);
+        }
+
+        *self = solution_clone;
+
+        Ok(())
+    }
+
+    // Construct quad
+    pub fn construct_quad(&mut self, omega: usize) -> Result<(), PropertyViolationError> {
+        self.quad = Quad::from_layout(self.layout.as_ref().unwrap(), self.polycube.as_ref().unwrap(), omega);
+        Ok(())
+    }
+
+    // Optimize quad
+    pub fn optimize_quad(&mut self) -> Option<()> {
+        if let Some(quad) = self.quad.as_mut() {
+            quad.smoothing(10, &self.mesh_ref, false);
+            Some(())
+        } else {
+            None
+        }
+    }
+
+    /// REST OF THE FUNCS
+    ///
+    ///
+    ///
+    ///
+    ///
+    ///
+    ///
+    ///
+    ///
+    ///
+    ///
+    ///
 
     pub fn del_loop(&mut self, loop_id: LoopID) {
         for &e in &self.loops[loop_id].edges.clone() {
@@ -384,56 +625,6 @@ impl Solution {
             .collect::<Vec<_>>()
     }
 
-    pub fn initialize(&mut self, flow_graphs: &[grapff::fixed::FixedGraph<EdgeID, f64>; 3]) {
-        let m = |b: f64| OrderedFloat(b.powi(10));
-        let s = |(p, _): (&[EdgeID], f64)| -(p.len() as f64);
-
-        let samples = 3;
-        let x_loops = self.sample_loops(samples, PrincipalDirection::X, flow_graphs, m, s);
-        let y_loops = self.sample_loops(samples, PrincipalDirection::Y, flow_graphs, m, s);
-        let z_loops = self.sample_loops(samples, PrincipalDirection::Z, flow_graphs, m, s);
-
-        // Compute all n^3 combinations
-        let combinations = x_loops
-            .into_iter()
-            .cartesian_product(y_loops)
-            .cartesian_product(z_loops)
-            .map(|((x, y), z)| (x, y, z))
-            .collect_vec();
-
-        let candidate_solutions = combinations
-            .into_par_iter()
-            .filter_map(|(x_loop, y_loop, z_loop)| {
-                let mut solution = self.clone();
-                solution.add_loop(Loop {
-                    edges: x_loop,
-                    direction: PrincipalDirection::X,
-                });
-                solution.add_loop(Loop {
-                    edges: y_loop,
-                    direction: PrincipalDirection::Y,
-                });
-                solution.add_loop(Loop {
-                    edges: z_loop,
-                    direction: PrincipalDirection::Z,
-                });
-                if solution.reconstruct_solution(false, 1).is_err() {
-                    None
-                } else {
-                    Some(solution)
-                }
-            })
-            .collect::<Vec<_>>();
-
-        // Get the best solution based on quality
-        if let Some(best_solution) = candidate_solutions
-            .into_iter()
-            .max_by_key(|solution| OrderedFloat(solution.get_quality().unwrap()))
-        {
-            *self = best_solution;
-        }
-    }
-
     pub fn dual_is_ok(&self) -> bool {
         Dual::from(self.mesh_ref.clone(), &self.loops).is_ok()
     }
@@ -518,68 +709,6 @@ impl Solution {
     pub fn get_quality(&self) -> Option<f64> {
         let beta = 0.001;
         self.alignment.map(|align| align - beta * self.loops.len() as f64)
-    }
-
-    pub fn evolve(&self, iterations: usize, pool1_size: usize, pool2_size: usize, flowgraphs: &[grapff::fixed::FixedGraph<EdgeID, f64>; 3]) -> Option<Self> {
-        let flowgraphs_clone = flowgraphs.clone();
-        let mut pool1 = vec![(self.clone(), self.get_quality().unwrap()); pool1_size];
-        for _ in 0..iterations {
-            let pool2 = (0..pool2_size)
-                .into_par_iter()
-                .map(|_| {
-                    // Grab a random solution from pool1
-                    let index = rand::Rng::random_range(&mut rand::rng(), 0..pool1.len());
-                    pool1[index].clone()
-                })
-                .filter_map(|(sol, _)| {
-                    // Mutate the solution
-                    sol.mutation(&flowgraphs_clone).map_or_else(
-                        || None,
-                        |mutation| {
-                            let quality = mutation.get_quality().unwrap_or(0.0);
-                            // Compute quality
-                            Some((mutation, quality))
-                        },
-                    )
-                })
-                .collect::<Vec<_>>()
-                .into_iter()
-                .sorted_by(|(_, a), (_, b)| a.partial_cmp(b).unwrap())
-                .rev();
-
-            for (_, quality) in pool2.clone() {
-                println!("Generated solution with quality: {quality}");
-            }
-
-            // overwrite pool1 with top 5 solutions of pool1 and top 5 solutions of pool2
-
-            pool1 = pool1
-                .into_iter()
-                .take(5)
-                .chain(pool2.take(5))
-                .sorted_by(|(_, a), (_, b)| a.partial_cmp(b).unwrap())
-                .rev()
-                .collect();
-
-            for (_, quality) in &pool1 {
-                println!("PICKED solution with quality: {quality}");
-            }
-        }
-
-        if pool1.is_empty() {
-            println!("No valid solutions generated.");
-            return None;
-        }
-
-        // Log all qualities of generated solutions
-        for (_, quality) in &pool1 {
-            println!("Generated solution with quality: {quality}");
-        }
-
-        // Grab the best solution
-        let (sol, quality) = pool1.into_iter().max_by(|(_, a), (_, b)| a.partial_cmp(b).unwrap()).unwrap();
-        println!("Picked solution with quality: {quality}");
-        Some(sol)
     }
 
     pub fn mutation(&self, flow_graphs: &[grapff::fixed::FixedGraph<EdgeID, f64>; 3]) -> Option<Self> {

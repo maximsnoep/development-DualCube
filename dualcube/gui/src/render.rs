@@ -1,5 +1,5 @@
-use crate::colors;
 use crate::ui::UiResource;
+use crate::{colors, PerpetualGizmos};
 use crate::{to_principal_direction, vector3d_to_vec3, CameraHandles, Configuration, FlatMaterial, Perspective, PrincipalDirection, Rendered};
 use bevy::core_pipeline::tonemapping::Tonemapping;
 use bevy::prelude::*;
@@ -91,9 +91,13 @@ impl GizmoBundle {
 
 #[derive(Clone)]
 pub struct RenderFeature {
+    pub asset: RenderAsset,
+}
+
+#[derive(Clone)]
+pub struct RenderFeatureSetting {
     pub label: String,
     pub visible: bool,
-    pub asset: RenderAsset,
 }
 
 #[derive(Clone, PartialEq)]
@@ -102,7 +106,7 @@ pub struct RenderFlag {
     pub visible: bool,
 }
 
-impl RenderFeature {
+impl RenderFeatureSetting {
     pub fn flag(&self) -> RenderFlag {
         RenderFlag {
             label: self.label.clone(),
@@ -111,36 +115,46 @@ impl RenderFeature {
     }
 }
 
-impl PartialEq for RenderFeature {
+impl PartialEq for RenderFeatureSetting {
     fn eq(&self, other: &Self) -> bool {
         self.label == other.label && self.visible == other.visible
     }
 }
 
 impl RenderFeature {
-    pub fn new(label: String, visible: bool, asset: RenderAsset) -> Self {
-        Self { label, visible, asset }
+    pub fn new(asset: RenderAsset) -> Self {
+        Self { asset }
     }
 }
 
-#[derive(Clone, Default, PartialEq)]
+#[derive(Clone, Default)]
 pub struct RenderObject {
-    pub features: Vec<RenderFeature>,
+    pub features: HashMap<String, RenderFeature>,
 }
 
 impl RenderObject {
-    pub fn add(&mut self, feature: RenderFeature) -> &mut Self {
-        self.features.push(feature);
+    pub fn add(&mut self, label: &str, feature: RenderFeature) -> &mut Self {
+        self.features.insert(label.to_owned(), feature);
         self
     }
 
-    pub fn mesh<M: Tag>(&mut self, mesh: &mehsh::prelude::Mesh<M>, color_map: &HashMap<FaceKey<M>, colors::Color>, label: &str, visible: bool) -> &mut Self {
-        self.add(RenderFeature::new(label.to_owned(), visible, RenderAsset::Mesh(mesh.bevy(color_map).0)))
+    pub fn mesh<M: Tag>(&mut self, mesh: &mehsh::prelude::Mesh<M>, color_map: &HashMap<FaceKey<M>, colors::Color>, label: &str) -> &mut Self {
+        self.add(label, RenderFeature::new(RenderAsset::Mesh(mesh.bevy(color_map).0)))
     }
 
-    pub fn gizmo(&mut self, gizmo: GizmoAsset, width: f32, depth: f32, label: &str, visible: bool) -> &mut Self {
-        self.add(RenderFeature::new(label.to_owned(), visible, RenderAsset::Gizmo((gizmo, width, depth))))
+    pub fn gizmo(&mut self, gizmo: GizmoAsset, width: f32, depth: f32, label: &str) -> &mut Self {
+        self.add(label, RenderFeature::new(RenderAsset::Gizmo((gizmo, width, depth))))
     }
+}
+
+#[derive(Default, Resource)]
+pub struct RenderObjectSettingStore {
+    pub objects: HashMap<Objects, RenderObjectSetting>,
+}
+
+#[derive(Clone, Default, PartialEq)]
+pub struct RenderObjectSetting {
+    pub settings: HashMap<String, RenderFeatureSetting>,
 }
 
 #[derive(Default, Resource)]
@@ -272,8 +286,41 @@ pub fn setup(
     mut handles: ResMut<CameraHandles>,
     cameras: Query<Entity, With<Camera>>,
     configuration: ResMut<Configuration>,
+    mut config_store: ResMut<GizmoConfigStore>,
 ) {
+    let (perp_gizmos, _) = config_store.config_mut::<PerpetualGizmos>();
+    perp_gizmos.depth_bias = -1.0;
+
     self::reset(&mut commands, &cameras, &mut images, &mut handles, &configuration);
+}
+
+pub fn update_render_settings(render_object_store: Res<RenderObjectStore>, mut render_settings_store: ResMut<RenderObjectSettingStore>) {
+    let default = |object: &Objects, label: &str| {
+        matches!(
+            (object, label),
+            (Objects::InputMesh, "gray")
+                | (Objects::InputMesh, "X-loops")
+                | (Objects::InputMesh, "Y-loops")
+                | (Objects::InputMesh, "Z-loops")
+                | (Objects::PolycubeMap, "colored")
+                | (Objects::PolycubeMap, "paths")
+                | (Objects::QuadMesh, "colored")
+                | (Objects::QuadMesh, "paths")
+        )
+    };
+
+    if render_object_store.is_changed() {
+        for (object, render_object) in &render_object_store.objects {
+            let mut settings = render_settings_store.objects.get(object).map_or_else(HashMap::new, |s| s.settings.clone());
+            for feature_label in render_object.features.keys() {
+                settings.entry(feature_label.clone()).or_insert(RenderFeatureSetting {
+                    label: feature_label.clone(),
+                    visible: default(object, feature_label),
+                });
+            }
+            render_settings_store.objects.insert(object.to_owned(), RenderObjectSetting { settings });
+        }
+    }
 }
 
 #[derive(Default, Debug, Clone)]
@@ -291,10 +338,11 @@ pub fn respawn_renders(
     mut custom_materials: ResMut<Assets<FlatMaterial>>,
     configuration: Res<Configuration>,
     render_object_store: Res<RenderObjectStore>,
+    render_settings_store: Res<RenderObjectSettingStore>,
     rendered_mesh_query: Query<Entity, With<Rendered>>,
 ) {
-    if render_object_store.is_changed() {
-        info!("render_object_store has been changed.");
+    if render_settings_store.is_changed() {
+        info!("render_settings_store has been changed.");
 
         info!("Despawn all objects.");
         for entity in rendered_mesh_query.iter() {
@@ -320,10 +368,14 @@ pub fn respawn_renders(
 
         // Go through render_object_store and spawn all objects (if they are visible).
         info!("Spawn all objects.");
-        for (&object, render_object) in &render_object_store.objects {
-            for feature in &render_object.features {
-                if feature.visible {
-                    match &feature.asset {
+        for &object in render_object_store.objects.keys() {
+            let features = &render_object_store.objects.get(&object).unwrap().features;
+            let settings = &render_settings_store.objects.get(&object).unwrap().settings;
+            for feature in features.keys() {
+                let visible = settings.get(feature).unwrap().visible;
+                let asset = &features.get(feature).unwrap().asset;
+                if visible {
+                    match &asset {
                         RenderAsset::Mesh(mesh) => {
                             let mesh_handle = MeshBundle::new(meshes.add(mesh.clone())).0;
                             match object {
@@ -500,11 +552,12 @@ pub fn refresh(solution: &Solution) -> RenderObjectStore {
                             let endpoints = quad.quad_mesh.vertices(edge_id);
                             let u = quad.quad_mesh.position(endpoints[0]);
                             let v = quad.quad_mesh.position(endpoints[1]);
-                            let line = DrawableLine::from_line(u, v, Vector3D::new(0., 0., 0.), translation, scale);
+                            let u_transformed = world_to_view(u, translation, scale);
+                            let v_transformed = world_to_view(v, translation, scale);
                             if n1 == n2 {
-                                gizmos_flat_paths.line(line.u, line.v, c);
+                                gizmos_flat_paths.line(u_transformed, v_transformed, c);
                             } else {
-                                gizmos_paths.line(line.u, line.v, c);
+                                gizmos_paths.line(u_transformed, v_transformed, c);
                             }
                         }
                     }
@@ -513,10 +566,10 @@ pub fn refresh(solution: &Solution) -> RenderObjectStore {
                         object,
                         RenderObject::default()
                             // .mesh(&quad.quad_mesh, &default_color_map, "default", false)
-                            .mesh(&quad.quad_mesh, &color_map, "colored", true)
-                            .gizmo(quad.quad_mesh.gizmos(colors::GRAY), 1.0, -0.001, "wireframe", false)
-                            .gizmo(gizmos_paths, 4., -0.0001, "paths", true)
-                            .gizmo(gizmos_flat_paths, 3., -0.00011, "flat paths", false)
+                            .mesh(&quad.quad_mesh, &color_map, "colored")
+                            .gizmo(quad.quad_mesh.gizmos(colors::GRAY), 1.0, -0.001, "wireframe")
+                            .gizmo(gizmos_paths, 4., -0.0001, "paths")
+                            .gizmo(gizmos_flat_paths, 3., -0.00011, "flat paths")
                             .to_owned(),
                     );
                 }
@@ -554,10 +607,11 @@ pub fn refresh(solution: &Solution) -> RenderObjectStore {
                             let endpoints = polycube.structure.vertices(pedge_id);
                             let u = polycube.structure.position(endpoints[0]);
                             let v = polycube.structure.position(endpoints[1]);
-                            let line = DrawableLine::from_line(u, v, Vector3D::new(0., 0., 0.), translation, scale);
-                            gizmos_flat_paths.line(line.u, line.v, c);
+                            let u_transformed = world_to_view(u, translation, scale);
+                            let v_transformed = world_to_view(v, translation, scale);
+                            gizmos_flat_paths.line(u_transformed, v_transformed, c);
                             if f1 != f2 {
-                                gizmos_paths.line(line.u, line.v, c);
+                                gizmos_paths.line(u_transformed, v_transformed, c);
                             }
                         }
                     }
@@ -566,11 +620,11 @@ pub fn refresh(solution: &Solution) -> RenderObjectStore {
                         object,
                         RenderObject::default()
                             // .mesh(&mut meshes, &quad.quad_mesh_polycube, &default_color_map, "default", false)
-                            .mesh(&quad.quad_mesh_polycube, &color_map, "colored", true)
-                            .gizmo(quad.quad_mesh_polycube.gizmos(colors::GRAY), 2., -0.01, "quads", false)
-                            .gizmo(quad.triangle_mesh_polycube.gizmos(colors::GRAY), 2., -0.01, "triangles", false)
-                            .gizmo(gizmos_paths, 5., -0.001, "paths", true)
-                            .gizmo(gizmos_flat_paths, 4., -0.0011, "flat paths", false)
+                            .mesh(&quad.quad_mesh_polycube, &color_map, "colored")
+                            .gizmo(quad.quad_mesh_polycube.gizmos(colors::GRAY), 2., -0.01, "quads")
+                            .gizmo(quad.triangle_mesh_polycube.gizmos(colors::GRAY), 2., -0.01, "triangles")
+                            .gizmo(gizmos_paths, 5., -0.001, "paths")
+                            .gizmo(gizmos_flat_paths, 4., -0.0011, "flat paths")
                             .to_owned(),
                     );
                 }
@@ -591,6 +645,12 @@ pub fn refresh(solution: &Solution) -> RenderObjectStore {
                     black_color_map.insert(face_id, colors::BLACK);
                 }
                 let mut color_map_segmentation = HashMap::new();
+                let mut color_map_planarity = HashMap::new();
+                // let mut color_map_alignment = HashMap::new();
+
+                let mut color_map_d_area = HashMap::new();
+                let mut color_map_d_angle = HashMap::new();
+
                 // let mut color_map_alignment = HashMap::new();
 
                 let color = colors::GRAY;
@@ -630,10 +690,11 @@ pub fn refresh(solution: &Solution) -> RenderObjectStore {
                             let endpoints = granulated_mesh.vertices(edge_id);
                             let u = granulated_mesh.position(endpoints[0]);
                             let v = granulated_mesh.position(endpoints[1]);
-                            let line = DrawableLine::from_line(u, v, Vector3D::new(0., 0., 0.), translation, scale);
-                            gizmos_flat_paths.line(line.u, line.v, c);
+                            let u_transformed = world_to_view(u, translation, scale);
+                            let v_transformed = world_to_view(v, translation, scale);
+                            gizmos_flat_paths.line(u_transformed, v_transformed, c);
                             if f1 != f2 {
-                                gizmos_paths.line(line.u, line.v, c);
+                                gizmos_paths.line(u_transformed, v_transformed, c);
                             }
                         }
                     }
@@ -644,6 +705,106 @@ pub fn refresh(solution: &Solution) -> RenderObjectStore {
                         let color = colors::from_direction(dir, Some(Perspective::Primal), Some(side));
                         for &triangle_id in &lay.face_to_patch[&face_id].faces {
                             color_map_segmentation.insert(triangle_id, color);
+                        }
+                    }
+
+                    for &face_id in &polycube.structure.face_ids() {
+                        let normal = (polycube.structure.normal(face_id) as Vector3D).normalize();
+                        let patch = &lay.face_to_patch[&face_id].faces;
+                        let patch_vertices = patch.iter().flat_map(|&face_id| granulated_mesh.vertices(face_id)).collect::<HashSet<_>>();
+                        let patch_positions = patch_vertices.into_iter().map(|v| granulated_mesh.position(v)).collect::<Vec<_>>();
+                        let (plane, rms) = mehsh::prelude::geom::fit_plane(&patch_positions);
+
+                        let color = colors::map(1. - rms as f32, &colors::SCALE_MAGMA);
+                        for &triangle_id in &lay.face_to_patch[&face_id].faces {
+                            color_map_planarity.insert(triangle_id, color);
+                        }
+                    }
+
+                    if let Some(quad) = &solution.quad {
+                        for &triangle_id in &granulated_mesh.face_ids() {
+                            // Compute Jacobian
+                            let triangle = granulated_mesh
+                                .vertices(triangle_id)
+                                .into_iter()
+                                .map(|v| granulated_mesh.position(v))
+                                .collect_vec();
+
+                            if quad.triangle_mesh_polycube.normal(triangle_id).x.is_nan() {
+                                continue;
+                            }
+
+                            let mapped_triangle = quad
+                                .triangle_mesh_polycube
+                                .vertices(triangle_id)
+                                .into_iter()
+                                .map(|v| quad.triangle_mesh_polycube.position(v))
+                                .collect_vec();
+
+                            /// Compute local 2D coordinates of a triangle in its tangent frame
+                            fn local_transfo(v0: Vector3D, v1: Vector3D, v2: Vector3D, normal: Vector3D) -> Matrix22 {
+                                // local axes
+                                let mut local_axis1 = v1 - v0;
+                                let norm1 = local_axis1.norm();
+                                local_axis1 /= norm1; // normalize
+
+                                let local_axis2 = normal.cross(&local_axis1);
+
+                                // local coordinates
+                                let local_coords1 = Vector2D::new(norm1, 0.0);
+
+                                let diff = v2 - v0;
+                                let local_coords2 = Vector2D::new(diff.dot(&local_axis1), diff.dot(&local_axis2));
+
+                                // build 2x2 matrix A
+                                let mut a = Matrix22::zeros();
+                                a.set_column(0, &local_coords1);
+                                a.set_column(1, &local_coords2);
+
+                                a
+                            }
+
+                            /// Compute the Jacobian of a single triangle mapping from V1 → V2
+                            pub fn compute_jacobian(
+                                v1_0: Vector3D,
+                                v1_1: Vector3D,
+                                v1_2: Vector3D,
+                                normal1: Vector3D,
+                                v2_0: Vector3D,
+                                v2_1: Vector3D,
+                                v2_2: Vector3D,
+                                normal2: Vector3D,
+                            ) -> Matrix22 {
+                                let a1 = local_transfo(v1_0, v1_1, v1_2, normal1);
+                                let a2 = local_transfo(v2_0, v2_1, v2_2, normal2);
+
+                                a2 * a1.try_inverse().expect("Triangle is degenerate")
+                            }
+
+                            let p1 = triangle[0];
+                            let p2 = triangle[1];
+                            let p3 = triangle[2];
+
+                            let q1 = mapped_triangle[0];
+                            let q2 = mapped_triangle[1];
+                            let q3 = mapped_triangle[2];
+
+                            let n1 = (p2 - p1).cross(&(p3 - p1)).normalize();
+                            let n2 = (q2 - q1).cross(&(q3 - q1)).normalize();
+
+                            let jac = compute_jacobian(p1, p2, p3, n1, q1, q2, q3, n2);
+
+                            let svd = jac.svd(true, true);
+                            let svals = svd.singular_values;
+                            let sigma1 = svals[0];
+                            let sigma2 = svals[1];
+
+                            // Distortion metrics
+                            let area_distortion = 0.5 * (sigma1 * sigma2 + 1.0 / (sigma1 * sigma2));
+                            let angle_distortion = 0.5 * (sigma1 / sigma2 + sigma2 / sigma1);
+
+                            color_map_d_area.insert(triangle_id, colors::map(2. - area_distortion as f32, &colors::SCALE_MAGMA));
+                            color_map_d_angle.insert(triangle_id, colors::map(2. - angle_distortion as f32, &colors::SCALE_MAGMA));
                         }
                     }
 
@@ -677,8 +838,9 @@ pub fn refresh(solution: &Solution) -> RenderObjectStore {
                             let endpoints = input.vertices(edge_id);
                             let u = input.position(endpoints[0]);
                             let v = input.position(endpoints[1]);
-                            let line = DrawableLine::from_line(u, v, Vector3D::new(0., 0., 0.), translation, scale);
-                            gizmos_flag_paths.line(line.u, line.v, c);
+                            let u_transformed = world_to_view(u, translation, scale);
+                            let v_transformed = world_to_view(v, translation, scale);
+                            gizmos_flag_paths.line(u_transformed, v_transformed, c);
                         }
                     }
                 }
@@ -686,18 +848,20 @@ pub fn refresh(solution: &Solution) -> RenderObjectStore {
                 render_object_store.add_object(
                     object,
                     RenderObject::default()
-                        .mesh(input, &default_color_map, "gray", false)
-                        .mesh(input, &black_color_map, "black", true)
-                        .mesh(granulated_mesh, &color_map_segmentation, "segmentation", false)
-                        // .mesh(&mut meshes, granulated_mesh, &color_map_alignment, "alignment", false)
-                        .gizmo(input.gizmos(colors::GRAY), 0.5, -0.00001, "wireframe", true)
-                        .gizmo(gizmos_xloops, 3., -0.0001, "X-loops", true)
-                        .gizmo(gizmos_yloops, 3., -0.00011, "Y-loops", true)
-                        .gizmo(gizmos_zloops, 3., -0.000111, "Z-loops", true)
-                        .gizmo(gizmos_paths, 4., -0.0001, "paths", false)
-                        .gizmo(gizmos_flat_paths, 2., -0.00011, "flat paths", false)
-                        .mesh(input, &color_map_flag, "flag", false)
-                        .gizmo(gizmos_flag_paths, 2., -1e-4, "flag paths", false)
+                        .mesh(input, &default_color_map, "gray")
+                        .mesh(input, &black_color_map, "black")
+                        .mesh(granulated_mesh, &color_map_segmentation, "segmentation")
+                        .mesh(granulated_mesh, &color_map_planarity, "planarity")
+                        .mesh(granulated_mesh, &color_map_d_area, "d_area")
+                        .mesh(granulated_mesh, &color_map_d_angle, "d_angle")
+                        .gizmo(input.gizmos(colors::GRAY), 0.5, -0.00001, "wireframe")
+                        .gizmo(gizmos_xloops, 3., -0.0001, "X-loops")
+                        .gizmo(gizmos_yloops, 3., -0.00011, "Y-loops")
+                        .gizmo(gizmos_zloops, 3., -0.000111, "Z-loops")
+                        .gizmo(gizmos_paths, 4., -0.0001, "paths")
+                        .gizmo(gizmos_flat_paths, 2., -0.00011, "flat paths")
+                        .mesh(input, &color_map_flag, "flag")
+                        .gizmo(gizmos_flag_paths, 2., -1e-4, "flag paths")
                         .to_owned(),
                 );
             }
@@ -707,48 +871,7 @@ pub fn refresh(solution: &Solution) -> RenderObjectStore {
     render_object_store
 }
 
-/// TODO:
-
-#[derive(Default, Resource)]
-pub struct GizmosCache {
-    pub raycaster: Vec<Line>,
-}
-
-type Line = (Vec3, Vec3, colors::Color);
-
-// Draws the gizmos. This includes all wireframes, vertices, normals, raycasts, etc.
-pub fn gizmos(mut gizmos: Gizmos, gizmos_cache: Res<GizmosCache>, configuration: Res<Configuration>) {
-    // println!("Drawing gizmos");
-    // println!("Gizmos cache: {:?}", gizmos_cache.raycaster);
-    if configuration.interactive {
-        for &(u, v, c) in &gizmos_cache.raycaster {
-            gizmos.line(u, v, bevy::color::Color::srgb(c[0], c[1], c[2]));
-        }
-    }
-}
-
-pub fn add_line2(lines: &mut Vec<Line>, position_a: Vector3D, position_b: Vector3D, offset: Vector3D, color: colors::Color, translation: Vector3D, scale: f64) {
-    let line = DrawableLine::from_line(position_a, position_b, offset, translation, scale);
-    lines.push((line.u, line.v, color));
-}
-
-pub struct DrawableLine {
-    pub u: Vec3,
-    pub v: Vec3,
-}
-
-impl DrawableLine {
-    pub fn new(u: Vector3D, v: Vector3D) -> Self {
-        Self {
-            u: Vec3::new(u.x as f32, u.y as f32, u.z as f32),
-            v: Vec3::new(v.x as f32, v.y as f32, v.z as f32),
-        }
-    }
-
-    pub fn from_line(u: Vector3D, v: Vector3D, offset: Vector3D, translation: Vector3D, scale: f64) -> Self {
-        Self::new(
-            transform_coordinates(u, translation, scale) + offset,
-            transform_coordinates(v, translation, scale) + offset,
-        )
-    }
+pub fn world_to_view(v: Vector3D, translation: Vector3D, scale: f64) -> Vec3 {
+    let vt = transform_coordinates(v, translation, scale);
+    Vec3::new(vt.x as f32, vt.y as f32, vt.z as f32)
 }

@@ -399,3 +399,7 @@ pub const fn from_direction(direction: PrincipalDirection, perspective: Option<P
         (PrincipalDirection::Z, Some(Perspective::Dual), Some(Orientation::Backwards)) => PURPLE_LIGHT,
     }
 }
+
+pub fn to_bevy(color: Color) -> bevy::color::Color {
+    bevy::color::Color::srgb(color[0], color[1], color[2])
+}

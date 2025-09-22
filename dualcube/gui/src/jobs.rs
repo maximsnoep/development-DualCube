@@ -1,13 +1,13 @@
 use crate::render::{self, RenderObjectStore};
-use crate::{InputResource, SolutionResource};
+use crate::{Configuration, InputResource, Phase, SolutionResource};
 use bevy::prelude::*;
 use bevy::tasks::futures_lite::future;
 use bevy::tasks::{AsyncComputeTaskPool, Task};
+use dualcube::polycube::POLYCUBE;
 use dualcube::prelude::*;
 use dualcube::solutions::{Loop, LoopID};
 use io::Export;
-use itertools::Itertools;
-use mehsh::prelude::HasEdges;
+use mehsh::prelude::VertKey;
 use ordered_float::OrderedFloat;
 use std::collections::HashMap;
 use std::path::PathBuf;
@@ -16,6 +16,140 @@ async fn run_job(job: Job) -> Option<JobResult> {
     match job {
         Job::Hex { .. } => None,
         Job::Import { path } => Some(JobResult::Imported(io::import_solution(path))),
+
+        Job::InitializeLoops {
+            solution,
+            flowgraphs,
+            configuration,
+        } => {
+            let mut solution = Solution::new(solution.mesh_ref.clone());
+            solution.initialize(&flowgraphs);
+            Some(JobResult::LoopsChanged((solution, configuration)))
+        }
+
+        Job::Evolve {
+            solution,
+
+            flowgraphs,
+            configuration,
+        } => {
+            if let Some(new_sol) = solution.evolve(configuration.iterations, configuration.pool1, configuration.pool2, &flowgraphs) {
+                Some(JobResult::LoopsChanged((new_sol, configuration)))
+            } else {
+                warn!("Failed to evolve solution.");
+                None
+            }
+        }
+
+        Job::ComputeDual { solution, configuration } => {
+            let mut solution_clone = solution.clone();
+            if let Err(err) = solution_clone.construct_dual_and_polycube() {
+                warn!("Failed to construct dual and polycube: {err:?}");
+                return None;
+            }
+            Some(JobResult::DualChanged((solution_clone, configuration)))
+        }
+
+        Job::PlaceCorners { solution, configuration } => {
+            let mut solution_clone = solution.clone();
+            if let Err(err) = solution_clone.place_corners() {
+                warn!("Failed to place corners and paths: {err:?}");
+                return None;
+            }
+            Some(JobResult::CornersPlaced((solution_clone, configuration)))
+        }
+
+        Job::MoveCorner {
+            configuration,
+            solution,
+            corner,
+            new_vertex,
+        } => {
+            let mut solution_clone = solution.clone();
+            if let Err(err) = solution_clone.move_corner(corner, new_vertex) {
+                warn!("Failed to move corner: {err:?}");
+                return None;
+            }
+            Some(JobResult::LayoutChanged((solution_clone, configuration)))
+        }
+
+        Job::PlacePaths { solution, configuration } => {
+            let mut solution_clone = solution.clone();
+            if let Err(err) = solution_clone.place_paths() {
+                warn!("Failed to place paths: {err:?}");
+                return None;
+            }
+            Some(JobResult::LayoutChanged((solution_clone, configuration)))
+        }
+
+        Job::SmoothenLayout { solution, configuration } => {
+            let mut solution_clone = solution.clone();
+            if let Err(err) = solution_clone.optimize_corners() {
+                warn!("Failed to optimize corners: {err:?}");
+                return None;
+            }
+            Some(JobResult::LayoutChanged((solution_clone, configuration)))
+        }
+
+        Job::ComputePolycube { configuration, solution } => {
+            let mut solution_clone = solution.clone();
+            solution_clone.resize_polycube(configuration.unit);
+
+            Some(JobResult::PolycubeChanged((solution_clone, configuration)))
+        }
+
+        Job::ComputeQuad { solution, configuration } => {
+            let mut solution_clone = solution.clone();
+            if let Err(err) = solution_clone.construct_quad(configuration.omega) {
+                warn!("Failed to construct quad: {err:?}");
+                return None;
+            }
+            Some(JobResult::QuadChanged((solution_clone, configuration)))
+        }
+
+        Job::SmoothenQuad { solution, configuration } => {
+            let mut solution_clone = solution.clone();
+            solution_clone.optimize_quad();
+            Some(JobResult::QuadChanged((solution_clone, configuration)))
+        }
+
+        Job::Refresh { solution } => Some(JobResult::Refreshed(render::refresh(&solution))),
+
+        Job::AddLoop {
+            solution,
+            seed,
+            direction,
+            flowgraph,
+        } => {
+            let Some((candidate_loop, _)) = solution.construct_unbounded_loop(seed, direction, &flowgraph, |a: f64| OrderedFloat(a.powi(10))) else {
+                return Some(JobResult::AddedLoop((seed, direction, None)));
+            };
+            let mut candidate_solution = solution.clone();
+            candidate_solution.add_loop(Loop {
+                edges: candidate_loop,
+                direction,
+            });
+            if let Err(err) = candidate_solution.construct_dual_and_polycube() {
+                warn!("Failed to reconstruct solution: {err:?}");
+                return Some(JobResult::AddedLoop((seed, direction, None)));
+            }
+            Some(JobResult::AddedLoop((seed, direction, Some(candidate_solution))))
+        }
+        Job::RemoveLoop {
+            solution,
+            loop_id,
+            force,
+            configuration,
+        } => {
+            let mut candidate_solution = solution.clone();
+            candidate_solution.del_loop(loop_id);
+            if candidate_solution.reconstruct_solution(true, 8).is_ok() || force {
+                Some(JobResult::RemovedLoop(Some((candidate_solution, configuration))))
+            } else {
+                Some(JobResult::RemovedLoop(None))
+            }
+        }
+
         Job::Export { solution, path } => {
             if solution.mesh_ref.vert_ids().is_empty() {
                 return None;
@@ -40,104 +174,6 @@ async fn run_job(job: Job) -> Option<JobResult> {
             }
             None
         }
-        Job::InitializeLoops { solution, flowgraphs } => {
-            let mut solution_clone = solution.clone();
-            solution_clone.initialize(&flowgraphs);
-            Some(JobResult::Recomputed(solution_clone))
-        }
-        Job::AddLoop {
-            solution,
-            seed,
-            direction,
-            flowgraph,
-        } => {
-            let Some((candidate_loop, _)) = solution.construct_unbounded_loop(seed, direction, &flowgraph, |a: f64| OrderedFloat(a.powi(10))) else {
-                return Some(JobResult::AddedLoop((seed, direction, None)));
-            };
-            let mut candidate_solution = solution.clone();
-            candidate_solution.add_loop(Loop {
-                edges: candidate_loop,
-                direction,
-            });
-            if let Err(err) = candidate_solution.reconstruct_solution(false, 8) {
-                warn!("Failed to reconstruct solution: {err:?}");
-                return Some(JobResult::AddedLoop((seed, direction, None)));
-            }
-            Some(JobResult::AddedLoop((seed, direction, Some(candidate_solution))))
-        }
-        Job::RemoveLoop { solution, loop_id, force } => {
-            let mut candidate_solution = solution.clone();
-            candidate_solution.del_loop(loop_id);
-            if candidate_solution.reconstruct_solution(true, 8).is_ok() || force {
-                Some(JobResult::RemovedLoop(Some(candidate_solution)))
-            } else {
-                Some(JobResult::RemovedLoop(None))
-            }
-        }
-        Job::Recompute { solution, unit, omega } => {
-            let mut solution_clone = solution.clone();
-            if let Err(err) = solution_clone.reconstruct_solution(unit, omega) {
-                warn!("Failed to reconstruct solution: {err:?}");
-            }
-            Some(JobResult::Recomputed(solution_clone))
-        }
-        Job::Refresh { solution } => Some(JobResult::Refreshed(render::refresh(&solution))),
-        Job::SmoothenQuad { solution } => {
-            let mut solution_clone = solution.clone();
-            // if let Some(quad) = solution_clone.quad.as_mut() {
-            //     quad.smoothing(10, &solution_clone.mesh_ref, false);
-
-            //     Some(JobResult::Recomputed(solution_clone))
-            // } else {
-            //     None
-            // }
-
-            if let Ok(layout) = solution_clone.layout.as_mut() {
-                let verts = layout
-                    .dual_ref
-                    .loop_structure
-                    .face_ids()
-                    .iter()
-                    .map(|f| layout.polycube_ref.region_to_vertex.get_by_left(f).unwrap().to_owned())
-                    // .filter(|&v| layout.polycube_ref.structure.edges(v).len() == 4)
-                    .collect_vec();
-
-                for vert in verts {
-                    let edges_to_be_replaced = layout.polycube_ref.structure.edges(vert);
-                    for &edge in &edges_to_be_replaced {
-                        layout.edge_to_path.remove(&edge);
-                        layout.edge_to_path.remove(&layout.polycube_ref.structure.twin(edge));
-                    }
-
-                    layout.optimize_corner(vert);
-
-                    for &edge in &edges_to_be_replaced {
-                        layout.place_path(edge).unwrap();
-                    }
-                }
-                // layout.place_paths();
-                layout.verify_paths();
-                layout.assign_patches();
-
-                Some(JobResult::Recomputed(solution_clone))
-            } else {
-                None
-            }
-        }
-        Job::Evolve {
-            solution,
-            iterations,
-            pool1,
-            pool2,
-            flowgraphs,
-        } => {
-            if let Some(new_sol) = solution.evolve(iterations, pool1, pool2, &flowgraphs) {
-                Some(JobResult::Recomputed(new_sol))
-            } else {
-                warn!("Failed to evolve solution.");
-                None
-            }
-        }
     }
 }
 
@@ -152,45 +188,111 @@ fn poll_jobs(
     if let (Some(request), Some(mut task)) = (job_state.request.take(), job_state.current.take()) {
         if let Some(result) = future::block_on(future::poll_once(&mut task)) {
             match result {
-                Some(JobResult::Hexed(res)) => {
-                    info!("Hexed completed: {:?}", res);
-                    // TODO: insert into your resources
+                Some(JobResult::LoopsChanged((solution, configuration))) => {
+                    solution_resource.current_solution = solution;
+                    if configuration.stop == Phase::Loops {
+                        jobs.write(JobRequest::Run(Box::new(Job::Refresh {
+                            solution: solution_resource.current_solution.clone(),
+                        })));
+                    } else {
+                        jobs.write(JobRequest::Run(Box::new(Job::ComputeDual {
+                            solution: solution_resource.current_solution.clone(),
+                            configuration,
+                        })));
+                    }
                 }
-                Some(JobResult::Recomputed(sol)) => {
-                    solution_resource.current_solution = sol;
+
+                Some(JobResult::DualChanged((solution, configuration))) => {
+                    solution_resource.current_solution = solution;
+                    if configuration.stop == Phase::Dual {
+                        jobs.write(JobRequest::Run(Box::new(Job::Refresh {
+                            solution: solution_resource.current_solution.clone(),
+                        })));
+                    } else {
+                        jobs.write(JobRequest::Run(Box::new(Job::PlaceCorners {
+                            solution: solution_resource.current_solution.clone(),
+                            configuration,
+                        })));
+                    }
+                }
+
+                Some(JobResult::CornersPlaced((solution, configuration))) => {
+                    solution_resource.current_solution = solution;
+                    jobs.write(JobRequest::Run(Box::new(Job::PlacePaths {
+                        solution: solution_resource.current_solution.clone(),
+                        configuration,
+                    })));
+                }
+
+                Some(JobResult::LayoutChanged((solution, configuration))) => {
+                    solution_resource.current_solution = solution;
+                    if configuration.stop == Phase::Layout {
+                        jobs.write(JobRequest::Run(Box::new(Job::Refresh {
+                            solution: solution_resource.current_solution.clone(),
+                        })));
+                    } else {
+                        jobs.write(JobRequest::Run(Box::new(Job::ComputePolycube {
+                            solution: solution_resource.current_solution.clone(),
+                            configuration,
+                        })));
+                    }
+                }
+
+                Some(JobResult::PolycubeChanged((solution, configuration))) => {
+                    solution_resource.current_solution = solution;
+                    if configuration.stop == Phase::Polycube {
+                        jobs.write(JobRequest::Run(Box::new(Job::Refresh {
+                            solution: solution_resource.current_solution.clone(),
+                        })));
+                    } else {
+                        jobs.write(JobRequest::Run(Box::new(Job::ComputeQuad {
+                            solution: solution_resource.current_solution.clone(),
+                            configuration,
+                        })));
+                    }
+                }
+
+                Some(JobResult::QuadChanged((solution, configuration))) => {
+                    solution_resource.current_solution = solution;
                     jobs.write(JobRequest::Run(Box::new(Job::Refresh {
                         solution: solution_resource.current_solution.clone(),
                     })));
                 }
+
+                Some(JobResult::Hexed(res)) => {
+                    info!("Hexed completed: {:?}", res);
+                    // TODO: insert into your resources
+                }
+
                 Some(JobResult::Imported(sol)) => {
                     *input_resource = InputResource::new(sol.mesh_ref.clone());
                     solution_resource.current_solution = sol;
                     solution_resource.next[0] = HashMap::new();
                     solution_resource.next[1] = HashMap::new();
                     solution_resource.next[2] = HashMap::new();
-                    jobs.write(JobRequest::Run(Box::new(Job::Recompute {
+                    jobs.write(JobRequest::Run(Box::new(Job::Refresh {
                         solution: solution_resource.current_solution.clone(),
-                        unit: true,
-                        omega: 1,
                     })));
                 }
+
                 Some(JobResult::AddedLoop((seed, direction, maybe))) => {
                     solution_resource.next[direction as usize].insert(seed, maybe);
                 }
                 Some(JobResult::RemovedLoop(maybe)) => {
-                    if let Some(sol) = maybe {
+                    if let Some((sol, configuration)) = maybe {
                         solution_resource.current_solution = sol;
                         solution_resource.next[0].clear();
                         solution_resource.next[1].clear();
                         solution_resource.next[2].clear();
-                        jobs.write(JobRequest::Run(Box::new(Job::Recompute {
+                        jobs.write(JobRequest::Run(Box::new(Job::ComputeDual {
                             solution: solution_resource.current_solution.clone(),
-                            unit: true,
-                            omega: 1,
+                            configuration,
                         })));
                     }
                 }
+
                 Some(JobResult::Refreshed(new_render_object_store)) => *render_object_store = new_render_object_store,
+
                 None => {
                     info!("Job ended with no result (silently, cancelled or failed)");
                 }
@@ -244,6 +346,54 @@ pub enum Job {
     Import {
         path: PathBuf,
     },
+    InitializeLoops {
+        solution: Solution,
+        configuration: Configuration,
+        flowgraphs: [grapff::fixed::FixedGraph<EdgeID, f64>; 3],
+    },
+    Evolve {
+        solution: Solution,
+        configuration: Configuration,
+        flowgraphs: [grapff::fixed::FixedGraph<EdgeID, f64>; 3],
+    },
+    ComputeDual {
+        configuration: Configuration,
+        solution: Solution,
+    },
+    PlaceCorners {
+        configuration: Configuration,
+        solution: Solution,
+    },
+    MoveCorner {
+        configuration: Configuration,
+        solution: Solution,
+        corner: VertKey<POLYCUBE>,
+        new_vertex: VertID,
+    },
+    PlacePaths {
+        configuration: Configuration,
+        solution: Solution,
+    },
+    SmoothenLayout {
+        configuration: Configuration,
+        solution: Solution,
+    },
+    ComputePolycube {
+        configuration: Configuration,
+        solution: Solution,
+    },
+    ComputeQuad {
+        configuration: Configuration,
+        solution: Solution,
+    },
+    SmoothenQuad {
+        configuration: Configuration,
+        solution: Solution,
+    },
+    Refresh {
+        solution: Solution,
+    },
+    // EXPORT
     Export {
         solution: Solution,
         path: PathBuf,
@@ -252,10 +402,7 @@ pub enum Job {
         solution: Solution,
         path: PathBuf,
     },
-    InitializeLoops {
-        solution: Solution,
-        flowgraphs: [grapff::fixed::FixedGraph<EdgeID, f64>; 3],
-    },
+    // MANUAL
     AddLoop {
         solution: Solution,
         seed: [EdgeID; 2],
@@ -266,26 +413,10 @@ pub enum Job {
         solution: Solution,
         loop_id: LoopID,
         force: bool,
+        configuration: Configuration,
     },
+    // HEX MESHING
     Hex {
-        solution: Solution,
-    },
-    Evolve {
-        solution: Solution,
-        iterations: usize,
-        pool1: usize,
-        pool2: usize,
-        flowgraphs: [grapff::fixed::FixedGraph<EdgeID, f64>; 3],
-    },
-    Recompute {
-        solution: Solution,
-        unit: bool,
-        omega: usize,
-    },
-    Refresh {
-        solution: Solution,
-    },
-    SmoothenQuad {
         solution: Solution,
     },
 }
@@ -298,12 +429,19 @@ pub enum JobType {
     ExportNLR,
     Hex,
     Evolve,
+    ComputePolycube,
     InitializeLoops,
     AddLoop,
     RemoveLoop,
     Recompute,
     Refresh,
+    SmoothenLayout,
     SmoothenQuad,
+    ComputeDual,
+    PlaceCorners,
+    MoveCorner,
+    PlacePaths,
+    ComputeQuad,
 }
 
 impl std::fmt::Display for JobType {
@@ -318,8 +456,15 @@ impl std::fmt::Display for JobType {
             JobType::Refresh => write!(f, "refreshing"),
             JobType::AddLoop => write!(f, "adding loop"),
             JobType::RemoveLoop => write!(f, "removing loop"),
+            JobType::SmoothenLayout => write!(f, "smoothening layout"),
             JobType::SmoothenQuad => write!(f, "smoothening quad"),
             JobType::InitializeLoops => write!(f, "initializing loops"),
+            JobType::ComputeDual => write!(f, "computing dual"),
+            JobType::PlaceCorners => write!(f, "placing corners"),
+            JobType::MoveCorner => write!(f, "moving corner"),
+            JobType::PlacePaths => write!(f, "placing paths"),
+            JobType::ComputeQuad => write!(f, "computing quad"),
+            JobType::ComputePolycube => write!(f, "computing polycube"),
         }
     }
 }
@@ -332,12 +477,18 @@ impl Job {
             Job::ExportNLR { .. } => JobType::ExportNLR,
             Job::Hex { .. } => JobType::Hex,
             Job::Evolve { .. } => JobType::Evolve,
-            Job::Recompute { .. } => JobType::Recompute,
             Job::Refresh { .. } => JobType::Refresh,
             Job::AddLoop { .. } => JobType::AddLoop,
             Job::RemoveLoop { .. } => JobType::RemoveLoop,
+            Job::SmoothenLayout { .. } => JobType::SmoothenLayout,
             Job::SmoothenQuad { .. } => JobType::SmoothenQuad,
             Job::InitializeLoops { .. } => JobType::InitializeLoops,
+            Job::ComputeDual { .. } => JobType::ComputeDual,
+            Job::PlaceCorners { .. } => JobType::PlaceCorners,
+            Job::MoveCorner { .. } => JobType::MoveCorner,
+            Job::PlacePaths { .. } => JobType::PlacePaths,
+            Job::ComputeQuad { .. } => JobType::ComputeQuad,
+            Job::ComputePolycube { .. } => JobType::ComputePolycube,
         }
     }
 }
@@ -345,11 +496,23 @@ impl Job {
 /// Results of jobs
 enum JobResult {
     Imported(Solution),
+    // For example after initializing or optimizing loop structure
+    LoopsChanged((Solution, Configuration)),
+    // For example after computing dual / polycube representation
+    DualChanged((Solution, Configuration)),
+    // For example after placing corners or paths
+    CornersPlaced((Solution, Configuration)),
+    LayoutChanged((Solution, Configuration)),
+    // After polycube changed
+    PolycubeChanged((Solution, Configuration)),
+    // For example after optimizing quad structure
+    QuadChanged((Solution, Configuration)),
+
     Hexed(PathBuf),
-    Recomputed(Solution),
     Refreshed(RenderObjectStore),
+
     AddedLoop(([EdgeID; 2], PrincipalDirection, Option<Solution>)),
-    RemovedLoop(Option<Solution>),
+    RemovedLoop(Option<(Solution, Configuration)>),
 }
 
 /// Singleton job state
