@@ -4,6 +4,8 @@ mod jobs;
 mod render;
 mod ui;
 
+use crate::controls::InteractiveMode;
+use crate::render::RenderObjectSettingStore;
 use crate::ui::UiResource;
 use bevy::diagnostic::{FrameTimeDiagnosticsPlugin, SystemInformationDiagnosticsPlugin};
 use bevy::prelude::*;
@@ -19,7 +21,7 @@ use itertools::Itertools;
 use mehsh::prelude::*;
 use ordered_float::OrderedFloat;
 use rayon::iter::{IntoParallelIterator, ParallelIterator};
-use render::{CameraFor, GizmosCache, MeshProperties, Objects, RenderObjectStore};
+use render::{CameraFor, MeshProperties, Objects, RenderObjectStore};
 use smooth_bevy_cameras::controllers::orbit::OrbitCameraPlugin;
 use smooth_bevy_cameras::LookTransformPlugin;
 use std::collections::HashMap;
@@ -31,24 +33,40 @@ use winit::window::Icon;
 /// This example uses a shader source file from the assets subdirectory
 const SHADER_ASSET_PATH: &str = "flat.wgsl";
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Phase {
+    None,
+    Input,
+    Loops,
+    Dual,
+    Layout,
+    Polycube,
+    Quad,
+}
+
 #[derive(Resource, Debug, Clone)]
 pub struct Configuration {
     pub direction: PrincipalDirection,
     pub alpha: f64,
 
+    pub unit: bool,
     pub omega: usize,
+    pub iterations: usize,
+    pub pool1: usize,
+    pub pool2: usize,
 
     pub raycasted: Option<[EdgeID; 2]>,
     pub selected: Option<[EdgeID; 2]>,
 
     pub automatic: bool,
-    pub interactive: bool,
+
+    pub interactive_mode: InteractiveMode,
 
     pub window_shows_object: [Objects; 2],
 
-    pub clear_color: [u8; 3],
+    pub stop: Phase,
 
-    pub unit_cubes: bool,
+    pub clear_color: [u8; 3],
 }
 
 impl Default for Configuration {
@@ -56,15 +74,22 @@ impl Default for Configuration {
         Self {
             direction: PrincipalDirection::X,
             alpha: 0.5,
-            omega: 10,
+
+            unit: true,
+            omega: 5,
+            iterations: 10,
+            pool1: 10,
+            pool2: 30,
+
+            stop: Phase::Polycube,
+
             raycasted: None,
             selected: None,
             automatic: false,
-            interactive: false,
+            interactive_mode: InteractiveMode::None,
             window_shows_object: [Objects::PolycubeMap, Objects::QuadMesh],
-            // clear_color: [27, 27, 27],
-            clear_color: [255, 255, 255],
-            unit_cubes: false,
+            clear_color: [27, 27, 27],
+            // clear_color: [255, 255, 255],
         }
     }
 }
@@ -214,16 +239,21 @@ impl Material for FlatMaterial {
     }
 }
 
+// We can create our own gizmo config group!
+#[derive(Default, Reflect, GizmoConfigGroup)]
+struct PerpetualGizmos {}
+
 fn main() {
     App::new()
         .init_resource::<UiResource>()
         .init_resource::<InputResource>()
         .init_resource::<CacheResource>()
-        .init_resource::<GizmosCache>()
         .init_resource::<SolutionResource>()
         .init_resource::<Configuration>()
+        .init_resource::<RenderObjectSettingStore>()
         .init_resource::<RenderObjectStore>()
         .init_resource::<CameraHandles>()
+        .init_gizmo_group::<PerpetualGizmos>()
         .insert_resource(AmbientLight {
             color: bevy::color::Color::WHITE,
             brightness: 1.0,
@@ -262,8 +292,8 @@ fn main() {
         // Updates
         .add_systems(Update, ui::update)
         .add_systems(Update, render::update)
-        .add_systems(Update, render::gizmos)
         .add_systems(FixedUpdate, render::respawn_renders.run_if(on_timer(Duration::from_millis(100))))
+        .add_systems(Update, render::update_render_settings)
         .add_systems(Update, controls::system)
         // .add_systems(Update, handle_tasks)
         .add_event::<ActionEvent>()

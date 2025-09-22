@@ -1,3 +1,5 @@
+use nalgebra::DMatrix;
+
 use crate::utils::primitives::{EPS, Vector2D, Vector3D};
 
 /// Represents the orientation of three points in 3D space.
@@ -248,4 +250,62 @@ pub fn inverse_barycentric_coordinates(u: f64, v: f64, w: f64, t: (Vector3D, Vec
     let p2 = t.1 * v;
     let p3 = t.2 * w;
     p1 + p2 + p3
+}
+
+// PCA to fit plane
+pub fn fit_plane(points: &[Vector3D]) -> (Vector3D, f64) {
+    let n = points.len();
+
+    // 1. Compute centroid
+    let centroid = points.iter().cloned().sum::<Vector3D>() / n as f64;
+
+    // 2. Build covariance matrix
+    let mut covariance = DMatrix::zeros(3, 3);
+    for p in points {
+        let diff = p - centroid;
+        covariance += diff * diff.transpose();
+    }
+    covariance /= n as f64;
+
+    // 3. Eigen decomposition
+    let eigen = covariance.symmetric_eigen();
+    let idx = eigen.eigenvalues.imin();
+    let eigenvector = eigen.eigenvectors.column(idx);
+    let rms = eigen.eigenvalues[idx].sqrt();
+    let diameter = diameter(points);
+    (Vector3D::new(eigenvector[0], eigenvector[1], eigenvector[2]), rms / diameter)
+}
+
+// Diameter of a set of points (max distance between two points)
+pub fn diameter(points: &[Vector3D]) -> f64 {
+    let mut max_dist = 0.0;
+    for i in 0..points.len() {
+        for j in (i + 1)..points.len() {
+            let dist = (points[i] - points[j]).norm();
+            if dist > max_dist {
+                max_dist = dist;
+            }
+        }
+    }
+    max_dist
+}
+
+/// Project a 3D triangle into its local 2D coordinates
+/// Returns a tuple (q0, q1, q2) in 2D
+pub fn triangle_to_2d(p0: Vector3D, p1: Vector3D, p2: Vector3D) -> Option<(Vector2D, Vector2D, Vector2D)> {
+    // 1. Compute edges
+    let v1 = p1 - p0;
+    let v2 = p2 - p0;
+
+    // 3. Construct orthonormal basis (u_x, u_y, u_z)
+    let ux = v1.normalize();
+    let uz = v1.cross(&v2).normalize();
+    let uy = uz.cross(&ux); // guaranteed orthonormal
+
+    // 4. Project each vertex into 2D plane coordinates
+    let q0 = Vector2D::new(p0.dot(&ux), p0.dot(&uy));
+    let q1 = Vector2D::new(p1.dot(&ux), p1.dot(&uy));
+    let q2 = Vector2D::new(p2.dot(&ux), p2.dot(&uy));
+
+    Some((q0, q1, q2))
 }

@@ -1,6 +1,6 @@
 use crate::jobs::{Job, JobRequest};
-use crate::render::{add_line2, GizmosCache};
-use crate::{colors, vec3_to_vector3d, CacheResource, Configuration, InputResource, SolutionResource};
+use crate::render::world_to_view;
+use crate::{colors, vec3_to_vector3d, vector3d_to_vec3, CacheResource, Configuration, InputResource, PerpetualGizmos, SolutionResource};
 use bevy::picking::backend::ray::RayMap;
 use bevy::prelude::*;
 use dualcube::prelude::*;
@@ -8,7 +8,14 @@ use itertools::Itertools;
 use mehsh::prelude::*;
 use ordered_float::OrderedFloat;
 
-pub fn system(
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum InteractiveMode {
+    None,
+    LoopModification,
+    SegmentationModification,
+}
+
+pub fn segmentation_modification_system(
     ray_map: Res<RayMap>,
     mut ray_cast: MeshRayCast,
     mouse: Res<ButtonInput<MouseButton>>,
@@ -16,82 +23,116 @@ pub fn system(
     mesh_resmut: Res<InputResource>,
     mut solution: ResMut<SolutionResource>,
     mut cache: ResMut<CacheResource>,
-    mut gizmos_cache: ResMut<GizmosCache>,
+    mut gizmos: Gizmos<PerpetualGizmos>,
     mut configuration: ResMut<Configuration>,
     mut jobs: EventWriter<JobRequest>,
+    position: Vector3D,
+    nearest_face: FaceID,
+    nearest_vert: VertID,
+    edgepair: [EdgeID; 2],
 ) -> Result<(), BevyError> {
-    configuration.raycasted = None;
-    configuration.selected = None;
-    gizmos_cache.raycaster.clear();
+    // Look for what loop region I am in
+    // Look for the vertex corresponding to the loop region
+    let modification = if let (Ok(dual), Ok(layout), Some(polycube)) = (
+        &solution.current_solution.dual,
+        &solution.current_solution.layout,
+        &solution.current_solution.polycube,
+    ) {
+        let current_loop_region = dual.vert_to_region(nearest_vert);
+        let current_polycube_corner = polycube.region_to_vertex.get_by_left(&current_loop_region).unwrap().to_owned();
+        let current_segmentation_corner = layout.vert_to_corner.get_by_left(&current_polycube_corner).unwrap().to_owned();
 
-    if !configuration.interactive {
-        return Ok(());
+        // Highlight this vertex
+        let v = layout.granulated_mesh.position(current_segmentation_corner);
+        let v_transformed = world_to_view(v, mesh_resmut.properties.translation, mesh_resmut.properties.scale);
+        let n = vector3d_to_vec3(layout.granulated_mesh.normal(current_segmentation_corner));
+
+        let isometry = Isometry3d::new(v_transformed, Quat::from_rotation_arc(Vec3::Z, n.normalize()));
+        gizmos.line(v_transformed, v_transformed + n, colors::to_bevy(colors::DARK_GRAY));
+        gizmos.circle(isometry, 0.2, colors::to_bevy(colors::DARK_GRAY));
+
+        // Highlight the current position (where the vertex would be moved)
+        let v1 = layout.granulated_mesh.position(nearest_vert);
+        let v1_transformed = world_to_view(v1, mesh_resmut.properties.translation, mesh_resmut.properties.scale);
+        let n1 = vector3d_to_vec3(layout.granulated_mesh.normal(nearest_vert));
+
+        let isometry1 = Isometry3d::new(v1_transformed, Quat::from_rotation_arc(Vec3::Z, n1.normalize()));
+        gizmos.line(v1_transformed, v1_transformed + n1, colors::to_bevy(colors::DARK_GRAY));
+        gizmos.circle(isometry1, 0.2, colors::to_bevy(colors::DARK_GRAY));
+
+        gizmos.line(v_transformed + 0.2 * n, v1_transformed + 0.2 * n1, colors::to_bevy(colors::DARK_GRAY));
+
+        Some((current_polycube_corner, nearest_vert))
+    } else {
+        None
+    };
+
+    if let (Some((corner_poly, corner_seg)), Ok(layout)) = (modification, &mut solution.current_solution.layout) {
+        // CONTROLS
+        //
+        // Action1:  Move segmentation corner (LMB)
+
+        let lmb = mouse.pressed(MouseButton::Left);
+        // Controls
+        match (lmb) {
+            // No actions
+            (true) => {
+                layout.vert_to_corner.insert(corner_poly, corner_seg);
+
+                jobs.write(JobRequest::Run(Box::new(Job::MoveCorner {
+                    configuration: configuration.clone(),
+                    solution: solution.current_solution.clone(),
+                    corner: corner_poly,
+                    new_vertex: corner_seg,
+                })));
+            }
+            _ => {}
+        }
     }
 
+    Ok(())
+}
+
+pub fn loop_modification_system(
+    ray_map: Res<RayMap>,
+    mut ray_cast: MeshRayCast,
+    mouse: Res<ButtonInput<MouseButton>>,
+    keyboard: Res<ButtonInput<KeyCode>>,
+    mesh_resmut: Res<InputResource>,
+    mut solution: ResMut<SolutionResource>,
+    mut cache: ResMut<CacheResource>,
+    mut gizmos: Gizmos<PerpetualGizmos>,
+    mut configuration: ResMut<Configuration>,
+    mut jobs: EventWriter<JobRequest>,
+
+    position: Vector3D,
+    nearest_face: FaceID,
+    nearest_vert: VertID,
+    edgepair: [EdgeID; 2],
+) -> Result<(), BevyError> {
     // Render all current solutions  (for currently selected direction)
     for (&edgepair, sol) in &solution.next[configuration.direction as usize] {
         let u = mesh_resmut.mesh.position(edgepair[0]);
         let v = mesh_resmut.mesh.position(edgepair[1]);
-        let n = mesh_resmut.mesh.normal(mesh_resmut.mesh.face(edgepair[0]));
+
         let color = match sol {
             Some(_) => colors::from_direction(configuration.direction, Some(Perspective::Dual), None),
             None => colors::BLACK,
         };
-        add_line2(
-            &mut gizmos_cache.raycaster,
-            u,
-            v,
-            n * 0.01,
-            color,
-            mesh_resmut.properties.translation,
-            mesh_resmut.properties.scale,
-        );
+
+        let u_transformed = world_to_view(u, mesh_resmut.properties.translation, mesh_resmut.properties.scale);
+        let v_transformed = world_to_view(v, mesh_resmut.properties.translation, mesh_resmut.properties.scale);
+        gizmos.line(u_transformed, v_transformed, colors::to_bevy(color));
     }
-
-    if keyboard.pressed(KeyCode::ControlLeft) || mouse.pressed(MouseButton::Right) {
-        return Ok(());
-    }
-
-    let intersections = ray_map
-        .iter()
-        .filter_map(|(_, ray)| {
-            let (_, hit) = ray_cast.cast_ray(*ray, &MeshRayCastSettings::default()).first()?;
-            Some(hit.point)
-        })
-        .collect_vec();
-
-    if intersections.is_empty() {
-        return Ok(());
-    }
-
-    let position = (vec3_to_vector3d(intersections[0]) - mesh_resmut.properties.translation) / mesh_resmut.properties.scale;
-
-    let nearest_face = mesh_resmut.triangle_lookup.nearest(&position.into());
-    // get the nearest_vert (one of 3 corners of nearest_face)
-    let nearest_vert = mesh_resmut
-        .mesh
-        .vertices(nearest_face)
-        .iter()
-        .min_by_key(|&v| OrderedFloat(position.metric_distance(&mesh_resmut.mesh.position(*v))))
-        .unwrap()
-        .to_owned();
-
-    let edgepair = mesh_resmut.mesh.edges_in_face_with_vert(nearest_face, nearest_vert).unwrap();
 
     let u = mesh_resmut.mesh.position(edgepair[0]);
     let v = mesh_resmut.mesh.position(edgepair[1]);
-    let n = mesh_resmut.mesh.normal(mesh_resmut.mesh.face(edgepair[0]));
     let color = colors::from_direction(configuration.direction, Some(Perspective::Dual), None);
 
-    add_line2(
-        &mut gizmos_cache.raycaster,
-        u,
-        v,
-        n * 0.01,
-        color,
-        mesh_resmut.properties.translation,
-        mesh_resmut.properties.scale,
-    );
+    let u_transformed = world_to_view(u, mesh_resmut.properties.translation, mesh_resmut.properties.scale);
+    let v_transformed = world_to_view(v, mesh_resmut.properties.translation, mesh_resmut.properties.scale);
+
+    gizmos.line(u_transformed, v_transformed, colors::to_bevy(color));
 
     // CONTROLS
     //
@@ -141,15 +182,9 @@ pub fn system(
                         let u = mesh_resmut.mesh.position(edgepair[0]);
                         let v = mesh_resmut.mesh.position(edgepair[1]);
                         let n = mesh_resmut.mesh.normal(edgepair[0]);
-                        add_line2(
-                            &mut gizmos_cache.raycaster,
-                            u,
-                            v,
-                            n * 0.05,
-                            color,
-                            mesh_resmut.properties.translation,
-                            mesh_resmut.properties.scale,
-                        );
+                        let u_transformed = world_to_view(u, mesh_resmut.properties.translation, mesh_resmut.properties.scale);
+                        let v_transformed = world_to_view(v, mesh_resmut.properties.translation, mesh_resmut.properties.scale);
+                        gizmos.line(u_transformed, v_transformed, colors::to_bevy(color));
                     }
                 }
             }
@@ -164,10 +199,9 @@ pub fn system(
                 cache.cache[0].clear();
                 cache.cache[1].clear();
                 cache.cache[2].clear();
-                jobs.write(JobRequest::Run(Box::new(Job::Recompute {
+                jobs.write(JobRequest::Run(Box::new(Job::ComputeDual {
                     solution: solution.current_solution.clone(),
-                    unit: true,
-                    omega: 1,
+                    configuration: configuration.clone(),
                 })));
             }
         }
@@ -184,6 +218,7 @@ pub fn system(
                     solution: solution.current_solution.clone(),
                     loop_id,
                     force,
+                    configuration: configuration.clone(),
                 })));
             }
         }
@@ -192,4 +227,90 @@ pub fn system(
     }
 
     Ok(())
+}
+
+pub fn system(
+    ray_map: Res<RayMap>,
+    mut ray_cast: MeshRayCast,
+    mouse: Res<ButtonInput<MouseButton>>,
+    keyboard: Res<ButtonInput<KeyCode>>,
+    mesh_resmut: Res<InputResource>,
+    mut solution: ResMut<SolutionResource>,
+    mut cache: ResMut<CacheResource>,
+    mut gizmos: Gizmos<PerpetualGizmos>,
+    mut configuration: ResMut<Configuration>,
+    mut jobs: EventWriter<JobRequest>,
+) -> Result<(), BevyError> {
+    configuration.raycasted = None;
+    configuration.selected = None;
+
+    if keyboard.pressed(KeyCode::ControlLeft) || mouse.pressed(MouseButton::Right) {
+        return Ok(());
+    }
+
+    if configuration.interactive_mode == InteractiveMode::None {
+        return Ok(());
+    }
+
+    let intersections = ray_map
+        .iter()
+        .filter_map(|(_, ray)| {
+            let (_, hit) = ray_cast.cast_ray(*ray, &MeshRayCastSettings::default()).first()?;
+            Some(hit.point)
+        })
+        .collect_vec();
+
+    if intersections.is_empty() {
+        return Ok(());
+    }
+
+    let position = (vec3_to_vector3d(intersections[0]) - mesh_resmut.properties.translation) / mesh_resmut.properties.scale;
+
+    let nearest_face = mesh_resmut.triangle_lookup.nearest(&position.into());
+    // get the nearest_vert (one of 3 corners of nearest_face)
+    let nearest_vert = mesh_resmut
+        .mesh
+        .vertices(nearest_face)
+        .iter()
+        .min_by_key(|&v| OrderedFloat(position.metric_distance(&mesh_resmut.mesh.position(*v))))
+        .unwrap()
+        .to_owned();
+
+    let edgepair = mesh_resmut.mesh.edges_in_face_with_vert(nearest_face, nearest_vert).unwrap();
+
+    match configuration.interactive_mode {
+        InteractiveMode::None => Ok(()),
+        InteractiveMode::LoopModification => loop_modification_system(
+            ray_map,
+            ray_cast,
+            mouse,
+            keyboard,
+            mesh_resmut,
+            solution,
+            cache,
+            gizmos,
+            configuration,
+            jobs,
+            position,
+            nearest_face,
+            nearest_vert,
+            edgepair,
+        ),
+        InteractiveMode::SegmentationModification => segmentation_modification_system(
+            ray_map,
+            ray_cast,
+            mouse,
+            keyboard,
+            mesh_resmut,
+            solution,
+            cache,
+            gizmos,
+            configuration,
+            jobs,
+            position,
+            nearest_face,
+            nearest_vert,
+            edgepair,
+        ),
+    }
 }

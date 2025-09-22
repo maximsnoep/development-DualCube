@@ -68,6 +68,21 @@ pub struct Mesh<M: Tag> {
 }
 
 impl<M: Tag> Mesh<M> {
+    // Create mesh from other mesh
+    pub fn convert<T: Tag>(other: &Mesh<T>) -> Self {
+        Self {
+            verts: ids::IdxMap::convert(&other.verts),
+            edges: ids::IdxMap::convert(&other.edges),
+            faces: ids::IdxMap::convert(&other.faces),
+            edge_root: ids::AssMap::convert(&other.edge_root),
+            edge_face: ids::AssMap::convert(&other.edge_face),
+            edge_next: ids::AssMap::convert(&other.edge_next),
+            edge_twin: ids::AssMap::convert(&other.edge_twin),
+            vert_repr: ids::AssMap::convert(&other.vert_repr),
+            face_repr: ids::AssMap::convert(&other.face_repr),
+        }
+    }
+
     // Adds a vertex to the mesh and returns its ID.
     pub fn add_vertex(&mut self, pos: Vector3D) -> VertKey<M> {
         self.verts.insert(pos)

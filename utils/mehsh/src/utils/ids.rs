@@ -62,6 +62,17 @@ impl<K, M, V> IdxMap<K, M, V> {
         }
     }
 
+    #[must_use]
+    pub fn convert<T>(other: &IdxMap<K, T, V>) -> Self
+    where
+        V: Clone,
+    {
+        Self {
+            map: other.map.clone(),
+            _marker: PhantomData,
+        }
+    }
+
     pub fn insert(&mut self, value: V) -> Key<K, M> {
         Key::new(self.map.insert(value))
     }
@@ -115,6 +126,13 @@ impl<K1, K2, M> AssMap<K1, K2, M> {
     pub fn new() -> Self {
         Self {
             map: SecondaryMap::new(),
+            _marker: PhantomData,
+        }
+    }
+
+    pub fn convert<T>(other: &AssMap<K1, K2, T>) -> Self {
+        Self {
+            map: other.map.clone(),
             _marker: PhantomData,
         }
     }

@@ -146,6 +146,14 @@ impl Dual {
     }
 
     #[must_use]
+    pub fn vert_to_region(&self, vert: VertID) -> LoopRegionID {
+        self.loop_regions
+            .iter()
+            .find_map(|(region_id, region)| if region.verts.contains(&vert) { Some(*region_id) } else { None })
+            .unwrap()
+    }
+
+    #[must_use]
     pub fn region_to_zone(&self, region: LoopRegionID, direction: PrincipalDirection) -> ZoneID {
         self.level_graphs.region_to_zones[direction as usize][&region]
     }

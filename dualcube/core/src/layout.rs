@@ -1,4 +1,4 @@
-use crate::dual::{Dual, PropertyViolationError, LOOPSTRUCTURE};
+use crate::dual::{Dual, PropertyViolationError};
 use crate::polycube::{Polycube, POLYCUBE};
 use crate::prelude::*;
 use bimap::BiHashMap;
@@ -36,6 +36,17 @@ pub struct Layout {
 }
 
 impl Layout {
+    pub fn new(dual_ref: &Dual, polycube_ref: &Polycube) -> Self {
+        Self {
+            polycube_ref: polycube_ref.clone(),
+            dual_ref: dual_ref.clone(),
+            granulated_mesh: (*dual_ref.mesh_ref).clone(),
+            vert_to_corner: BiHashMap::new(),
+            face_to_patch: HashMap::new(),
+            edge_to_path: HashMap::new(),
+        }
+    }
+
     pub fn embed(dual_ref: &Dual, polycube_ref: &Polycube) -> Result<Self, PropertyViolationError> {
         let mut layout = Self {
             polycube_ref: polycube_ref.clone(),
@@ -45,7 +56,7 @@ impl Layout {
             face_to_patch: HashMap::new(),
             edge_to_path: HashMap::new(),
         };
-        layout.place_vertices();
+        layout.place_corners();
         layout.place_paths()?;
 
         layout.verify_paths();
@@ -54,7 +65,7 @@ impl Layout {
         Ok(layout)
     }
 
-    fn place_vertices(&mut self) {
+    pub fn place_corners(&mut self) {
         // Clear the mapping
         self.vert_to_corner.clear();
 
@@ -275,6 +286,7 @@ impl Layout {
 
         let normal_on_left = primal.structure.normal(primal.structure.face(edge_id));
         let normal_on_right = primal.structure.normal(primal.structure.face(primal.structure.twin(edge_id)));
+        let angle_between_normals = normal_on_left.angle(&normal_on_right);
 
         let primal_vertices = primal
             .structure
@@ -360,14 +372,15 @@ impl Layout {
                 }
             };
 
+            let angle = normal1.angle(&normal2);
             let angle1 = normal1.angle(&normal_on_left);
             let angle2 = normal2.angle(&normal_on_right);
+            let difference_between_angles = (angle - angle_between_normals).abs();
 
-            if angle1 + angle2 < std::f64::consts::PI / 4.0 {
-                // If the angles are small, we can use a simpler function
+            if difference_between_angles < std::f64::consts::PI / 4.0 && angle1 + angle2 < std::f64::consts::PI / 4.0 {
                 0.5
             } else {
-                1.5
+                1.
             }
         };
 
@@ -469,7 +482,6 @@ impl Layout {
         self.edge_to_path.clear();
 
         for vert in primal.structure.vert_ids() {
-            println!("vert: {vert:?}");
             assert!(self.vert_to_corner.get_by_left(&vert).is_some());
         }
 
@@ -511,6 +523,7 @@ impl Layout {
 
             let normal_on_left = primal.structure.normal(primal.structure.face(edge_id));
             let normal_on_right = primal.structure.normal(primal.structure.face(primal.structure.twin(edge_id)));
+            let angle_between_normals = normal_on_left.angle(&normal_on_right);
 
             // if already found (because of twin), skip
             if self.edge_to_path.contains_key(&edge_id) {
@@ -732,14 +745,15 @@ impl Layout {
                     }
                 };
 
+                let angle = normal1.angle(&normal2);
                 let angle1 = normal1.angle(&normal_on_left);
                 let angle2 = normal2.angle(&normal_on_right);
+                let difference_between_angles = (angle - angle_between_normals).abs();
 
-                if angle1 + angle2 < std::f64::consts::PI / 4.0 {
-                    // If the angles are small, we can use a simpler function
+                if difference_between_angles < std::f64::consts::PI / 4.0 && angle1 + angle2 < std::f64::consts::PI / 4.0 {
                     0.5
                 } else {
-                    1.5
+                    1.
                 }
             };
 
@@ -843,9 +857,13 @@ impl Layout {
         // 1. place corner in the average position of its neighbors (and constrained by region formed by existing paths)
         // 2. find new paths (constrained by existing paths)
 
-        let polycube_neighbors = self.polycube_ref.structure.neighbors(polycube_vert);
+        let edges_to_be_replaced = self.polycube_ref.structure.edges(polycube_vert);
+        for &edge in &edges_to_be_replaced {
+            self.edge_to_path.remove(&edge);
+            self.edge_to_path.remove(&self.polycube_ref.structure.twin(edge));
+        }
 
-        println!("Optimizing corner for polycube vertex: {polycube_vert:?}, neighbors: {polycube_neighbors:?}");
+        let polycube_neighbors = self.polycube_ref.structure.neighbors(polycube_vert);
 
         // grab all vertices in the corresponding patches (they are candidates)
         let polycube_faces = self.polycube_ref.structure.faces(polycube_vert);
@@ -862,11 +880,67 @@ impl Layout {
         let mesh_vert = self.vert_to_corner.get_by_left(&polycube_vert).unwrap().to_owned();
         let mesh_neighbors = polycube_neighbors
             .into_iter()
-            .filter_map(|neighbor| self.vert_to_corner.get_by_left(&neighbor))
+            .map(|neighbor| {
+                let direction_vec = self.polycube_ref.structure.position(neighbor) - self.polycube_ref.structure.position(polycube_vert);
+                let direction = to_principal_direction(direction_vec).0;
+                (self.vert_to_corner.get_by_left(&neighbor).unwrap().to_owned(), direction)
+            })
             .collect_vec();
 
-        let sum = mesh_neighbors.iter().map(|&&v| self.granulated_mesh.position(v)).sum::<Vector3D>();
-        let avg = sum / mesh_neighbors.len() as f64;
+        let cur_x = self.granulated_mesh.position(mesh_vert).x;
+        let cur_y = self.granulated_mesh.position(mesh_vert).y;
+        let cur_z = self.granulated_mesh.position(mesh_vert).z;
+
+        // for each neighbor, check its edge class (X, Y, or Z)
+        let mut delta_x = 0.;
+        let mut counter_x = 0;
+        let mut delta_y = 0.;
+        let mut counter_y = 0;
+        let mut delta_z = 0.;
+        let mut counter_z = 0;
+        for (neighbor, direction) in mesh_neighbors {
+            let pos = self.granulated_mesh.position(neighbor);
+            match direction {
+                PrincipalDirection::X => {
+                    delta_y += (pos.y - cur_y);
+                    delta_z += (pos.z - cur_z);
+                    counter_y += 1;
+                    counter_z += 1;
+                }
+                PrincipalDirection::Y => {
+                    delta_x += (pos.x - cur_x);
+                    delta_z += (pos.z - cur_z);
+                    counter_x += 1;
+                    counter_z += 1;
+                }
+                PrincipalDirection::Z => {
+                    delta_x += (pos.x - cur_x);
+                    delta_y += (pos.y - cur_y);
+                    counter_x += 1;
+                    counter_y += 1;
+                }
+            }
+        }
+
+        // let sum = mesh_neighbors.iter().map(|&&v| self.granulated_mesh.position(v)).sum::<Vector3D>();
+        // let avg = sum / mesh_neighbors.len() as f64;
+
+        if counter_x > 0 {
+            delta_x /= counter_x as f64;
+        }
+
+        if counter_y > 0 {
+            delta_y /= counter_y as f64;
+        }
+
+        if counter_z > 0 {
+            delta_z /= counter_z as f64;
+        }
+
+        let dir = Vector3D::new(delta_x, delta_y, delta_z);
+        let avg = self.granulated_mesh.position(mesh_vert) + dir;
+
+        // let avg = Vector3D::new(delta_x / counter_x as f64, delta_y / counter_y as f64, delta_z / counter_z as f64);
 
         // Find vertex on mesh with smallest distance to avg
         // let vert_lookup = self.granulated_mesh.kdtree();
@@ -880,14 +954,28 @@ impl Layout {
             .unwrap()
             .to_owned();
 
-        println!("Optimizing corner for polycube vertex: {polycube_vert:?}, nearest mesh vertex: {nearest_vert:?}");
-
         if self.vert_to_corner.contains_right(&nearest_vert) {
-            println!("Vertex already occupied, skipping optimization");
             return;
         }
 
-        self.vert_to_corner.insert(polycube_vert, nearest_vert);
+        self.move_corner(polycube_vert, nearest_vert);
+    }
+
+    pub fn move_corner(&mut self, corner: VertKey<POLYCUBE>, new_vertex: VertID) {
+        self.vert_to_corner.insert(corner, new_vertex);
+
+        let edges_to_be_replaced = self.polycube_ref.structure.edges(corner);
+        for &edge in &edges_to_be_replaced {
+            self.edge_to_path.remove(&edge);
+            self.edge_to_path.remove(&self.polycube_ref.structure.twin(edge));
+        }
+
+        for &edge in &edges_to_be_replaced {
+            self.place_path(edge).unwrap();
+        }
+
+        self.verify_paths();
+        self.assign_patches();
     }
 
     pub fn assign_patches(&mut self) {
