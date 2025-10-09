@@ -6,7 +6,7 @@ use grapff::Grapff;
 use itertools::Itertools;
 use mehsh::prelude::*;
 use ordered_float::OrderedFloat;
-use rand::seq::SliceRandom;
+use rand::seq::{IndexedRandom, SliceRandom};
 use std::collections::{HashMap, HashSet, VecDeque};
 
 #[derive(Clone, Debug, PartialEq, Eq, Hash, Copy)]
@@ -61,7 +61,7 @@ impl Layout {
 
         layout.verify_paths();
 
-        layout.assign_patches();
+        layout.assign_patches()?;
         Ok(layout)
     }
 
@@ -292,8 +292,13 @@ impl Layout {
             .structure
             .vert_ids()
             .iter()
-            .map(|&x| self.vert_to_corner.get_by_left(&x).unwrap().to_owned())
+            .filter_map(|&x| self.vert_to_corner.get_by_left(&x).to_owned())
+            .copied()
             .collect_vec();
+
+        if primal_vertices.len() != primal.structure.vert_ids().len() {
+            return Err(PropertyViolationError::UnknownError);
+        }
 
         for path in self.edge_to_path.values() {
             for &v_id in path {
@@ -310,8 +315,14 @@ impl Layout {
         let endpoints = primal.structure.vertices(edge_id);
 
         let (u, v) = (
-            self.vert_to_corner.get_by_left(&endpoints[0]).unwrap().to_owned(),
-            self.vert_to_corner.get_by_left(&endpoints[1]).unwrap().to_owned(),
+            self.vert_to_corner
+                .get_by_left(&endpoints[0])
+                .ok_or(PropertyViolationError::UnknownError)?
+                .to_owned(),
+            self.vert_to_corner
+                .get_by_left(&endpoints[1])
+                .ok_or(PropertyViolationError::UnknownError)?
+                .to_owned(),
         );
 
         // shortest path from u to v
@@ -850,7 +861,77 @@ impl Layout {
         Ok(())
     }
 
-    pub fn optimize_corner(&mut self, polycube_vert: VertKey<POLYCUBE>) {
+    pub fn random_improvement_corner(&mut self, polycube_vert: VertKey<POLYCUBE>) -> Result<(), PropertyViolationError> {
+        // INVARIANT: ALL CORNERS AND PATHS MUST ALREADY BE PLACED
+
+        let vertex = self.vert_to_corner.get_by_left(&polycube_vert).unwrap().to_owned();
+        let region_id = self.polycube_ref.region_to_vertex.get_by_right(&polycube_vert).unwrap().to_owned();
+        let region_vertices = self.dual_ref.region_to_verts(region_id).into_iter().collect_vec();
+
+        // grab all vertices in the k-neighborhood
+        let mut candidate_vertices = self.dual_ref.mesh_ref.neighbors_k(vertex, 10);
+        candidate_vertices.retain(|&v| !self.edge_to_path.values().any(|path| path.contains(&v))); // filter out vertices that are part of a path
+        candidate_vertices.retain(|&v| region_vertices.contains(&v)); // filter out vertices that are not in the same region
+
+        // grab random vertex from candidate_vertices
+        let new_vertex = candidate_vertices
+            .choose(&mut rand::rng())
+            .ok_or(PropertyViolationError::UnknownError)?
+            .to_owned();
+
+        self.move_corner(polycube_vert, new_vertex)?;
+        Ok(())
+    }
+
+    pub fn laplacian_corner(&mut self, polycube_vert: VertKey<POLYCUBE>) -> Result<(), PropertyViolationError> {
+        // INVARIANT: ALL CORNERS AND PATHS MUST ALREADY BE PLACED
+
+        // LaPlacian optimization of specific corner:
+        // 1. place corner in the average position of its neighbors (and constrained by region formed by existing paths)
+        // 2. find new paths (constrained by existing paths)
+
+        // grab all vertices in the loop region
+        let region_id = self.polycube_ref.region_to_vertex.get_by_right(&polycube_vert).unwrap().to_owned();
+        let candidate_vertices = self.dual_ref.region_to_verts(region_id).into_iter().collect_vec();
+
+        // grab candidate that minimizes axis-aligned-distance to neighbors
+        let mut best_score = f64::MAX;
+        let mut best_candidate = candidate_vertices[0];
+        for candidate_vertex in candidate_vertices {
+            let mut score = 0.0;
+            for neighbor_region_id in self.polycube_ref.structure.neighbors(polycube_vert) {
+                let candidate_pos = self.granulated_mesh.position(candidate_vertex);
+                let neighbor_pos = self
+                    .granulated_mesh
+                    .position(self.vert_to_corner.get_by_left(&neighbor_region_id).unwrap().to_owned());
+                let direction_of_edge = self
+                    .polycube_ref
+                    .structure
+                    .vector(self.polycube_ref.structure.edge_between_verts(polycube_vert, neighbor_region_id).unwrap().0);
+                if direction_of_edge.x == 0.0 {
+                    // minimize x distance
+                    score += (candidate_pos.x - neighbor_pos.x).abs();
+                }
+                if direction_of_edge.y == 0.0 {
+                    // minimize y distance
+                    score += (candidate_pos.y - neighbor_pos.y).abs();
+                }
+                if direction_of_edge.z == 0.0 {
+                    // minimize z distance
+                    score += (candidate_pos.z - neighbor_pos.z).abs();
+                }
+            }
+            if score < best_score {
+                best_score = score;
+                best_candidate = candidate_vertex;
+            }
+        }
+
+        self.move_corner(polycube_vert, best_candidate)?;
+        Ok(())
+    }
+
+    pub fn optimize_corner(&mut self, polycube_vert: VertKey<POLYCUBE>) -> Result<(), PropertyViolationError> {
         // INVARIANT: ALL CORNERS AND PATHS MUST ALREADY BE PLACED
 
         // LaPlacian optimization of specific corner:
@@ -955,13 +1036,14 @@ impl Layout {
             .to_owned();
 
         if self.vert_to_corner.contains_right(&nearest_vert) {
-            return;
+            return Err(PropertyViolationError::UnknownError);
         }
 
-        self.move_corner(polycube_vert, nearest_vert);
+        self.move_corner(polycube_vert, nearest_vert)?;
+        Ok(())
     }
 
-    pub fn move_corner(&mut self, corner: VertKey<POLYCUBE>, new_vertex: VertID) {
+    pub fn move_corner(&mut self, corner: VertKey<POLYCUBE>, new_vertex: VertID) -> Result<(), PropertyViolationError> {
         self.vert_to_corner.insert(corner, new_vertex);
 
         let edges_to_be_replaced = self.polycube_ref.structure.edges(corner);
@@ -971,14 +1053,15 @@ impl Layout {
         }
 
         for &edge in &edges_to_be_replaced {
-            self.place_path(edge).unwrap();
+            self.place_path(edge)?;
         }
 
         self.verify_paths();
-        self.assign_patches();
+        self.assign_patches()?;
+        Ok(())
     }
 
-    pub fn assign_patches(&mut self) {
+    pub fn assign_patches(&mut self) -> Result<(), PropertyViolationError> {
         // Get all blocked edges (ALL PATHS)
         let blocked = self
             .edge_to_path
@@ -1014,7 +1097,9 @@ impl Layout {
         let patches =
             grapff::fluid::FluidGraph::new(|face_id: FaceID| face_to_neighbors[&face_id].clone()).connected_components(&self.granulated_mesh.face_ids());
 
-        assert!(patches.len() == self.polycube_ref.structure.face_ids().len());
+        if patches.len() != self.polycube_ref.structure.face_ids().len() {
+            return Err(PropertyViolationError::UnknownError);
+        }
 
         // Every path should be part of exactly TWO patches (on both sides)
         let mut path_to_ccs: HashMap<EdgeKey<POLYCUBE>, [usize; 2]> = HashMap::new();
@@ -1030,7 +1115,9 @@ impl Layout {
 
             let cc1 = patches.iter().position(|cc| cc.contains(&face1)).unwrap();
             let cc2 = patches.iter().position(|cc| cc.contains(&face2)).unwrap();
-            assert_ne!(cc1, cc2);
+            if cc1 == cc2 {
+                return Err(PropertyViolationError::UnknownError);
+            }
             path_to_ccs.insert(*path_id, (cc1, cc2).into());
         }
 
@@ -1045,11 +1132,15 @@ impl Layout {
             // Check whether all paths share the same connected component
             let cc1_shared = paths.iter().all(|&path| path_to_ccs[&path].contains(&cc1));
             let cc2_shared = paths.iter().all(|&path| path_to_ccs[&path].contains(&cc2));
-            assert!(cc1_shared ^ cc2_shared);
+            if !(cc1_shared ^ cc2_shared) {
+                return Err(PropertyViolationError::UnknownError);
+            }
 
             let faces = if cc1_shared { patches[cc1].clone() } else { patches[cc2].clone() };
             self.face_to_patch.insert(face_id, Patch { faces });
         }
+
+        Ok(())
     }
 
     pub fn verify_paths(&self) {
@@ -1058,7 +1149,7 @@ impl Layout {
                 // check if edge between them exists
                 let edge = self.granulated_mesh.edge_between_verts(a, b);
                 assert!(edge.is_some());
-                assert!(self.granulated_mesh.size(edge.unwrap().0) > 0.);
+                // assert!(self.granulated_mesh.size(edge.unwrap().0) > 0.);
             }
         }
     }

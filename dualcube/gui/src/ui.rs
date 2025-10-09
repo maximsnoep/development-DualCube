@@ -236,6 +236,7 @@ fn header(
     ev_w: &mut EventWriter<ActionEvent>,
     jobs: &mut EventWriter<JobRequest>,
     configuration: &mut ResMut<Configuration>,
+    render_object_settings_store: &mut ResMut<RenderObjectSettingStore>,
     time: &Res<Time>,
 ) {
     ui.with_layout(Layout::left_to_right(Align::TOP), |ui| {
@@ -273,6 +274,15 @@ fn header(
                             })));
                         }
                     }
+                    space(ui);
+                    if sleek_button(ui, "Export (Honors)") {
+                        if let Some(path) = rfd::FileDialog::new().save_file() {
+                            jobs.write(JobRequest::Run(Box::new(Job::ExportDotgraph {
+                                solution: solution.current_solution.clone(),
+                                path,
+                            })));
+                        }
+                    }
                     sep(ui);
                     if sleek_button(ui, "Quit") {
                         std::process::exit(0);
@@ -282,14 +292,60 @@ fn header(
                 menu_button(ui, "Rendering", |ui| {
                     // Select different presets of rendering combinations.
 
-                    if sleek_button(ui, "Preset 1") {
-                        // Apply preset 1
+                    if sleek_button(ui, "Dual") {
+                        let true_labels = ["black", "X-loops", "Y-loops", "Z-loops", "colored"];
+                        for settings in render_object_settings_store.objects.values_mut() {
+                            for (label, setting) in settings.settings.iter_mut() {
+                                setting.visible = true_labels.contains(&label.as_str());
+                            }
+                        }
                     }
-                    if sleek_button(ui, "Preset 2") {
-                        // Apply preset 2
+                    if sleek_button(ui, "Primal") {
+                        let true_labels = ["segmentation", "colored", "paths", "flat paths"];
+                        for settings in render_object_settings_store.objects.values_mut() {
+                            for (label, setting) in settings.settings.iter_mut() {
+                                setting.visible = true_labels.contains(&label.as_str());
+                            }
+                        }
                     }
-                    if sleek_button(ui, "Preset 3") {
-                        // Apply preset 3
+                    if sleek_button(ui, "Input") {
+                        let true_labels = ["gray", "wireframe"];
+                        for settings in render_object_settings_store.objects.values_mut() {
+                            for (label, setting) in settings.settings.iter_mut() {
+                                setting.visible = true_labels.contains(&label.as_str());
+                            }
+                        }
+                    }
+                });
+
+                menu_button(ui, "Camera", |ui| {
+                    // Select different presets of rendering combinations.
+
+                    // slider for camera configs
+                    let m = 2.0;
+
+                    if sleek_button(ui, "reset to default") {
+                        configuration.camera_rotate_sensitivity = 0.2;
+                        configuration.camera_translate_sensitivity = 2.0;
+                        configuration.camera_zoom_sensitivity = 0.2;
+                    }
+
+                    let mut rotate = 1. + configuration.camera_rotate_sensitivity.log10() / m;
+                    slider(ui, "rotate", &mut rotate, 0.1..=1.);
+                    configuration.camera_rotate_sensitivity = 10f32.powf((rotate - 1.) * m);
+
+                    let mut translate = 1. + ((configuration.camera_translate_sensitivity / 3.).log10() / m);
+                    slider(ui, "translate", &mut translate, 0.1..=1.);
+                    configuration.camera_translate_sensitivity = 10f32.powf((translate - 1.) * m) * 3.;
+
+                    let mut zoom = 1. + configuration.camera_zoom_sensitivity.log10() / m;
+                    slider(ui, "zoom", &mut zoom, 0.1..=1.);
+                    configuration.camera_zoom_sensitivity = 10f32.powf((zoom - 1.) * m);
+
+                    if sleek_button(ui, "precision mode") {
+                        configuration.camera_rotate_sensitivity = 0.01;
+                        configuration.camera_translate_sensitivity = 0.01;
+                        configuration.camera_zoom_sensitivity = 0.01;
                     }
                 });
             });
@@ -431,7 +487,7 @@ pub fn update(
         ui.horizontal(|ui| {
             ui.with_layout(Layout::top_down(Align::TOP), |ui| {
                 // FIRST ROW
-                header(ui, &solution, &mut ev_w, &mut jobs, &mut conf, &time);
+                header(ui, &solution, &mut ev_w, &mut jobs, &mut conf, &mut render_setting_store, &time);
 
                 ui.add_space(5.);
 
@@ -445,7 +501,6 @@ pub fn update(
                     ui.add_space(5.);
 
                     let text_size = 12.5;
-                    let arrow_size = 14.;
 
                     bevy_egui::egui::menu::bar(ui, |ui| {
                         // ****************

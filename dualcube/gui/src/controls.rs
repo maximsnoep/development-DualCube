@@ -116,10 +116,20 @@ pub fn loop_modification_system(
         let v = mesh_resmut.mesh.position(edgepair[1]);
 
         let color = match sol {
-            Some(_) => colors::from_direction(configuration.direction, Some(Perspective::Dual), None),
+            Some(_) => colors::from_direction(configuration.direction, Some(Perspective::Dual), Some(Orientation::Backwards)),
             None => colors::BLACK,
         };
 
+        let u_transformed = world_to_view(u, mesh_resmut.properties.translation, mesh_resmut.properties.scale);
+        let v_transformed = world_to_view(v, mesh_resmut.properties.translation, mesh_resmut.properties.scale);
+        gizmos.line(u_transformed, v_transformed, colors::to_bevy(color));
+    }
+
+    // Render all current anchors
+    for anchor in &configuration.loop_anchors {
+        let u = mesh_resmut.mesh.position(anchor[0]);
+        let v = mesh_resmut.mesh.position(anchor[1]);
+        let color = colors::from_direction(configuration.direction, Some(Perspective::Dual), None);
         let u_transformed = world_to_view(u, mesh_resmut.properties.translation, mesh_resmut.properties.scale);
         let v_transformed = world_to_view(v, mesh_resmut.properties.translation, mesh_resmut.properties.scale);
         gizmos.line(u_transformed, v_transformed, colors::to_bevy(color));
@@ -142,10 +152,17 @@ pub fn loop_modification_system(
     //
     // Action4:  Remove closest valid loop (Delete, no Shift)
     // Action5:  Remove closest loop (Delete + Shift)
+    //
+    // Action6: Add anchor (Alt + LMB)
 
-    let lmb = mouse.pressed(MouseButton::Left);
+    let lmb = mouse.just_pressed(MouseButton::Left);
     let shift = keyboard.pressed(KeyCode::ShiftLeft);
-    let delete = keyboard.just_pressed(KeyCode::Delete) || keyboard.just_released(KeyCode::Delete);
+    let delete = keyboard.just_pressed(KeyCode::Delete);
+    let alt = keyboard.pressed(KeyCode::AltLeft);
+
+    if keyboard.pressed(KeyCode::Escape) {
+        configuration.loop_anchors.clear();
+    }
 
     let closest_solution = solution.next[configuration.direction as usize]
         .iter()
@@ -158,39 +175,38 @@ pub fn loop_modification_system(
         })
         .min_by(|a, b| a.0.partial_cmp(&b.0).unwrap());
 
-    match (shift, lmb, delete) {
+    match (shift, lmb, delete, alt) {
         // Action1
-        (false, true, false) => {
+        (false, true, false, false) => {
             let selected_edges = mesh_resmut.mesh.edges_in_face_with_vert(nearest_face, nearest_vert).unwrap();
-
+            let mut anchors = configuration.loop_anchors.clone();
+            configuration.loop_anchors.clear();
+            anchors.push(selected_edges);
             jobs.write(JobRequest::Run(Box::new(Job::AddLoop {
-                seed: selected_edges,
+                anchors,
                 direction: configuration.direction,
                 flowgraph: mesh_resmut.flow_graphs[configuration.direction as usize].clone(),
                 solution: solution.current_solution.clone(),
             })));
         }
         // Action 2
-        (true, false, false) => {
+        (true, false, false, _) => {
             if let Some((_, Some(some_solution), signature)) = closest_solution {
                 configuration.selected = Some(signature);
-
-                for loop_id in some_solution.loops.keys() {
-                    let direction = some_solution.loop_to_direction(loop_id);
-                    let color = colors::from_direction(direction, Some(Perspective::Dual), None);
-                    for &edgepair in &some_solution.get_pairs_of_loop(loop_id) {
-                        let u = mesh_resmut.mesh.position(edgepair[0]);
-                        let v = mesh_resmut.mesh.position(edgepair[1]);
-                        let n = mesh_resmut.mesh.normal(edgepair[0]);
-                        let u_transformed = world_to_view(u, mesh_resmut.properties.translation, mesh_resmut.properties.scale);
-                        let v_transformed = world_to_view(v, mesh_resmut.properties.translation, mesh_resmut.properties.scale);
-                        gizmos.line(u_transformed, v_transformed, colors::to_bevy(color));
-                    }
+                let loop_id = some_solution.last_loop.unwrap();
+                let direction = some_solution.loop_to_direction(loop_id);
+                let color = colors::from_direction(direction, Some(Perspective::Dual), Some(Orientation::Backwards));
+                for &edgepair in &some_solution.get_pairs_of_loop(loop_id) {
+                    let u = mesh_resmut.mesh.position(edgepair[0]);
+                    let v = mesh_resmut.mesh.position(edgepair[1]);
+                    let u_transformed = world_to_view(u, mesh_resmut.properties.translation, mesh_resmut.properties.scale);
+                    let v_transformed = world_to_view(v, mesh_resmut.properties.translation, mesh_resmut.properties.scale);
+                    gizmos.line(u_transformed, v_transformed, colors::to_bevy(color));
                 }
             }
         }
         // Action 3
-        (true, true, false) => {
+        (true, true, false, _) => {
             if let Some((_, Some(sol), _)) = closest_solution {
                 solution.current_solution = sol.clone();
                 solution.next[0].clear();
@@ -206,7 +222,7 @@ pub fn loop_modification_system(
             }
         }
         // Action 4 and Action 5
-        (force, _, true) => {
+        (force, _, true, _) => {
             let option_a = [edgepair[0], edgepair[1]];
             let option_b = [edgepair[1], edgepair[0]];
 
@@ -222,6 +238,11 @@ pub fn loop_modification_system(
                 })));
             }
         }
+        (_, true, _, true) => {
+            configuration.loop_anchors.push(edgepair);
+            println!("{:?}", configuration.loop_anchors);
+        }
+
         // No actions
         _ => {}
     }

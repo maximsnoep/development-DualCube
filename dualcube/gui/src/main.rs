@@ -58,11 +58,17 @@ pub struct Configuration {
     pub raycasted: Option<[EdgeID; 2]>,
     pub selected: Option<[EdgeID; 2]>,
 
+    pub loop_anchors: Vec<[EdgeID; 2]>,
+
     pub automatic: bool,
 
     pub interactive_mode: InteractiveMode,
 
     pub window_shows_object: [Objects; 2],
+
+    pub camera_rotate_sensitivity: f32,
+    pub camera_translate_sensitivity: f32,
+    pub camera_zoom_sensitivity: f32,
 
     pub stop: Phase,
 
@@ -81,6 +87,8 @@ impl Default for Configuration {
             pool1: 10,
             pool2: 30,
 
+            loop_anchors: vec![],
+
             stop: Phase::Polycube,
 
             raycasted: None,
@@ -88,8 +96,11 @@ impl Default for Configuration {
             automatic: false,
             interactive_mode: InteractiveMode::None,
             window_shows_object: [Objects::PolycubeMap, Objects::QuadMesh],
-            clear_color: [27, 27, 27],
-            // clear_color: [255, 255, 255],
+            // clear_color: [27, 27, 27],
+            clear_color: [255, 255, 255],
+            camera_rotate_sensitivity: 0.2,
+            camera_translate_sensitivity: 2.,
+            camera_zoom_sensitivity: 0.2,
         }
     }
 }
@@ -293,6 +304,7 @@ fn main() {
         .add_systems(Update, ui::update)
         .add_systems(Update, render::update)
         .add_systems(FixedUpdate, render::respawn_renders.run_if(on_timer(Duration::from_millis(100))))
+        .add_systems(Update, render::update_camera_settings)
         .add_systems(Update, render::update_render_settings)
         .add_systems(Update, controls::system)
         // .add_systems(Update, handle_tasks)

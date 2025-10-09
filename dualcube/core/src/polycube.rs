@@ -5,6 +5,8 @@ use bimap::BiHashMap;
 use itertools::Itertools;
 use mehsh::prelude::*;
 use std::collections::HashMap;
+use std::io::Write;
+use std::path::PathBuf;
 
 mehsh::prelude::define_tag!(POLYCUBE);
 
@@ -91,7 +93,7 @@ impl Polycube {
         for direction in [PrincipalDirection::X, PrincipalDirection::Y, PrincipalDirection::Z] {
             let direction_levels = &levels[direction as usize];
             for (level1, level2) in direction_levels.iter().tuple_windows() {
-                let distance = level2.0 - level1.0;
+                let distance = (level2.0 - level1.0).abs();
                 if distance < min_distance {
                     min_distance = distance;
                 }
@@ -101,9 +103,11 @@ impl Polycube {
         let scale = 1. / min_distance;
         for direction in [PrincipalDirection::X, PrincipalDirection::Y, PrincipalDirection::Z] {
             for (level, verts_in_level) in levels[direction as usize].iter() {
+                println!("Level {:?}", level);
                 let value = level * scale;
                 // round to nearest integer
                 let value = value.round();
+                println!("New level {:?}", value);
                 for vert in verts_in_level {
                     vert_to_coord.get_mut(vert).unwrap()[direction as usize] = value;
                 }
@@ -115,5 +119,49 @@ impl Polycube {
             let [x, y, z] = vert_to_coord[&vert_id];
             self.structure.set_position(vert_id, Vector3D::new(x, y, z));
         }
+    }
+
+    pub fn to_dotgraph(dual: &Dual, path: &PathBuf) -> Result<(), std::io::Error> {
+        let mut file = std::fs::File::create(path)?;
+
+        let mut polycube = Self::from_dual(dual);
+        polycube.resize(dual, None);
+
+        let mut vert_ids = ids::IdMap::<VERT, POLYCUBE>::new();
+        for (i, vert_id) in polycube.structure.vert_ids().into_iter().enumerate() {
+            vert_ids.insert(i, vert_id);
+        }
+
+        writeln!(
+            file,
+            "{} {} {}",
+            polycube.structure.face_ids().len(),
+            polycube.structure.edge_ids().len() / 2,
+            polycube.structure.vert_ids().len(),
+        )?;
+        for face_id in polycube.structure.face_ids() {
+            let vertices = polycube.structure.vertices(face_id);
+            writeln!(
+                file,
+                "{}",
+                vertices.iter().map(|vert_id| format!("{}", vert_ids.id(vert_id).unwrap())).rev().join(" ")
+            )?;
+        }
+        for edge_id in polycube.structure.edge_ids() {
+            let verts = polycube.structure.vertices(edge_id);
+            let direction_vector = polycube.structure.vector(edge_id).normalize();
+            let (direction, orientation) = to_principal_direction(direction_vector);
+            if orientation == Orientation::Backwards {
+                continue;
+            }
+            let label = match direction {
+                PrincipalDirection::X => "X",
+                PrincipalDirection::Y => "Y",
+                PrincipalDirection::Z => "Z",
+            };
+            writeln!(file, "{} {} {label}", vert_ids.id(&verts[0]).unwrap(), vert_ids.id(&verts[1]).unwrap())?;
+        }
+
+        Ok(())
     }
 }

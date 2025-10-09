@@ -6,6 +6,7 @@ use crate::{
     polycube::Polycube,
     quad::Quad,
 };
+use grapff::Grapff;
 use itertools::Itertools;
 use mehsh::prelude::*;
 use ordered_float::OrderedFloat;
@@ -86,6 +87,7 @@ pub struct Solution {
     pub mesh_ref: Arc<Mesh<INPUT>>,
     pub loops: SlotMap<LoopID, Loop>,
     occupied: ids::SecMap<EDGE, INPUT, Vec<LoopID>>,
+    pub last_loop: Option<LoopID>,
 
     pub dual: Result<Dual, PropertyViolationError>,
     pub polycube: Option<Polycube>,
@@ -124,6 +126,7 @@ impl Solution {
             alignment_per_triangle: ids::SecMap::new(),
             alignment: None,
             external_flag: None,
+            last_loop: None,
         }
     }
 
@@ -274,8 +277,11 @@ impl Solution {
 
     // Move a corner
     pub fn move_corner(&mut self, corner: VertKey<POLYCUBE>, new_vertex: VertID) -> Result<(), PropertyViolationError> {
-        if let Ok(layout) = self.layout.as_mut() {
-            layout.move_corner(corner, new_vertex);
+        if let Ok(mut layout) = self.layout.clone() {
+            if layout.move_corner(corner, new_vertex).is_ok() {
+                self.layout = Ok(layout);
+                self.compute_quality();
+            }
             Ok(())
         } else {
             Err(PropertyViolationError::UnknownError)
@@ -314,17 +320,43 @@ impl Solution {
         solution_clone.compute_quality();
         let mut current_quality = self.get_quality().unwrap();
 
-        for vert in verts {
-            solution_backup = solution_clone.clone();
-            solution_clone.layout.as_mut().unwrap().optimize_corner(vert);
-            solution_clone.compute_quality();
-            let quality = solution_clone.get_quality().unwrap();
-            if quality >= current_quality {
-                current_quality = quality;
-            } else {
-                solution_clone = solution_backup.clone();
+        for _ in 0..10 {
+            for &vert in &verts {
+                if self.polycube.as_ref().unwrap().structure.edges(vert).len() == 4 {
+                    continue;
+                }
+                if solution_clone.layout.as_mut().unwrap().random_improvement_corner(vert).is_err() {
+                    solution_clone = solution_backup.clone();
+                    continue;
+                }
+                solution_clone.compute_quality();
+                let quality = solution_clone.get_quality().unwrap();
+                if quality >= current_quality {
+                    solution_backup = solution_clone.clone();
+                    current_quality = quality;
+                    println!("New quality: {:?}", current_quality);
+                } else {
+                    solution_clone = solution_backup.clone();
+                }
             }
-            println!("Current quality: {:?}", current_quality);
+        }
+
+        for _ in 0..2 {
+            for &vert in &verts {
+                if solution_clone.layout.as_mut().unwrap().laplacian_corner(vert).is_err() {
+                    solution_clone = solution_backup.clone();
+                    continue;
+                }
+                solution_clone.compute_quality();
+                let quality = solution_clone.get_quality().unwrap();
+                if quality >= current_quality {
+                    solution_backup = solution_clone.clone();
+                    current_quality = quality;
+                    println!("New quality: {:?}", current_quality);
+                } else {
+                    solution_clone = solution_backup.clone();
+                }
+            }
         }
 
         *self = solution_clone;
@@ -384,6 +416,8 @@ impl Solution {
             }
             self.occupied.get_mut(&e).unwrap().push(loop_id);
         }
+
+        self.last_loop = Some(loop_id);
 
         loop_id
     }
@@ -495,6 +529,18 @@ impl Solution {
         // Check if none of the edges are already occupied
         for edge_pair in Self::cycled_windows(edges) {
             if self.is_occupied(edge_pair).is_some() {
+                println!("{:?}", edge_pair);
+                println!("error 1");
+                return Err(PropertyViolationError::UnknownError);
+            }
+        }
+
+        // Check if the loop contains any duplicates
+        let mut seen = HashSet::new();
+        for &edge in edges {
+            if !seen.insert(edge) {
+                println!("{:?}", edge);
+                println!("error 4");
                 return Err(PropertyViolationError::UnknownError);
             }
         }
@@ -506,12 +552,14 @@ impl Solution {
         for edge_pair in Self::cycled_windows(edges) {
             if alternate {
                 if self.mesh_ref.twin(edge_pair[0]) != edge_pair[1] {
+                    println!("error 2");
                     return Err(PropertyViolationError::UnknownError);
                 }
                 assert!(self.mesh_ref.twin(edge_pair[0]) == edge_pair[1]);
                 alternate = false;
             } else {
                 if self.mesh_ref.face(edge_pair[0]) != self.mesh_ref.face(edge_pair[1]) {
+                    println!("error 3");
                     return Err(PropertyViolationError::UnknownError);
                 }
                 assert!(self.mesh_ref.face(edge_pair[0]) == self.mesh_ref.face(edge_pair[1]));
@@ -520,6 +568,31 @@ impl Solution {
         }
 
         Ok(())
+    }
+
+    pub fn construct_part_of_loop(
+        &self,
+        [e1, e2]: [EdgeID; 2],
+        domain: &grapff::fixed::FixedGraph<EdgeID, f64>,
+        measure: &impl Fn(f64) -> OrderedFloat<f64>,
+    ) -> Option<(Vec<EdgeID>, f64)> {
+        let (solution, cost) = domain.shortest_path(e1, e2, measure).unwrap_or_default();
+
+        // let flatten = solution;
+
+        // // // If three edges share the same face, remove the middle edge
+        // // let mut short = vec![];
+        // // for i in 0..flatten.len() {
+        // //     if self.mesh_ref.face(flatten[i]) == self.mesh_ref.face(flatten[(i + flatten.len() - 1) % flatten.len()])
+        // //         && self.mesh_ref.face(flatten[i]) == self.mesh_ref.face(flatten[(i + 1) % flatten.len()])
+        // //     {
+        // //         continue;
+        // //     }
+
+        // //     short.push(flatten[i]);
+        // // }
+
+        Some((solution, *cost))
     }
 
     pub fn construct_loop(
@@ -564,6 +637,87 @@ impl Solution {
         } else {
             None
         }
+    }
+
+    pub fn construct_loop_with_anchors(
+        &self,
+        anchors: &[[EdgeID; 2]],
+        direction: PrincipalDirection,
+        flow_graph: &grapff::fixed::FixedGraph<EdgeID, f64>,
+        measure: impl Fn(f64) -> OrderedFloat<f64>,
+    ) -> Option<(Vec<EdgeID>, f64)> {
+        // Filter the original flow graph
+        let occupied = self.occupied_edgepairs();
+        let filter_edges = |edge: (&EdgeID, &EdgeID)| !occupied.contains(&(*edge.0, *edge.1));
+        let filter_nodes = |&node: &EdgeID| !self.loops_on_edge(node).iter().any(|&loop_id| self.loops[loop_id].direction == direction);
+        let g = flow_graph.filter_edges(filter_edges);
+        let g = g.filter_nodes(filter_nodes);
+
+        let mut two_loops = vec![];
+        for reverse in [true, false] {
+            let mut flipped_anchors = vec![];
+            for &[e1, e2] in anchors {
+                if let (Some(n1), Some(n2)) = (flow_graph.node_to_index(&e1), flow_graph.node_to_index(&e2)) {
+                    // Get the better direction
+                    println!("{:?} {:?}", e1, e2);
+                    let (new_e1, new_e2) = if measure(flow_graph.get_weight(n1, n2).to_owned()) < measure(flow_graph.get_weight(n2, n1).to_owned()) {
+                        (e1, e2)
+                    } else {
+                        (e2, e1)
+                    };
+                    flipped_anchors.push([new_e1, new_e2]);
+                }
+            }
+
+            let mut anchors_flattened = flipped_anchors.iter().flatten().copied().collect_vec();
+            anchors_flattened.push(anchors_flattened.first().cloned().unwrap());
+            println!("{:?}", anchors_flattened);
+
+            // might have to flip some anchors into the "correct" direction
+
+            let mut new_loop = vec![];
+
+            if reverse {
+                anchors_flattened.reverse();
+            }
+
+            for (&start, &end) in anchors_flattened.iter().tuple_windows() {
+                println!("{:?} {:?}", start, end);
+                if let Some((mut part, _)) = self.construct_part_of_loop([start, end], &g, &measure) {
+                    part.pop().unwrap();
+                    println!("{}", part.len());
+                    new_loop.extend(part);
+                } else {
+                    panic!("Failed to construct part of loop");
+                }
+            }
+
+            // If three edges share the same face, remove the middle edge
+            let mut short = vec![];
+            for i in 0..new_loop.len() {
+                if self.mesh_ref.face(new_loop[i]) == self.mesh_ref.face(new_loop[(i + new_loop.len() - 1) % new_loop.len()])
+                    && self.mesh_ref.face(new_loop[i]) == self.mesh_ref.face(new_loop[(i + 1) % new_loop.len()])
+                {
+                    continue;
+                }
+
+                short.push(new_loop[i]);
+            }
+
+            two_loops.push(short);
+        }
+
+        let shortest_loop = if two_loops[0].len() < two_loops[1].len() {
+            two_loops[0].clone()
+        } else {
+            two_loops[1].clone()
+        };
+
+        println!("{:?}", shortest_loop);
+        let res = self.check_loop(&shortest_loop);
+        println!("{:?}", res);
+
+        Some((shortest_loop, 0.0))
     }
 
     pub fn construct_unbounded_loop(
