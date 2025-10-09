@@ -248,6 +248,7 @@ pub trait HasFaces<K, M> {
 pub trait HasNeighbors<K, M> {
     #[must_use]
     fn neighbors(&self, id: ids::Key<K, M>) -> Vec<ids::Key<K, M>>;
+    fn neighbors_k(&self, id: ids::Key<K, M>, k: usize) -> Vec<ids::Key<K, M>>;
 }
 
 pub trait HasRing<K, M> {

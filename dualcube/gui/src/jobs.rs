@@ -117,23 +117,25 @@ async fn run_job(job: Job) -> Option<JobResult> {
 
         Job::AddLoop {
             solution,
-            seed,
+            anchors,
             direction,
             flowgraph,
         } => {
-            let Some((candidate_loop, _)) = solution.construct_unbounded_loop(seed, direction, &flowgraph, |a: f64| OrderedFloat(a.powi(10))) else {
-                return Some(JobResult::AddedLoop((seed, direction, None)));
+            let Some((candidate_loop, _)) = solution.construct_loop_with_anchors(&anchors, direction, &flowgraph, |a: f64| OrderedFloat(a.powi(2))) else {
+                return Some(JobResult::AddedLoop((anchors, direction, None)));
             };
             let mut candidate_solution = solution.clone();
             candidate_solution.add_loop(Loop {
                 edges: candidate_loop,
                 direction,
             });
-            if let Err(err) = candidate_solution.construct_dual_and_polycube() {
-                warn!("Failed to reconstruct solution: {err:?}");
-                return Some(JobResult::AddedLoop((seed, direction, None)));
+            if candidate_solution.loops.len() >= 3 {
+                if let Err(err) = candidate_solution.construct_dual_and_polycube() {
+                    warn!("Failed to reconstruct solution: {err:?}");
+                    return Some(JobResult::AddedLoop((anchors, direction, None)));
+                }
             }
-            Some(JobResult::AddedLoop((seed, direction, Some(candidate_solution))))
+            Some(JobResult::AddedLoop((anchors, direction, Some(candidate_solution))))
         }
         Job::RemoveLoop {
             solution,
@@ -171,6 +173,12 @@ async fn run_job(job: Job) -> Option<JobResult> {
             }
             if let Err(err) = io::Nlr::export(&solution, &path) {
                 warn!("Failed to export NLR file: {err:?}");
+            }
+            None
+        }
+        Job::ExportDotgraph { solution, path } => {
+            if let Err(err) = io::Dotgraph::export(&solution, &path) {
+                warn!("Failed to export Dotgraph file: {err:?}");
             }
             None
         }
@@ -275,8 +283,10 @@ fn poll_jobs(
                     })));
                 }
 
-                Some(JobResult::AddedLoop((seed, direction, maybe))) => {
-                    solution_resource.next[direction as usize].insert(seed, maybe);
+                Some(JobResult::AddedLoop((anchors, direction, maybe))) => {
+                    for seed in anchors {
+                        solution_resource.next[direction as usize].insert(seed, maybe.clone());
+                    }
                 }
                 Some(JobResult::RemovedLoop(maybe)) => {
                     if let Some((sol, configuration)) = maybe {
@@ -402,10 +412,14 @@ pub enum Job {
         solution: Solution,
         path: PathBuf,
     },
+    ExportDotgraph {
+        solution: Solution,
+        path: PathBuf,
+    },
     // MANUAL
     AddLoop {
         solution: Solution,
-        seed: [EdgeID; 2],
+        anchors: Vec<[EdgeID; 2]>,
         direction: PrincipalDirection,
         flowgraph: grapff::fixed::FixedGraph<EdgeID, f64>,
     },
@@ -427,6 +441,7 @@ pub enum JobType {
     Import,
     Export,
     ExportNLR,
+    ExportDotgraph,
     Hex,
     Evolve,
     ComputePolycube,
@@ -465,6 +480,7 @@ impl std::fmt::Display for JobType {
             JobType::PlacePaths => write!(f, "placing paths"),
             JobType::ComputeQuad => write!(f, "computing quad"),
             JobType::ComputePolycube => write!(f, "computing polycube"),
+            JobType::ExportDotgraph => write!(f, "exporting (Dotgraph)"),
         }
     }
 }
@@ -489,6 +505,7 @@ impl Job {
             Job::PlacePaths { .. } => JobType::PlacePaths,
             Job::ComputeQuad { .. } => JobType::ComputeQuad,
             Job::ComputePolycube { .. } => JobType::ComputePolycube,
+            Job::ExportDotgraph { .. } => JobType::ExportDotgraph,
         }
     }
 }
@@ -511,7 +528,7 @@ enum JobResult {
     Hexed(PathBuf),
     Refreshed(RenderObjectStore),
 
-    AddedLoop(([EdgeID; 2], PrincipalDirection, Option<Solution>)),
+    AddedLoop((Vec<[EdgeID; 2]>, PrincipalDirection, Option<Solution>)),
     RemovedLoop(Option<(Solution, Configuration)>),
 }
 

@@ -1,5 +1,6 @@
 use crate::prelude::*;
 use core::panic;
+use std::collections::HashSet;
 
 impl<M: Tag> Mesh<M> {
     #[must_use]
@@ -133,5 +134,19 @@ impl<M: Tag> HasNeighbors<EDGE, M> for Mesh<M> {
             }
             nexts.push(cur);
         }
+    }
+
+    fn neighbors_k(&self, id: ids::Key<EDGE, M>, k: usize) -> Vec<ids::Key<EDGE, M>> {
+        let mut neighbors = vec![id];
+        for _ in 0..k {
+            neighbors = neighbors
+                .into_iter()
+                .flat_map(|n| self.neighbors(n))
+                .collect::<HashSet<_>>()
+                .into_iter()
+                .collect();
+        }
+        neighbors.retain(|&n| n != id);
+        neighbors
     }
 }

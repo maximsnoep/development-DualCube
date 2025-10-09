@@ -11,6 +11,7 @@ use enum_iterator::{all, Sequence};
 use itertools::Itertools;
 use mehsh::prelude::*;
 use smooth_bevy_cameras::controllers::orbit::{OrbitCameraBundle, OrbitCameraController};
+use smooth_bevy_cameras::Smoother;
 use std::collections::{HashMap, HashSet};
 use std::ops::Index;
 
@@ -189,6 +190,29 @@ impl From<Objects> for Vec3 {
     }
 }
 
+// pub fn update_camera_settings(mut cameras: Query<(&mut Transform, &mut Projection, &mut Camera, &CameraFor)>, configuration: &ResMut<Configuration>) {
+//     if let Ok(mut main_camera) = cameras.single_mut() {
+//         // main_camera.0.mouse_rotate_sensitivity = configuration.camera_rotate_sensitivity;
+//         // main_camera.0.mouse_translate_sensitivity = configuration.camera_translate_sensitivity;
+//         // main_camera.0.mouse_wheel_zoom_sensitivity = configuration.camera_zoom_sensitivity;
+//         // main_camera.0.smoothing_weight = configuration.camera_smoothing_weight;
+//     }
+// }
+
+pub fn update_camera_settings(mut cameras: Query<(&mut OrbitCameraController, &mut Smoother)>, configuration: ResMut<Configuration>) {
+    if let Ok((mut main_camera, mut smoother)) = cameras.single_mut() {
+        *main_camera = OrbitCameraController {
+            mouse_rotate_sensitivity: Vec2::splat(configuration.camera_rotate_sensitivity),
+            mouse_translate_sensitivity: Vec2::splat(configuration.camera_translate_sensitivity),
+            mouse_wheel_zoom_sensitivity: configuration.camera_zoom_sensitivity,
+            smoothing_weight: 0.8,
+            ..Default::default()
+        };
+
+        *smoother = Smoother::new(0.8);
+    }
+}
+
 #[derive(Component, PartialEq, Eq, Hash, Debug, Copy, Clone, Default)]
 pub struct CameraFor(pub Objects);
 
@@ -298,7 +322,7 @@ pub fn update_render_settings(render_object_store: Res<RenderObjectStore>, mut r
     let default = |object: &Objects, label: &str| {
         matches!(
             (object, label),
-            (Objects::InputMesh, "gray")
+            (Objects::InputMesh, "black")
                 | (Objects::InputMesh, "X-loops")
                 | (Objects::InputMesh, "Y-loops")
                 | (Objects::InputMesh, "Z-loops")
@@ -645,13 +669,11 @@ pub fn refresh(solution: &Solution) -> RenderObjectStore {
                     black_color_map.insert(face_id, colors::BLACK);
                 }
                 let mut color_map_segmentation = HashMap::new();
+                let mut color_map_alignment = HashMap::new();
                 let mut color_map_planarity = HashMap::new();
-                // let mut color_map_alignment = HashMap::new();
 
                 let mut color_map_d_area = HashMap::new();
                 let mut color_map_d_angle = HashMap::new();
-
-                // let mut color_map_alignment = HashMap::new();
 
                 let color = colors::GRAY;
                 let c = bevy::color::Color::srgb(color[0], color[1], color[2]);
@@ -705,6 +727,14 @@ pub fn refresh(solution: &Solution) -> RenderObjectStore {
                         let color = colors::from_direction(dir, Some(Perspective::Primal), Some(side));
                         for &triangle_id in &lay.face_to_patch[&face_id].faces {
                             color_map_segmentation.insert(triangle_id, color);
+                        }
+                    }
+
+                    for triangle_id in lay.granulated_mesh.face_ids() {
+                        if let Some(&score) = solution.alignment_per_triangle.get(&triangle_id) {
+                            color_map_alignment.insert(triangle_id, colors::map(score as f32, &colors::SCALE_MAGMA));
+                        } else {
+                            color_map_alignment.insert(triangle_id, colors::PURPLE_LIGHT);
                         }
                     }
 
@@ -851,6 +881,7 @@ pub fn refresh(solution: &Solution) -> RenderObjectStore {
                         .mesh(input, &default_color_map, "gray")
                         .mesh(input, &black_color_map, "black")
                         .mesh(granulated_mesh, &color_map_segmentation, "segmentation")
+                        .mesh(granulated_mesh, &color_map_alignment, "alignment")
                         .mesh(granulated_mesh, &color_map_planarity, "planarity")
                         .mesh(granulated_mesh, &color_map_d_area, "d_area")
                         .mesh(granulated_mesh, &color_map_d_angle, "d_angle")

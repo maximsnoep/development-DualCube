@@ -24,5 +24,6 @@ image = "0.25.6"
 rfd = "0.15.3"
 enum-iterator = "2.1.0"
 
+
 [lints]
 workspace = true
