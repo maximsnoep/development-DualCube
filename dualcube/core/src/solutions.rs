@@ -257,6 +257,7 @@ impl Solution {
         for face in self.polycube.as_ref().unwrap().structure.face_ids() {
             let normal = self.polycube.as_ref().unwrap().structure.normal(face);
             if normal.x.is_nan() || normal.y.is_nan() || normal.z.is_nan() {
+                println!("cube: {normal}");
                 return Err(PropertyViolationError::UnknownError);
             }
         }
@@ -293,7 +294,7 @@ impl Solution {
         if let Ok(layout) = self.layout.as_mut() {
             layout.place_paths()?;
             layout.verify_paths();
-            layout.assign_patches();
+            layout.assign_patches()?;
             self.compute_quality();
             Ok(())
         } else {
@@ -306,7 +307,7 @@ impl Solution {
         let dual = self.layout.as_ref().unwrap().dual_ref.clone();
         let polycube = self.layout.as_ref().unwrap().polycube_ref.clone();
 
-        let verts = dual
+        let polycube_vertices = dual
             .loop_structure
             .face_ids()
             .iter()
@@ -320,15 +321,71 @@ impl Solution {
         solution_clone.compute_quality();
         let mut current_quality = self.get_quality().unwrap();
 
+        // Create priority queue with "quality" around a vertex as key;
+        // let mut priority_queue = std::collections::BinaryHeap::new();
+        // for &polycube_vertex in &polycube_vertices {
+        //     let mesh_vertex = solution_clone
+        //         .layout
+        //         .as_mut()
+        //         .unwrap()
+        //         .vert_to_corner
+        //         .get_by_left(&polycube_vertex)
+        //         .unwrap()
+        //         .to_owned();
+        //     let faces_of_vert = solution_clone.layout.as_mut().unwrap().granulated_mesh.faces(mesh_vertex);
+
+        //     let worst_quality = faces_of_vert
+        //         .iter()
+        //         .map(|&f| OrderedFloat(solution_clone.alignment_per_triangle.get(&f).unwrap().to_owned()))
+        //         .min()
+        //         .unwrap()
+        //         .0;
+
+        //     priority_queue.push((polycube_vertex, OrderedFloat(100. - worst_quality)));
+        // }
+
         for _ in 0..10 {
-            for &vert in &verts {
-                if self.polycube.as_ref().unwrap().structure.edges(vert).len() == 4 {
+            for &polycube_vertex in &polycube_vertices {
+                // if self.polycube.as_ref().unwrap().structure.edges(vert).len() == 4 {
+                //     continue;
+                // }
+                // check the "quality" around this vert, if its already good, dont improve it
+                let mesh_vertex = solution_clone
+                    .layout
+                    .as_mut()
+                    .unwrap()
+                    .vert_to_corner
+                    .get_by_left(&polycube_vertex)
+                    .unwrap()
+                    .to_owned();
+                let faces_of_vert = solution_clone.layout.as_mut().unwrap().granulated_mesh.faces(mesh_vertex);
+
+                let worst_quality = faces_of_vert
+                    .iter()
+                    .map(|&f| OrderedFloat(solution_clone.alignment_per_triangle.get(&f).unwrap().to_owned()))
+                    .min()
+                    .unwrap();
+
+                if worst_quality > OrderedFloat(0.5) {
                     continue;
                 }
-                if solution_clone.layout.as_mut().unwrap().random_improvement_corner(vert).is_err() {
+
+                if solution_clone.layout.as_mut().unwrap().random_improvement_corner(polycube_vertex).is_err() {
                     solution_clone = solution_backup.clone();
                     continue;
                 }
+
+                let new_worst_quality = faces_of_vert
+                    .iter()
+                    .map(|&f| OrderedFloat(solution_clone.alignment_per_triangle.get(&f).unwrap().to_owned()))
+                    .min()
+                    .unwrap();
+
+                if new_worst_quality < worst_quality {
+                    solution_clone = solution_backup.clone();
+                    continue;
+                }
+
                 solution_clone.compute_quality();
                 let quality = solution_clone.get_quality().unwrap();
                 if quality >= current_quality {
@@ -341,23 +398,23 @@ impl Solution {
             }
         }
 
-        for _ in 0..2 {
-            for &vert in &verts {
-                if solution_clone.layout.as_mut().unwrap().laplacian_corner(vert).is_err() {
-                    solution_clone = solution_backup.clone();
-                    continue;
-                }
-                solution_clone.compute_quality();
-                let quality = solution_clone.get_quality().unwrap();
-                if quality >= current_quality {
-                    solution_backup = solution_clone.clone();
-                    current_quality = quality;
-                    println!("New quality: {:?}", current_quality);
-                } else {
-                    solution_clone = solution_backup.clone();
-                }
-            }
-        }
+        // for _ in 0..2 {
+        //     for &vert in &verts {
+        //         if solution_clone.layout.as_mut().unwrap().laplacian_corner(vert).is_err() {
+        //             solution_clone = solution_backup.clone();
+        //             continue;
+        //         }
+        //         solution_clone.compute_quality();
+        //         let quality = solution_clone.get_quality().unwrap();
+        //         if quality >= current_quality {
+        //             solution_backup = solution_clone.clone();
+        //             current_quality = quality;
+        //             println!("New quality: {:?}", current_quality);
+        //         } else {
+        //             solution_clone = solution_backup.clone();
+        //         }
+        //     }
+        // }
 
         *self = solution_clone;
 

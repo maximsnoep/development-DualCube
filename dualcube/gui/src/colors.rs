@@ -377,26 +377,26 @@ pub const fn from_direction(direction: PrincipalDirection, perspective: Option<P
     match (direction, perspective, orientation) {
         // General
         (PrincipalDirection::X, None, _) => RED,
-        (PrincipalDirection::Y, None, _) => BLUE,
-        (PrincipalDirection::Z, None, _) => YELLOW,
+        (PrincipalDirection::Y, None, _) => YELLOW,
+        (PrincipalDirection::Z, None, _) => BLUE,
 
         // Primal
         (PrincipalDirection::X, Some(Perspective::Primal), _) => RED,
-        (PrincipalDirection::Y, Some(Perspective::Primal), _) => BLUE,
-        (PrincipalDirection::Z, Some(Perspective::Primal), _) => YELLOW,
+        (PrincipalDirection::Y, Some(Perspective::Primal), _) => YELLOW,
+        (PrincipalDirection::Z, Some(Perspective::Primal), _) => BLUE,
 
         // Dual
-        (PrincipalDirection::X, Some(Perspective::Dual), None) => GREEN,
-        (PrincipalDirection::X, Some(Perspective::Dual), Some(Orientation::Forwards)) => GREEN,
-        (PrincipalDirection::X, Some(Perspective::Dual), Some(Orientation::Backwards)) => GREEN_LIGHT,
+        (PrincipalDirection::X, Some(Perspective::Dual), None) => RED,
+        (PrincipalDirection::X, Some(Perspective::Dual), Some(Orientation::Forwards)) => RED,
+        (PrincipalDirection::X, Some(Perspective::Dual), Some(Orientation::Backwards)) => RED_LIGHT,
 
-        (PrincipalDirection::Y, Some(Perspective::Dual), None) => ORANGE,
-        (PrincipalDirection::Y, Some(Perspective::Dual), Some(Orientation::Forwards)) => ORANGE,
-        (PrincipalDirection::Y, Some(Perspective::Dual), Some(Orientation::Backwards)) => ORANGE_LIGHT,
+        (PrincipalDirection::Y, Some(Perspective::Dual), None) => YELLOW,
+        (PrincipalDirection::Y, Some(Perspective::Dual), Some(Orientation::Forwards)) => YELLOW,
+        (PrincipalDirection::Y, Some(Perspective::Dual), Some(Orientation::Backwards)) => YELLOW_LIGHT,
 
-        (PrincipalDirection::Z, Some(Perspective::Dual), None) => PURPLE,
-        (PrincipalDirection::Z, Some(Perspective::Dual), Some(Orientation::Forwards)) => PURPLE,
-        (PrincipalDirection::Z, Some(Perspective::Dual), Some(Orientation::Backwards)) => PURPLE_LIGHT,
+        (PrincipalDirection::Z, Some(Perspective::Dual), None) => BLUE,
+        (PrincipalDirection::Z, Some(Perspective::Dual), Some(Orientation::Forwards)) => BLUE,
+        (PrincipalDirection::Z, Some(Perspective::Dual), Some(Orientation::Backwards)) => BLUE_LIGHT,
     }
 }
 

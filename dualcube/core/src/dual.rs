@@ -2,8 +2,10 @@ use crate::prelude::*;
 use crate::solutions::{Loop, LoopID};
 use grapff::Grapff;
 use itertools::Itertools;
+use log::{error, info};
 use mehsh::prelude::*;
 use slotmap::SlotMap;
+use std::collections::VecDeque;
 use std::{
     collections::{HashMap, HashSet},
     sync::Arc,
@@ -102,18 +104,23 @@ impl Dual {
         };
 
         // Find all intersections and loop regions induced by the loops, and compute the loop structure
+        info!("Assigning loop structure");
         dual.assign_loop_structure()?;
 
         // For each loop region, find its actual subsurface (on the mesh)
+        info!("Assigning subsurfaces");
         dual.assign_subsurfaces()?;
 
         // Find the zones and construct the level graphs
+        info!("Assigning level graphs");
         dual.assign_level_graphs();
 
         // Verify properties
+        info!("Verifying properties");
         dual.verify_properties()?;
 
         // Assign levels to the loop structure
+        info!("Assigning levels");
         dual.assign_levels();
 
         Ok(dual)
@@ -266,7 +273,7 @@ impl Dual {
         // Intersections are edges that are occupied exactly twice. It is not possible for an edge to be occupied more than twice.
         // NOTE: An intersection exists on two half-edges, we only store the intersection at the lower ID half-edge
         if occupied.values().any(|x| x.len() >= 3) {
-            // error!("Invalid intersection: an edge is occupied by more than two loops.");
+            error!("Invalid intersection: an edge is occupied by more than two loops.");
             return Err(PropertyViolationError::UnknownError);
         }
 
@@ -344,10 +351,10 @@ impl Dual {
                 })
                 .collect_vec();
             if (ordered_adjacent_intersections.len() != 4) || (ordered_adjacent_intersections.iter().map(|x| x.1).collect::<HashSet<_>>().len() != 4) {
-                // error!(
-                //     "Invalid intersection: ordered adjacent intersections are not unique or not 4. {:?} ({:?})",
-                //     ordered_adjacent_intersections, quad
-                // );
+                error!(
+                    "Invalid intersection: ordered adjacent intersections are not unique or not 4. {:?} ({:?})",
+                    ordered_adjacent_intersections, quad
+                );
                 return Err(PropertyViolationError::UnknownError);
             }
 
@@ -355,25 +362,25 @@ impl Dual {
             assert!(ordered_adjacent_intersections.iter().map(|x| x.1).collect::<HashSet<_>>().len() == 4);
 
             if ordered_adjacent_intersections[0].0 == ordered_adjacent_intersections[1].0 {
-                // error!("[0].0 == [1].0: {:?}", ordered_adjacent_intersections[0].0);
+                error!("[0].0 == [1].0: {:?}", ordered_adjacent_intersections[0].0);
                 return Err(PropertyViolationError::UnknownError);
             }
             assert!(ordered_adjacent_intersections[0].0 != ordered_adjacent_intersections[1].0);
 
             if ordered_adjacent_intersections[1].0 == ordered_adjacent_intersections[2].0 {
-                // error!("[1].0 == [2].0: {:?}", ordered_adjacent_intersections[1].0);
+                error!("[1].0 == [2].0: {:?}", ordered_adjacent_intersections[1].0);
                 return Err(PropertyViolationError::UnknownError);
             }
             assert!(ordered_adjacent_intersections[1].0 != ordered_adjacent_intersections[2].0);
 
             if ordered_adjacent_intersections[2].0 == ordered_adjacent_intersections[3].0 {
-                // error!("[2].0 == [3].0: {:?}", ordered_adjacent_intersections[2].0);
+                error!("[2].0 == [3].0: {:?}", ordered_adjacent_intersections[2].0);
                 return Err(PropertyViolationError::UnknownError);
             }
             assert!(ordered_adjacent_intersections[2].0 != ordered_adjacent_intersections[3].0);
 
             if ordered_adjacent_intersections[3].0 == ordered_adjacent_intersections[0].0 {
-                // error!("[3].0 == [0].0: {:?}", ordered_adjacent_intersections[3].0);
+                error!("[3].0 == [0].0: {:?}", ordered_adjacent_intersections[3].0);
                 return Err(PropertyViolationError::UnknownError);
             }
             assert!(ordered_adjacent_intersections[3].0 != ordered_adjacent_intersections[0].0);
@@ -444,7 +451,7 @@ impl Dual {
 
             self.loop_structure = douconel;
         } else {
-            // error!("Failed to create loop structure from faces.");
+            error!("Failed to create loop structure from faces.");
             return Err(PropertyViolationError::UnknownError);
         }
 
@@ -583,33 +590,69 @@ impl Dual {
     pub fn assign_levels(&mut self) {
         for direction in [PrincipalDirection::X, PrincipalDirection::Y, PrincipalDirection::Z] {
             let graph = &self.level_graphs.graphs[direction as usize];
-            let start = graph.nodes().first().unwrap().to_owned();
+            let mut topo_sort = graph.topological_sort().unwrap();
 
-            let mut queue = vec![start];
-            let mut visited: HashSet<ZoneID> = HashSet::default();
-            visited.insert(start);
+            println!("{:?}", topo_sort);
             let mut levels = HashMap::new();
-            levels.insert(start, 100_000usize);
+            levels.insert(topo_sort.first().unwrap().to_owned(), 100_000usize);
 
-            while let Some(node) = queue.pop() {
-                let node_level = levels.get(&node).unwrap().to_owned();
-                for neighbor in graph.neighbors_undirected(node) {
-                    if visited.contains(&neighbor) {
-                        continue;
+            for node in topo_sort.clone() {
+                println!("Visiting node: {:?}", node);
+                if let Some(node_level) = levels.get(&node).cloned() {
+                    for neighbor in graph.neighbors_undirected(node) {
+                        match (graph.directed_edge_exists(node, neighbor), graph.directed_edge_exists(neighbor, node)) {
+                            (true, false) => {
+                                if levels.contains_key(&neighbor) {
+                                    let cur = levels[&neighbor];
+                                    levels.insert(neighbor, cur.max(node_level + 1));
+                                } else {
+                                    levels.insert(neighbor, node_level + 1);
+                                }
+                            }
+                            (false, true) => {
+                                if levels.contains_key(&neighbor) {
+                                    let cur = levels[&neighbor];
+                                    levels.insert(neighbor, cur.min(node_level - 1));
+                                } else {
+                                    levels.insert(neighbor, node_level - 1);
+                                }
+                            }
+                            _ => {
+                                panic!();
+                            }
+                        }
                     }
-                    match (graph.directed_edge_exists(node, neighbor), graph.directed_edge_exists(neighbor, node)) {
-                        (true, false) => {
-                            levels.insert(neighbor, node_level + 1);
-                        }
-                        (false, true) => {
-                            levels.insert(neighbor, node_level - 1);
-                        }
-                        _ => {
-                            panic!();
+                }
+            }
+
+            topo_sort.reverse();
+
+            for node in topo_sort {
+                println!("Visiting node: {:?}", node);
+                if let Some(node_level) = levels.get(&node).cloned() {
+                    for neighbor in graph.neighbors_undirected(node) {
+                        match (graph.directed_edge_exists(node, neighbor), graph.directed_edge_exists(neighbor, node)) {
+                            (true, false) => {
+                                if levels.contains_key(&neighbor) {
+                                    let cur = levels[&neighbor];
+                                    levels.insert(neighbor, cur.max(node_level + 1));
+                                } else {
+                                    levels.insert(neighbor, node_level + 1);
+                                }
+                            }
+                            (false, true) => {
+                                if levels.contains_key(&neighbor) {
+                                    let cur = levels[&neighbor];
+                                    levels.insert(neighbor, cur.min(node_level - 1));
+                                } else {
+                                    levels.insert(neighbor, node_level - 1);
+                                }
+                            }
+                            _ => {
+                                panic!();
+                            }
                         }
                     }
-                    visited.insert(neighbor);
-                    queue.push(neighbor);
                 }
             }
 

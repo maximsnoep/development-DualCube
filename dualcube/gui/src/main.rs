@@ -1,3 +1,4 @@
+pub mod axes;
 mod colors;
 mod controls;
 mod jobs;
@@ -96,8 +97,8 @@ impl Default for Configuration {
             automatic: false,
             interactive_mode: InteractiveMode::None,
             window_shows_object: [Objects::PolycubeMap, Objects::QuadMesh],
-            // clear_color: [27, 27, 27],
-            clear_color: [255, 255, 255],
+            clear_color: [27, 27, 27],
+            // clear_color: [255, 255, 255],
             camera_rotate_sensitivity: 0.2,
             camera_translate_sensitivity: 2.,
             camera_zoom_sensitivity: 0.2,
@@ -296,6 +297,8 @@ fn main() {
         .add_plugins(MaterialPlugin::<FlatMaterial>::default())
         // Jobs system
         .add_plugins(jobs::JobPlugin)
+        // Axes gizmo
+        .add_plugins(axes::AxesGizmoPlugin)
         // Setups
         .add_systems(Startup, ui::setup)
         .add_systems(Startup, render::setup)

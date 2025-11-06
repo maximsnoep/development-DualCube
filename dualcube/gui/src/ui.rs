@@ -1,3 +1,4 @@
+use crate::axes::AxesGizmoTexture;
 use crate::controls::InteractiveMode;
 use crate::jobs::{Job, JobRequest, JobState};
 use crate::render::{CameraFor, Objects, RenderFlag, RenderObjectSetting, RenderObjectSettingStore, RenderObjectStore};
@@ -361,6 +362,7 @@ fn footer(
     job_state: &Res<JobState>,
     jobs: &mut EventWriter<JobRequest>,
     time: &Res<Time>,
+    axes_texture: TextureId,
 ) {
     TopBottomPanel::bottom("footer").show_separator_line(false).show(egui_ctx.ctx_mut(), |ui| {
         ui.separator();
@@ -371,6 +373,50 @@ fn footer(
             // Left side: Display FPS
             ui.with_layout(Layout::left_to_right(Align::TOP), |ui| {
                 ui.add_space(15.);
+
+                let size = 8.0;
+
+                let mut job = text::LayoutJob::default();
+
+                ui.add(bevy_egui::egui::widgets::Image::new(bevy_egui::egui::load::SizedTexture::new(
+                    axes_texture,
+                    [10., 10.],
+                )));
+
+                job.append("right-hand: ", 0.0, text_format(size, Color32::LIGHT_GRAY));
+                let red = colors::from_direction(PrincipalDirection::X, Some(Perspective::Primal), None);
+                job.append(
+                    "+X",
+                    0.0,
+                    text_format(size, Color32::from_rgb((red[0] * 255.) as u8, (red[1] * 255.) as u8, (red[2] * 255.) as u8)),
+                );
+
+                job.append(", ", 0.0, text_format(size, Color32::GRAY));
+
+                let yellow = colors::from_direction(PrincipalDirection::Y, Some(Perspective::Primal), None);
+                job.append(
+                    "+Y",
+                    0.0,
+                    text_format(
+                        size,
+                        Color32::from_rgb((yellow[0] * 255.) as u8, (yellow[1] * 255.) as u8, (yellow[2] * 255.) as u8),
+                    ),
+                );
+
+                job.append(", ", 0.0, text_format(size, Color32::GRAY));
+
+                let green = colors::from_direction(PrincipalDirection::Z, Some(Perspective::Primal), None);
+                job.append(
+                    "+Z",
+                    0.0,
+                    text_format(
+                        size,
+                        Color32::from_rgb((green[0] * 255.) as u8, (green[1] * 255.) as u8, (green[2] * 255.) as u8),
+                    ),
+                );
+
+                ui.label(job);
+
                 let mut job = text::LayoutJob::default();
 
                 fn usage_color(value: f64) -> Color32 {
@@ -415,7 +461,7 @@ fn footer(
                     .and_then(|d| d.smoothed())
                     .unwrap_or(0.0);
 
-                let size = 8.0;
+                job.append("  |  ", 0.0, text_format(9.0, Color32::GRAY));
 
                 job.append(&format!("fps {:>3.0}", fps), 0.0, text_format(size, fps_color(fps)));
 
@@ -476,7 +522,10 @@ pub fn update(
     mut ui_resource: ResMut<UiResource>,
     diagnostics: Res<DiagnosticsStore>,
     mesh_ref: Res<InputResource>,
+    axes_texture: Res<AxesGizmoTexture>,
 ) {
+    let axes_texture = egui_ctx.add_image(axes_texture.0.clone());
+
     TopBottomPanel::top("panel").show_separator_line(false).show(egui_ctx.ctx_mut(), |ui| {
         ui.add_space(10.);
 
@@ -808,7 +857,7 @@ pub fn update(
         });
     });
 
-    footer(&mut egui_ctx, &mut conf, &solution, &diagnostics, &job_state, &mut jobs, &time);
+    footer(&mut egui_ctx, &mut conf, &solution, &diagnostics, &job_state, &mut jobs, &time, axes_texture);
 
     let mut egui_handles = vec![];
     for obj in conf.window_shows_object.iter() {

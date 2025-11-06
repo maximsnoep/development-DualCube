@@ -863,21 +863,14 @@ impl Layout {
 
     pub fn random_improvement_corner(&mut self, polycube_vert: VertKey<POLYCUBE>) -> Result<(), PropertyViolationError> {
         // INVARIANT: ALL CORNERS AND PATHS MUST ALREADY BE PLACED
-
         let vertex = self.vert_to_corner.get_by_left(&polycube_vert).unwrap().to_owned();
         let region_id = self.polycube_ref.region_to_vertex.get_by_right(&polycube_vert).unwrap().to_owned();
-        let region_vertices = self.dual_ref.region_to_verts(region_id).into_iter().collect_vec();
 
         // grab all vertices in the k-neighborhood
-        let mut candidate_vertices = self.dual_ref.mesh_ref.neighbors_k(vertex, 10);
-        candidate_vertices.retain(|&v| !self.edge_to_path.values().any(|path| path.contains(&v))); // filter out vertices that are part of a path
-        candidate_vertices.retain(|&v| region_vertices.contains(&v)); // filter out vertices that are not in the same region
+        let candidate_vertices = self.dual_ref.mesh_ref.neighbors_k(vertex, 3);
 
         // grab random vertex from candidate_vertices
-        let new_vertex = candidate_vertices
-            .choose(&mut rand::rng())
-            .ok_or(PropertyViolationError::UnknownError)?
-            .to_owned();
+        let new_vertex = candidate_vertices.choose(&mut rand::rng()).unwrap().to_owned();
 
         self.move_corner(polycube_vert, new_vertex)?;
         Ok(())
