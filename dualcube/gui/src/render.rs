@@ -678,6 +678,8 @@ pub fn refresh(solution: &Solution) -> RenderObjectStore {
                 let color = colors::GRAY;
                 let c = bevy::color::Color::srgb(color[0], color[1], color[2]);
 
+                println!("loops: {:?}", solution.loops.keys());
+
                 for (lewp_id, lewp) in &solution.loops {
                     let direction = solution.loop_to_direction(lewp_id);
 
@@ -687,6 +689,8 @@ pub fn refresh(solution: &Solution) -> RenderObjectStore {
                         // gizmos_loop.line(line.u, line.v, c);
                         positions.push(vector3d_to_vec3(ut));
                     }
+
+                    println!("drawing: {:?}", lewp_id);
 
                     let color = colors::from_direction(direction, Some(Perspective::Dual), Some(Orientation::Forwards));
                     let c = bevy::color::Color::srgb(color[0], color[1], color[2]);
@@ -723,6 +727,7 @@ pub fn refresh(solution: &Solution) -> RenderObjectStore {
 
                     for &face_id in &polycube.structure.face_ids() {
                         let normal = (polycube.structure.normal(face_id) as Vector3D).normalize();
+                        println!("normal: {:?}", normal);
                         let (dir, side) = to_principal_direction(normal);
                         let color = colors::from_direction(dir, Some(Perspective::Primal), Some(side));
                         for &triangle_id in &lay.face_to_patch[&face_id].faces {

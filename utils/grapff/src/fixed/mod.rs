@@ -127,6 +127,12 @@ impl<V: Eq + PartialEq + Hash + Default + Copy, E: Copy> FixedGraph<V, E> {
     pub fn get_weight(&self, a: NodeIndex, b: NodeIndex) -> E {
         self.petgraph.edges_connecting(a, b).next().unwrap().weight().to_owned()
     }
+
+    pub fn topological_sort(&self) -> Option<Vec<V>> {
+        petgraph::algo::toposort(&self.petgraph, None)
+            .ok()
+            .map(|sorted_indices| sorted_indices.into_iter().map(|index| self.index_to_node(index).unwrap().to_owned()).collect())
+    }
 }
 
 impl<T: Eq + Hash + Clone + Copy + Default, E: Copy> Grapff<T, E> for FixedGraph<T, E> {

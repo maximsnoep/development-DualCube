@@ -27,9 +27,9 @@ pub mod prelude {
     impl Display for PrincipalDirection {
         fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
             match self {
-                Self::X => write!(f, "Z-axis"),
+                Self::X => write!(f, "X-axis"),
                 Self::Y => write!(f, "Y-axis"),
-                Self::Z => write!(f, "X-axis"),
+                Self::Z => write!(f, "Z-axis"),
             }
         }
     }

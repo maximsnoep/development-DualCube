@@ -45,7 +45,7 @@ async fn run_job(job: Job) -> Option<JobResult> {
             let mut solution_clone = solution.clone();
             if let Err(err) = solution_clone.construct_dual_and_polycube() {
                 warn!("Failed to construct dual and polycube: {err:?}");
-                return None;
+                return Some(JobResult::Refreshed(render::refresh(&solution)));
             }
             Some(JobResult::DualChanged((solution_clone, configuration)))
         }
@@ -121,7 +121,7 @@ async fn run_job(job: Job) -> Option<JobResult> {
             direction,
             flowgraph,
         } => {
-            let Some((candidate_loop, _)) = solution.construct_loop_with_anchors(&anchors, direction, &flowgraph, |a: f64| OrderedFloat(a.powi(2))) else {
+            let Some((candidate_loop, _)) = solution.construct_loop_with_anchors(&anchors, direction, &flowgraph, |a: f64| OrderedFloat(a.powi(3))) else {
                 return Some(JobResult::AddedLoop((anchors, direction, None)));
             };
             let mut candidate_solution = solution.clone();
@@ -129,7 +129,7 @@ async fn run_job(job: Job) -> Option<JobResult> {
                 edges: candidate_loop,
                 direction,
             });
-            if candidate_solution.loops.len() >= 3 {
+            if candidate_solution.loops.len() >= 10 {
                 if let Err(err) = candidate_solution.construct_dual_and_polycube() {
                     warn!("Failed to reconstruct solution: {err:?}");
                     return Some(JobResult::AddedLoop((anchors, direction, None)));
