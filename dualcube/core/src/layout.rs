@@ -864,7 +864,6 @@ impl Layout {
     pub fn random_improvement_corner(&mut self, polycube_vert: VertKey<POLYCUBE>) -> Result<(), PropertyViolationError> {
         // INVARIANT: ALL CORNERS AND PATHS MUST ALREADY BE PLACED
         let vertex = self.vert_to_corner.get_by_left(&polycube_vert).unwrap().to_owned();
-        let region_id = self.polycube_ref.region_to_vertex.get_by_right(&polycube_vert).unwrap().to_owned();
 
         // grab all vertices in the k-neighborhood
         let candidate_vertices = self.dual_ref.mesh_ref.neighbors_k(vertex, 3);
@@ -876,16 +875,57 @@ impl Layout {
         Ok(())
     }
 
+    pub fn laplacian_corner_shoot(
+        &mut self,
+        polycube_vert: VertKey<POLYCUBE>,
+        vert_lookup: &mehsh::prelude::VertLocation<INPUT>,
+    ) -> Result<(), PropertyViolationError> {
+        // Compute the laplacian (axis-aligned) of the neighbors
+
+        let mesh_vertex = self.vert_to_corner.get_by_left(&polycube_vert).unwrap().to_owned();
+
+        let mut x_targets = vec![self.granulated_mesh.position(mesh_vertex).x];
+        let mut y_targets = vec![self.granulated_mesh.position(mesh_vertex).y];
+        let mut z_targets = vec![self.granulated_mesh.position(mesh_vertex).z];
+
+        for polycube_neighbor in self.polycube_ref.structure.neighbors(polycube_vert) {
+            let mesh_neighbor = self.vert_to_corner.get_by_left(&polycube_neighbor).unwrap().to_owned();
+
+            let direction_of_edge = self
+                .polycube_ref
+                .structure
+                .vector(self.polycube_ref.structure.edge_between_verts(polycube_vert, polycube_neighbor).unwrap().0);
+            if direction_of_edge.x != 0.0 {
+                x_targets.push(self.granulated_mesh.position(mesh_neighbor).x);
+            }
+            if direction_of_edge.y != 0.0 {
+                y_targets.push(self.granulated_mesh.position(mesh_neighbor).y);
+            }
+            if direction_of_edge.z != 0.0 {
+                z_targets.push(self.granulated_mesh.position(mesh_neighbor).z);
+            }
+        }
+
+        let target = [
+            x_targets.iter().sum::<f64>() / x_targets.len() as f64,
+            y_targets.iter().sum::<f64>() / y_targets.len() as f64,
+            z_targets.iter().sum::<f64>() / z_targets.len() as f64,
+        ];
+
+        let mesh_target = vert_lookup.nearest(&target).1;
+        self.move_corner(polycube_vert, mesh_target)?;
+
+        Ok(())
+    }
+
     pub fn laplacian_corner(&mut self, polycube_vert: VertKey<POLYCUBE>) -> Result<(), PropertyViolationError> {
         // INVARIANT: ALL CORNERS AND PATHS MUST ALREADY BE PLACED
 
         // LaPlacian optimization of specific corner:
         // 1. place corner in the average position of its neighbors (and constrained by region formed by existing paths)
         // 2. find new paths (constrained by existing paths)
-
-        // grab all vertices in the loop region
-        let region_id = self.polycube_ref.region_to_vertex.get_by_right(&polycube_vert).unwrap().to_owned();
-        let candidate_vertices = self.dual_ref.region_to_verts(region_id).into_iter().collect_vec();
+        let vertex = self.vert_to_corner.get_by_left(&polycube_vert).unwrap().to_owned();
+        let candidate_vertices = self.dual_ref.mesh_ref.neighbors_k(vertex, 5);
 
         // grab candidate that minimizes axis-aligned-distance to neighbors
         let mut best_score = f64::MAX;

@@ -1,0 +1,9 @@
+[package]
+name = "bevy-axes-gizmo"
+version = "0.1.0"
+edition = "2024"
+description = "A tiny Bevy plugin that renders the axes and exposes its view through a texture."
+license = "MIT OR Apache-2.0"
+
+[dependencies]
+bevy = "0.16.1"

@@ -31,6 +31,10 @@ pub fn segmentation_modification_system(
     nearest_vert: VertID,
     edgepair: [EdgeID; 2],
 ) -> Result<(), BevyError> {
+    if mesh_resmut.mesh.nr_verts() == 0 {
+        return Ok(());
+    }
+
     // Look for what loop region I am in
     // Look for the vertex corresponding to the loop region
     let modification = if let (Ok(dual), Ok(layout), Some(polycube)) = (
@@ -110,6 +114,10 @@ pub fn loop_modification_system(
     nearest_vert: VertID,
     edgepair: [EdgeID; 2],
 ) -> Result<(), BevyError> {
+    if mesh_resmut.mesh.nr_verts() == 0 {
+        return Ok(());
+    }
+
     // Render all current solutions  (for currently selected direction)
     for (&edgepair, sol) in &solution.next[configuration.direction as usize] {
         let u = mesh_resmut.mesh.position(edgepair[0]);
