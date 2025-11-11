@@ -8,6 +8,7 @@ use crate::{
 };
 use grapff::Grapff;
 use itertools::Itertools;
+use mehsh::mesh::elem::edge;
 use mehsh::prelude::*;
 use ordered_float::OrderedFloat;
 use rand::{rng, seq::IteratorRandom};
@@ -97,6 +98,9 @@ pub struct Solution {
     pub alignment_per_triangle: ids::SecMap<FACE, INPUT, f64>,
     pub alignment: Option<f64>,
 
+    pub orthogonality_per_vert: ids::SecMap<VERT, POLYCUBE, f64>,
+    pub orthogonality: Option<f64>,
+
     pub external_flag: Option<ids::SecMap<FACE, INPUT, usize>>,
 }
 
@@ -107,6 +111,8 @@ impl Solution {
         self.layout = Err(PropertyViolationError::default());
         self.alignment_per_triangle.clear();
         self.alignment = None;
+        self.orthogonality_per_vert.clear();
+        self.orthogonality = None;
     }
 
     // ***
@@ -125,6 +131,8 @@ impl Solution {
             quad: None,
             alignment_per_triangle: ids::SecMap::new(),
             alignment: None,
+            orthogonality_per_vert: ids::SecMap::new(),
+            orthogonality: None,
             external_flag: None,
             last_loop: None,
         }
@@ -246,6 +254,9 @@ impl Solution {
 
     // Construct dual and polycube
     pub fn construct_dual_and_polycube(&mut self) -> Result<(), PropertyViolationError> {
+        self.layout = Err(PropertyViolationError::UnknownError);
+        self.polycube = None;
+
         self.dual = Dual::from(self.mesh_ref.clone(), &self.loops);
         if let Err(e) = &self.dual {
             return Err(e.clone());
@@ -342,6 +353,45 @@ impl Solution {
         //         .0;
 
         //     priority_queue.push((polycube_vertex, OrderedFloat(100. - worst_quality)));
+        // }
+
+        let vert_lookup = self.layout.as_ref().unwrap().granulated_mesh.kdtree();
+
+        // for _ in 0..5 {
+        //     for &polycube_vertex in &polycube_vertices {
+        //         println!(
+        //             "orthogonality of v {:?} is {:?}",
+        //             polycube_vertex,
+        //             solution_clone.orthogonality_per_vert.get(&polycube_vertex)
+        //         );
+
+        //         if solution_clone.orthogonality_per_vert.get(&polycube_vertex).is_some()
+        //             && *solution_clone.orthogonality_per_vert.get(&polycube_vertex).unwrap() > 0.7
+        //         {
+        //             continue;
+        //         }
+
+        //         if solution_clone
+        //             .layout
+        //             .as_mut()
+        //             .unwrap()
+        //             .laplacian_corner_shoot(polycube_vertex, &vert_lookup)
+        //             .is_err()
+        //         {
+        //             solution_clone = solution_backup.clone();
+        //             continue;
+        //         }
+
+        //         solution_clone.compute_quality();
+        //         let quality = solution_clone.get_quality().unwrap();
+        //         if quality >= current_quality {
+        //             solution_backup = solution_clone.clone();
+        //             current_quality = quality;
+        //             println!("New quality: {:?}", current_quality);
+        //         } else {
+        //             solution_clone = solution_backup.clone();
+        //         }
+        //     }
         // }
 
         for _ in 0..10 {
@@ -506,8 +556,15 @@ impl Solution {
         p + offset * (q - p)
     }
 
+    pub fn get_loops_in_direction(&self, direction: PrincipalDirection) -> Vec<LoopID> {
+        self.loops
+            .iter()
+            .filter_map(|(id, l)| if l.direction == direction { Some(id) } else { None })
+            .collect()
+    }
+
     pub fn count_loops_in_direction(&self, direction: PrincipalDirection) -> usize {
-        self.loops.iter().filter(|(_, l)| l.direction == direction).count()
+        self.get_loops_in_direction(direction).len()
     }
 
     pub fn loop_to_direction(&self, loop_id: LoopID) -> PrincipalDirection {
@@ -728,9 +785,6 @@ impl Solution {
 
             let mut anchors_flattened = flipped_anchors.iter().flatten().copied().collect_vec();
             anchors_flattened.push(anchors_flattened.first().cloned().unwrap());
-            println!("{:?}", anchors_flattened);
-
-            // might have to flip some anchors into the "correct" direction
 
             let mut new_loop = vec![];
 
@@ -915,11 +969,56 @@ impl Solution {
             }
             self.alignment = Some(total_score);
         }
+
+        self.orthogonality_per_vert.clear();
+        self.orthogonality = None;
+        if let (Ok(layout), Some(polycube)) = (&self.layout, &self.polycube) {
+            let mut total_score = vec![];
+
+            let vertices = polycube.structure.vert_ids();
+            for &v in &vertices {
+                let mut vert_score = vec![];
+                let edges = polycube.structure.edges(v);
+                for (edge1, edge2) in edges.iter().tuple_windows() {
+                    let u = polycube.structure.vertices(*edge1)[1];
+                    let w = polycube.structure.vertices(*edge2)[1];
+                    assert!(v == polycube.structure.vertices(*edge1)[0]);
+                    assert!(v == polycube.structure.vertices(*edge2)[0]);
+
+                    let u_in_mesh = layout.vert_to_corner.get_by_left(&u).unwrap().to_owned();
+                    let v_in_mesh = layout.vert_to_corner.get_by_left(&v).unwrap().to_owned();
+                    let w_in_mesh = layout.vert_to_corner.get_by_left(&w).unwrap().to_owned();
+
+                    let u_pos = layout.granulated_mesh.position(u_in_mesh);
+                    let v_pos = layout.granulated_mesh.position(v_in_mesh);
+                    let w_pos = layout.granulated_mesh.position(w_in_mesh);
+
+                    // vector1 is v to u
+                    let vector1 = u_pos - v_pos;
+                    // vector2 is v to w
+                    let vector2 = w_pos - v_pos;
+
+                    // angle
+                    let angle = vector1.angle(&vector2);
+                    let score = (90. - (angle.to_degrees() - 90.).abs()) / 90.;
+                    vert_score.push(score);
+                }
+                let avg_score = vert_score.iter().cloned().sum::<f64>() / vert_score.len() as f64;
+                self.orthogonality_per_vert.insert(&v, avg_score);
+                total_score.push(avg_score);
+            }
+
+            self.orthogonality = Some(total_score.iter().cloned().sum::<f64>() / total_score.len() as f64);
+        }
     }
 
     pub fn get_quality(&self) -> Option<f64> {
         let beta = 0.001;
-        self.alignment.map(|align| align - beta * self.loops.len() as f64)
+        if let (Some(alignment), Some(orthogonality)) = (self.alignment, self.orthogonality) {
+            Some(alignment + orthogonality - beta * self.loops.len() as f64)
+        } else {
+            None
+        }
     }
 
     pub fn mutation(&self, flow_graphs: &[grapff::fixed::FixedGraph<EdgeID, f64>; 3]) -> Option<Self> {

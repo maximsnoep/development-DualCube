@@ -15,7 +15,7 @@ use std::path::PathBuf;
 async fn run_job(job: Job) -> Option<JobResult> {
     match job {
         Job::Hex { .. } => None,
-        Job::Import { path } => Some(JobResult::Imported(io::import_solution(path))),
+        Job::Import { path, configuration } => Some(JobResult::Imported((io::import_solution(path), configuration))),
 
         Job::InitializeLoops {
             solution,
@@ -129,7 +129,7 @@ async fn run_job(job: Job) -> Option<JobResult> {
                 edges: candidate_loop,
                 direction,
             });
-            if candidate_solution.loops.len() >= 10 {
+            if candidate_solution.loops.len() >= 3 {
                 if let Err(err) = candidate_solution.construct_dual_and_polycube() {
                     warn!("Failed to reconstruct solution: {err:?}");
                     return Some(JobResult::AddedLoop((anchors, direction, None)));
@@ -272,15 +272,22 @@ fn poll_jobs(
                     // TODO: insert into your resources
                 }
 
-                Some(JobResult::Imported(sol)) => {
-                    *input_resource = InputResource::new(sol.mesh_ref.clone());
-                    solution_resource.current_solution = sol;
+                Some(JobResult::Imported((solution, configuration))) => {
+                    *input_resource = InputResource::new(solution.mesh_ref.clone());
+                    solution_resource.current_solution = solution;
                     solution_resource.next[0] = HashMap::new();
                     solution_resource.next[1] = HashMap::new();
                     solution_resource.next[2] = HashMap::new();
-                    jobs.write(JobRequest::Run(Box::new(Job::Refresh {
-                        solution: solution_resource.current_solution.clone(),
-                    })));
+                    if configuration.stop == Phase::Loops {
+                        jobs.write(JobRequest::Run(Box::new(Job::Refresh {
+                            solution: solution_resource.current_solution.clone(),
+                        })));
+                    } else {
+                        jobs.write(JobRequest::Run(Box::new(Job::ComputeDual {
+                            solution: solution_resource.current_solution.clone(),
+                            configuration,
+                        })));
+                    }
                 }
 
                 Some(JobResult::AddedLoop((anchors, direction, maybe))) => {
@@ -355,6 +362,7 @@ fn submit_jobs(mut ev_reader: EventReader<JobRequest>, mut job_state: ResMut<Job
 pub enum Job {
     Import {
         path: PathBuf,
+        configuration: Configuration,
     },
     InitializeLoops {
         solution: Solution,
@@ -512,7 +520,7 @@ impl Job {
 
 /// Results of jobs
 enum JobResult {
-    Imported(Solution),
+    Imported((Solution, Configuration)),
     // For example after initializing or optimizing loop structure
     LoopsChanged((Solution, Configuration)),
     // For example after computing dual / polycube representation
