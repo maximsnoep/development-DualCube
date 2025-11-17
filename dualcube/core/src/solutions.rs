@@ -8,7 +8,6 @@ use crate::{
 };
 use grapff::Grapff;
 use itertools::Itertools;
-use mehsh::mesh::elem::edge;
 use mehsh::prelude::*;
 use ordered_float::OrderedFloat;
 use rand::{rng, seq::IteratorRandom};

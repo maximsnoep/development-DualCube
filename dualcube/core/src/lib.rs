@@ -1,4 +1,5 @@
 pub mod dual;
+pub mod feature;
 pub mod layout;
 pub mod polycube;
 pub mod quad;

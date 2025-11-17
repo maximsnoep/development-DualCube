@@ -121,11 +121,11 @@ impl Polycube {
         }
     }
 
-    pub fn to_dotgraph(dual: &Dual, path: &PathBuf) -> Result<(), std::io::Error> {
+    pub fn to_dotgraph(dual: &Dual, layout: &Layout, path: &PathBuf) -> Result<(), std::io::Error> {
         let mut file = std::fs::File::create(path)?;
 
         let mut polycube = Self::from_dual(dual);
-        polycube.resize(dual, None);
+        polycube.resize(dual, Some(layout));
 
         let mut vert_ids = ids::IdMap::<VERT, POLYCUBE>::new();
         for (i, vert_id) in polycube.structure.vert_ids().into_iter().enumerate() {
@@ -134,11 +134,20 @@ impl Polycube {
 
         writeln!(
             file,
+            "/ comments are lines starting with a slash (/), they should be ignored when parsing the file"
+        )?;
+        writeln!(file, "/ ")?;
+        writeln!(file, "/ number of faces, number of edges, and number of vertices:")?;
+        writeln!(
+            file,
             "{} {} {}",
             polycube.structure.face_ids().len(),
             polycube.structure.edge_ids().len() / 2,
             polycube.structure.vert_ids().len(),
         )?;
+
+        writeln!(file, "/ faces in format of:")?;
+        writeln!(file, "/ <VERT_ID> <VERT_ID> <VERT_ID> <VERT_ID>")?;
         for face_id in polycube.structure.face_ids() {
             let vertices = polycube.structure.vertices(face_id);
             writeln!(
@@ -147,6 +156,11 @@ impl Polycube {
                 vertices.iter().map(|vert_id| format!("{}", vert_ids.id(vert_id).unwrap())).rev().join(" ")
             )?;
         }
+
+        writeln!(file, "/ edges in format of:")?;
+        writeln!(file, "/ <VERT_ID> <VERT_ID> <AXIS_LABEL> <TARGET_LENGTH>")?;
+        let mut edge_strings = vec![];
+        let mut edge_lengths = vec![];
         for edge_id in polycube.structure.edge_ids() {
             let verts = polycube.structure.vertices(edge_id);
             let direction_vector = polycube.structure.vector(edge_id).normalize();
@@ -159,7 +173,21 @@ impl Polycube {
                 PrincipalDirection::Y => "Y",
                 PrincipalDirection::Z => "Z",
             };
-            writeln!(file, "{} {} {label}", vert_ids.id(&verts[0]).unwrap(), vert_ids.id(&verts[1]).unwrap())?;
+            edge_strings.push(format!("{} {} {label}", vert_ids.id(&verts[0]).unwrap(), vert_ids.id(&verts[1]).unwrap()));
+
+            let path = layout.edge_to_path.get(&edge_id).unwrap();
+            let length_of_path = path.windows(2).map(|w| layout.granulated_mesh.distance(w[0], w[1])).sum::<f64>();
+            edge_lengths.push(length_of_path);
+        }
+
+        let min_edge_length = edge_lengths.iter().cloned().fold(f64::MAX, f64::min);
+        let edge_lengths_int = edge_lengths
+            .into_iter()
+            .map(|length: f64| (length / min_edge_length).ceil() as u32)
+            .collect::<Vec<_>>();
+
+        for i in 0..edge_strings.len() {
+            writeln!(file, "{} {}", edge_strings[i], edge_lengths_int[i])?;
         }
 
         Ok(())

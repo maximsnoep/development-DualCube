@@ -123,6 +123,7 @@ impl<M: Tag> HasFaces<EDGE, M> for Mesh<M> {
     }
 }
 
+// This is incorrect ;)
 impl<M: Tag> HasNeighbors<EDGE, M> for Mesh<M> {
     fn neighbors(&self, id: EdgeKey<M>) -> Vec<EdgeKey<M>> {
         let mut nexts = vec![];
@@ -147,6 +148,20 @@ impl<M: Tag> HasNeighbors<EDGE, M> for Mesh<M> {
                 .collect();
         }
         neighbors.retain(|&n| n != id);
+        neighbors
+    }
+}
+
+// More correct neighbors:
+impl<M: Tag> Mesh<M> {
+    pub fn neighbors2(&self, id: EdgeKey<M>) -> HashSet<EdgeKey<M>> {
+        let mut neighbors = HashSet::new();
+
+        let es1 = self.edges(self.vertices(id)[0]).into_iter().flat_map(|e| [e, self.twin(e)]);
+        let es2 = self.edges(self.vertices(id)[1]).into_iter().flat_map(|e| [e, self.twin(e)]);
+        neighbors.extend(es1);
+        neighbors.extend(es2);
+        neighbors.retain(|&e| e != id);
         neighbors
     }
 }

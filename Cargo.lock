@@ -538,7 +538,9 @@ dependencies = [
 
 [[package]]
 name = "bevy-axes-gizmo"
-version = "0.1.0"
+version = "0.1.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "237bf31a75042766b0dc700380840af6d8c0995e651a79a51c6cba096c9716e5"
 dependencies = [
  "bevy",
 ]

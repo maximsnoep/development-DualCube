@@ -7,6 +7,7 @@ use bevy::render::camera::ScalingMode;
 use bevy::render::camera::Viewport;
 use bevy::render::render_resource::{Extent3d, TextureDescriptor, TextureDimension, TextureFormat, TextureUsages};
 use bevy_axes_gizmo::AxesGizmoSyncCamera;
+use core::f32;
 use dualcube::prelude::*;
 use enum_iterator::{all, Sequence};
 use itertools::Itertools;
@@ -878,6 +879,26 @@ pub fn refresh(solution: &Solution) -> RenderObjectStore {
                     }
                 }
 
+                let features = dualcube::feature::feature_extraction(input, std::f64::consts::FRAC_PI_3, 1);
+                let mut gizmos_features = GizmoAsset::new();
+                let cs = [
+                    colors::to_bevy(colors::from_direction(PrincipalDirection::X, None, None)),
+                    colors::to_bevy(colors::from_direction(PrincipalDirection::Y, None, None)),
+                    colors::to_bevy(colors::from_direction(PrincipalDirection::Z, None, None)),
+                ];
+                for i in 0..3 {
+                    let color = cs[i];
+                    let feature_edges = &features[i];
+                    for &edge_id in feature_edges {
+                        let endpoints = input.vertices(edge_id);
+                        let u = input.position(endpoints[0]);
+                        let v = input.position(endpoints[1]);
+                        let u_transformed = world_to_view(u, translation, scale);
+                        let v_transformed = world_to_view(v, translation, scale);
+                        gizmos_features.line(u_transformed, v_transformed, color);
+                    }
+                }
+
                 render_object_store.add_object(
                     object,
                     RenderObject::default()
@@ -896,6 +917,7 @@ pub fn refresh(solution: &Solution) -> RenderObjectStore {
                         .gizmo(gizmos_flat_paths, 2., -0.00011, "flat paths")
                         .mesh(input, &color_map_flag, "flag")
                         .gizmo(gizmos_flag_paths, 2., -1e-4, "flag paths")
+                        .gizmo(gizmos_features, 5., -0.00012, "features")
                         .to_owned(),
                 );
             }

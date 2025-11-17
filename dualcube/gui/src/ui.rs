@@ -252,6 +252,8 @@ pub fn setup(mut ui: bevy_egui::EguiContexts) {
             (TextStyle::Small, FontId::new(10.0, Proportional)),
         ]
         .into();
+
+        style.interaction.selectable_labels = false;
     });
 }
 
@@ -259,12 +261,6 @@ fn sep(ui: &mut Ui) {
     ui.add_space(5.);
     ui.separator();
     ui.add_space(5.);
-}
-
-fn sep2(ui: &mut Ui) {
-    let mut job = text::LayoutJob::default();
-    job.append("  ", 0.0, text_format(18.0, Color32::DARK_GRAY));
-    ui.label(job);
 }
 
 fn space(ui: &mut Ui) {
