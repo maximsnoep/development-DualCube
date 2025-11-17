@@ -129,7 +129,7 @@ async fn run_job(job: Job) -> Option<JobResult> {
                 edges: candidate_loop,
                 direction,
             });
-            if candidate_solution.loops.len() >= 3 {
+            if candidate_solution.loops.len() >= 14 {
                 if let Err(err) = candidate_solution.construct_dual_and_polycube() {
                     warn!("Failed to reconstruct solution: {err:?}");
                     return Some(JobResult::AddedLoop((anchors, direction, None)));

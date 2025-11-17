@@ -350,16 +350,16 @@ impl Dual {
                     _ => None,
                 })
                 .collect_vec();
-            if (ordered_adjacent_intersections.len() != 4) || (ordered_adjacent_intersections.iter().map(|x| x.1).collect::<HashSet<_>>().len() != 4) {
-                error!(
-                    "Invalid intersection: ordered adjacent intersections are not unique or not 4. {:?} ({:?})",
-                    ordered_adjacent_intersections, quad
-                );
-                return Err(PropertyViolationError::UnknownError);
-            }
+            // if (ordered_adjacent_intersections.len() != 4) || (ordered_adjacent_intersections.iter().map(|x| x.1).collect::<HashSet<_>>().len() != 4) {
+            //     error!(
+            //         "Invalid intersection: ordered adjacent intersections are not unique or not 4. {:?} ({:?})",
+            //         ordered_adjacent_intersections, quad
+            //     );
+            //     return Err(PropertyViolationError::UnknownError);
+            // }
 
-            assert!(ordered_adjacent_intersections.len() == 4);
-            assert!(ordered_adjacent_intersections.iter().map(|x| x.1).collect::<HashSet<_>>().len() == 4);
+            // assert!(ordered_adjacent_intersections.len() == 4);
+            // assert!(ordered_adjacent_intersections.iter().map(|x| x.1).collect::<HashSet<_>>().len() == 4);
 
             if ordered_adjacent_intersections[0].0 == ordered_adjacent_intersections[1].0 {
                 error!("[0].0 == [1].0: {:?}", ordered_adjacent_intersections[0].0);

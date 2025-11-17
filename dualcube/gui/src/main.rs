@@ -14,7 +14,6 @@ use bevy::time::common_conditions::on_timer;
 use bevy::window::WindowMode;
 use bevy::winit::WinitWindows;
 use bevy::{reflect::TypePath, render::render_resource::ShaderRef};
-use bevy_axes_gizmo::*;
 use bevy_egui::EguiPlugin;
 use dualcube::prelude::*;
 use dualcube::solutions::Solution;
@@ -304,7 +303,8 @@ fn main() {
                 colors::to_bevy(colors::from_direction(PrincipalDirection::Y, Some(Perspective::Primal), None)),
                 colors::to_bevy(colors::from_direction(PrincipalDirection::Z, Some(Perspective::Primal), None)),
             ],
-            ..Default::default()
+            width: 5.,
+            ..default()
         })
         // Setups
         .add_systems(Startup, ui::setup)
