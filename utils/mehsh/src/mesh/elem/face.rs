@@ -17,7 +17,7 @@ impl<M: Tag> Mesh<M> {
             .into_iter()
             .filter(|&edge_id| self.root(edge_id) == vert_id || self.toor(edge_id) == vert_id)
             .collect_tuple()
-            .map(|(a, b)| [a, b])
+            .map(|(a, b)| if self.next(a) == b { [a, b] } else { [b, a] })
     }
 
     // Returns the edge between the two faces. Returns None if the faces do not share an edge.

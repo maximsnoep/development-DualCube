@@ -8,7 +8,7 @@ impl Export for Dotgraph {
     fn export(solution: &dualcube::prelude::Solution, path: &std::path::Path) -> Result<(), Box<dyn std::error::Error>> {
         let path_obj = path.with_extension("graph");
 
-        if let (Ok(dual), Ok(layout)) = (&solution.dual, &solution.layout) {
+        if let (Ok(dual), Some(layout)) = (&solution.dual, &solution.layout) {
             Polycube::to_dotgraph(dual, layout, &path_obj)?;
             return Ok(());
         }

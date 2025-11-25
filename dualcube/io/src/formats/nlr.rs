@@ -24,7 +24,7 @@ impl Export for Nlr {
         let path_ypatches = path.with_extension("ypatches.seg");
         let path_zpatches = path.with_extension("zpatches.seg");
 
-        if let (Ok(dual), Ok(layout), Some(polycube), Some(quad)) = (&solution.dual, &solution.layout, &solution.polycube, &solution.quad) {
+        if let (Ok(dual), Some(layout), Some(polycube), Some(quad)) = (&solution.dual, &solution.layout, &solution.polycube, &solution.quad) {
             let signature = " -- automatically generated via DualCube (Maxim Snoep)";
 
             // Minimum dimension of smallest edge in polycube (cartesian representation)

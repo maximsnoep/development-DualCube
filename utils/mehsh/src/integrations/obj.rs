@@ -1,4 +1,5 @@
 use crate::prelude::*;
+use crate::utils::ids::IdMap;
 use itertools::Itertools;
 use std::io::Write;
 use std::{
@@ -26,7 +27,7 @@ where
         }
     }
 
-    pub fn to_obj(&self, path: &PathBuf) -> Result<(), std::io::Error> {
+    pub fn to_obj(&self, path: &PathBuf) -> Result<IdMap<VERT, M>, std::io::Error> {
         let mut file = std::fs::File::create(path)?;
 
         let mut vert_ids = ids::IdMap::<VERT, M>::new();
@@ -81,7 +82,7 @@ where
                 .join("\n")
         )?;
 
-        Ok(())
+        Ok(vert_ids)
     }
 
     fn obj_to_elements(reader: impl BufRead) -> Result<(Vec<Vector3D>, Vec<Vec<usize>>), obj::ObjError> {

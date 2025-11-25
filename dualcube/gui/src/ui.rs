@@ -95,8 +95,10 @@ impl egui_dock::TabViewer for TabViewer {
 
     fn context_menu(&mut self, ui: &mut Ui, tab: &mut Self::Tab, _surface: egui_dock::SurfaceIndex, _node: NodeIndex) {
         if let Some(local_copy) = self.render_settings.get_mut(tab) {
-            for (label, setting) in local_copy.settings.iter_mut() {
-                ui.checkbox(&mut setting.visible, label.to_owned());
+            for label in &local_copy.labels {
+                if let Some(setting) = local_copy.settings.get_mut(label) {
+                    ui.checkbox(&mut setting.visible, label.to_owned());
+                }
             }
         } else {
             ui.label("o_O");
@@ -288,7 +290,7 @@ fn header(
                     space(ui);
                     if sleek_button(ui, "Load") {
                         if let Some(path) = rfd::FileDialog::new()
-                            .add_filter("triangulated geometry", &["obj", "stl", "save", "flag", "dcube"])
+                            .add_filter("triangulated geometry", &["obj", "stl", "dcube", "dsol"])
                             .pick_file()
                         {
                             jobs.write(JobRequest::Run(Box::new(Job::Import {
@@ -470,19 +472,19 @@ fn header(
                             ui.label("]");
 
                             ui.label("EMBD[");
-                            if sol.layout.is_ok() {
+                            if sol.layout.is_some() {
                                 ui.label(colored_text("Ok", BLUE));
                             } else {
-                                ui.label(colored_text(&format!("{:?}", sol.layout.as_ref().err()), RED));
+                                ui.label(colored_text("Not found", RED));
                             }
 
                             ui.label("]");
 
-                            if let Some(alignment) = sol.alignment {
-                                ui.label("ALIGN[");
-                                ui.label(format!("{alignment:.3}"));
-                                ui.label("]");
-                            }
+                            // if let Some(alignment) = sol.alignment {
+                            //     ui.label("ALIGN[");
+                            //     ui.label(format!("{alignment:.3}"));
+                            //     ui.label("]");
+                            // }
                         }
                     }
 
@@ -834,16 +836,15 @@ pub fn update(
                                     }
                                 });
 
-                                label(
-                                    ui,
-                                    &format!(
-                                        "({:.2}, {:.2})",
-                                        solution.current_solution.alignment.unwrap_or(0.0),
-                                        solution.current_solution.orthogonality.unwrap_or(0.0)
-                                    ),
-                                    12.,
-                                    Color32::GRAY,
-                                );
+                                if let Some(layout) = &solution.current_solution.layout {
+                                    if let (Some(alignment), Some(orthogonality)) = (layout.alignment, layout.orthogonality) {
+                                        label(ui, &format!("({:.3}, {:.3})", alignment, orthogonality), text_size, Color32::GRAY);
+                                    } else {
+                                        label(ui, "(Quality missing(?))", text_size, Color32::GRAY);
+                                    }
+                                } else {
+                                    label(ui, "(None)", text_size, Color32::GRAY);
+                                }
                             }
                         }
 
@@ -860,10 +861,10 @@ pub fn update(
                         // POLYCUBE
                         // ****************
                         match (&solution.current_solution.layout, stopped) {
-                            (Err(_), _) | (_, true) => {
+                            (None, _) | (_, true) => {
                                 label(ui, "Polycube", text_size, Color32::GRAY);
                             }
-                            (Ok(_), _) => {
+                            (Some(_), _) => {
                                 menu_button(ui, "Polycube", |ui| {
                                     ui.checkbox(&mut conf.unit, "unit");
                                     if sleek_button(ui, "(re)compute") {

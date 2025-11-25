@@ -1,17 +1,18 @@
 use crate::prelude::*;
 use rand::seq::IteratorRandom;
+use serde::{Deserialize, Serialize};
 use std::fmt::Debug;
 use thiserror::Error;
 
-#[derive(Default, Clone, Copy, Debug, PartialEq, Eq, Hash)]
+#[derive(Default, Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub struct VERT;
 pub type VertKey<M> = ids::Key<VERT, M>;
 
-#[derive(Default, Clone, Copy, Debug, PartialEq, Eq, Hash)]
+#[derive(Default, Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub struct FACE;
 pub type FaceKey<M> = ids::Key<FACE, M>;
 
-#[derive(Default, Clone, Copy, Debug, PartialEq, Eq, Hash)]
+#[derive(Default, Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub struct EDGE;
 pub type EdgeKey<M> = ids::Key<EDGE, M>;
 
@@ -54,7 +55,7 @@ macro_rules! define_tag {
 // 3) orientable: There exists a consistent normal for each face.
 // These requirements will be true per construction.
 // We use a doubly connected edge list (DCEL) data structure, also known as the half-edge data structure (HEDS).
-#[derive(Default, Clone, Debug)]
+#[derive(Default, Clone, Debug, Serialize, Deserialize)]
 pub struct Mesh<M: Tag> {
     pub verts: ids::IdxMap<VERT, M, Vector3D>,
     pub edges: ids::IdxMap<EDGE, M, u8>,

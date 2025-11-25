@@ -4,13 +4,15 @@ use crate::prelude::*;
 use bimap::BiHashMap;
 use itertools::Itertools;
 use mehsh::prelude::*;
+use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::io::Write;
 use std::path::PathBuf;
 
-mehsh::prelude::define_tag!(POLYCUBE);
+#[derive(Default, Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub struct POLYCUBE;
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct Polycube {
     pub structure: Mesh<POLYCUBE>,
 
@@ -119,6 +121,11 @@ impl Polycube {
             let [x, y, z] = vert_to_coord[&vert_id];
             self.structure.set_position(vert_id, Vector3D::new(x, y, z));
         }
+    }
+
+    // Get the signed direction of an edge in the polycube (+X, -X, +Y, -Y, +Z, or -Z)
+    pub fn get_direction_of_edge(&self, a: VertKey<POLYCUBE>, b: VertKey<POLYCUBE>) -> (PrincipalDirection, Orientation) {
+        to_principal_direction(self.structure.vector(self.structure.edge_between_verts(a, b).unwrap().0))
     }
 
     pub fn to_dotgraph(dual: &Dual, layout: &Layout, path: &PathBuf) -> Result<(), std::io::Error> {

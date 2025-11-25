@@ -3,11 +3,12 @@ use core::hash::Hash;
 use itertools::Itertools;
 use petgraph::algo::tarjan_scc;
 use petgraph::{Directed, Graph, graph::NodeIndex};
+use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 
 // Graph struct, that builds an underlying Petgraph with helper functions for various graph algorithms, such as, shortest path, shortest cycle, connected components, etc.
 // Also contains functionality to transform a graph into a modified graph. (e.g., filtering edges or vertices)
-#[derive(Default, Clone, Debug)]
+#[derive(Default, Clone, Debug, Serialize, Deserialize)]
 pub struct FixedGraph<V: Eq + PartialEq + Hash, E> {
     petgraph: Graph<V, E, Directed>,
     node_to_index: HashMap<V, NodeIndex>,

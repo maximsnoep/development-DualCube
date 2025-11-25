@@ -1,3 +1,4 @@
+use crate::layout::{self, LayoutError};
 use crate::polycube::POLYCUBE;
 use crate::prelude::*;
 use crate::{
@@ -12,8 +13,10 @@ use mehsh::prelude::*;
 use ordered_float::OrderedFloat;
 use rand::{rng, seq::IteratorRandom};
 use rayon::iter::{IntoParallelIterator, ParallelIterator};
+use serde::{Deserialize, Serialize};
 use slotmap::SlotMap;
 use std::{collections::HashSet, hash::Hash, sync::Arc};
+use thiserror::Error;
 
 slotmap::new_key_type! {
     pub struct LoopID;
@@ -26,12 +29,26 @@ pub struct NodeCopy {
 }
 
 // A loop forms the basis of the dual structure.
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct Loop {
     // A loop is defined by a sequence of half-edges.
     pub edges: Vec<EdgeID>,
     // the direction or labeling associated with the loop
     pub direction: PrincipalDirection,
+}
+
+#[derive(Error, Debug, Clone, Serialize, Deserialize)]
+pub enum SolutionError {
+    #[error("Something is wrong with the DUAL representation: {0}")]
+    DualError(#[from] PropertyViolationError),
+    #[error("Something is wrong with the PRIMAL representation: {0}")]
+    PrimalError(#[from] LayoutError),
+    #[error("The DUAL representation is not initialized and can therefore not be modified.")]
+    NoDual,
+    #[error("The PRIMAL representation is not initialized and can therefore not be modified.")]
+    NoPrimal,
+    #[error("The POLYCUBE representation is not initialized and can therefore not be modified.")]
+    NoPolycube,
 }
 
 #[must_use]
@@ -82,7 +99,7 @@ impl Loop {
     }
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Solution {
     pub mesh_ref: Arc<Mesh<INPUT>>,
     pub loops: SlotMap<LoopID, Loop>,
@@ -91,14 +108,8 @@ pub struct Solution {
 
     pub dual: Result<Dual, PropertyViolationError>,
     pub polycube: Option<Polycube>,
-    pub layout: Result<Layout, PropertyViolationError>,
+    pub layout: Option<Layout>,
     pub quad: Option<Quad>,
-
-    pub alignment_per_triangle: ids::SecMap<FACE, INPUT, f64>,
-    pub alignment: Option<f64>,
-
-    pub orthogonality_per_vert: ids::SecMap<VERT, POLYCUBE, f64>,
-    pub orthogonality: Option<f64>,
 
     pub external_flag: Option<ids::SecMap<FACE, INPUT, usize>>,
 }
@@ -107,11 +118,7 @@ impl Solution {
     pub fn clear(&mut self) {
         self.dual = Err(PropertyViolationError::default());
         self.polycube = None;
-        self.layout = Err(PropertyViolationError::default());
-        self.alignment_per_triangle.clear();
-        self.alignment = None;
-        self.orthogonality_per_vert.clear();
-        self.orthogonality = None;
+        self.layout = None;
     }
 
     // ***
@@ -126,12 +133,8 @@ impl Solution {
             occupied: ids::SecMap::new(),
             dual: Err(PropertyViolationError::default()),
             polycube: None,
-            layout: Err(PropertyViolationError::default()),
+            layout: None,
             quad: None,
-            alignment_per_triangle: ids::SecMap::new(),
-            alignment: None,
-            orthogonality_per_vert: ids::SecMap::new(),
-            orthogonality: None,
             external_flag: None,
             last_loop: None,
         }
@@ -253,7 +256,7 @@ impl Solution {
 
     // Construct dual and polycube
     pub fn construct_dual_and_polycube(&mut self) -> Result<(), PropertyViolationError> {
-        self.layout = Err(PropertyViolationError::UnknownError);
+        self.layout = None;
         self.polycube = None;
 
         self.dual = Dual::from(self.mesh_ref.clone(), &self.loops);
@@ -276,44 +279,49 @@ impl Solution {
     }
 
     // Place all corners
-    pub fn place_corners(&mut self) -> Result<(), PropertyViolationError> {
-        self.layout = Ok(Layout::new(self.dual.as_ref().unwrap(), self.polycube.as_ref().unwrap()));
-        if let Ok(layout) = self.layout.as_mut() {
-            layout.place_corners();
-            Ok(())
-        } else {
-            Err(PropertyViolationError::UnknownError)
+    pub fn place_corners(&mut self) -> Result<(), SolutionError> {
+        if self.dual.is_err() {
+            return Err(SolutionError::NoDual);
         }
+        if self.polycube.is_none() {
+            return Err(SolutionError::NoPolycube);
+        }
+
+        let mut layout = Layout::new(self.dual.as_ref().unwrap(), self.polycube.as_ref().unwrap());
+        layout.place_all_corners();
+        self.layout = Some(layout);
+        Ok(())
     }
 
     // Move a corner
-    pub fn move_corner(&mut self, corner: VertKey<POLYCUBE>, new_vertex: VertID) -> Result<(), PropertyViolationError> {
-        if let Ok(mut layout) = self.layout.clone() {
-            if layout.move_corner(corner, new_vertex).is_ok() {
-                self.layout = Ok(layout);
-                self.compute_quality();
-            }
-            Ok(())
-        } else {
-            Err(PropertyViolationError::UnknownError)
+    pub fn move_corner_to(&mut self, corner: VertKey<POLYCUBE>, new_vertex: VertID) -> Result<(), SolutionError> {
+        if self.layout.is_none() {
+            return Err(SolutionError::NoPrimal);
         }
+
+        let mut layout = self.layout.clone().unwrap();
+        layout.move_corner(corner, new_vertex)?;
+        self.layout = Some(layout);
+
+        Ok(())
     }
 
     // Place all paths
-    pub fn place_paths(&mut self) -> Result<(), PropertyViolationError> {
-        if let Ok(layout) = self.layout.as_mut() {
-            layout.place_paths()?;
-            layout.verify_paths();
-            layout.assign_patches()?;
-            self.compute_quality();
-            Ok(())
-        } else {
-            Err(PropertyViolationError::UnknownError)
+    pub fn place_paths(&mut self) -> Result<(), SolutionError> {
+        if self.layout.is_none() {
+            return Err(SolutionError::NoPrimal);
         }
+        let layout = self.layout.as_mut().unwrap();
+        layout.place_all_paths()?;
+        layout.assign_all_patches()?;
+        Ok(())
     }
 
     // Optimize corners
-    pub fn optimize_corners(&mut self) -> Result<(), PropertyViolationError> {
+    pub fn optimize_corners(&mut self) -> Result<(), SolutionError> {
+        if self.dual.is_err() {
+            return Err(SolutionError::NoDual);
+        }
         let dual = self.layout.as_ref().unwrap().dual_ref.clone();
         let polycube = self.layout.as_ref().unwrap().polycube_ref.clone();
 
@@ -328,8 +336,7 @@ impl Solution {
         let mut solution_backup = self.clone();
 
         let mut solution_clone = self.clone();
-        solution_clone.compute_quality();
-        let mut current_quality = self.get_quality().unwrap();
+        let mut current_quality = solution_clone.get_quality().unwrap();
 
         // Create priority queue with "quality" around a vertex as key;
         // let mut priority_queue = std::collections::BinaryHeap::new();
@@ -393,57 +400,51 @@ impl Solution {
         //     }
         // }
 
-        for _ in 0..10 {
+        for _ in 0..1 {
             for &polycube_vertex in &polycube_vertices {
                 // if self.polycube.as_ref().unwrap().structure.edges(vert).len() == 4 {
                 //     continue;
                 // }
                 // check the "quality" around this vert, if its already good, dont improve it
-                let mesh_vertex = solution_clone
-                    .layout
-                    .as_mut()
-                    .unwrap()
-                    .vert_to_corner
-                    .get_by_left(&polycube_vertex)
-                    .unwrap()
-                    .to_owned();
-                let faces_of_vert = solution_clone.layout.as_mut().unwrap().granulated_mesh.faces(mesh_vertex);
+                let layout = solution_clone.layout.as_mut().unwrap();
+                // let mesh_vertex = layout.vert_to_corner.get_by_left(&polycube_vertex).unwrap().to_owned();
+                // let faces_of_vert = layout.granulated_mesh.faces(mesh_vertex);
 
-                let worst_quality = faces_of_vert
-                    .iter()
-                    .map(|&f| OrderedFloat(solution_clone.alignment_per_triangle.get(&f).unwrap().to_owned()))
-                    .min()
-                    .unwrap();
+                // let worst_quality = faces_of_vert
+                //     .iter()
+                //     .map(|&f| OrderedFloat(layout.alignment_per_triangle.get(&f).unwrap().to_owned()))
+                //     .min()
+                //     .unwrap();
 
-                if worst_quality > OrderedFloat(0.5) {
-                    continue;
-                }
+                // if worst_quality > OrderedFloat(0.5) {
+                //     continue;
+                // }
 
-                if solution_clone.layout.as_mut().unwrap().random_improvement_corner(polycube_vertex).is_err() {
+                if layout.laplacian_corner_shoot(polycube_vertex, &vert_lookup).is_err() {
                     solution_clone = solution_backup.clone();
                     continue;
                 }
 
-                let new_worst_quality = faces_of_vert
-                    .iter()
-                    .map(|&f| OrderedFloat(solution_clone.alignment_per_triangle.get(&f).unwrap().to_owned()))
-                    .min()
-                    .unwrap();
+                // let new_worst_quality = faces_of_vert
+                //     .iter()
+                //     .map(|&f| OrderedFloat(layout.alignment_per_triangle.get(&f).unwrap().to_owned()))
+                //     .min()
+                //     .unwrap();
 
-                if new_worst_quality < worst_quality {
-                    solution_clone = solution_backup.clone();
-                    continue;
-                }
+                // if new_worst_quality < worst_quality {
+                //     solution_clone = solution_backup.clone();
+                //     continue;
+                // }
 
-                solution_clone.compute_quality();
+                // solution_clone.get_quality();
                 let quality = solution_clone.get_quality().unwrap();
-                if quality >= current_quality {
-                    solution_backup = solution_clone.clone();
-                    current_quality = quality;
-                    println!("New quality: {:?}", current_quality);
-                } else {
-                    solution_clone = solution_backup.clone();
-                }
+                // if quality >= current_quality {
+                solution_backup = solution_clone.clone();
+                current_quality = quality;
+                println!("New quality: {:?}", current_quality);
+                // } else {
+                //     solution_clone = solution_backup.clone();
+                // }
             }
         }
 
@@ -499,6 +500,19 @@ impl Solution {
     ///
     ///
     ///
+    ///
+
+    pub fn recompute_occupied(&mut self) {
+        self.occupied.clear();
+        for (loop_id, loop_) in &self.loops {
+            for &e in &loop_.edges {
+                if !self.occupied.contains_key(&e) {
+                    self.occupied.insert(&e, vec![]);
+                }
+                self.occupied.get_mut(&e).unwrap().push(loop_id);
+            }
+        }
+    }
 
     pub fn del_loop(&mut self, loop_id: LoopID) {
         for &e in &self.loops[loop_id].edges.clone() {
@@ -893,7 +907,7 @@ impl Solution {
         Dual::from(self.mesh_ref.clone(), &self.loops).is_ok()
     }
 
-    pub fn reconstruct_solution(&mut self, unit: bool, omega: usize) -> Result<(), PropertyViolationError> {
+    pub fn reconstruct_solution(&mut self, unit: bool, omega: usize) -> Result<(), SolutionError> {
         self.clear();
 
         if self.loops.len() < 3 {
@@ -902,35 +916,32 @@ impl Solution {
 
         log::info!("Reconstructing solution ({} loops) with unit: {}, omega: {}.", self.loops.len(), unit, omega);
 
-        self.dual = Dual::from(self.mesh_ref.clone(), &self.loops);
-        if let Err(e) = &self.dual {
-            return Err(e.clone());
-        }
-
-        self.polycube = Some(Polycube::from_dual(self.dual.as_ref().unwrap()));
+        let dual = Dual::from(self.mesh_ref.clone(), &self.loops)?;
+        let polycube = Polycube::from_dual(&dual);
 
         // check all faces of the polycube have a normal
-        for face in self.polycube.as_ref().unwrap().structure.face_ids() {
-            let normal = self.polycube.as_ref().unwrap().structure.normal(face);
+        for face in polycube.structure.face_ids() {
+            let normal = polycube.structure.normal(face);
             if normal.x.is_nan() || normal.y.is_nan() || normal.z.is_nan() {
-                return Err(PropertyViolationError::UnknownError);
+                return Err(SolutionError::NoPolycube);
             }
         }
 
-        for _ in 0..10 {
-            self.layout = Layout::embed(self.dual.as_ref().unwrap(), self.polycube.as_ref().unwrap());
-            if self.layout.is_ok() {
-                break;
+        'outer: for _ in 0..10 {
+            let layout = Layout::embed(&dual, &polycube);
+            if let Ok(ok_layout) = layout {
+                self.layout = Some(ok_layout);
+                break 'outer;
             }
         }
 
-        if let Err(e) = &self.layout {
-            return Err(e.clone());
+        if self.layout.is_none() {
+            return Err(SolutionError::NoPrimal);
         }
+        self.polycube = Some(polycube);
+        self.dual = Ok(dual);
 
         self.resize_polycube(unit);
-
-        self.compute_quality();
 
         log::info!("The constructed solution has quality: {:?}", self.get_quality());
 
@@ -939,81 +950,36 @@ impl Solution {
         Ok(())
     }
 
-    pub fn resize_polycube(&mut self, unit: bool) {
-        if let (Ok(dual), Some(polycube), Ok(layout)) = (&self.dual, &mut self.polycube, &mut self.layout) {
-            if unit {
-                polycube.resize(dual, None);
-            } else {
-                polycube.resize(dual, Some(layout));
-            }
+    pub fn resize_polycube(&mut self, unit: bool) -> Result<(), SolutionError> {
+        if self.dual.is_err() {
+            return Err(SolutionError::NoDual);
         }
-    }
-
-    pub fn compute_quality(&mut self) {
-        self.alignment_per_triangle.clear();
-        self.alignment = None;
-
-        if let (Ok(layout), Some(polycube)) = (&self.layout, &self.polycube) {
-            let total_area: f64 = layout.granulated_mesh.face_ids().into_iter().map(|f| layout.granulated_mesh.size(f)).sum();
-            let mut total_score = 0.0;
-
-            for (&patch, patch_faces) in &layout.face_to_patch {
-                let mapped_normal = polycube.structure.normal(patch).normalize();
-                for &triangle_id in &patch_faces.faces {
-                    let actual_normal = layout.granulated_mesh.normal(triangle_id);
-                    let score = actual_normal.dot(&mapped_normal);
-                    self.alignment_per_triangle.insert(&triangle_id, score);
-                    total_score += score * layout.granulated_mesh.size(triangle_id) / total_area;
-                }
-            }
-            self.alignment = Some(total_score);
+        let dual = self.dual.as_ref().unwrap();
+        if self.polycube.is_none() {
+            return Err(SolutionError::NoPolycube);
         }
+        let polycube = self.polycube.as_mut().unwrap();
 
-        self.orthogonality_per_vert.clear();
-        self.orthogonality = None;
-        if let (Ok(layout), Some(polycube)) = (&self.layout, &self.polycube) {
-            let mut total_score = vec![];
-
-            let vertices = polycube.structure.vert_ids();
-            for &v in &vertices {
-                let mut vert_score = vec![];
-                let edges = polycube.structure.edges(v);
-                for (edge1, edge2) in edges.iter().tuple_windows() {
-                    let u = polycube.structure.vertices(*edge1)[1];
-                    let w = polycube.structure.vertices(*edge2)[1];
-                    assert!(v == polycube.structure.vertices(*edge1)[0]);
-                    assert!(v == polycube.structure.vertices(*edge2)[0]);
-
-                    let u_in_mesh = layout.vert_to_corner.get_by_left(&u).unwrap().to_owned();
-                    let v_in_mesh = layout.vert_to_corner.get_by_left(&v).unwrap().to_owned();
-                    let w_in_mesh = layout.vert_to_corner.get_by_left(&w).unwrap().to_owned();
-
-                    let u_pos = layout.granulated_mesh.position(u_in_mesh);
-                    let v_pos = layout.granulated_mesh.position(v_in_mesh);
-                    let w_pos = layout.granulated_mesh.position(w_in_mesh);
-
-                    // vector1 is v to u
-                    let vector1 = u_pos - v_pos;
-                    // vector2 is v to w
-                    let vector2 = w_pos - v_pos;
-
-                    // angle
-                    let angle = vector1.angle(&vector2);
-                    let score = (90. - (angle.to_degrees() - 90.).abs()) / 90.;
-                    vert_score.push(score);
-                }
-                let avg_score = vert_score.iter().cloned().sum::<f64>() / vert_score.len() as f64;
-                self.orthogonality_per_vert.insert(&v, avg_score);
-                total_score.push(avg_score);
+        if unit {
+            polycube.resize(dual, None);
+            return Ok(());
+        } else {
+            if self.layout.is_none() {
+                return Err(SolutionError::NoPrimal);
             }
-
-            self.orthogonality = Some(total_score.iter().cloned().sum::<f64>() / total_score.len() as f64);
+            let layout = self.layout.as_ref().unwrap();
+            polycube.resize(dual, Some(layout));
+            return Ok(());
         }
     }
 
     pub fn get_quality(&self) -> Option<f64> {
+        if self.layout.is_none() {
+            return None;
+        }
+        let layout = self.layout.as_ref().unwrap();
         let beta = 0.001;
-        if let (Some(alignment), Some(orthogonality)) = (self.alignment, self.orthogonality) {
+        if let (Some(alignment), Some(orthogonality)) = (layout.alignment, layout.orthogonality) {
             Some(alignment + orthogonality - beta * self.loops.len() as f64)
         } else {
             None

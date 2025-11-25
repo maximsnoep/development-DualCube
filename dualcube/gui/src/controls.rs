@@ -37,7 +37,7 @@ pub fn segmentation_modification_system(
 
     // Look for what loop region I am in
     // Look for the vertex corresponding to the loop region
-    let modification = if let (Ok(dual), Ok(layout), Some(polycube)) = (
+    let modification = if let (Ok(dual), Some(layout), Some(polycube)) = (
         &solution.current_solution.dual,
         &solution.current_solution.layout,
         &solution.current_solution.polycube,
@@ -71,7 +71,7 @@ pub fn segmentation_modification_system(
         None
     };
 
-    if let (Some((corner_poly, corner_seg)), Ok(layout)) = (modification, &mut solution.current_solution.layout) {
+    if let (Some((corner_poly, corner_seg)), Some(layout)) = (modification, &mut solution.current_solution.layout) {
         // CONTROLS
         //
         // Action1:  Move segmentation corner (LMB)
