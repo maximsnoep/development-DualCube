@@ -1,4 +1,4 @@
-use crate::layout::{self, LayoutError};
+use crate::layout::LayoutError;
 use crate::polycube::POLYCUBE;
 use crate::prelude::*;
 use crate::{
