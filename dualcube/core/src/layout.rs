@@ -688,8 +688,7 @@ impl Layout {
         // Get all blocked edges (ALL PATHS)
         let blocked = self
             .edge_to_path
-            .values()
-            .flat_map(|path| path.windows(2))
+            .values() 
             .map(|verts| self.granulated_mesh.edge_between_verts(verts[0], verts[1]).unwrap())
             .flat_map(|(a, b)| {
                 vec![

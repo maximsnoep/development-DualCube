@@ -1,4 +1,4 @@
-use crate::Export;
+use crate::{Export, Import};
 use itertools::Itertools;
 use log::info;
 use std::{fs::OpenOptions, io::Write};

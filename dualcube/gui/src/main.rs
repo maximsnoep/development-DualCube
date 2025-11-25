@@ -155,6 +155,11 @@ pub struct InputResource {
     flow_graphs: [grapff::fixed::FixedGraph<EdgeID, f64>; 3],
 }
 
+#[derive(Resource, Default)]
+pub struct VertexMap {
+    pub map: ids::IdMap<VERT, INPUT>,
+}
+
 impl InputResource {
     pub fn new(mesh: Arc<mehsh::prelude::Mesh<INPUT>>) -> Self {
         if mesh.nr_verts() == 0 {
@@ -264,6 +269,7 @@ fn main() {
         .init_resource::<RenderObjectSettingStore>()
         .init_resource::<RenderObjectStore>()
         .init_resource::<CameraHandles>()
+        .init_resource::<VertexMap>()
         .init_gizmo_group::<PerpetualGizmos>()
         .insert_resource(AmbientLight {
             color: bevy::color::Color::WHITE,
