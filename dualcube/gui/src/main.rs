@@ -89,7 +89,7 @@ impl Default for Configuration {
 
             loop_anchors: vec![],
 
-            stop: Phase::Polycube,
+            stop: Phase::None,
 
             raycasted: None,
             selected: None,

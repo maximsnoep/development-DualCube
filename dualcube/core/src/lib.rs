@@ -7,18 +7,20 @@ pub mod solutions;
 
 pub mod prelude {
     use mehsh::prelude::*;
+    use serde::{Deserialize, Serialize};
     use std::fmt::Display;
 
     pub use crate::polycube::Polycube;
     pub use crate::solutions::Solution;
 
-    mehsh::prelude::define_tag!(INPUT);
+    #[derive(Default, Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+    pub struct INPUT;
     pub type VertID = VertKey<INPUT>;
     pub type EdgeID = EdgeKey<INPUT>;
     pub type FaceID = FaceKey<INPUT>;
 
     // Principal directions, used to characterize a polycube (each edge and face is associated with a principal direction)
-    #[derive(Copy, Clone, Default, PartialEq, Eq, Debug, Hash)]
+    #[derive(Copy, Clone, Default, PartialEq, Eq, Debug, Hash, Serialize, Deserialize)]
     pub enum PrincipalDirection {
         #[default]
         X,
@@ -35,14 +37,14 @@ pub mod prelude {
         }
     }
 
-    #[derive(Default, Copy, Clone, Debug, PartialEq, Eq, Hash)]
+    #[derive(Default, Copy, Clone, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
     pub enum Orientation {
         #[default]
         Forwards,
         Backwards,
     }
 
-    #[derive(Copy, Clone, Default, Debug)]
+    #[derive(Copy, Clone, Default, Debug, Serialize, Deserialize)]
     pub enum Perspective {
         Primal,
         #[default]

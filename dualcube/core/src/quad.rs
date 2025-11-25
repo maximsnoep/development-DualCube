@@ -8,6 +8,7 @@ use faer_gmres::gmres;
 use itertools::Itertools;
 use mehsh::prelude::*;
 use rayon::iter::{IntoParallelIterator, ParallelIterator};
+use serde::{Deserialize, Deserializer, Serialize, Serializer};
 use std::collections::{HashMap, HashSet};
 
 mehsh::prelude::define_tag!(QUAD);
@@ -19,6 +20,27 @@ pub struct Quad {
     pub quad_mesh: Mesh<QUAD>,
     pub face_to_verts: HashMap<FaceKey<POLYCUBE>, Vec<Vec<VertKey<QUAD>>>>,
     pub edge_to_verts: HashMap<EdgeKey<POLYCUBE>, Vec<VertKey<QUAD>>>,
+    pub frozen: HashSet<VertKey<QUAD>>,
+}
+
+// serialize Quad to nothing
+impl Serialize for Quad {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: Serializer,
+    {
+        serializer.serialize_unit()
+    }
+}
+
+// deserialize Quad
+impl<'de> Deserialize<'de> for Quad {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        Ok(Quad::default())
+    }
 }
 
 impl Quad {
@@ -45,6 +67,9 @@ impl Quad {
 
         let mut faces = vec![];
         let mut vertex_positions = vec![];
+
+        // set of frozen vertices. Should be vertices that lie on important boundaries or features.
+        let mut frozen = HashSet::new();
 
         // For every patch in the layout (corresponding to a face in the polycube), we map this patch to a unit square
         // 1. Map the boundary of the patch to the boundary of a unit square via arc-length parameterization
@@ -242,10 +267,10 @@ impl Quad {
             let faer_triplets = triplets.into_iter().map(|(i, j, v)| Triplet::new(i, j, v)).collect::<Vec<_>>();
             let a = SparseColMat::<usize, f64>::try_new_from_triplets(n, n, &faer_triplets).unwrap();
             if !interior_verts.is_empty() {
-                if let Err(_) = gmres(a.as_ref(), b_u.as_ref(), x_u.as_mut(), 1000, 1e-8, None) {
+                if gmres(a.as_ref(), b_u.as_ref(), x_u.as_mut(), 1000, 1e-8, None).is_err() {
                     return None;
                 }
-                if let Err(_) = gmres(a.as_ref(), b_v.as_ref(), x_v.as_mut(), 1000, 1e-8, None) {
+                if gmres(a.as_ref(), b_v.as_ref(), x_v.as_mut(), 1000, 1e-8, None).is_err() {
                     return None;
                 }
             }
@@ -466,6 +491,17 @@ impl Quad {
                 edge_to_verts.insert(twin_id, rev_vert_keys);
             }
 
+            // For each vert_id in quad_mesh_polycube, check the surrounding normals. If surrounding normals are all equal, then this vertex is NOT frozen. Else it is frozen (its a boundary vertex)
+            for vert_id in quad_mesh_polycube.vert_ids() {
+                let mut surrounding_normals = HashSet::new();
+                for neighbor in quad_mesh_polycube.neighbors(vert_id) {
+                    surrounding_normals.insert(to_principal_direction(quad_mesh_polycube.normal(neighbor)));
+                }
+                if surrounding_normals.len() > 1 {
+                    frozen.insert(vert_id);
+                }
+            }
+
             // Create the quad mesh
             // First, create copy of quad_mesh_polycube
             let mut quad_mesh = quad_mesh_polycube.clone();
@@ -521,6 +557,7 @@ impl Quad {
                 quad_mesh,
                 face_to_verts,
                 edge_to_verts,
+                frozen,
             })
         } else {
             panic!("Failed to create quad mesh from faces and vertex positions");
@@ -528,9 +565,6 @@ impl Quad {
     }
 
     pub fn smoothing(&mut self, _iterations: usize, reference: &Mesh<INPUT>, _fix_sharp: bool) {
-        let triangle_lookup = reference.bvh();
-        // let vertex_lookup = reference.kdtree();
-
         log::info!("Performing 200 iterations of Laplacian smoothing on the quad mesh.");
 
         for i in 0..200 {
@@ -539,53 +573,18 @@ impl Quad {
                 .quad_mesh
                 .vert_ids()
                 .into_par_iter()
+                .filter(|&vert_id| !self.frozen.contains(&vert_id))
                 .flat_map(|vert_id| {
-                    // If the vertex is a boundary vertex, e.g., it is on a sharp ridge both on the polycube, and on the mesh itself, we skip it
-                    // Grab the faces around the vertex, look for large angles
-                    // let labels = self
-                    //     .quad_mesh_polycube
-                    //     .faces(vert_id)
-                    //     .iter()
-                    //     .map(|&f| self.quad_mesh_polycube.normal(f))
-                    //     .map(to_principal_direction)
-                    //     .collect::<HashSet<_>>();
-
-                    // // Polycube ridge
-                    // if labels.len() >= 2 {
-                    //     // Get the nearest vertex in the input mesh
-                    //     let nearest_vert = vertex_lookup
-                    //         .nearest(&[
-                    //             self.quad_mesh.position(vert_id).x,
-                    //             self.quad_mesh.position(vert_id).y,
-                    //             self.quad_mesh.position(vert_id).z,
-                    //         ])
-                    //         .1;
-
-                    //     // If the vertex is also located on a sharp ridge in the mesh, we should "freeze" it
-                    //     let max_angle = reference
-                    //         .edges(nearest_vert)
-                    //         .iter()
-                    //         .map(|&e| reference.dihedral(e))
-                    //         .max_by(|a, b| a.partial_cmp(b).unwrap())
-                    //         .unwrap_or(0.0);
-                    //     if max_angle > std::f64::consts::FRAC_PI_4 {
-                    //         return None;
-                    //     }
-                    // }
-
                     let mut p_i = self.quad_mesh.position(vert_id);
 
                     let neighbors = self.quad_mesh.neighbors(vert_id);
-                    // if neighbors.is_empty() {
-                    //     return None;
-                    // }
 
                     let sum = neighbors.iter().map(|&n| self.quad_mesh.position(n)).sum::<Vector3D>();
                     let avg = sum / neighbors.len() as f64;
                     let delta_p_i = avg - p_i;
 
                     // inflate factor, > 0
-                    let lambda = 0.33;
+                    let lambda = 0.35;
                     // shrink factor, < 0
                     let mu = -0.34;
 
@@ -596,26 +595,6 @@ impl Quad {
                         // inflate
                         p_i += mu * delta_p_i;
                     }
-
-                    // let avg_pos = neighbors.iter().map(|&n| self.quad_mesh.position(n)).sum::<Vector3D>() / neighbors.len() as f64;
-                    // // vector from current position to average neighbor position:
-                    // let direction = avg_pos - self.quad_mesh.position(vert_id);
-                    // // go in the direction of the average position
-                    // let omega = 0.05;
-                    // let step = direction * omega;
-                    // let new_position = self.quad_mesh.position(vert_id) + step;
-
-                    // // find closest triangle to this position in original mesh
-                    // let nearest_triangle = triangle_lookup.nearest(&[new_position.x, new_position.y, new_position.z]);
-
-                    // compute closest point on this triangle
-                    // let corners = reference.vertices(nearest_triangle);
-                    // let closest_point = mehsh::utils::geom::point_on_triangle(
-                    //     new_position,
-                    //     (reference.position(corners[0]), reference.position(corners[1]), reference.position(corners[2])),
-                    // );
-
-                    // let closest_point = avg_pos;
 
                     Some((vert_id, p_i))
                 })

@@ -4,12 +4,13 @@ use grapff::Grapff;
 use itertools::Itertools;
 use log::{error, info};
 use mehsh::prelude::*;
+use serde::{Deserialize, Serialize};
 use slotmap::SlotMap;
-use std::collections::VecDeque;
 use std::{
     collections::{HashMap, HashSet},
     sync::Arc,
 };
+use thiserror::Error;
 
 // A collection of loops forms a loop structure; a graph, where
 // the vertices correspond to loop intersections,
@@ -23,7 +24,7 @@ pub type LoopIntersectionID = mehsh::prelude::VertKey<LOOPSTRUCTURE>;
 pub type LoopSegmentID = mehsh::prelude::EdgeKey<LOOPSTRUCTURE>;
 pub type LoopRegionID = mehsh::prelude::FaceKey<LOOPSTRUCTURE>;
 
-#[derive(Default, Copy, Clone, Debug)]
+#[derive(Default, Copy, Clone, Debug, Serialize, Deserialize)]
 pub struct LoopSegment {
     // A loop segment has a corresponding loop (id) and an orientation (either following the direction of the loop, or opposite direction of the loop)
     pub loop_id: LoopID,
@@ -31,13 +32,13 @@ pub struct LoopSegment {
     pub orientation: Orientation,
 }
 
-#[derive(Default, Clone, Debug)]
+#[derive(Default, Clone, Debug, Serialize, Deserialize)]
 pub struct LoopRegion {
     // A loop region has a corresponding surface, in this implementation, the surface is defined by a set of mesh vertices
     pub verts: HashSet<VertID>,
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct Zone {
     // A zone is defined by a direction
     pub direction: PrincipalDirection,
@@ -45,7 +46,7 @@ pub struct Zone {
     pub regions: HashSet<LoopRegionID>,
 }
 
-#[derive(Default, Clone, Debug)]
+#[derive(Default, Clone, Debug, Serialize, Deserialize)]
 pub struct LevelGraphs {
     //
     pub zones: SlotMap<ZoneID, Zone>,
@@ -57,12 +58,13 @@ pub struct LevelGraphs {
     pub levels: [Vec<HashSet<ZoneID>>; 3],
 }
 
-mehsh::prelude::define_tag!(LOOPSTRUCTURE);
+#[derive(Default, Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub struct LOOPSTRUCTURE;
 
 pub type LoopStructure = mehsh::prelude::Mesh<LOOPSTRUCTURE>;
 
 // Dual structure (of a polycube)
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Dual {
     pub mesh_ref: Arc<Mesh<INPUT>>,
     // TODO: make this an actual (arc) reference somehow?
@@ -73,22 +75,32 @@ pub struct Dual {
 
     // intersections to edges
     intersection_to_edge: HashMap<LoopIntersectionID, EdgeID>,
-
     loop_segments: HashMap<LoopSegmentID, LoopSegment>,
-
     loop_regions: HashMap<LoopRegionID, LoopRegion>,
 }
 
-#[derive(Default, Debug, Clone)]
+#[derive(Error, Debug, Clone, Serialize, Deserialize)]
 pub enum PropertyViolationError {
-    #[default]
+    #[error("Unknown error")]
     UnknownError,
+    #[error("Face has degree less than three")]
     FaceWithDegreeLessThanThree,
+    #[error("Face has degree more than six")]
     FaceWithDegreeMoreThanSix,
+    #[error("Invalid face boundary")]
     InvalidFaceBoundary,
+    #[error("Cyclic dependency detected")]
     CyclicDependency,
+    #[error("Path is empty")]
     PathEmpty,
+    #[error("Loop has too few intersections")]
     LoopHasTooFewIntersections,
+}
+
+impl Default for PropertyViolationError {
+    fn default() -> Self {
+        PropertyViolationError::UnknownError
+    }
 }
 
 impl Dual {
@@ -350,16 +362,16 @@ impl Dual {
                     _ => None,
                 })
                 .collect_vec();
-            // if (ordered_adjacent_intersections.len() != 4) || (ordered_adjacent_intersections.iter().map(|x| x.1).collect::<HashSet<_>>().len() != 4) {
-            //     error!(
-            //         "Invalid intersection: ordered adjacent intersections are not unique or not 4. {:?} ({:?})",
-            //         ordered_adjacent_intersections, quad
-            //     );
-            //     return Err(PropertyViolationError::UnknownError);
-            // }
+            if (ordered_adjacent_intersections.len() != 4) || (ordered_adjacent_intersections.iter().map(|x| x.1).collect::<HashSet<_>>().len() != 4) {
+                error!(
+                    "Invalid intersection: ordered adjacent intersections are not unique or not 4. {:?} ({:?})",
+                    ordered_adjacent_intersections, quad
+                );
+                return Err(PropertyViolationError::UnknownError);
+            }
 
-            // assert!(ordered_adjacent_intersections.len() == 4);
-            // assert!(ordered_adjacent_intersections.iter().map(|x| x.1).collect::<HashSet<_>>().len() == 4);
+            assert!(ordered_adjacent_intersections.len() == 4);
+            assert!(ordered_adjacent_intersections.iter().map(|x| x.1).collect::<HashSet<_>>().len() == 4);
 
             if ordered_adjacent_intersections[0].0 == ordered_adjacent_intersections[1].0 {
                 error!("[0].0 == [1].0: {:?}", ordered_adjacent_intersections[0].0);

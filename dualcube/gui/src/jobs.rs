@@ -66,7 +66,7 @@ async fn run_job(job: Job) -> Option<JobResult> {
             new_vertex,
         } => {
             let mut solution_clone = solution.clone();
-            if let Err(err) = solution_clone.move_corner(corner, new_vertex) {
+            if let Err(err) = solution_clone.move_corner_to(corner, new_vertex) {
                 warn!("Failed to move corner: {err:?}");
                 return None;
             }
@@ -159,8 +159,14 @@ async fn run_job(job: Job) -> Option<JobResult> {
             if let Err(err) = io::Dcube::export(&solution, &path) {
                 warn!("Failed to export Dcube file: {err:?}");
             }
+            if let Err(err) = io::Dsol::export(&solution, &path) {
+                warn!("Failed to export Dsol file: {err:?}");
+            }
             if let Err(err) = io::Obj::export(&solution, &path) {
                 warn!("Failed to export Obj file: {err:?}");
+            }
+            if let Err(err) = io::ObjPlus::export(&solution, &path) {
+                warn!("Failed to export Obj+ file: {err:?}");
             }
             if let Err(err) = io::Flag::export(&solution, &path) {
                 warn!("Failed to export Flag file: {err:?}");
@@ -278,16 +284,10 @@ fn poll_jobs(
                     solution_resource.next[0] = HashMap::new();
                     solution_resource.next[1] = HashMap::new();
                     solution_resource.next[2] = HashMap::new();
-                    if configuration.stop == Phase::Loops {
-                        jobs.write(JobRequest::Run(Box::new(Job::Refresh {
-                            solution: solution_resource.current_solution.clone(),
-                        })));
-                    } else {
-                        jobs.write(JobRequest::Run(Box::new(Job::ComputeDual {
-                            solution: solution_resource.current_solution.clone(),
-                            configuration,
-                        })));
-                    }
+
+                    jobs.write(JobRequest::Run(Box::new(Job::Refresh {
+                        solution: solution_resource.current_solution.clone(),
+                    })));
                 }
 
                 Some(JobResult::AddedLoop((anchors, direction, maybe))) => {

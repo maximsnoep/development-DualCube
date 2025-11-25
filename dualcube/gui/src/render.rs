@@ -132,11 +132,13 @@ impl RenderFeature {
 
 #[derive(Clone, Default)]
 pub struct RenderObject {
+    pub labels: Vec<String>,
     pub features: HashMap<String, RenderFeature>,
 }
 
 impl RenderObject {
     pub fn add(&mut self, label: &str, feature: RenderFeature) -> &mut Self {
+        self.labels.push(label.to_owned());
         self.features.insert(label.to_owned(), feature);
         self
     }
@@ -157,6 +159,7 @@ pub struct RenderObjectSettingStore {
 
 #[derive(Clone, Default, PartialEq)]
 pub struct RenderObjectSetting {
+    pub labels: Vec<String>,
     pub settings: HashMap<String, RenderFeatureSetting>,
 }
 
@@ -338,6 +341,7 @@ pub fn update_render_settings(render_object_store: Res<RenderObjectStore>, mut r
 
     if render_object_store.is_changed() {
         for (object, render_object) in &render_object_store.objects {
+            let labels = render_object.labels.clone();
             let mut settings = render_settings_store.objects.get(object).map_or_else(HashMap::new, |s| s.settings.clone());
             for feature_label in render_object.features.keys() {
                 settings.entry(feature_label.clone()).or_insert(RenderFeatureSetting {
@@ -345,7 +349,9 @@ pub fn update_render_settings(render_object_store: Res<RenderObjectStore>, mut r
                     visible: default(object, feature_label),
                 });
             }
-            render_settings_store.objects.insert(object.to_owned(), RenderObjectSetting { settings });
+            render_settings_store
+                .objects
+                .insert(object.to_owned(), RenderObjectSetting { labels, settings });
         }
     }
 }
@@ -539,7 +545,7 @@ pub fn refresh(solution: &Solution) -> RenderObjectStore {
 
                     let mut gizmos_paths = GizmoAsset::new();
                     let mut gizmos_flat_paths = GizmoAsset::new();
-                    if let (Ok(_), Some(_)) = (&solution.layout, &solution.polycube) {
+                    if let (Some(_), Some(_)) = (&solution.layout, &solution.polycube) {
                         let color = colors::GRAY;
                         let c = bevy::color::Color::srgb(color[0], color[1], color[2]);
 
@@ -624,7 +630,7 @@ pub fn refresh(solution: &Solution) -> RenderObjectStore {
 
                     let mut gizmos_paths = GizmoAsset::new();
                     let mut gizmos_flat_paths = GizmoAsset::new();
-                    if let (Ok(lay), Some(polycube)) = (&solution.layout, &solution.polycube) {
+                    if let (Some(lay), Some(polycube)) = (&solution.layout, &solution.polycube) {
                         let color = colors::GRAY;
                         let c = bevy::color::Color::srgb(color[0], color[1], color[2]);
 
@@ -700,7 +706,7 @@ pub fn refresh(solution: &Solution) -> RenderObjectStore {
                     }
                 }
 
-                if let (Ok(lay), Some(polycube)) = (&solution.layout, &solution.polycube) {
+                if let (Some(lay), Some(polycube)) = (&solution.layout, &solution.polycube) {
                     granulated_mesh = &lay.granulated_mesh;
 
                     for (&pedge_id, path) in &lay.edge_to_path {
@@ -735,7 +741,7 @@ pub fn refresh(solution: &Solution) -> RenderObjectStore {
                     }
 
                     for triangle_id in lay.granulated_mesh.face_ids() {
-                        if let Some(&score) = solution.alignment_per_triangle.get(&triangle_id) {
+                        if let Some(&score) = solution.layout.as_ref().unwrap().alignment_per_triangle.get(&triangle_id) {
                             color_map_alignment.insert(triangle_id, colors::map(score as f32, &colors::SCALE_MAGMA));
                         } else {
                             color_map_alignment.insert(triangle_id, colors::PURPLE_LIGHT);
@@ -899,6 +905,11 @@ pub fn refresh(solution: &Solution) -> RenderObjectStore {
                     }
                 }
 
+                let mut granulated_mesh_gizmos = GizmoAsset::new();
+                if let Some(layout) = &solution.layout {
+                    granulated_mesh_gizmos = layout.granulated_mesh.gizmos(colors::GRAY);
+                }
+
                 render_object_store.add_object(
                     object,
                     RenderObject::default()
@@ -918,6 +929,7 @@ pub fn refresh(solution: &Solution) -> RenderObjectStore {
                         .mesh(input, &color_map_flag, "flag")
                         .gizmo(gizmos_flag_paths, 2., -1e-4, "flag paths")
                         .gizmo(gizmos_features, 5., -0.00012, "features")
+                        .gizmo(granulated_mesh_gizmos, 0.5, -0.00001, "refined wireframe")
                         .to_owned(),
                 );
             }
