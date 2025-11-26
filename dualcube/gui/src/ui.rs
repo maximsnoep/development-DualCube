@@ -1,16 +1,31 @@
+use crate::controls::InteractiveMode;
 use crate::jobs::{Job, JobRequest, JobState};
-use crate::render::{CameraFor, Objects, RenderFlag, RenderObjectStore};
-use crate::{colors, ActionEvent, CameraHandles, Configuration, HexMeshStatus, InputResource, Perspective, PrincipalDirection, SolutionResource};
+use crate::render::{world_to_view, CameraFor, Objects, RenderObjectSetting, RenderObjectSettingStore};
+use crate::{colors, ActionEvent, CameraHandles, Configuration, InputResource, Perspective, Phase, PrincipalDirection, SolutionResource, VertexMap};
 use bevy::diagnostic::{DiagnosticsStore, FrameTimeDiagnosticsPlugin, SystemInformationDiagnosticsPlugin};
 use bevy::prelude::*;
+use bevy_egui::egui::FontFamily::Proportional;
 use bevy_egui::egui::*;
+use dualcube::prelude::Solution;
 use egui_dock::{DockArea, DockState, NodeIndex, Style};
+use mehsh::prelude::HasPosition;
+use rand::{random, random_range};
 use std::collections::HashMap;
+use std::sync::Arc;
 
 #[derive(Resource)]
 pub struct UiResource {
     pub tree: DockState<Objects>,
 }
+
+const RED: Color32 = Color32::from_rgb((colors::RED[0] * 255.) as u8, (colors::RED[1] * 255.) as u8, (colors::RED[2] * 255.) as u8);
+const LIGHT_RED: Color32 = Color32::from_rgb(
+    (colors::RED_LIGHT[0] * 255.) as u8,
+    (colors::RED_LIGHT[1] * 255.) as u8,
+    (colors::RED_LIGHT[2] * 255.) as u8,
+);
+
+const BLUE: Color32 = Color32::from_rgb((colors::BLUE[0] * 255.) as u8, (colors::BLUE[1] * 255.) as u8, (colors::BLUE[2] * 255.) as u8);
 
 impl Default for UiResource {
     fn default() -> Self {
@@ -29,7 +44,8 @@ impl Default for UiResource {
 }
 struct TabViewer {
     egui_handles: Vec<bevy_egui::egui::TextureId>,
-    render_objects: HashMap<Objects, Vec<RenderFlag>>,
+    render_settings: HashMap<Objects, RenderObjectSetting>,
+    axes_handle: bevy_egui::egui::TextureId,
 }
 
 impl egui_dock::TabViewer for TabViewer {
@@ -82,9 +98,11 @@ impl egui_dock::TabViewer for TabViewer {
     }
 
     fn context_menu(&mut self, ui: &mut Ui, tab: &mut Self::Tab, _surface: egui_dock::SurfaceIndex, _node: NodeIndex) {
-        if let Some(local_copy) = self.render_objects.get_mut(tab) {
-            for flag in local_copy.iter_mut() {
-                ui.checkbox(&mut flag.visible, flag.label.clone());
+        if let Some(local_copy) = self.render_settings.get_mut(tab) {
+            for label in &local_copy.labels {
+                if let Some(setting) = local_copy.settings.get_mut(label) {
+                    ui.checkbox(&mut setting.visible, label.to_owned());
+                }
             }
         } else {
             ui.label("o_O");
@@ -107,35 +125,40 @@ impl egui_dock::TabViewer for TabViewer {
                 },
                 ..default()
             }
-            .show(ui, |ui| match tab {
-                Objects::InputMesh => {
-                    ui.allocate_exact_size(ui.available_size(), Sense::all());
-                }
+            .show(ui, |ui| {
+                let response = match tab {
+                    Objects::InputMesh => ui.allocate_exact_size(ui.available_size(), Sense::all()),
 
-                Objects::PolycubeMap | Objects::QuadMesh => {
-                    let egui_handle = match tab {
-                        Objects::PolycubeMap => self.egui_handles[0],
-                        Objects::QuadMesh => self.egui_handles[1],
-                        _ => unreachable!(),
-                    };
-                    let [w, h] = ui.available_size().into();
+                    Objects::PolycubeMap | Objects::QuadMesh => {
+                        let egui_handle = match tab {
+                            Objects::PolycubeMap => self.egui_handles[0],
+                            Objects::QuadMesh => self.egui_handles[1],
+                            _ => unreachable!(),
+                        };
+                        let [w, h] = ui.available_size().into();
 
-                    if w > h {
-                        let offset = (1.0 - h / w) / 2.0;
-                        ui.add(
-                            bevy_egui::egui::widgets::Image::new(bevy_egui::egui::load::SizedTexture::new(egui_handle, [w, h])).uv(
-                                bevy_egui::egui::Rect::from_min_max(bevy_egui::egui::Pos2::new(0., offset), bevy_egui::egui::Pos2::new(1.0, 1.0 - offset)),
-                            ),
-                        );
-                    } else {
-                        let offset = (1.0 - w / h) / 2.0;
-                        ui.add(
-                            bevy_egui::egui::widgets::Image::new(bevy_egui::egui::load::SizedTexture::new(egui_handle, [w, h])).uv(
-                                bevy_egui::egui::Rect::from_min_max(bevy_egui::egui::Pos2::new(offset, 0.), bevy_egui::egui::Pos2::new(1.0 - offset, 1.0)),
-                            ),
-                        );
+                        return if w > h {
+                            let offset = (1.0 - h / w) / 2.0;
+                            ui.add(
+                                bevy_egui::egui::widgets::Image::new(bevy_egui::egui::load::SizedTexture::new(egui_handle, [w, h])).uv(
+                                    bevy_egui::egui::Rect::from_min_max(bevy_egui::egui::Pos2::new(0., offset), bevy_egui::egui::Pos2::new(1.0, 1.0 - offset)),
+                                ),
+                            )
+                        } else {
+                            let offset = (1.0 - w / h) / 2.0;
+                            ui.add(
+                                bevy_egui::egui::widgets::Image::new(bevy_egui::egui::load::SizedTexture::new(egui_handle, [w, h])).uv(
+                                    bevy_egui::egui::Rect::from_min_max(bevy_egui::egui::Pos2::new(offset, 0.), bevy_egui::egui::Pos2::new(1.0 - offset, 1.0)),
+                                ),
+                            )
+                        };
                     }
-                }
+                };
+
+                ui.put(
+                    bevy_egui::egui::Rect::from_two_pos(response.0.left_bottom(), Pos2::new(response.0.left() + 200., response.0.bottom() - 200.)),
+                    bevy_egui::egui::widgets::Image::new(bevy_egui::egui::load::SizedTexture::new(self.axes_handle, [200., 200.])),
+                )
             });
         });
     }
@@ -178,16 +201,26 @@ pub fn setup(mut ui: bevy_egui::EguiContexts) {
         "font".to_owned(),
         bevy_egui::egui::FontData::from_static(include_bytes!("../assets/font.ttf")).into(),
     );
-    fonts
-        .families
-        .entry(bevy_egui::egui::FontFamily::Proportional)
-        .or_default()
-        .insert(0, "font".to_owned());
-    fonts
-        .families
-        .entry(bevy_egui::egui::FontFamily::Monospace)
-        .or_default()
-        .insert(0, "font".to_owned());
+    fonts.font_data.insert(
+        "UEXM".to_owned(),
+        bevy_egui::egui::FontData::from_static(include_bytes!("../assets/UnifontExMono.ttf")).into(),
+    );
+
+    fonts.families.insert(
+        FontFamily::Monospace,
+        vec![
+            "font".to_owned(),
+            "UEXM".to_owned(), // fallback for some ascii symbols like →
+        ],
+    );
+    fonts.families.insert(
+        FontFamily::Proportional,
+        vec![
+            "font".to_owned(),
+            "UEXM".to_owned(), // fallback
+        ],
+    );
+
     ui.ctx_mut().set_fonts(fonts);
 
     // Theme
@@ -216,6 +249,17 @@ pub fn setup(mut ui: bevy_egui::EguiContexts) {
         // visuals.widgets.active.corner_radius = zero;
 
         style.visuals = visuals;
+
+        style.text_styles = [
+            (TextStyle::Heading, FontId::new(30.0, Proportional)),
+            (TextStyle::Body, FontId::new(12.0, Proportional)),
+            (TextStyle::Monospace, FontId::new(12.0, Proportional)),
+            (TextStyle::Button, FontId::new(12.0, Proportional)),
+            (TextStyle::Small, FontId::new(10.0, Proportional)),
+        ]
+        .into();
+
+        style.interaction.selectable_labels = false;
     });
 }
 
@@ -231,11 +275,15 @@ fn space(ui: &mut Ui) {
 
 fn header(
     ui: &mut Ui,
-    solution: &SolutionResource,
+    solution: &mut SolutionResource,
+    vertex_map: &mut VertexMap,
     ev_w: &mut EventWriter<ActionEvent>,
     jobs: &mut EventWriter<JobRequest>,
     configuration: &mut ResMut<Configuration>,
+    render_object_settings_store: &mut ResMut<RenderObjectSettingStore>,
     time: &Res<Time>,
+    gizmo_assets: &mut ResMut<Assets<GizmoAsset>>,
+    commands: &mut Commands,
 ) {
     ui.with_layout(Layout::left_to_right(Align::TOP), |ui| {
         Frame {
@@ -246,12 +294,99 @@ fn header(
         .show(ui, |ui| {
             bevy_egui::egui::menu::bar(ui, |ui| {
                 menu_button(ui, "File", |ui| {
+                    space(ui);
                     if sleek_button(ui, "Load") {
                         if let Some(path) = rfd::FileDialog::new()
-                            .add_filter("triangulated geometry", &["obj", "stl", "save", "flag", "dcube"])
+                            .add_filter("triangulated geometry", &["obj", "stl", "dcube", "dsol", "txt"])
                             .pick_file()
                         {
-                            jobs.write(JobRequest::Run(Box::new(Job::Import { path })));
+                            println!("Found file: {}", path.display());
+                            if path.extension().map(|e| e == "obj").unwrap_or(false) {
+                                // Load the mesh
+                                let mesh = mehsh::mesh::connectivity::Mesh::from_obj(&path).unwrap();
+                                solution.current_solution = Solution::new(Arc::new(mesh.0));
+                                vertex_map.map = mesh.1;
+
+                                jobs.write(JobRequest::Run(Box::new(Job::Refresh {
+                                    solution: solution.current_solution.clone(),
+                                })));
+                            } else if path.extension().map(|e| e == "txt").unwrap_or(false) {
+                                let mut gizmo = GizmoAsset::new();
+
+                                // Read the .txt
+                                let paths = std::fs::read_to_string(&path).unwrap();
+
+                                // Split into lines
+                                let mut lines = paths.lines();
+
+                                // Go through lines
+                                while let Some(line) = lines.next() {
+                                    // Skip empty line
+                                    if line.trim().is_empty() {
+                                        continue;
+                                    }
+                                    // Next line should end with a integer
+                                    let n: usize = line.split_whitespace().last().and_then(|s| s.parse().ok()).unwrap();
+
+                                    let (scale, translation) = solution.current_solution.mesh_ref.scale_translation();
+
+                                    let mut path = vec![];
+                                    let random = random_range(0. ..360.);
+                                    for _ in 0..n {
+                                        if let Some(line) = lines.next() {
+                                            // Lines are formatted either as:
+                                            // - v INDEX_A
+                                            // - e INDEX_A INDEX_B T_VALUE, where it should be positioned at T_VALUE from INDEX_A to INDEX_B
+                                            let parts: Vec<&str> = line.split_whitespace().collect();
+                                            match parts.as_slice() {
+                                                ["v", index] => {
+                                                    let index: usize = index.parse().unwrap();
+                                                    // get the position by using the vertex_map
+                                                    if let Some(&vert_id) = vertex_map.map.key(index) {
+                                                        let position = solution.current_solution.mesh_ref.position(vert_id);
+                                                        let worldview_position = world_to_view(position, translation, scale);
+                                                        path.push(worldview_position);
+                                                    }
+                                                }
+                                                ["e", start, end, t_value] => {
+                                                    let start: usize = start.parse().unwrap();
+                                                    let end: usize = end.parse().unwrap();
+                                                    let t_value: f64 = t_value.parse().unwrap();
+                                                    if let (Some(&start_vert), Some(&end_vert)) = (vertex_map.map.key(start), vertex_map.map.key(end)) {
+                                                        let start_pos = solution.current_solution.mesh_ref.position(start_vert);
+                                                        let end_pos = solution.current_solution.mesh_ref.position(end_vert);
+                                                        // get the position T_VALUE from start_pos towards end_pos
+                                                        let position = start_pos.lerp(&end_pos, t_value);
+                                                        let worldview_position = world_to_view(position, translation, scale);
+                                                        path.push(worldview_position);
+                                                    }
+                                                }
+                                                _ => {}
+                                            }
+                                        }
+                                    }
+                                    for pair in path.windows(2) {
+                                        let start = pair[0];
+                                        let end = pair[1];
+                                        gizmo.line(
+                                            Vec3::new(start.x as f32, start.y as f32, start.z as f32),
+                                            Vec3::new(end.x as f32, end.y as f32, end.z as f32),
+                                            bevy::color::Color::hsl(random, 1.0, 0.5),
+                                        );
+                                    }
+                                }
+
+                                commands.spawn((Gizmo {
+                                    handle: gizmo_assets.add(gizmo),
+                                    line_config: GizmoLineConfig { width: 5., ..default() },
+                                    ..default()
+                                },));
+                            } else {
+                                jobs.write(JobRequest::Run(Box::new(Job::Import {
+                                    path,
+                                    configuration: configuration.clone(),
+                                })));
+                            }
                         }
                     }
                     sep(ui);
@@ -272,64 +407,188 @@ fn header(
                             })));
                         }
                     }
+                    space(ui);
+                    if sleek_button(ui, "Export (Honors)") {
+                        if let Some(path) = rfd::FileDialog::new().save_file() {
+                            jobs.write(JobRequest::Run(Box::new(Job::ExportDotgraph {
+                                solution: solution.current_solution.clone(),
+                                path,
+                            })));
+                        }
+                    }
                     sep(ui);
                     if sleek_button(ui, "Quit") {
                         std::process::exit(0);
                     }
+                    space(ui);
                 });
 
-                sep(ui);
+                space(ui);
 
-                menu_button(ui, "Solution", |ui| {
-                    ui.checkbox(&mut configuration.unit_cubes, "constrain polycube edges to 1 unit size");
-                    slider(ui, "omega (quad mesh detail)", &mut configuration.omega, 1..=20);
+                menu_button(ui, "Rendering", |ui| {
+                    // Select different presets of rendering combinations.
 
-                    ui.add_space(5.);
-                    if sleek_button(ui, "Recompute solution") {
-                        jobs.write(JobRequest::Run(Box::new(Job::Recompute {
-                            solution: solution.current_solution.clone(),
-                            unit: configuration.unit_cubes,
-                            omega: configuration.omega,
-                        })));
+                    space(ui);
+
+                    label(ui, "Presets", 12., Color32::WHITE);
+
+                    space(ui);
+
+                    if sleek_button(ui, "Input mesh") {
+                        let true_labels = ["gray", "wireframe"];
+                        for settings in render_object_settings_store.objects.values_mut() {
+                            for (label, setting) in settings.settings.iter_mut() {
+                                setting.visible = true_labels.contains(&label.as_str());
+                            }
+                        }
                     }
+
+                    space(ui);
+
+                    if sleek_button(ui, "Dual loops") {
+                        let true_labels = ["black", "X-loops", "Y-loops", "Z-loops", "colored"];
+                        for settings in render_object_settings_store.objects.values_mut() {
+                            for (label, setting) in settings.settings.iter_mut() {
+                                setting.visible = true_labels.contains(&label.as_str());
+                            }
+                        }
+                    }
+
+                    space(ui);
+
+                    if sleek_button(ui, "Polycube segmentation") {
+                        let true_labels = ["segmentation", "colored", "paths", "flat paths"];
+                        for settings in render_object_settings_store.objects.values_mut() {
+                            for (label, setting) in settings.settings.iter_mut() {
+                                setting.visible = true_labels.contains(&label.as_str());
+                            }
+                        }
+                    }
+
+                    space(ui);
                 });
 
-                ui.separator();
+                space(ui);
 
-                menu_button(ui, "EXPERIMENTAL", |ui| {
-                    ui.with_layout(Layout::left_to_right(Align::TOP), |ui| {
-                        if sleek_button(ui, "Quad mesh: Laplacian Smoothing") {
-                            jobs.write(JobRequest::Run(Box::new(Job::SmoothenQuad {
-                                solution: solution.current_solution.clone(),
-                            })));
-                        }
-                    });
+                menu_button(ui, "Camera", |ui| {
+                    // Select different presets of rendering combinations.
 
-                    ui.add_space(5.);
+                    // slider for camera configs
+                    let m = 2.0;
 
-                    ui.with_layout(Layout::left_to_right(Align::TOP), |ui| {
-                        if sleek_button(ui, "Hex mesh: Run 'RobustPolycube'") && !matches!(&configuration.hex_mesh_status, HexMeshStatus::Loading) {
-                            ev_w.write(ActionEvent::ToHexmesh);
-                        };
-                        if matches!(configuration.hex_mesh_status, HexMeshStatus::Loading) {
-                            ui.add_space(5.);
-                            ui.label(text(&timer_animation(time)));
-                        }
-                    });
+                    space(ui);
 
-                    if let HexMeshStatus::Done(score) = &configuration.hex_mesh_status {
-                        ui.add_space(5.);
-                        ui.label("Hex-meshing results:");
-                        ui.add_space(5.);
-                        ui.label(format!(
-                            "hd: {hd:.3}\nsJ: {sj:.3} ({sjmin:.3}-{sjmax:.3})\nirr: {irr:.3}",
-                            hd = score.hausdorff,
-                            sj = score.avg_jacob,
-                            sjmin = score.min_jacob,
-                            sjmax = score.max_jacob,
-                            irr = score.irregular,
-                        ));
+                    label(ui, "Sensitivity", 12., Color32::WHITE);
+
+                    space(ui);
+
+                    let mut rotate = 1. + configuration.camera_rotate_sensitivity.log10() / m;
+                    slider(ui, "rotate", &mut rotate, 0.1..=1.);
+                    configuration.camera_rotate_sensitivity = 10f32.powf((rotate - 1.) * m);
+
+                    space(ui);
+
+                    let mut translate = 1. + ((configuration.camera_translate_sensitivity / 3.).log10() / m);
+                    slider(ui, "translate", &mut translate, 0.1..=1.);
+                    configuration.camera_translate_sensitivity = 10f32.powf((translate - 1.) * m) * 3.;
+
+                    space(ui);
+
+                    let mut zoom = 1. + configuration.camera_zoom_sensitivity.log10() / m;
+                    slider(ui, "zoom", &mut zoom, 0.1..=1.);
+                    configuration.camera_zoom_sensitivity = 10f32.powf((zoom - 1.) * m);
+
+                    space(ui);
+
+                    if sleek_button(ui, "High-precision") {
+                        configuration.camera_rotate_sensitivity = 0.01;
+                        configuration.camera_translate_sensitivity = 0.01;
+                        configuration.camera_zoom_sensitivity = 0.01;
                     }
+
+                    space(ui);
+
+                    if sleek_button(ui, "Default") {
+                        configuration.camera_rotate_sensitivity = 0.2;
+                        configuration.camera_translate_sensitivity = 2.0;
+                        configuration.camera_zoom_sensitivity = 0.2;
+                    }
+
+                    space(ui);
+                });
+
+                space(ui);
+
+                menu_button(ui, "Manual", |ui| {
+                    space(ui);
+
+                    if configuration.interactive_mode == InteractiveMode::LoopModification {
+                        if sleek_button(ui, "Modify loops [active]") {
+                            configuration.interactive_mode = InteractiveMode::None;
+                        }
+                    } else if sleek_button_unfocused(ui, "Modify loops [not active]") {
+                        configuration.interactive_mode = InteractiveMode::LoopModification;
+                    }
+
+                    space(ui);
+
+                    for direction in [PrincipalDirection::X, PrincipalDirection::Y, PrincipalDirection::Z] {
+                        radio(
+                            ui,
+                            &mut configuration.direction,
+                            direction,
+                            Color32::from_rgb(
+                                (colors::from_direction(direction, Some(Perspective::Dual), None)[0] * 255.) as u8,
+                                (colors::from_direction(direction, Some(Perspective::Dual), None)[1] * 255.) as u8,
+                                (colors::from_direction(direction, Some(Perspective::Dual), None)[2] * 255.) as u8,
+                            ),
+                        );
+                        space(ui);
+                    }
+
+                    // add slider for alpha (or 1-beta)
+                    slider(ui, "alpha", &mut configuration.alpha, 0.0..=1.0);
+
+                    space(ui);
+
+                    if let Some(edgepair) = configuration.selected {
+                        if let Some(Some(sol)) = solution.next[configuration.direction as usize].get(&edgepair) {
+                            ui.label("DUAL[");
+                            if sol.dual.is_ok() {
+                                ui.label(colored_text("Ok", BLUE));
+                            } else {
+                                ui.label(colored_text(&format!("{:?}", sol.dual.as_ref().err()), RED));
+                            }
+                            ui.label("]");
+
+                            ui.label("EMBD[");
+                            if sol.layout.is_some() {
+                                ui.label(colored_text("Ok", BLUE));
+                            } else {
+                                ui.label(colored_text("Not found", RED));
+                            }
+
+                            ui.label("]");
+
+                            // if let Some(alignment) = sol.alignment {
+                            //     ui.label("ALIGN[");
+                            //     ui.label(format!("{alignment:.3}"));
+                            //     ui.label("]");
+                            // }
+                        }
+                    }
+
+                    sep(ui);
+
+                    if configuration.interactive_mode == InteractiveMode::SegmentationModification {
+                        if sleek_button(ui, "Modify segmentation [active]") {
+                            configuration.interactive_mode = InteractiveMode::None;
+                        }
+                    } else if sleek_button_unfocused(ui, "Modify segmentation [not active]") {
+                        configuration.interactive_mode = InteractiveMode::SegmentationModification;
+                    }
+
+                    space(ui);
                 });
             });
         });
@@ -344,6 +603,7 @@ fn footer(
     job_state: &Res<JobState>,
     jobs: &mut EventWriter<JobRequest>,
     time: &Res<Time>,
+    axes_texture: TextureId,
 ) {
     TopBottomPanel::bottom("footer").show_separator_line(false).show(egui_ctx.ctx_mut(), |ui| {
         ui.separator();
@@ -354,23 +614,62 @@ fn footer(
             // Left side: Display FPS
             ui.with_layout(Layout::left_to_right(Align::TOP), |ui| {
                 ui.add_space(15.);
+
+                let size = 8.0;
+
+                let mut job = text::LayoutJob::default();
+
+                job.append("right-hand: ", 0.0, text_format(size, Color32::LIGHT_GRAY));
+                let red = colors::from_direction(PrincipalDirection::X, Some(Perspective::Primal), None);
+                job.append(
+                    "+X",
+                    0.0,
+                    text_format(size, Color32::from_rgb((red[0] * 255.) as u8, (red[1] * 255.) as u8, (red[2] * 255.) as u8)),
+                );
+
+                job.append(", ", 0.0, text_format(size, Color32::GRAY));
+
+                let yellow = colors::from_direction(PrincipalDirection::Y, Some(Perspective::Primal), None);
+                job.append(
+                    "+Y",
+                    0.0,
+                    text_format(
+                        size,
+                        Color32::from_rgb((yellow[0] * 255.) as u8, (yellow[1] * 255.) as u8, (yellow[2] * 255.) as u8),
+                    ),
+                );
+
+                job.append(", ", 0.0, text_format(size, Color32::GRAY));
+
+                let green = colors::from_direction(PrincipalDirection::Z, Some(Perspective::Primal), None);
+                job.append(
+                    "+Z",
+                    0.0,
+                    text_format(
+                        size,
+                        Color32::from_rgb((green[0] * 255.) as u8, (green[1] * 255.) as u8, (green[2] * 255.) as u8),
+                    ),
+                );
+
+                ui.label(job);
+
                 let mut job = text::LayoutJob::default();
 
                 fn usage_color(value: f64) -> Color32 {
                     if value < 70.0 {
                         Color32::LIGHT_GRAY // neutral
                     } else if value < 90.0 {
-                        Color32::from_rgb(180, 100, 100) // faded red
+                        LIGHT_RED // faded red
                     } else {
-                        Color32::RED // critical
+                        RED // critical
                     }
                 }
 
                 fn fps_color(fps: f64) -> Color32 {
                     if fps < 30.0 {
-                        Color32::RED // very bad
+                        RED // very bad
                     } else if fps < 50.0 {
-                        Color32::from_rgb(180, 100, 100) // warning
+                        LIGHT_RED // warning
                     } else {
                         Color32::LIGHT_GRAY // normal
                     }
@@ -398,7 +697,7 @@ fn footer(
                     .and_then(|d| d.smoothed())
                     .unwrap_or(0.0);
 
-                let size = 8.0;
+                job.append("  |  ", 0.0, text_format(9.0, Color32::GRAY));
 
                 job.append(&format!("fps {:>3.0}", fps), 0.0, text_format(size, fps_color(fps)));
 
@@ -420,124 +719,19 @@ fn footer(
 
                 job.append("  |  ", 0.0, text_format(9.0, Color32::GRAY));
 
+                let mode = match conf.interactive_mode {
+                    InteractiveMode::None => "automatic",
+                    InteractiveMode::LoopModification => "manual loops",
+                    InteractiveMode::SegmentationModification => "manual seg",
+                };
+                job.append(&format!("{}", mode), 0.0, text_format(size, Color32::LIGHT_GRAY));
+
+                job.append("  |  ", 0.0, text_format(9.0, Color32::GRAY));
+
                 if let Some(request) = &job_state.request {
                     job.append(&format!("{}  {}", request, &timer_animation(time)), 0.0, text_format(size, Color32::LIGHT_GRAY));
                 } else {
                     job.append("idle", 0.0, text_format(size, Color32::LIGHT_GRAY));
-                }
-
-                ui.label(job);
-            });
-
-            // Center: Display status of dual, embd, alignment, and orthogonality
-            ui.vertical_centered(|ui| {
-                let mut job = text::LayoutJob::default();
-
-                let default = || text_format(9.0, Color32::WHITE);
-                let off = || text_format(9.0, Color32::GRAY);
-                let ok = || text_format(9.0, Color32::GREEN);
-                let error = || text_format(9.0, Color32::RED);
-
-                let mut active = true; // all systems go until proven otherwise
-
-                // Input
-                job.append("Input: ", 0.0, default());
-                if solution.current_solution.mesh_ref.nr_verts() == 0 {
-                    job.append("Uninitialized", 0.0, error());
-                    active = false;
-                } else {
-                    job.append(
-                        &format!(
-                            "V: {}, E: {}, F: {}",
-                            solution.current_solution.mesh_ref.nr_verts(),
-                            solution.current_solution.mesh_ref.nr_edges() / 2,
-                            solution.current_solution.mesh_ref.nr_faces()
-                        ),
-                        0.0,
-                        if active { ok() } else { off() },
-                    );
-                }
-
-                job.append(" | ", 0.0, off());
-
-                // Loops
-                job.append("Loops: ", 0.0, default());
-                if active {
-                    if solution.current_solution.loops.is_empty() {
-                        job.append("Empty", 0.0, error());
-                        active = false;
-                    } else {
-                        job.append(&format!("{}", solution.current_solution.loops.len()), 0.0, ok());
-                    }
-                } else {
-                    job.append("...", 0.0, off());
-                }
-
-                job.append(" | ", 0.0, off());
-
-                // Dual
-                job.append("Dual: ", 0.0, default());
-                if active {
-                    match &solution.current_solution.dual {
-                        Ok(dual) => {
-                            job.append("Ok", 0.0, ok());
-                            job.append(
-                                &format!(
-                                    " (zones: {} , {} , {})",
-                                    dual.level_graphs.levels[0].len(),
-                                    dual.level_graphs.levels[1].len(),
-                                    dual.level_graphs.levels[2].len()
-                                ),
-                                0.0,
-                                default(),
-                            );
-                        }
-                        Err(err) => {
-                            job.append("Error", 0.0, error());
-                            job.append(&format!(" ({:?})", err), 0.0, error());
-                            active = false;
-                        }
-                    }
-                } else {
-                    job.append("...", 0.0, off());
-                }
-
-                job.append(" | ", 0.0, off());
-
-                // Layout
-                job.append("Seg: ", 0.0, default());
-                if active {
-                    match &solution.current_solution.layout {
-                        Ok(_layout) => {
-                            job.append("Ok", 0.0, ok());
-                            job.append(
-                                &format!(" (alignment: {:.5})", solution.current_solution.get_quality().unwrap_or(0.0)),
-                                0.0,
-                                default(),
-                            );
-                        }
-                        Err(err) => {
-                            job.append("Error", 0.0, error());
-                            job.append(&format!(" ({:?})", err), 0.0, error());
-                            active = false;
-                        }
-                    }
-                } else {
-                    job.append("...", 0.0, off());
-                }
-
-                job.append(" | ", 0.0, off());
-
-                // Quad
-                job.append("Quad: ", 0.0, default());
-                if active {
-                    if let Some(_quad) = &solution.current_solution.quad {
-                        job.append("Ok", 0.0, ok());
-                    } else {
-                        job.append("None / Error?", 0.0, error());
-                    }
-                } else {
-                    job.append("...", 0.0, off());
                 }
 
                 ui.label(job);
@@ -551,8 +745,6 @@ fn footer(
                 ui.label(job);
             });
         });
-
-        conf.ui_is_hovered[1] = ui.ui_contains_pointer();
 
         ui.add_space(5.);
     });
@@ -568,14 +760,20 @@ pub fn update(
     mut jobs: EventWriter<JobRequest>,
     mut conf: ResMut<Configuration>,
     job_state: Res<JobState>,
-    solution: Res<SolutionResource>,
-    mut render_object_store: ResMut<RenderObjectStore>,
+    mut solution: ResMut<SolutionResource>,
+    mut vertex_map: ResMut<VertexMap>,
+    mut render_setting_store: ResMut<RenderObjectSettingStore>,
     time: Res<Time>,
     image_handle: Res<CameraHandles>,
     mut ui_resource: ResMut<UiResource>,
     diagnostics: Res<DiagnosticsStore>,
     mesh_ref: Res<InputResource>,
+    axes_texture: Res<bevy_axes_gizmo::AxesGizmoTexture>,
+    mut gizmo_assets: ResMut<Assets<GizmoAsset>>,
+    mut commands: Commands,
 ) {
+    let axes_texture = egui_ctx.add_image(axes_texture.0.clone());
+
     TopBottomPanel::top("panel").show_separator_line(false).show(egui_ctx.ctx_mut(), |ui| {
         ui.add_space(10.);
 
@@ -586,7 +784,18 @@ pub fn update(
         ui.horizontal(|ui| {
             ui.with_layout(Layout::top_down(Align::TOP), |ui| {
                 // FIRST ROW
-                header(ui, &solution, &mut ev_w, &mut jobs, &mut conf, &time);
+                header(
+                    ui,
+                    &mut solution,
+                    &mut vertex_map,
+                    &mut ev_w,
+                    &mut jobs,
+                    &mut conf,
+                    &mut render_setting_store,
+                    &time,
+                    &mut gizmo_assets,
+                    &mut commands,
+                );
 
                 ui.add_space(5.);
 
@@ -594,125 +803,234 @@ pub fn update(
 
                 ui.add_space(5.);
 
-                // NEXT ROW
                 ui.with_layout(Layout::left_to_right(Align::TOP), |ui| {
-                    ui.add_space(15.);
-                });
+                    // Center: Display status of dual, embd, alignment, and orthogonality
 
-                ui.add_space(5.);
+                    ui.add_space(17.);
 
-                // THIRD ROW
-                ui.with_layout(Layout::left_to_right(Align::TOP), |ui| {
-                    ui.add_space(15.);
+                    let text_size = 12.;
 
                     bevy_egui::egui::menu::bar(ui, |ui| {
-                        if if conf.automatic {
-                            sleek_button(ui, "AUTO")
+                        // ****************
+                        // INPUT
+                        // ****************
+                        label(ui, "Input", text_size, Color32::WHITE);
+                        label(ui, &format!("({})", solution.current_solution.mesh_ref.nr_verts()), text_size, Color32::GRAY);
+
+                        let mut stopped = false;
+
+                        let stop_label = "  🚫  ";
+                        let continue_label = "─────";
+
+                        if conf.stop == Phase::Input {
+                            stopped = true;
+                            if sleek_button_warn(ui, stop_label) {
+                                conf.stop = Phase::None;
+                            }
+                        } else if sleek_button_unfocused(ui, continue_label) {
+                            conf.stop = Phase::Input;
+                        }
+
+                        // ****************
+                        // LOOPS
+                        // ****************
+                        if solution.current_solution.mesh_ref.nr_verts() == 0 || stopped {
+                            label(ui, "Loops", text_size, Color32::GRAY);
                         } else {
-                            sleek_button_unfocused(ui, "AUTO")
-                        } {
-                            if conf.automatic {
-                                conf.automatic = false;
-                            } else {
-                                conf.automatic = true;
-                                conf.interactive = false;
+                            menu_button(ui, "Loops", |ui| {
+                                if sleek_button(ui, "initialize") {
+                                    jobs.write(JobRequest::Run(Box::new(Job::InitializeLoops {
+                                        solution: solution.current_solution.clone(),
+                                        flowgraphs: mesh_ref.flow_graphs.clone(),
+                                        configuration: conf.clone(),
+                                    })));
+                                    ui.close_menu();
+                                }
+
+                                if sleek_button(ui, "evolve") {
+                                    jobs.write(JobRequest::Run(Box::new(Job::Evolve {
+                                        solution: solution.current_solution.clone(),
+                                        configuration: conf.clone(),
+                                        flowgraphs: mesh_ref.flow_graphs.clone(),
+                                    })));
+                                    ui.close_menu();
+                                }
+                                slider(ui, "iterations", &mut conf.iterations, 1..=20);
+                                slider(ui, "pool1", &mut conf.pool1, 1..=20);
+                                slider(ui, "pool2", &mut conf.pool2, 1..=50);
+                            });
+                            label(ui, &format!("({})", solution.current_solution.loops.len()), 12., Color32::GRAY);
+                        }
+
+                        if conf.stop == Phase::Loops {
+                            stopped = true;
+                            if sleek_button_warn(ui, stop_label) {
+                                conf.stop = Phase::None;
                             }
-                            conf.should_continue = false;
-                        };
+                        } else if sleek_button_unfocused(ui, continue_label) {
+                            conf.stop = Phase::Loops;
+                        }
 
-                        let rt: RichText = RichText::new("|").color(Color32::GRAY);
-                        ui.label(rt);
-
-                        if if conf.interactive {
-                            sleek_button(ui, "MANUAL")
-                        } else {
-                            sleek_button_unfocused(ui, "MANUAL")
-                        } {
-                            if conf.interactive {
-                                conf.interactive = false;
-                            } else {
-                                conf.interactive = true;
-                                conf.automatic = false;
+                        // ****************
+                        // DUAL
+                        // ****************
+                        match (&solution.current_solution.loops.len(), stopped) {
+                            (0, _) | (_, true) => {
+                                label(ui, "Dual", text_size, Color32::GRAY);
                             }
-                            conf.should_continue = false;
-                        };
-
-                        ui.add_space(15.);
-
-                        if conf.automatic {
-                            if sleek_button(ui, "initialize") {
-                                jobs.write(JobRequest::Run(Box::new(Job::InitializeLoops {
-                                    solution: solution.current_solution.clone(),
-                                    flowgraphs: mesh_ref.flow_graphs.clone(),
-                                })));
-                            }
-
-                            if sleek_button(ui, "mutate") {
-                                jobs.write(JobRequest::Run(Box::new(Job::Evolve {
-                                    solution: solution.current_solution.clone(),
-                                    iterations: 10,
-                                    pool1: 10,
-                                    pool2: 30,
-                                    flowgraphs: mesh_ref.flow_graphs.clone(),
-                                })));
+                            _ => {
+                                menu_button(ui, "Dual", |ui| {
+                                    if sleek_button(ui, "(re)compute") {
+                                        jobs.write(JobRequest::Run(Box::new(Job::ComputeDual {
+                                            solution: solution.current_solution.clone(),
+                                            configuration: conf.clone(),
+                                        })));
+                                        ui.close_menu();
+                                    }
+                                });
+                                let status = match solution.current_solution.dual {
+                                    Ok(_) => "(Ok)",
+                                    Err(_) => "(err)",
+                                };
+                                label(ui, status, text_size, Color32::GRAY);
                             }
                         }
 
-                        if conf.interactive {
-                            for direction in [PrincipalDirection::X, PrincipalDirection::Y, PrincipalDirection::Z] {
-                                radio(
-                                    ui,
-                                    &mut conf.direction,
-                                    direction,
-                                    Color32::from_rgb(
-                                        (colors::from_direction(direction, Some(Perspective::Dual), None)[0] * 255.) as u8,
-                                        (colors::from_direction(direction, Some(Perspective::Dual), None)[1] * 255.) as u8,
-                                        (colors::from_direction(direction, Some(Perspective::Dual), None)[2] * 255.) as u8,
-                                    ),
-                                );
+                        if conf.stop == Phase::Dual {
+                            stopped = true;
+                            if sleek_button_warn(ui, stop_label) {
+                                conf.stop = Phase::None;
                             }
+                        } else if sleek_button_unfocused(ui, continue_label) {
+                            conf.stop = Phase::Dual;
+                        }
 
-                            // add slider for alpha (or 1-beta)
-                            slider(ui, "alpha", &mut conf.alpha, 0.0..=1.0);
+                        // ****************
+                        // LAYOUT
+                        // ****************
+                        match (&solution.current_solution.dual, stopped) {
+                            (Err(_), _) | (_, true) => {
+                                label(ui, "Layout", text_size, Color32::GRAY);
+                            }
+                            (Ok(_), _) => {
+                                menu_button(ui, "Layout", |ui| {
+                                    // Place corners
+                                    if sleek_button(ui, "(re)compute corners") {
+                                        jobs.write(JobRequest::Run(Box::new(Job::PlaceCorners {
+                                            solution: solution.current_solution.clone(),
+                                            configuration: conf.clone(),
+                                        })));
+                                        ui.close_menu();
+                                    }
+                                    // Place paths
+                                    if sleek_button(ui, "(re)compute paths") {
+                                        jobs.write(JobRequest::Run(Box::new(Job::PlacePaths {
+                                            solution: solution.current_solution.clone(),
+                                            configuration: conf.clone(),
+                                        })));
+                                        ui.close_menu();
+                                    }
+                                    // Optimize corners
+                                    if sleek_button(ui, "optimize") {
+                                        jobs.write(JobRequest::Run(Box::new(Job::SmoothenLayout {
+                                            solution: solution.current_solution.clone(),
+                                            configuration: conf.clone(),
+                                        })));
+                                        ui.close_menu();
+                                    }
+                                });
 
-                            if let Some(edgepair) = conf.selected {
-                                if let Some(Some(sol)) = solution.next[conf.direction as usize].get(&edgepair) {
-                                    ui.label("DUAL[");
-                                    if sol.dual.is_ok() {
-                                        ui.label(colored_text("Ok", Color32::GREEN));
+                                if let Some(layout) = &solution.current_solution.layout {
+                                    if let (Some(alignment), Some(orthogonality)) = (layout.alignment, layout.orthogonality) {
+                                        label(ui, &format!("({:.3}, {:.3})", alignment, orthogonality), text_size, Color32::GRAY);
                                     } else {
-                                        ui.label(colored_text(&format!("{:?}", sol.dual.as_ref().err()), Color32::RED));
+                                        label(ui, "(Quality missing(?))", text_size, Color32::GRAY);
                                     }
-                                    ui.label("]");
-
-                                    ui.label("EMBD[");
-                                    if sol.layout.is_ok() {
-                                        ui.label(colored_text("Ok", Color32::GREEN));
-                                    } else {
-                                        ui.label(colored_text(&format!("{:?}", sol.layout.as_ref().err()), Color32::RED));
-                                    }
-
-                                    ui.label("]");
-
-                                    if let Some(alignment) = sol.alignment {
-                                        ui.label("ALIGN[");
-                                        ui.label(format!("{alignment:.3}"));
-                                        ui.label("]");
-                                    }
+                                } else {
+                                    label(ui, "(None)", text_size, Color32::GRAY);
                                 }
+                            }
+                        }
+
+                        if conf.stop == Phase::Layout {
+                            stopped = true;
+                            if sleek_button_warn(ui, stop_label) {
+                                conf.stop = Phase::None;
+                            }
+                        } else if sleek_button_unfocused(ui, continue_label) {
+                            conf.stop = Phase::Layout;
+                        }
+
+                        // ****************
+                        // POLYCUBE
+                        // ****************
+                        match (&solution.current_solution.layout, stopped) {
+                            (None, _) | (_, true) => {
+                                label(ui, "Polycube", text_size, Color32::GRAY);
+                            }
+                            (Some(_), _) => {
+                                menu_button(ui, "Polycube", |ui| {
+                                    ui.checkbox(&mut conf.unit, "unit");
+                                    if sleek_button(ui, "(re)compute") {
+                                        jobs.write(JobRequest::Run(Box::new(Job::ComputePolycube {
+                                            solution: solution.current_solution.clone(),
+                                            configuration: conf.clone(),
+                                        })));
+                                        ui.close_menu();
+                                    }
+                                });
+                            }
+                        }
+
+                        if conf.stop == Phase::Polycube {
+                            stopped = true;
+                            if sleek_button_warn(ui, stop_label) {
+                                conf.stop = Phase::None;
+                            }
+                        } else if sleek_button_unfocused(ui, continue_label) {
+                            conf.stop = Phase::Polycube;
+                        }
+
+                        // ****************
+                        // QUAD
+                        // ****************
+                        match (&solution.current_solution.quad, stopped) {
+                            (None, _) | (_, true) => {
+                                label(ui, "Quad", text_size, Color32::GRAY);
+                            }
+                            (Some(_quad), _) => {
+                                menu_button(ui, "Quad", |ui| {
+                                    if sleek_button(ui, "(re)compute") {
+                                        jobs.write(JobRequest::Run(Box::new(Job::ComputeQuad {
+                                            solution: solution.current_solution.clone(),
+                                            configuration: conf.clone(),
+                                        })));
+                                        ui.close_menu();
+                                    }
+
+                                    slider(ui, "omega", &mut conf.omega, 1..=20);
+
+                                    if sleek_button(ui, "optimize") {
+                                        jobs.write(JobRequest::Run(Box::new(Job::SmoothenQuad {
+                                            solution: solution.current_solution.clone(),
+                                            configuration: conf.clone(),
+                                        })));
+                                        ui.close_menu();
+                                    }
+                                });
+
+                                label(ui, "(Ok)", 12., Color32::GRAY);
                             }
                         }
                     });
                 });
 
-                ui.add_space(5.);
+                sep(ui);
             });
         });
-
-        conf.ui_is_hovered[0] = ui.ui_contains_pointer();
     });
 
-    footer(&mut egui_ctx, &mut conf, &solution, &diagnostics, &job_state, &mut jobs, &time);
+    footer(&mut egui_ctx, &mut conf, &solution, &diagnostics, &job_state, &mut jobs, &time, axes_texture);
 
     let mut egui_handles = vec![];
     for obj in conf.window_shows_object.iter() {
@@ -746,23 +1064,17 @@ pub fn update(
             dock_area_style.overlay.selection_color = Color32::from_rgba_unmultiplied(50, 50, 50, 100);
             dock_area_style.overlay.overlay_type = egui_dock::OverlayType::HighlightedAreas;
 
-            let flags: HashMap<Objects, Vec<RenderFlag>> = render_object_store
-                .objects
-                .iter()
-                .map(|(&obj, data)| (obj, data.features.iter().map(|f| f.flag()).collect()))
-                .collect();
+            let settings_copy = &render_setting_store.objects;
+
             let mut tab_viewer = TabViewer {
                 egui_handles: egui_handles.clone(),
-                render_objects: flags.clone(),
+                render_settings: settings_copy.clone(),
+                axes_handle: axes_texture.clone(),
             };
             dock_area.style(dock_area_style).show(ui.ctx(), &mut tab_viewer);
 
-            if flags != tab_viewer.render_objects {
-                for obj in flags.keys() {
-                    for i in 0..flags[obj].len() {
-                        render_object_store.objects.get_mut(obj).unwrap().features[i].visible = tab_viewer.render_objects[obj][i].visible;
-                    }
-                }
+            if settings_copy != &tab_viewer.render_settings {
+                render_setting_store.objects = tab_viewer.render_settings.clone();
             }
         });
 }
@@ -813,7 +1125,7 @@ pub fn text(string: &str) -> text::LayoutJob {
 
 pub fn colored_text(string: &str, color: Color32) -> text::LayoutJob {
     let mut job = text::LayoutJob::default();
-    job.append(string, 0.0, text_format(13.0, color));
+    job.append(string, 0.0, text_format(12., color));
     job
 }
 
@@ -829,16 +1141,24 @@ pub fn text_format(size: f32, color: Color32) -> TextFormat {
 }
 
 pub fn menu_button(ui: &mut Ui, label: &str, f: impl FnOnce(&mut Ui)) {
-    bevy_egui::egui::menu::menu_button(ui, RichText::new(label).color(Color32::WHITE), f);
+    bevy_egui::egui::menu::menu_button(ui, RichText::new(label).color(Color32::WHITE).size(12.), f);
 }
 
 #[allow(dead_code)]
 pub fn menu_button_unfocused(ui: &mut Ui, label: &str, f: impl FnOnce(&mut Ui)) {
-    bevy_egui::egui::menu::menu_button(ui, RichText::new(label).color(Color32::GRAY), f);
+    bevy_egui::egui::menu::menu_button(ui, RichText::new(label).color(Color32::GRAY).size(12.), f);
 }
 
 pub fn sleek_button(ui: &mut Ui, label: &str) -> bool {
-    bevy_egui::egui::menu::menu_button(ui, RichText::new(label).color(Color32::WHITE), |ui| {
+    bevy_egui::egui::menu::menu_button(ui, RichText::new(label).color(Color32::WHITE).size(12.), |ui| {
+        ui.close_menu();
+    })
+    .response
+    .clicked()
+}
+
+pub fn sleek_button_warn(ui: &mut Ui, label: &str) -> bool {
+    bevy_egui::egui::menu::menu_button(ui, RichText::new(label).color(RED).size(12.), |ui| {
         ui.close_menu();
     })
     .response
@@ -846,11 +1166,17 @@ pub fn sleek_button(ui: &mut Ui, label: &str) -> bool {
 }
 
 pub fn sleek_button_unfocused(ui: &mut Ui, label: &str) -> bool {
-    bevy_egui::egui::menu::menu_button(ui, RichText::new(label).color(Color32::GRAY), |ui| {
+    bevy_egui::egui::menu::menu_button(ui, RichText::new(label).color(Color32::GRAY).size(12.), |ui| {
         ui.close_menu();
     })
     .response
     .clicked()
+}
+
+pub fn label(ui: &mut Ui, label: &str, size: f32, color: Color32) {
+    let mut job = text::LayoutJob::default();
+    job.append(label, 0.0, text_format(size, color));
+    ui.label(job);
 }
 
 // pub fn timer_animation(time: &Time) -> String {

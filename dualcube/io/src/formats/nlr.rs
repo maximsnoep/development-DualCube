@@ -17,8 +17,14 @@ impl Export for Nlr {
         let path_geom = path.with_extension("geom");
         let path_cdim = path.with_extension("cdim");
         let path_bcdat = path.with_extension("bcdat");
+        let path_xloops = path.with_extension("xloops.seg");
+        let path_yloops = path.with_extension("yloops.seg");
+        let path_zloops = path.with_extension("zloops.seg");
+        let path_xpatches = path.with_extension("xpatches.seg");
+        let path_ypatches = path.with_extension("ypatches.seg");
+        let path_zpatches = path.with_extension("zpatches.seg");
 
-        if let (Ok(dual), Ok(layout), Some(polycube), Some(quad)) = (&solution.dual, &solution.layout, &solution.polycube, &solution.quad) {
+        if let (Ok(dual), Some(layout), Some(polycube), Some(quad)) = (&solution.dual, &solution.layout, &solution.polycube, &solution.quad) {
             let signature = " -- automatically generated via DualCube (Maxim Snoep)";
 
             // Minimum dimension of smallest edge in polycube (cartesian representation)
@@ -517,6 +523,45 @@ impl Export for Nlr {
                     .join("  ")
             )?;
             info!("Finished writing BCDAT file");
+
+            // ------------------------
+            // --- WRITE SEG FILE ---
+            //
+            //
+            //
+
+            for (path, dir) in [
+                (path_xloops, PrincipalDirection::X),
+                (path_yloops, PrincipalDirection::Y),
+                (path_zloops, PrincipalDirection::Z),
+            ] {
+                info!("Writing SEG file to {path:?} for direction {dir:?}");
+
+                let mut file_seg = std::fs::File::create(path)?;
+
+                for xloop in solution.get_loops_in_direction(dir) {
+                    let edges_through_loop = &solution.loops.get(xloop).unwrap().edges;
+                    let mut positions_on_loop = edges_through_loop
+                        .iter()
+                        .map(|&edge_id| solution.get_coordinates_of_loop_in_edge(xloop, edge_id))
+                        .collect_vec();
+                    // repeat first position to make a loop
+                    positions_on_loop.push(positions_on_loop[0]);
+                    let lines = positions_on_loop
+                        .iter()
+                        .map(|pos| {
+                            format!(
+                                "    {}    {}    {}    ",
+                                ryu::Buffer::new().format(pos.x),
+                                ryu::Buffer::new().format(pos.y),
+                                ryu::Buffer::new().format(pos.z)
+                            )
+                        })
+                        .collect::<Vec<_>>()
+                        .join("\n");
+                    write!(file_seg, "    1\n    {}\n    1D SEGMENT\n{}\n", positions_on_loop.len(), lines)?;
+                }
+            }
         }
 
         Ok(())

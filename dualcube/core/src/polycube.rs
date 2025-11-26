@@ -4,11 +4,15 @@ use crate::prelude::*;
 use bimap::BiHashMap;
 use itertools::Itertools;
 use mehsh::prelude::*;
+use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
+use std::io::Write;
+use std::path::PathBuf;
 
-mehsh::prelude::define_tag!(POLYCUBE);
+#[derive(Default, Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub struct POLYCUBE;
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct Polycube {
     pub structure: Mesh<POLYCUBE>,
 
@@ -91,7 +95,7 @@ impl Polycube {
         for direction in [PrincipalDirection::X, PrincipalDirection::Y, PrincipalDirection::Z] {
             let direction_levels = &levels[direction as usize];
             for (level1, level2) in direction_levels.iter().tuple_windows() {
-                let distance = level2.0 - level1.0;
+                let distance = (level2.0 - level1.0).abs();
                 if distance < min_distance {
                     min_distance = distance;
                 }
@@ -101,9 +105,11 @@ impl Polycube {
         let scale = 1. / min_distance;
         for direction in [PrincipalDirection::X, PrincipalDirection::Y, PrincipalDirection::Z] {
             for (level, verts_in_level) in levels[direction as usize].iter() {
+                println!("Level {:?}", level);
                 let value = level * scale;
                 // round to nearest integer
                 let value = value.round();
+                println!("New level {:?}", value);
                 for vert in verts_in_level {
                     vert_to_coord.get_mut(vert).unwrap()[direction as usize] = value;
                 }
@@ -115,5 +121,82 @@ impl Polycube {
             let [x, y, z] = vert_to_coord[&vert_id];
             self.structure.set_position(vert_id, Vector3D::new(x, y, z));
         }
+    }
+
+    // Get the signed direction of an edge in the polycube (+X, -X, +Y, -Y, +Z, or -Z)
+    pub fn get_direction_of_edge(&self, a: VertKey<POLYCUBE>, b: VertKey<POLYCUBE>) -> (PrincipalDirection, Orientation) {
+        to_principal_direction(self.structure.vector(self.structure.edge_between_verts(a, b).unwrap().0))
+    }
+
+    pub fn to_dotgraph(dual: &Dual, layout: &Layout, path: &PathBuf) -> Result<(), std::io::Error> {
+        let mut file = std::fs::File::create(path)?;
+
+        let mut polycube = Self::from_dual(dual);
+        polycube.resize(dual, Some(layout));
+
+        let mut vert_ids = ids::IdMap::<VERT, POLYCUBE>::new();
+        for (i, vert_id) in polycube.structure.vert_ids().into_iter().enumerate() {
+            vert_ids.insert(i, vert_id);
+        }
+
+        writeln!(
+            file,
+            "/ comments are lines starting with a slash (/), they should be ignored when parsing the file"
+        )?;
+        writeln!(file, "/ ")?;
+        writeln!(file, "/ number of faces, number of edges, and number of vertices:")?;
+        writeln!(
+            file,
+            "{} {} {}",
+            polycube.structure.face_ids().len(),
+            polycube.structure.edge_ids().len() / 2,
+            polycube.structure.vert_ids().len(),
+        )?;
+
+        writeln!(file, "/ faces in format of:")?;
+        writeln!(file, "/ <VERT_ID> <VERT_ID> <VERT_ID> <VERT_ID>")?;
+        for face_id in polycube.structure.face_ids() {
+            let vertices = polycube.structure.vertices(face_id);
+            writeln!(
+                file,
+                "{}",
+                vertices.iter().map(|vert_id| format!("{}", vert_ids.id(vert_id).unwrap())).rev().join(" ")
+            )?;
+        }
+
+        writeln!(file, "/ edges in format of:")?;
+        writeln!(file, "/ <VERT_ID> <VERT_ID> <AXIS_LABEL> <TARGET_LENGTH>")?;
+        let mut edge_strings = vec![];
+        let mut edge_lengths = vec![];
+        for edge_id in polycube.structure.edge_ids() {
+            let verts = polycube.structure.vertices(edge_id);
+            let direction_vector = polycube.structure.vector(edge_id).normalize();
+            let (direction, orientation) = to_principal_direction(direction_vector);
+            if orientation == Orientation::Backwards {
+                continue;
+            }
+            let label = match direction {
+                PrincipalDirection::X => "X",
+                PrincipalDirection::Y => "Y",
+                PrincipalDirection::Z => "Z",
+            };
+            edge_strings.push(format!("{} {} {label}", vert_ids.id(&verts[0]).unwrap(), vert_ids.id(&verts[1]).unwrap()));
+
+            let path = layout.edge_to_path.get(&edge_id).unwrap();
+            let length_of_path = path.windows(2).map(|w| layout.granulated_mesh.distance(w[0], w[1])).sum::<f64>();
+            edge_lengths.push(length_of_path);
+        }
+
+        let min_edge_length = edge_lengths.iter().cloned().fold(f64::MAX, f64::min);
+        let edge_lengths_int = edge_lengths
+            .into_iter()
+            .map(|length: f64| (length / min_edge_length).ceil() as u32)
+            .collect::<Vec<_>>();
+
+        for i in 0..edge_strings.len() {
+            writeln!(file, "{} {}", edge_strings[i], edge_lengths_int[i])?;
+        }
+
+        Ok(())
     }
 }

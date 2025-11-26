@@ -5,7 +5,7 @@ edition = "2021"
 
 [dependencies]
 dualcube = { path = "../core" }
-mehsh = { path = "../../utils/mehsh", features = ["bevy", "obj", "stl", "petgraph"] }
+mehsh = { path = "../../utils/mehsh", features = ["bevy", "obj", "stl", "petgraph", "serde"] }
 grapff = { path = "../../utils/grapff" }
 itertools = "0.14.0"
 serde = { version = "1.0.219", features = ["rc", "derive"] }
@@ -18,7 +18,7 @@ bitcode = "0.6.6"
 zstd = "0.13.3"
 slotmap = { version = "1.0.7", features = ["serde"] }
 nalgebra = { version = "0.33.2", features = ["serde"] }
-# remove all serde once backwards compatibility is not needed
+rmp-serde = { version = "1.3.0" }
 
 [lints]
 workspace = true

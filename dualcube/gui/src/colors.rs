@@ -17,22 +17,22 @@ pub const GRAY: Color = [0.25, 0.25, 0.25];
 pub const LIGHT_GRAY: Color = [0.5, 0.5, 0.5];
 pub const WHITE: Color = [1.0, 1.0, 1.0]; // 255 255 255
 
-pub const RED: Color = [0.94, 0.48, 0.46]; // #F07A75
+pub const RED: Color = [0.95, 0.5, 0.5]; // #F07A75
 pub const RED_LIGHT: Color = [0.95, 0.61, 0.59]; // #F39B97
 
-pub const BLUE: Color = [0.48, 0.46, 0.94]; // #7A75F0
+pub const BLUE: Color = [0.5, 0.5, 0.95]; // #7A75F0
 pub const BLUE_LIGHT: Color = [0.61, 0.59, 0.95]; // #9B97F3
 
-pub const YELLOW: Color = [0.96, 0.97, 0.73]; // #F5F7BA
+pub const YELLOW: Color = [0.95, 0.95, 0.7]; // #F5F7BA
 pub const YELLOW_LIGHT: Color = [0.97, 0.98, 0.80]; // #F7F9CB
 
-pub const GREEN: Color = [0.69, 0.94, 0.46]; // #AFF075
-pub const GREEN_LIGHT: Color = [0.76, 0.95, 0.59]; // #C3F397
+pub const GREEN: Color = [0.7, 0.95, 0.5]; // #AFF075
+pub const GREEN_LIGHT: Color = [0.78, 0.95, 0.59]; // #C3F397
 
-pub const ORANGE: Color = [0.94, 0.71, 0.46]; // #F0B675
+pub const ORANGE: Color = [0.95, 0.7, 0.5]; // #F0B675
 pub const ORANGE_LIGHT: Color = [0.95, 0.78, 0.59]; // #F3C897
 
-pub const PURPLE: Color = [0.71, 0.46, 0.94]; // #B675F0
+pub const PURPLE: Color = [0.7, 0.5, 0.95]; // #B675F0
 pub const PURPLE_LIGHT: Color = [0.78, 0.59, 0.95]; // #C897F3
 
 // MAGMA: https://github.com/BIDS/colormap/blob/master/option_a.py
@@ -377,25 +377,29 @@ pub const fn from_direction(direction: PrincipalDirection, perspective: Option<P
     match (direction, perspective, orientation) {
         // General
         (PrincipalDirection::X, None, _) => RED,
-        (PrincipalDirection::Y, None, _) => BLUE,
-        (PrincipalDirection::Z, None, _) => YELLOW,
+        (PrincipalDirection::Y, None, _) => YELLOW,
+        (PrincipalDirection::Z, None, _) => BLUE,
 
         // Primal
         (PrincipalDirection::X, Some(Perspective::Primal), _) => RED,
-        (PrincipalDirection::Y, Some(Perspective::Primal), _) => BLUE,
-        (PrincipalDirection::Z, Some(Perspective::Primal), _) => YELLOW,
+        (PrincipalDirection::Y, Some(Perspective::Primal), _) => YELLOW,
+        (PrincipalDirection::Z, Some(Perspective::Primal), _) => BLUE,
 
         // Dual
-        (PrincipalDirection::X, Some(Perspective::Dual), None) => GREEN,
-        (PrincipalDirection::X, Some(Perspective::Dual), Some(Orientation::Forwards)) => GREEN,
-        (PrincipalDirection::X, Some(Perspective::Dual), Some(Orientation::Backwards)) => GREEN_LIGHT,
+        (PrincipalDirection::X, Some(Perspective::Dual), None) => RED,
+        (PrincipalDirection::X, Some(Perspective::Dual), Some(Orientation::Forwards)) => RED,
+        (PrincipalDirection::X, Some(Perspective::Dual), Some(Orientation::Backwards)) => RED_LIGHT,
 
-        (PrincipalDirection::Y, Some(Perspective::Dual), None) => ORANGE,
-        (PrincipalDirection::Y, Some(Perspective::Dual), Some(Orientation::Forwards)) => ORANGE,
-        (PrincipalDirection::Y, Some(Perspective::Dual), Some(Orientation::Backwards)) => ORANGE_LIGHT,
+        (PrincipalDirection::Y, Some(Perspective::Dual), None) => YELLOW,
+        (PrincipalDirection::Y, Some(Perspective::Dual), Some(Orientation::Forwards)) => YELLOW,
+        (PrincipalDirection::Y, Some(Perspective::Dual), Some(Orientation::Backwards)) => YELLOW_LIGHT,
 
-        (PrincipalDirection::Z, Some(Perspective::Dual), None) => PURPLE,
-        (PrincipalDirection::Z, Some(Perspective::Dual), Some(Orientation::Forwards)) => PURPLE,
-        (PrincipalDirection::Z, Some(Perspective::Dual), Some(Orientation::Backwards)) => PURPLE_LIGHT,
+        (PrincipalDirection::Z, Some(Perspective::Dual), None) => BLUE,
+        (PrincipalDirection::Z, Some(Perspective::Dual), Some(Orientation::Forwards)) => BLUE,
+        (PrincipalDirection::Z, Some(Perspective::Dual), Some(Orientation::Backwards)) => BLUE_LIGHT,
     }
+}
+
+pub fn to_bevy(color: Color) -> bevy::color::Color {
+    bevy::color::Color::srgb(color[0], color[1], color[2])
 }
