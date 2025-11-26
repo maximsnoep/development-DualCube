@@ -332,22 +332,18 @@ fn header(
 
                                     let mut path = vec![];
                                     let random = random_range(0. ..360.);
-                                    println!("Random value: {}", random);
                                     for _ in 0..n {
                                         if let Some(line) = lines.next() {
                                             // Lines are formatted either as:
                                             // - v INDEX_A
                                             // - e INDEX_A INDEX_B T_VALUE, where it should be positioned at T_VALUE from INDEX_A to INDEX_B
                                             let parts: Vec<&str> = line.split_whitespace().collect();
-                                            println!("parts: {:?}", parts);
                                             match parts.as_slice() {
                                                 ["v", index] => {
-                                                    println!("Found vertex: {}", index);
                                                     let index: usize = index.parse().unwrap();
                                                     // get the position by using the vertex_map
                                                     if let Some(&vert_id) = vertex_map.map.key(index) {
                                                         let position = solution.current_solution.mesh_ref.position(vert_id);
-                                                        println!("Found vertex position: {:?}", position);
                                                         let worldview_position = world_to_view(position, translation, scale);
                                                         path.push(worldview_position);
                                                     }
@@ -355,8 +351,15 @@ fn header(
                                                 ["e", start, end, t_value] => {
                                                     let start: usize = start.parse().unwrap();
                                                     let end: usize = end.parse().unwrap();
-                                                    let t_value: f32 = t_value.parse().unwrap();
-                                                    // skip for now.
+                                                    let t_value: f64 = t_value.parse().unwrap();
+                                                    if let (Some(&start_vert), Some(&end_vert)) = (vertex_map.map.key(start), vertex_map.map.key(end)) {
+                                                        let start_pos = solution.current_solution.mesh_ref.position(start_vert);
+                                                        let end_pos = solution.current_solution.mesh_ref.position(end_vert);
+                                                        // get the position T_VALUE from start_pos towards end_pos
+                                                        let position = start_pos.lerp(&end_pos, t_value);
+                                                        let worldview_position = world_to_view(position, translation, scale);
+                                                        path.push(worldview_position);
+                                                    }
                                                 }
                                                 _ => {}
                                             }
