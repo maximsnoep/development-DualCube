@@ -1,3 +1,5 @@
+use crate::layout::LayoutError;
+use crate::polycube::POLYCUBE;
 use crate::prelude::*;
 use crate::{
     dual::{Dual, PropertyViolationError},
@@ -5,13 +7,16 @@ use crate::{
     polycube::Polycube,
     quad::Quad,
 };
+use grapff::Grapff;
 use itertools::Itertools;
 use mehsh::prelude::*;
 use ordered_float::OrderedFloat;
 use rand::{rng, seq::IteratorRandom};
 use rayon::iter::{IntoParallelIterator, ParallelIterator};
+use serde::{Deserialize, Serialize};
 use slotmap::SlotMap;
 use std::{collections::HashSet, hash::Hash, sync::Arc};
+use thiserror::Error;
 
 slotmap::new_key_type! {
     pub struct LoopID;
@@ -24,12 +29,26 @@ pub struct NodeCopy {
 }
 
 // A loop forms the basis of the dual structure.
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct Loop {
     // A loop is defined by a sequence of half-edges.
     pub edges: Vec<EdgeID>,
     // the direction or labeling associated with the loop
     pub direction: PrincipalDirection,
+}
+
+#[derive(Error, Debug, Clone, Serialize, Deserialize)]
+pub enum SolutionError {
+    #[error("Something is wrong with the DUAL representation: {0}")]
+    DualError(#[from] PropertyViolationError),
+    #[error("Something is wrong with the PRIMAL representation: {0}")]
+    PrimalError(#[from] LayoutError),
+    #[error("The DUAL representation is not initialized and can therefore not be modified.")]
+    NoDual,
+    #[error("The PRIMAL representation is not initialized and can therefore not be modified.")]
+    NoPrimal,
+    #[error("The POLYCUBE representation is not initialized and can therefore not be modified.")]
+    NoPolycube,
 }
 
 #[must_use]
@@ -80,24 +99,33 @@ impl Loop {
     }
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Solution {
     pub mesh_ref: Arc<Mesh<INPUT>>,
     pub loops: SlotMap<LoopID, Loop>,
     occupied: ids::SecMap<EDGE, INPUT, Vec<LoopID>>,
+    pub last_loop: Option<LoopID>,
 
     pub dual: Result<Dual, PropertyViolationError>,
     pub polycube: Option<Polycube>,
-    pub layout: Result<Layout, PropertyViolationError>,
+    pub layout: Option<Layout>,
     pub quad: Option<Quad>,
-
-    pub alignment_per_triangle: ids::SecMap<FACE, INPUT, f64>,
-    pub alignment: Option<f64>,
 
     pub external_flag: Option<ids::SecMap<FACE, INPUT, usize>>,
 }
 
 impl Solution {
+    pub fn clear(&mut self) {
+        self.dual = Err(PropertyViolationError::default());
+        self.polycube = None;
+        self.layout = None;
+    }
+
+    // ***
+    // STEPS OF A SOLUTION
+    // ***
+
+    // Create new solution
     pub fn new(mesh_ref: Arc<Mesh<INPUT>>) -> Self {
         Self {
             mesh_ref,
@@ -105,20 +133,385 @@ impl Solution {
             occupied: ids::SecMap::new(),
             dual: Err(PropertyViolationError::default()),
             polycube: None,
-            layout: Err(PropertyViolationError::default()),
+            layout: None,
             quad: None,
-            alignment_per_triangle: ids::SecMap::new(),
-            alignment: None,
             external_flag: None,
+            last_loop: None,
         }
     }
 
-    pub fn clear(&mut self) {
-        self.dual = Err(PropertyViolationError::default());
+    // Initialize loop structure
+    pub fn initialize(&mut self, flow_graphs: &[grapff::fixed::FixedGraph<EdgeID, f64>; 3]) {
+        let m = |b: f64| OrderedFloat(b.powi(10));
+        let s = |(p, _): (&[EdgeID], f64)| -(p.len() as f64);
+
+        let samples = 3;
+        let x_loops = self.sample_loops(samples, PrincipalDirection::X, flow_graphs, m, s);
+        let y_loops = self.sample_loops(samples, PrincipalDirection::Y, flow_graphs, m, s);
+        let z_loops = self.sample_loops(samples, PrincipalDirection::Z, flow_graphs, m, s);
+
+        // Compute all n^3 combinations
+        let combinations = x_loops
+            .into_iter()
+            .cartesian_product(y_loops)
+            .cartesian_product(z_loops)
+            .map(|((x, y), z)| (x, y, z))
+            .collect_vec();
+
+        let candidate_solutions = combinations
+            .into_par_iter()
+            .filter_map(|(x_loop, y_loop, z_loop)| {
+                let mut solution = self.clone();
+                solution.add_loop(Loop {
+                    edges: x_loop,
+                    direction: PrincipalDirection::X,
+                });
+                solution.add_loop(Loop {
+                    edges: y_loop,
+                    direction: PrincipalDirection::Y,
+                });
+                solution.add_loop(Loop {
+                    edges: z_loop,
+                    direction: PrincipalDirection::Z,
+                });
+                if solution.reconstruct_solution(false, 1).is_err() {
+                    None
+                } else {
+                    Some(solution)
+                }
+            })
+            .collect::<Vec<_>>();
+
+        // Get the best solution based on quality
+        if let Some(best_solution) = candidate_solutions
+            .into_iter()
+            .max_by_key(|solution| OrderedFloat(solution.get_quality().unwrap()))
+        {
+            *self = best_solution;
+        }
+    }
+
+    // Evolve loop structure
+    pub fn evolve(&self, iterations: usize, pool1_size: usize, pool2_size: usize, flowgraphs: &[grapff::fixed::FixedGraph<EdgeID, f64>; 3]) -> Option<Self> {
+        let flowgraphs_clone = flowgraphs.clone();
+        let mut pool1 = vec![(self.clone(), self.get_quality().unwrap()); pool1_size];
+        for _ in 0..iterations {
+            let pool2 = (0..pool2_size)
+                .into_par_iter()
+                .map(|_| {
+                    // Grab a random solution from pool1
+                    let index = rand::Rng::random_range(&mut rand::rng(), 0..pool1.len());
+                    pool1[index].clone()
+                })
+                .filter_map(|(sol, _)| {
+                    // Mutate the solution
+                    sol.mutation(&flowgraphs_clone).map_or_else(
+                        || None,
+                        |mutation| {
+                            let quality = mutation.get_quality().unwrap_or(0.0);
+                            // Compute quality
+                            Some((mutation, quality))
+                        },
+                    )
+                })
+                .collect::<Vec<_>>()
+                .into_iter()
+                .sorted_by(|(_, a), (_, b)| a.partial_cmp(b).unwrap())
+                .rev();
+
+            for (_, quality) in pool2.clone() {
+                println!("Generated solution with quality: {quality}");
+            }
+
+            // overwrite pool1 with top 5 solutions of pool1 and top 5 solutions of pool2
+
+            pool1 = pool1
+                .into_iter()
+                .take(5)
+                .chain(pool2.take(5))
+                .sorted_by(|(_, a), (_, b)| a.partial_cmp(b).unwrap())
+                .rev()
+                .collect();
+
+            for (_, quality) in &pool1 {
+                println!("PICKED solution with quality: {quality}");
+            }
+        }
+
+        if pool1.is_empty() {
+            println!("No valid solutions generated.");
+            return None;
+        }
+
+        // Log all qualities of generated solutions
+        for (_, quality) in &pool1 {
+            println!("Generated solution with quality: {quality}");
+        }
+
+        // Grab the best solution
+        let (sol, quality) = pool1.into_iter().max_by(|(_, a), (_, b)| a.partial_cmp(b).unwrap()).unwrap();
+        println!("Picked solution with quality: {quality}");
+        Some(sol)
+    }
+
+    // Construct dual and polycube
+    pub fn construct_dual_and_polycube(&mut self) -> Result<(), PropertyViolationError> {
+        self.layout = None;
         self.polycube = None;
-        self.layout = Err(PropertyViolationError::default());
-        self.alignment_per_triangle.clear();
-        self.alignment = None;
+
+        self.dual = Dual::from(self.mesh_ref.clone(), &self.loops);
+        if let Err(e) = &self.dual {
+            return Err(e.clone());
+        }
+
+        self.polycube = Some(Polycube::from_dual(self.dual.as_ref().unwrap()));
+
+        // check all faces of the polycube have a normal
+        for face in self.polycube.as_ref().unwrap().structure.face_ids() {
+            let normal = self.polycube.as_ref().unwrap().structure.normal(face);
+            if normal.x.is_nan() || normal.y.is_nan() || normal.z.is_nan() {
+                println!("cube: {normal}");
+                return Err(PropertyViolationError::UnknownError);
+            }
+        }
+
+        Ok(())
+    }
+
+    // Place all corners
+    pub fn place_corners(&mut self) -> Result<(), SolutionError> {
+        if self.dual.is_err() {
+            return Err(SolutionError::NoDual);
+        }
+        if self.polycube.is_none() {
+            return Err(SolutionError::NoPolycube);
+        }
+
+        let mut layout = Layout::new(self.dual.as_ref().unwrap(), self.polycube.as_ref().unwrap());
+        layout.place_all_corners();
+        self.layout = Some(layout);
+        Ok(())
+    }
+
+    // Move a corner
+    pub fn move_corner_to(&mut self, corner: VertKey<POLYCUBE>, new_vertex: VertID) -> Result<(), SolutionError> {
+        if self.layout.is_none() {
+            return Err(SolutionError::NoPrimal);
+        }
+
+        let mut layout = self.layout.clone().unwrap();
+        layout.move_corner(corner, new_vertex)?;
+        self.layout = Some(layout);
+
+        Ok(())
+    }
+
+    // Place all paths
+    pub fn place_paths(&mut self) -> Result<(), SolutionError> {
+        if self.layout.is_none() {
+            return Err(SolutionError::NoPrimal);
+        }
+        let layout = self.layout.as_mut().unwrap();
+        layout.place_all_paths()?;
+        layout.assign_all_patches()?;
+        Ok(())
+    }
+
+    // Optimize corners
+    pub fn optimize_corners(&mut self) -> Result<(), SolutionError> {
+        if self.dual.is_err() {
+            return Err(SolutionError::NoDual);
+        }
+        let dual = self.layout.as_ref().unwrap().dual_ref.clone();
+        let polycube = self.layout.as_ref().unwrap().polycube_ref.clone();
+
+        let polycube_vertices = dual
+            .loop_structure
+            .face_ids()
+            .iter()
+            .map(|f| polycube.region_to_vertex.get_by_left(f).unwrap().to_owned())
+            // .filter(|&v| layout.polycube_ref.structure.edges(v).len() == 4)
+            .collect_vec();
+
+        let mut solution_backup = self.clone();
+
+        let mut solution_clone = self.clone();
+        let mut current_quality = solution_clone.get_quality().unwrap();
+
+        // Create priority queue with "quality" around a vertex as key;
+        // let mut priority_queue = std::collections::BinaryHeap::new();
+        // for &polycube_vertex in &polycube_vertices {
+        //     let mesh_vertex = solution_clone
+        //         .layout
+        //         .as_mut()
+        //         .unwrap()
+        //         .vert_to_corner
+        //         .get_by_left(&polycube_vertex)
+        //         .unwrap()
+        //         .to_owned();
+        //     let faces_of_vert = solution_clone.layout.as_mut().unwrap().granulated_mesh.faces(mesh_vertex);
+
+        //     let worst_quality = faces_of_vert
+        //         .iter()
+        //         .map(|&f| OrderedFloat(solution_clone.alignment_per_triangle.get(&f).unwrap().to_owned()))
+        //         .min()
+        //         .unwrap()
+        //         .0;
+
+        //     priority_queue.push((polycube_vertex, OrderedFloat(100. - worst_quality)));
+        // }
+
+        let vert_lookup = self.layout.as_ref().unwrap().granulated_mesh.kdtree();
+
+        // for _ in 0..5 {
+        //     for &polycube_vertex in &polycube_vertices {
+        //         println!(
+        //             "orthogonality of v {:?} is {:?}",
+        //             polycube_vertex,
+        //             solution_clone.orthogonality_per_vert.get(&polycube_vertex)
+        //         );
+
+        //         if solution_clone.orthogonality_per_vert.get(&polycube_vertex).is_some()
+        //             && *solution_clone.orthogonality_per_vert.get(&polycube_vertex).unwrap() > 0.7
+        //         {
+        //             continue;
+        //         }
+
+        //         if solution_clone
+        //             .layout
+        //             .as_mut()
+        //             .unwrap()
+        //             .laplacian_corner_shoot(polycube_vertex, &vert_lookup)
+        //             .is_err()
+        //         {
+        //             solution_clone = solution_backup.clone();
+        //             continue;
+        //         }
+
+        //         solution_clone.compute_quality();
+        //         let quality = solution_clone.get_quality().unwrap();
+        //         if quality >= current_quality {
+        //             solution_backup = solution_clone.clone();
+        //             current_quality = quality;
+        //             println!("New quality: {:?}", current_quality);
+        //         } else {
+        //             solution_clone = solution_backup.clone();
+        //         }
+        //     }
+        // }
+
+        for _ in 0..1 {
+            for &polycube_vertex in &polycube_vertices {
+                // if self.polycube.as_ref().unwrap().structure.edges(vert).len() == 4 {
+                //     continue;
+                // }
+                // check the "quality" around this vert, if its already good, dont improve it
+                let layout = solution_clone.layout.as_mut().unwrap();
+                // let mesh_vertex = layout.vert_to_corner.get_by_left(&polycube_vertex).unwrap().to_owned();
+                // let faces_of_vert = layout.granulated_mesh.faces(mesh_vertex);
+
+                // let worst_quality = faces_of_vert
+                //     .iter()
+                //     .map(|&f| OrderedFloat(layout.alignment_per_triangle.get(&f).unwrap().to_owned()))
+                //     .min()
+                //     .unwrap();
+
+                // if worst_quality > OrderedFloat(0.5) {
+                //     continue;
+                // }
+
+                if layout.laplacian_corner_shoot(polycube_vertex, &vert_lookup).is_err() {
+                    solution_clone = solution_backup.clone();
+                    continue;
+                }
+
+                // let new_worst_quality = faces_of_vert
+                //     .iter()
+                //     .map(|&f| OrderedFloat(layout.alignment_per_triangle.get(&f).unwrap().to_owned()))
+                //     .min()
+                //     .unwrap();
+
+                // if new_worst_quality < worst_quality {
+                //     solution_clone = solution_backup.clone();
+                //     continue;
+                // }
+
+                // solution_clone.get_quality();
+                let quality = solution_clone.get_quality().unwrap();
+                // if quality >= current_quality {
+                solution_backup = solution_clone.clone();
+                current_quality = quality;
+                println!("New quality: {:?}", current_quality);
+                // } else {
+                //     solution_clone = solution_backup.clone();
+                // }
+            }
+        }
+
+        // for _ in 0..2 {
+        //     for &vert in &verts {
+        //         if solution_clone.layout.as_mut().unwrap().laplacian_corner(vert).is_err() {
+        //             solution_clone = solution_backup.clone();
+        //             continue;
+        //         }
+        //         solution_clone.compute_quality();
+        //         let quality = solution_clone.get_quality().unwrap();
+        //         if quality >= current_quality {
+        //             solution_backup = solution_clone.clone();
+        //             current_quality = quality;
+        //             println!("New quality: {:?}", current_quality);
+        //         } else {
+        //             solution_clone = solution_backup.clone();
+        //         }
+        //     }
+        // }
+
+        *self = solution_clone;
+
+        Ok(())
+    }
+
+    // Construct quad
+    pub fn construct_quad(&mut self, omega: usize) -> Result<(), PropertyViolationError> {
+        self.quad = Quad::from_layout(self.layout.as_ref().unwrap(), self.polycube.as_ref().unwrap(), omega);
+        Ok(())
+    }
+
+    // Optimize quad
+    pub fn optimize_quad(&mut self) -> Option<()> {
+        if let Some(quad) = self.quad.as_mut() {
+            quad.smoothing(10, &self.mesh_ref, false);
+            Some(())
+        } else {
+            None
+        }
+    }
+
+    /// REST OF THE FUNCS
+    ///
+    ///
+    ///
+    ///
+    ///
+    ///
+    ///
+    ///
+    ///
+    ///
+    ///
+    ///
+    ///
+
+    pub fn recompute_occupied(&mut self) {
+        self.occupied.clear();
+        for (loop_id, loop_) in &self.loops {
+            for &e in &loop_.edges {
+                if !self.occupied.contains_key(&e) {
+                    self.occupied.insert(&e, vec![]);
+                }
+                self.occupied.get_mut(&e).unwrap().push(loop_id);
+            }
+        }
     }
 
     pub fn del_loop(&mut self, loop_id: LoopID) {
@@ -143,6 +536,8 @@ impl Solution {
             }
             self.occupied.get_mut(&e).unwrap().push(loop_id);
         }
+
+        self.last_loop = Some(loop_id);
 
         loop_id
     }
@@ -174,8 +569,15 @@ impl Solution {
         p + offset * (q - p)
     }
 
+    pub fn get_loops_in_direction(&self, direction: PrincipalDirection) -> Vec<LoopID> {
+        self.loops
+            .iter()
+            .filter_map(|(id, l)| if l.direction == direction { Some(id) } else { None })
+            .collect()
+    }
+
     pub fn count_loops_in_direction(&self, direction: PrincipalDirection) -> usize {
-        self.loops.iter().filter(|(_, l)| l.direction == direction).count()
+        self.get_loops_in_direction(direction).len()
     }
 
     pub fn loop_to_direction(&self, loop_id: LoopID) -> PrincipalDirection {
@@ -254,6 +656,18 @@ impl Solution {
         // Check if none of the edges are already occupied
         for edge_pair in Self::cycled_windows(edges) {
             if self.is_occupied(edge_pair).is_some() {
+                println!("{:?}", edge_pair);
+                println!("error 1");
+                return Err(PropertyViolationError::UnknownError);
+            }
+        }
+
+        // Check if the loop contains any duplicates
+        let mut seen = HashSet::new();
+        for &edge in edges {
+            if !seen.insert(edge) {
+                println!("{:?}", edge);
+                println!("error 4");
                 return Err(PropertyViolationError::UnknownError);
             }
         }
@@ -265,12 +679,14 @@ impl Solution {
         for edge_pair in Self::cycled_windows(edges) {
             if alternate {
                 if self.mesh_ref.twin(edge_pair[0]) != edge_pair[1] {
+                    println!("error 2");
                     return Err(PropertyViolationError::UnknownError);
                 }
                 assert!(self.mesh_ref.twin(edge_pair[0]) == edge_pair[1]);
                 alternate = false;
             } else {
                 if self.mesh_ref.face(edge_pair[0]) != self.mesh_ref.face(edge_pair[1]) {
+                    println!("error 3");
                     return Err(PropertyViolationError::UnknownError);
                 }
                 assert!(self.mesh_ref.face(edge_pair[0]) == self.mesh_ref.face(edge_pair[1]));
@@ -279,6 +695,31 @@ impl Solution {
         }
 
         Ok(())
+    }
+
+    pub fn construct_part_of_loop(
+        &self,
+        [e1, e2]: [EdgeID; 2],
+        domain: &grapff::fixed::FixedGraph<EdgeID, f64>,
+        measure: &impl Fn(f64) -> OrderedFloat<f64>,
+    ) -> Option<(Vec<EdgeID>, f64)> {
+        let (solution, cost) = domain.shortest_path(e1, e2, measure).unwrap_or_default();
+
+        // let flatten = solution;
+
+        // // // If three edges share the same face, remove the middle edge
+        // // let mut short = vec![];
+        // // for i in 0..flatten.len() {
+        // //     if self.mesh_ref.face(flatten[i]) == self.mesh_ref.face(flatten[(i + flatten.len() - 1) % flatten.len()])
+        // //         && self.mesh_ref.face(flatten[i]) == self.mesh_ref.face(flatten[(i + 1) % flatten.len()])
+        // //     {
+        // //         continue;
+        // //     }
+
+        // //     short.push(flatten[i]);
+        // // }
+
+        Some((solution, *cost))
     }
 
     pub fn construct_loop(
@@ -323,6 +764,84 @@ impl Solution {
         } else {
             None
         }
+    }
+
+    pub fn construct_loop_with_anchors(
+        &self,
+        anchors: &[[EdgeID; 2]],
+        direction: PrincipalDirection,
+        flow_graph: &grapff::fixed::FixedGraph<EdgeID, f64>,
+        measure: impl Fn(f64) -> OrderedFloat<f64>,
+    ) -> Option<(Vec<EdgeID>, f64)> {
+        // Filter the original flow graph
+        let occupied = self.occupied_edgepairs();
+        let filter_edges = |edge: (&EdgeID, &EdgeID)| !occupied.contains(&(*edge.0, *edge.1));
+        let filter_nodes = |&node: &EdgeID| !self.loops_on_edge(node).iter().any(|&loop_id| self.loops[loop_id].direction == direction);
+        let g = flow_graph.filter_edges(filter_edges);
+        let g = g.filter_nodes(filter_nodes);
+
+        let mut two_loops = vec![];
+        for reverse in [true, false] {
+            let mut flipped_anchors = vec![];
+            for &[e1, e2] in anchors {
+                if let (Some(n1), Some(n2)) = (flow_graph.node_to_index(&e1), flow_graph.node_to_index(&e2)) {
+                    // Get the better direction
+                    println!("{:?} {:?}", e1, e2);
+                    let (new_e1, new_e2) = if measure(flow_graph.get_weight(n1, n2).to_owned()) < measure(flow_graph.get_weight(n2, n1).to_owned()) {
+                        (e1, e2)
+                    } else {
+                        (e2, e1)
+                    };
+                    flipped_anchors.push([new_e1, new_e2]);
+                }
+            }
+
+            let mut anchors_flattened = flipped_anchors.iter().flatten().copied().collect_vec();
+            anchors_flattened.push(anchors_flattened.first().cloned().unwrap());
+
+            let mut new_loop = vec![];
+
+            if reverse {
+                anchors_flattened.reverse();
+            }
+
+            for (&start, &end) in anchors_flattened.iter().tuple_windows() {
+                println!("{:?} {:?}", start, end);
+                if let Some((mut part, _)) = self.construct_part_of_loop([start, end], &g, &measure) {
+                    part.pop().unwrap();
+                    println!("{}", part.len());
+                    new_loop.extend(part);
+                } else {
+                    panic!("Failed to construct part of loop");
+                }
+            }
+
+            // If three edges share the same face, remove the middle edge
+            let mut short = vec![];
+            for i in 0..new_loop.len() {
+                if self.mesh_ref.face(new_loop[i]) == self.mesh_ref.face(new_loop[(i + new_loop.len() - 1) % new_loop.len()])
+                    && self.mesh_ref.face(new_loop[i]) == self.mesh_ref.face(new_loop[(i + 1) % new_loop.len()])
+                {
+                    continue;
+                }
+
+                short.push(new_loop[i]);
+            }
+
+            two_loops.push(short);
+        }
+
+        let shortest_loop = if two_loops[0].len() < two_loops[1].len() {
+            two_loops[0].clone()
+        } else {
+            two_loops[1].clone()
+        };
+
+        println!("{:?}", shortest_loop);
+        let res = self.check_loop(&shortest_loop);
+        println!("{:?}", res);
+
+        Some((shortest_loop, 0.0))
     }
 
     pub fn construct_unbounded_loop(
@@ -384,61 +903,11 @@ impl Solution {
             .collect::<Vec<_>>()
     }
 
-    pub fn initialize(&mut self, flow_graphs: &[grapff::fixed::FixedGraph<EdgeID, f64>; 3]) {
-        let m = |b: f64| OrderedFloat(b.powi(10));
-        let s = |(p, _): (&[EdgeID], f64)| -(p.len() as f64);
-
-        let samples = 3;
-        let x_loops = self.sample_loops(samples, PrincipalDirection::X, flow_graphs, m, s);
-        let y_loops = self.sample_loops(samples, PrincipalDirection::Y, flow_graphs, m, s);
-        let z_loops = self.sample_loops(samples, PrincipalDirection::Z, flow_graphs, m, s);
-
-        // Compute all n^3 combinations
-        let combinations = x_loops
-            .into_iter()
-            .cartesian_product(y_loops)
-            .cartesian_product(z_loops)
-            .map(|((x, y), z)| (x, y, z))
-            .collect_vec();
-
-        let candidate_solutions = combinations
-            .into_par_iter()
-            .filter_map(|(x_loop, y_loop, z_loop)| {
-                let mut solution = self.clone();
-                solution.add_loop(Loop {
-                    edges: x_loop,
-                    direction: PrincipalDirection::X,
-                });
-                solution.add_loop(Loop {
-                    edges: y_loop,
-                    direction: PrincipalDirection::Y,
-                });
-                solution.add_loop(Loop {
-                    edges: z_loop,
-                    direction: PrincipalDirection::Z,
-                });
-                if solution.reconstruct_solution(false, 1).is_err() {
-                    None
-                } else {
-                    Some(solution)
-                }
-            })
-            .collect::<Vec<_>>();
-
-        // Get the best solution based on quality
-        if let Some(best_solution) = candidate_solutions
-            .into_iter()
-            .max_by_key(|solution| OrderedFloat(solution.get_quality().unwrap()))
-        {
-            *self = best_solution;
-        }
-    }
-
     pub fn dual_is_ok(&self) -> bool {
         Dual::from(self.mesh_ref.clone(), &self.loops).is_ok()
     }
 
-    pub fn reconstruct_solution(&mut self, unit: bool, omega: usize) -> Result<(), PropertyViolationError> {
+    pub fn reconstruct_solution(&mut self, unit: bool, omega: usize) -> Result<(), SolutionError> {
         self.clear();
 
         if self.loops.len() < 3 {
@@ -447,139 +916,74 @@ impl Solution {
 
         log::info!("Reconstructing solution ({} loops) with unit: {}, omega: {}.", self.loops.len(), unit, omega);
 
-        self.dual = Dual::from(self.mesh_ref.clone(), &self.loops);
-        if let Err(e) = &self.dual {
-            return Err(e.clone());
-        }
-
-        self.polycube = Some(Polycube::from_dual(self.dual.as_ref().unwrap()));
+        let dual = Dual::from(self.mesh_ref.clone(), &self.loops)?;
+        let polycube = Polycube::from_dual(&dual);
 
         // check all faces of the polycube have a normal
-        for face in self.polycube.as_ref().unwrap().structure.face_ids() {
-            let normal = self.polycube.as_ref().unwrap().structure.normal(face);
+        for face in polycube.structure.face_ids() {
+            let normal = polycube.structure.normal(face);
             if normal.x.is_nan() || normal.y.is_nan() || normal.z.is_nan() {
-                return Err(PropertyViolationError::UnknownError);
+                return Err(SolutionError::NoPolycube);
             }
         }
 
-        for _ in 0..10 {
-            self.layout = Layout::embed(self.dual.as_ref().unwrap(), self.polycube.as_ref().unwrap());
-            if self.layout.is_ok() {
-                break;
+        'outer: for _ in 0..10 {
+            let layout = Layout::embed(&dual, &polycube);
+            if let Ok(ok_layout) = layout {
+                self.layout = Some(ok_layout);
+                break 'outer;
             }
         }
 
-        if let Err(e) = &self.layout {
-            return Err(e.clone());
+        if self.layout.is_none() {
+            return Err(SolutionError::NoPrimal);
         }
+        self.polycube = Some(polycube);
+        self.dual = Ok(dual);
 
         self.resize_polycube(unit);
 
-        self.compute_quality();
-
         log::info!("The constructed solution has quality: {:?}", self.get_quality());
 
-        self.quad = Some(Quad::from_layout(self.layout.as_ref().unwrap(), self.polycube.as_ref().unwrap(), omega));
+        self.quad = Quad::from_layout(self.layout.as_ref().unwrap(), self.polycube.as_ref().unwrap(), omega);
 
         Ok(())
     }
 
-    pub fn resize_polycube(&mut self, unit: bool) {
-        if let (Ok(dual), Some(polycube), Ok(layout)) = (&self.dual, &mut self.polycube, &mut self.layout) {
-            if unit {
-                polycube.resize(dual, None);
-            } else {
-                polycube.resize(dual, Some(layout));
-            }
+    pub fn resize_polycube(&mut self, unit: bool) -> Result<(), SolutionError> {
+        if self.dual.is_err() {
+            return Err(SolutionError::NoDual);
         }
-    }
+        let dual = self.dual.as_ref().unwrap();
+        if self.polycube.is_none() {
+            return Err(SolutionError::NoPolycube);
+        }
+        let polycube = self.polycube.as_mut().unwrap();
 
-    pub fn compute_quality(&mut self) {
-        self.alignment_per_triangle.clear();
-        self.alignment = None;
-
-        if let (Ok(layout), Some(polycube)) = (&self.layout, &self.polycube) {
-            let total_area: f64 = layout.granulated_mesh.face_ids().into_iter().map(|f| layout.granulated_mesh.size(f)).sum();
-            let mut total_score = 0.0;
-
-            for (&patch, patch_faces) in &layout.face_to_patch {
-                let mapped_normal = polycube.structure.normal(patch).normalize();
-                for &triangle_id in &patch_faces.faces {
-                    let actual_normal = layout.granulated_mesh.normal(triangle_id);
-                    let score = actual_normal.dot(&mapped_normal);
-                    self.alignment_per_triangle.insert(&triangle_id, score);
-                    total_score += score * layout.granulated_mesh.size(triangle_id) / total_area;
-                }
+        if unit {
+            polycube.resize(dual, None);
+            return Ok(());
+        } else {
+            if self.layout.is_none() {
+                return Err(SolutionError::NoPrimal);
             }
-            self.alignment = Some(total_score);
+            let layout = self.layout.as_ref().unwrap();
+            polycube.resize(dual, Some(layout));
+            return Ok(());
         }
     }
 
     pub fn get_quality(&self) -> Option<f64> {
-        let beta = 0.001;
-        self.alignment.map(|align| align - beta * self.loops.len() as f64)
-    }
-
-    pub fn evolve(&self, iterations: usize, pool1_size: usize, pool2_size: usize, flowgraphs: &[grapff::fixed::FixedGraph<EdgeID, f64>; 3]) -> Option<Self> {
-        let flowgraphs_clone = flowgraphs.clone();
-        let mut pool1 = vec![(self.clone(), self.get_quality().unwrap()); pool1_size];
-        for _ in 0..iterations {
-            let pool2 = (0..pool2_size)
-                .into_par_iter()
-                .map(|_| {
-                    // Grab a random solution from pool1
-                    let index = rand::Rng::random_range(&mut rand::rng(), 0..pool1.len());
-                    pool1[index].clone()
-                })
-                .filter_map(|(sol, _)| {
-                    // Mutate the solution
-                    sol.mutation(&flowgraphs_clone).map_or_else(
-                        || None,
-                        |mutation| {
-                            let quality = mutation.get_quality().unwrap_or(0.0);
-                            // Compute quality
-                            Some((mutation, quality))
-                        },
-                    )
-                })
-                .collect::<Vec<_>>()
-                .into_iter()
-                .sorted_by(|(_, a), (_, b)| a.partial_cmp(b).unwrap())
-                .rev();
-
-            for (_, quality) in pool2.clone() {
-                println!("Generated solution with quality: {quality}");
-            }
-
-            // overwrite pool1 with top 5 solutions of pool1 and top 5 solutions of pool2
-
-            pool1 = pool1
-                .into_iter()
-                .take(5)
-                .chain(pool2.take(5))
-                .sorted_by(|(_, a), (_, b)| a.partial_cmp(b).unwrap())
-                .rev()
-                .collect();
-
-            for (_, quality) in &pool1 {
-                println!("PICKED solution with quality: {quality}");
-            }
-        }
-
-        if pool1.is_empty() {
-            println!("No valid solutions generated.");
+        if self.layout.is_none() {
             return None;
         }
-
-        // Log all qualities of generated solutions
-        for (_, quality) in &pool1 {
-            println!("Generated solution with quality: {quality}");
+        let layout = self.layout.as_ref().unwrap();
+        let beta = 0.001;
+        if let (Some(alignment), Some(orthogonality)) = (layout.alignment, layout.orthogonality) {
+            Some(alignment + orthogonality - beta * self.loops.len() as f64)
+        } else {
+            None
         }
-
-        // Grab the best solution
-        let (sol, quality) = pool1.into_iter().max_by(|(_, a), (_, b)| a.partial_cmp(b).unwrap()).unwrap();
-        println!("Picked solution with quality: {quality}");
-        Some(sol)
     }
 
     pub fn mutation(&self, flow_graphs: &[grapff::fixed::FixedGraph<EdgeID, f64>; 3]) -> Option<Self> {

@@ -1,5 +1,6 @@
 use crate::prelude::*;
 use bevy_math::Vec3;
+use itertools::Itertools;
 use std::collections::HashMap;
 
 #[derive(Default)]
@@ -67,32 +68,88 @@ where
         if self.faces.is_empty() {
             return (MeshBuilder::with_capacity(0).build(), Vector3D::new(0., 0., 0.), 1.);
         }
-
-        let k = self.vertices(self.faces.ids().next().unwrap()).len();
-
-        let mut bevy_mesh_builder = MeshBuilder::with_capacity(self.faces.len() * (k - 2) * 3);
-        let (triangle_mesh, face_map) = self.triangulate().unwrap();
-
-        for face_id in triangle_mesh.faces.ids() {
-            let corners = triangle_mesh.vertices(face_id);
-            let original_face = match face_map.get(&face_id) {
-                Some(&original_face) => original_face,
-                None => face_id,
-            };
-            let triangle = [corners[0], corners[1], corners[2]];
-            for vertex_id in triangle {
-                bevy_mesh_builder.add_vertex(
-                    &triangle_mesh.position(vertex_id),
-                    &triangle_mesh.normal(vertex_id),
-                    color_map.get(&original_face).unwrap_or(&[0., 0., 0.]),
-                );
-            }
-        }
-
+        let mut bevy_mesh_builder = self.fast_bevy_mesh(color_map);
         let (scale, translation) = self.scale_translation();
         bevy_mesh_builder.normalize(scale, translation);
-
         (bevy_mesh_builder.build(), translation, scale)
+    }
+
+    // Fast (non-storage) triangulation
+    fn fast_bevy_mesh(&self, color_map: &HashMap<FaceKey<M>, [f32; 3]>) -> MeshBuilder {
+        log::info!("Building Bevy mesh {}", self.nr_verts());
+        let k = self.vertices(self.faces.ids().next().unwrap()).len();
+
+        let positions = self
+            .face_ids()
+            .into_iter()
+            .flat_map(|face_id| {
+                let corners = self.vertices(face_id);
+
+                match corners.len() {
+                    3 => {
+                        let a = to_bevy_vec(&self.position(corners[0]));
+                        let b = to_bevy_vec(&self.position(corners[1]));
+                        let c = to_bevy_vec(&self.position(corners[2]));
+                        vec![a, b, c]
+                    }
+                    4 => {
+                        let a = to_bevy_vec(&self.position(corners[0]));
+                        let b = to_bevy_vec(&self.position(corners[1]));
+                        let c = to_bevy_vec(&self.position(corners[2]));
+                        let d = to_bevy_vec(&self.position(corners[3]));
+                        vec![d, a, b, b, c, d]
+                    }
+                    _ => vec![],
+                }
+            })
+            .collect_vec();
+
+        let normals = self
+            .face_ids()
+            .into_iter()
+            .flat_map(|face| {
+                let corners = self.vertices(face);
+                match corners.len() {
+                    3 => {
+                        let a = to_bevy_vec(&self.normal(corners[0]));
+                        let b = to_bevy_vec(&self.normal(corners[1]));
+                        let c = to_bevy_vec(&self.normal(corners[2]));
+                        vec![a, b, c]
+                    }
+                    4 => {
+                        let a = to_bevy_vec(&self.normal(corners[0]));
+                        let b = to_bevy_vec(&self.normal(corners[1]));
+                        let c = to_bevy_vec(&self.normal(corners[2]));
+                        let d = to_bevy_vec(&self.normal(corners[3]));
+                        vec![d, a, b, b, c, d]
+                    }
+                    _ => vec![],
+                }
+            })
+            .collect_vec();
+
+        let colors = self
+            .face_ids()
+            .into_iter()
+            .flat_map(|face| {
+                let color = color_map.get(&face).unwrap_or(&[0., 0., 0.]).to_owned();
+                let bevy_color = bevy_color::ColorToComponents::to_f32_array(bevy_color::Color::srgb(color[0], color[1], color[2]).to_linear());
+                match k {
+                    3 => vec![bevy_color; 3],
+                    4 => vec![bevy_color; 6],
+                    _ => vec![],
+                }
+            })
+            .collect_vec();
+
+        let uvs = vec![[0., 0.]; positions.len()];
+
+        MeshBuilder {
+            positions,
+            normals,
+            colors,
+            uvs,
+        }
     }
 
     // Construct a Bevy gizmos object of the wireframe (one that can be rendered using Bevy)

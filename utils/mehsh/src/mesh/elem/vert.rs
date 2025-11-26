@@ -1,6 +1,7 @@
 use crate::prelude::*;
 use core::panic;
 use itertools::Itertools;
+use std::collections::HashSet;
 
 impl<M: Tag> Mesh<M> {
     #[must_use]
@@ -34,32 +35,32 @@ impl<M: Tag> Mesh<M> {
     }
 
     #[must_use]
-    pub fn wedges(&self, a: VertKey<M>, b: VertKey<M>, c: VertKey<M>) -> (Vec<VertKey<M>>, Vec<VertKey<M>>) {
-        // First wedge is a to c (around b)
-        let wedge1 = std::iter::once(a)
+    pub fn outer_arcs(&self, a: VertKey<M>, b: VertKey<M>, c: VertKey<M>) -> (Vec<VertKey<M>>, Vec<VertKey<M>>) {
+        // First arc is a to c (around b)
+        let arc1 = std::iter::once(a)
             .chain(self.neighbors(b).into_iter().cycle().skip_while(|&v| v != a).skip(1).take_while(|&v| v != c))
             .chain([c])
             .collect_vec();
 
-        // Second wedge is c to a (around b)
-        let wedge2 = std::iter::once(c)
+        // Second arc is c to a (around b)
+        let arc2 = std::iter::once(c)
             .chain(self.neighbors(b).into_iter().cycle().skip_while(|&v| v != c).skip(1).take_while(|&v| v != a))
             .chain([a])
             .collect_vec();
 
-        // Return the wedges
-        (wedge1, wedge2)
+        // Return the arcs
+        (arc1, arc2)
     }
 
     #[must_use]
-    pub fn wedge_alpha(&self, (b, wedge): (VertKey<M>, &[VertKey<M>])) -> f64 {
-        wedge.windows(2).map(|vs| self.vertex_angle(vs[0], b, vs[1])).sum::<f64>()
+    pub fn arc_alpha(&self, (b, arc): (VertKey<M>, &[VertKey<M>])) -> f64 {
+        arc.windows(2).map(|vs| self.vertex_angle(vs[0], b, vs[1])).sum::<f64>()
     }
 
     #[must_use]
-    pub fn shortest_wedge(&self, a: VertKey<M>, b: VertKey<M>, c: VertKey<M>) -> (Vec<VertKey<M>>, f64) {
-        let (w1, w2) = self.wedges(a, b, c);
-        let (a1, a2) = (self.wedge_alpha((b, &w1)), self.wedge_alpha((b, &w2)));
+    pub fn arc_with_min_alpha(&self, a: VertKey<M>, b: VertKey<M>, c: VertKey<M>) -> (Vec<VertKey<M>>, f64) {
+        let (w1, w2) = self.outer_arcs(a, b, c);
+        let (a1, a2) = (self.arc_alpha((b, &w1)), self.arc_alpha((b, &w2)));
         if a1 < a2 { (w1, a1) } else { (w2.into_iter().rev().collect_vec(), a2) }
     }
 
@@ -136,5 +137,19 @@ impl<M: Tag> HasFaces<VERT, M> for Mesh<M> {
 impl<M: Tag> HasNeighbors<VERT, M> for Mesh<M> {
     fn neighbors(&self, id: VertKey<M>) -> Vec<VertKey<M>> {
         self.edges(id).iter().map(|&edge_id| self.root(self.twin(edge_id))).collect()
+    }
+
+    fn neighbors_k(&self, id: ids::Key<VERT, M>, k: usize) -> Vec<ids::Key<VERT, M>> {
+        let mut neighbors = vec![id];
+        for _ in 0..k {
+            neighbors = neighbors
+                .into_iter()
+                .flat_map(|n| self.neighbors(n))
+                .collect::<HashSet<_>>()
+                .into_iter()
+                .collect();
+        }
+        neighbors.retain(|&n| n != id);
+        neighbors
     }
 }
