@@ -362,8 +362,12 @@ impl Layout {
         };
         let normal_on_left = polycube.normal(polycube.face(edge_id));
         let normal_on_right = polycube.normal(polycube.face(polycube.twin(edge_id)));
+
         let angle_between_normals = normal_on_left.angle(&normal_on_right);
         let ridge_function = |a: NodeType, b: NodeType| {
+            if normal_on_left == normal_on_right {
+                return 1.0;
+            }
             let (normal1, normal2) = match (a, b) {
                 (NodeType::Vertex(a), NodeType::Vertex(b)) => {
                     let (edge1, edge2) = granulated_mesh.edge_between_verts(a, b).unwrap();
@@ -684,12 +688,12 @@ impl Layout {
     pub fn assign_all_patches(&mut self) -> Result<(), LayoutError> {
         // Verify the paths
         self.verify_paths()?;
-        self.face_to_patch.clear();
 
         // Get all blocked edges (ALL PATHS)
         let blocked = self
             .edge_to_path
             .values()
+            .flat_map(|path| path.windows(2))
             .map(|verts| self.granulated_mesh.edge_between_verts(verts[0], verts[1]).unwrap())
             .flat_map(|(a, b)| {
                 vec![
@@ -720,19 +724,9 @@ impl Layout {
         let patches =
             grapff::fluid::FluidGraph::new(|face_id: FaceID| face_to_neighbors[&face_id].clone()).connected_components(&self.granulated_mesh.face_ids());
 
-        let faces = self.polycube_ref.structure.face_ids();
-        for (i, patch) in patches.iter().enumerate() {
-            self.face_to_patch.insert(faces[i], Patch { faces: patch.clone() });
+        if patches.len() != self.polycube_ref.structure.face_ids().len() {
+            return Err(LayoutError::InvalidPatches);
         }
-
-        println!("faces in polycube: {:?}", self.polycube_ref.structure.face_ids().len());
-        println!("patches in segmentation: {:?}", patches.len());
-
-        return Ok(());
-
-        // if patches.len() != self.polycube_ref.structure.face_ids().len() {
-        //     return Err(LayoutError::InvalidPatches);
-        // }
 
         // Every path should be part of exactly TWO patches (on both sides)
         let mut path_to_ccs: HashMap<EdgeKey<POLYCUBE>, [usize; 2]> = HashMap::new();
@@ -791,11 +785,6 @@ impl Layout {
                 }
             }
         }
-
-        println!("nr of paths: {:?}", self.edge_to_path.len());
-
-        println!("All paths verified successfully.");
-
         Ok(())
     }
 

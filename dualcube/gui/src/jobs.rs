@@ -190,112 +190,108 @@ async fn run_job(job: Job) -> Option<JobResult> {
         }
         Job::PathStraightening { solution, configuration } => {
             if let Some(layout) = &solution.layout {
-                let path = PathBuf::from("C:\\Users\\20182085\\Documents\\flip-geodesics-demo\\build\\bin\\Release\\temp.obj");
-                info!("Writing OBJ+ file to {path:?}");
-                let vertex_map = layout.granulated_mesh.to_obj(&path).unwrap();
-                // open the file and write the lines to it
-                let mut file = OpenOptions::new().append(true).open(path.clone()).unwrap();
-                for path in layout.edge_to_path.values() {
-                    let line = path.iter().map(|vert_id| format!("{}", vertex_map.id(vert_id).unwrap())).join(" ");
-                    writeln!(file, "l {}", line).unwrap();
-                }
-
-                // Run path straightening algorithm
-                // using command line: C:\Users\20182085\Documents\flip-geodesics-demo\build\bin\Release\flip_geodesics.exe .\{path.obj}
-                let status = std::process::Command::new("C:\\Users\\20182085\\Documents\\flip-geodesics-demo\\build\\bin\\Release\\flip_geodesics.exe")
-                    .arg(path)
-                    .status()
-                    .unwrap();
-                if !status.success() {
-                    warn!("Path straightening failed");
-                }
-                info!("Path straightening succeeded");
-
-                // Read resulting .txt
-                let path = PathBuf::from("C:\\Users\\20182085\\Documents\\flip-geodesics-demo\\build\\bin\\Release\\paths.txt");
-
-                // Read the .txt
-                let paths = std::fs::read_to_string(&path).unwrap();
-
-                // Split into lines
-                let mut lines = paths.lines();
-
                 let mut solution_clone = solution.clone();
-                let mut mesh = solution_clone.layout.as_ref().unwrap().granulated_mesh.clone();
+                for _ in 0..3 {
+                    let input_path = PathBuf::from("C:\\Users\\20182085\\Documents\\flip-geodesics-demo\\build\\bin\\Release\\temp.obj");
+                    let output_path = PathBuf::from("C:\\Users\\20182085\\Documents\\flip-geodesics-demo\\build\\bin\\Release\\temp.lines");
 
-                // Go through lines
-                'out: while let Some(line) = lines.next() {
-                    break;
-
-                    // Skip empty line
-                    if line.trim().is_empty() {
-                        continue;
+                    info!("Writing OBJ+ file to {input_path:?}");
+                    let vertex_map = layout.granulated_mesh.to_obj(&input_path).unwrap();
+                    // open the file and write the lines to it
+                    let mut file = OpenOptions::new().append(true).open(input_path.clone()).unwrap();
+                    for path in layout.edge_to_path.values() {
+                        let line = path.iter().map(|vert_id| format!("{}", vertex_map.id(vert_id).unwrap())).join(" ");
+                        writeln!(file, "l {}", line).unwrap();
                     }
-                    // Next line should end with a integer
-                    let n: usize = line.split_whitespace().last().and_then(|s| s.parse().ok()).unwrap();
 
-                    // let random = random_range(0. ..360.);
-                    for i in 0..n {
-                        if let Some(line) = lines.next() {
-                            // Lines are formatted either as:
-                            // - v INDEX_A
-                            // - e INDEX_A INDEX_B T_VALUE, where it should be positioned at T_VALUE from INDEX_A to INDEX_B
-                            let parts: Vec<&str> = line.split_whitespace().collect();
-                            match parts.as_slice() {
-                                ["v", index] => {
-                                    let index: usize = index.parse::<usize>().unwrap() + 1;
-                                    // get the position by using the vertex_map
-                                    if let Some(&vert_id) = vertex_map.key(index) {}
-                                }
-                                ["e", start, end, t_value] => {
-                                    let start: usize = start.parse::<usize>().unwrap() + 1;
-                                    let end: usize = end.parse::<usize>().unwrap() + 1;
-                                    let t_value: f64 = t_value.parse().unwrap();
-                                    if t_value < 0.01 || t_value > 0.99 {
-                                        continue;
+                    // Run path straightening algorithm
+                    // using command line: C:\Users\20182085\Documents\flip-geodesics-demo\build\bin\Release\flip_geodesics.exe .\{path.obj}
+                    let status = std::process::Command::new("C:\\Users\\20182085\\Documents\\flip-geodesics-demo\\build\\bin\\Release\\flip_geodesics.exe")
+                        .arg(&input_path)
+                        .arg(&output_path)
+                        .status()
+                        .unwrap();
+                    if !status.success() {
+                        warn!("Path straightening failed");
+                    }
+                    info!("Path straightening succeeded");
+
+                    // Read the output
+                    let paths = std::fs::read_to_string(&output_path).unwrap();
+
+                    // Split into lines
+                    let mut lines = paths.lines();
+
+                    let mut mesh = solution_clone.layout.as_ref().unwrap().granulated_mesh.clone();
+
+                    // Go through lines
+                    while let Some(line) = lines.next() {
+                        // Skip empty line
+                        if line.trim().is_empty() {
+                            continue;
+                        }
+                        // Next line should end with a integer
+                        let n: usize = line.split_whitespace().last().and_then(|s| s.parse().ok()).unwrap();
+
+                        // let random = random_range(0. ..360.);
+                        for i in 0..n {
+                            if let Some(line) = lines.next() {
+                                // Lines are formatted either as:
+                                // - v INDEX_A
+                                // - e INDEX_A INDEX_B T_VALUE, where it should be positioned at T_VALUE from INDEX_A to INDEX_B
+                                let parts: Vec<&str> = line.split_whitespace().collect();
+                                match parts.as_slice() {
+                                    ["v", index] => {
+                                        let index: usize = index.parse::<usize>().unwrap() + 1;
+                                        // get the position by using the vertex_map
+                                        if let Some(&vert_id) = vertex_map.key(index) {}
                                     }
-                                    if let (Some(&start_vert), Some(&end_vert)) = (vertex_map.key(start), vertex_map.key(end)) {
-                                        let start_pos = mesh.position(start_vert);
-                                        let end_pos = mesh.position(end_vert);
-                                        // get the position T_VALUE from start_pos towards end_pos
-                                        let position = start_pos.lerp(&end_pos, t_value);
+                                    ["e", start, end, t_value] => {
+                                        let start: usize = start.parse::<usize>().unwrap() + 1;
+                                        let end: usize = end.parse::<usize>().unwrap() + 1;
+                                        let t_value: f64 = t_value.parse().unwrap();
+                                        if t_value < 0.001 || t_value > 0.999 {
+                                            continue;
+                                        }
+                                        if let (Some(&start_vert), Some(&end_vert)) = (vertex_map.key(start), vertex_map.key(end)) {
+                                            let start_pos = mesh.position(start_vert);
+                                            let end_pos = mesh.position(end_vert);
+                                            // get the position T_VALUE from start_pos towards end_pos
+                                            let position = start_pos.lerp(&end_pos, t_value);
 
-                                        // split edge at value t
-                                        if let Some((edge_id, _)) = mesh.edge_between_verts(start_vert, end_vert) {
-                                            let new_vert_id = mesh.split_edge(edge_id).0;
-                                            mesh.set_position(new_vert_id, position);
-                                        } else {
-                                            println!("weird, couldn't split edge");
+                                            // split edge at value t
+                                            if let Some((edge_id, _)) = mesh.edge_between_verts(start_vert, end_vert) {
+                                                let new_vert_id = mesh.split_edge(edge_id).0;
+                                                mesh.set_position(new_vert_id, position);
+                                            }
                                         }
                                     }
+                                    _ => {}
                                 }
-                                _ => {}
                             }
                         }
+                        // Find in the layout, the path that starts and ends with the selected vertices
                     }
-                    // Find in the layout, the path that starts and ends with the selected vertices
-                }
 
-                println!("nr of verts: {}", solution_clone.layout.as_mut().unwrap().granulated_mesh.nr_verts());
+                    println!("nr of verts: {}", solution_clone.layout.as_mut().unwrap().granulated_mesh.nr_verts());
 
-                solution_clone.layout.as_mut().unwrap().granulated_mesh = mesh;
+                    solution_clone.layout.as_mut().unwrap().granulated_mesh = mesh;
 
-                println!("nr of verts: {}", solution_clone.layout.as_mut().unwrap().granulated_mesh.nr_verts());
+                    println!("nr of verts: {}", solution_clone.layout.as_mut().unwrap().granulated_mesh.nr_verts());
 
-                loop {
-                    if solution_clone.layout.as_mut().unwrap().place_all_paths().is_err() {
-                        println!("Error placing paths");
-                        continue;
-                    };
-                    if solution_clone.layout.as_mut().unwrap().assign_all_patches().is_err() {
-                        println!("Error assigning patches");
-                        continue;
+                    loop {
+                        if solution_clone.layout.as_mut().unwrap().place_all_paths().is_err() {
+                            println!("Error placing paths");
+                            continue;
+                        };
+                        if solution_clone.layout.as_mut().unwrap().assign_all_patches().is_err() {
+                            println!("Error assigning patches");
+                            continue;
+                        }
+                        break;
                     }
-                    break;
                 }
-
                 return Some(JobResult::LayoutChanged((solution_clone, configuration)));
-                // None
             }
             None
         }
