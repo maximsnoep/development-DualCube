@@ -731,10 +731,17 @@ pub fn refresh(solution: &Solution) -> RenderObjectStore {
                     }
 
                     for &face_id in &polycube.structure.face_ids() {
+                        if !lay.face_to_patch.contains_key(&face_id) {
+                            println!("oopsie! face_id {:?} not found", face_id);
+                            continue;
+                        }
+
                         let normal = (polycube.structure.normal(face_id) as Vector3D).normalize();
 
                         let (dir, side) = to_principal_direction(normal);
-                        let color = colors::from_direction(dir, Some(Perspective::Primal), Some(side));
+                        // let color = colors::from_direction(dir, Some(Perspective::Primal), Some(side));
+                        // assign random color:
+                        let color = colors::bevy_random().to_srgba().to_f32_array_no_alpha();
                         for &triangle_id in &lay.face_to_patch[&face_id].faces {
                             color_map_segmentation.insert(triangle_id, color);
                         }
@@ -749,6 +756,7 @@ pub fn refresh(solution: &Solution) -> RenderObjectStore {
                     }
 
                     for &face_id in &polycube.structure.face_ids() {
+                        break;
                         let normal = (polycube.structure.normal(face_id) as Vector3D).normalize();
                         let patch = &lay.face_to_patch[&face_id].faces;
                         let patch_vertices = patch.iter().flat_map(|&face_id| granulated_mesh.vertices(face_id)).collect::<HashSet<_>>();
