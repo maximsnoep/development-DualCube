@@ -1,17 +1,13 @@
 use crate::controls::InteractiveMode;
 use crate::jobs::{Job, JobRequest, JobState};
-use crate::render::{world_to_view, CameraFor, Objects, RenderObjectSetting, RenderObjectSettingStore};
-use crate::{colors, ActionEvent, CameraHandles, Configuration, InputResource, Perspective, Phase, PrincipalDirection, SolutionResource, VertexMap};
+use crate::render::{CameraFor, Objects, RenderObjectSetting, RenderObjectSettingStore};
+use crate::{colors, ActionEvent, CameraHandles, Configuration, InputResource, Perspective, Phase, PrincipalDirection, SolutionResource};
 use bevy::diagnostic::{DiagnosticsStore, FrameTimeDiagnosticsPlugin, SystemInformationDiagnosticsPlugin};
 use bevy::prelude::*;
 use bevy_egui::egui::FontFamily::Proportional;
 use bevy_egui::egui::*;
-use dualcube::prelude::Solution;
 use egui_dock::{DockArea, DockState, NodeIndex, Style};
-use mehsh::prelude::HasPosition;
-use rand::{random, random_range};
 use std::collections::HashMap;
-use std::sync::Arc;
 
 #[derive(Resource)]
 pub struct UiResource {
@@ -276,7 +272,6 @@ fn space(ui: &mut Ui) {
 fn header(
     ui: &mut Ui,
     solution: &mut SolutionResource,
-    vertex_map: &mut VertexMap,
     ev_w: &mut EventWriter<ActionEvent>,
     jobs: &mut EventWriter<JobRequest>,
     configuration: &mut ResMut<Configuration>,
@@ -300,93 +295,10 @@ fn header(
                             .add_filter("triangulated geometry", &["obj", "stl", "dcube", "dsol", "txt"])
                             .pick_file()
                         {
-                            println!("Found file: {}", path.display());
-                            if path.extension().map(|e| e == "obj").unwrap_or(false) {
-                                // Load the mesh
-                                let mesh = mehsh::mesh::connectivity::Mesh::from_obj(&path).unwrap();
-                                solution.current_solution = Solution::new(Arc::new(mesh.0));
-                                vertex_map.map = mesh.1;
-
-                                jobs.write(JobRequest::Run(Box::new(Job::Refresh {
-                                    solution: solution.current_solution.clone(),
-                                })));
-                            } else if path.extension().map(|e| e == "txt").unwrap_or(false) {
-                                let mut gizmo = GizmoAsset::new();
-
-                                // Read the .txt
-                                let paths = std::fs::read_to_string(&path).unwrap();
-
-                                // Split into lines
-                                let mut lines = paths.lines();
-
-                                // Go through lines
-                                while let Some(line) = lines.next() {
-                                    // Skip empty line
-                                    if line.trim().is_empty() {
-                                        continue;
-                                    }
-                                    // Next line should end with a integer
-                                    let n: usize = line.split_whitespace().last().and_then(|s| s.parse().ok()).unwrap();
-
-                                    let (scale, translation) = solution.current_solution.mesh_ref.scale_translation();
-
-                                    let mut path = vec![];
-                                    let random = random_range(0. ..360.);
-                                    for _ in 0..n {
-                                        if let Some(line) = lines.next() {
-                                            // Lines are formatted either as:
-                                            // - v INDEX_A
-                                            // - e INDEX_A INDEX_B T_VALUE, where it should be positioned at T_VALUE from INDEX_A to INDEX_B
-                                            let parts: Vec<&str> = line.split_whitespace().collect();
-                                            match parts.as_slice() {
-                                                ["v", index] => {
-                                                    let index: usize = index.parse().unwrap();
-                                                    // get the position by using the vertex_map
-                                                    if let Some(&vert_id) = vertex_map.map.key(index) {
-                                                        let position = solution.current_solution.mesh_ref.position(vert_id);
-                                                        let worldview_position = world_to_view(position, translation, scale);
-                                                        path.push(worldview_position);
-                                                    }
-                                                }
-                                                ["e", start, end, t_value] => {
-                                                    let start: usize = start.parse().unwrap();
-                                                    let end: usize = end.parse().unwrap();
-                                                    let t_value: f64 = t_value.parse().unwrap();
-                                                    if let (Some(&start_vert), Some(&end_vert)) = (vertex_map.map.key(start), vertex_map.map.key(end)) {
-                                                        let start_pos = solution.current_solution.mesh_ref.position(start_vert);
-                                                        let end_pos = solution.current_solution.mesh_ref.position(end_vert);
-                                                        // get the position T_VALUE from start_pos towards end_pos
-                                                        let position = start_pos.lerp(&end_pos, t_value);
-                                                        let worldview_position = world_to_view(position, translation, scale);
-                                                        path.push(worldview_position);
-                                                    }
-                                                }
-                                                _ => {}
-                                            }
-                                        }
-                                    }
-                                    for pair in path.windows(2) {
-                                        let start = pair[0];
-                                        let end = pair[1];
-                                        gizmo.line(
-                                            Vec3::new(start.x as f32, start.y as f32, start.z as f32),
-                                            Vec3::new(end.x as f32, end.y as f32, end.z as f32),
-                                            bevy::color::Color::hsl(random, 1.0, 0.5),
-                                        );
-                                    }
-                                }
-
-                                commands.spawn((Gizmo {
-                                    handle: gizmo_assets.add(gizmo),
-                                    line_config: GizmoLineConfig { width: 5., ..default() },
-                                    ..default()
-                                },));
-                            } else {
-                                jobs.write(JobRequest::Run(Box::new(Job::Import {
-                                    path,
-                                    configuration: configuration.clone(),
-                                })));
-                            }
+                            jobs.write(JobRequest::Run(Box::new(Job::Import {
+                                path,
+                                configuration: configuration.clone(),
+                            })));
                         }
                     }
                     sep(ui);
@@ -761,7 +673,6 @@ pub fn update(
     mut conf: ResMut<Configuration>,
     job_state: Res<JobState>,
     mut solution: ResMut<SolutionResource>,
-    mut vertex_map: ResMut<VertexMap>,
     mut render_setting_store: ResMut<RenderObjectSettingStore>,
     time: Res<Time>,
     image_handle: Res<CameraHandles>,
@@ -787,7 +698,6 @@ pub fn update(
                 header(
                     ui,
                     &mut solution,
-                    &mut vertex_map,
                     &mut ev_w,
                     &mut jobs,
                     &mut conf,
@@ -922,6 +832,15 @@ pub fn update(
                                         })));
                                         ui.close_menu();
                                     }
+                                    // Optimize corners
+                                    if sleek_button(ui, "optimize corners") {
+                                        jobs.write(JobRequest::Run(Box::new(Job::SmoothenLayout {
+                                            solution: solution.current_solution.clone(),
+                                            configuration: conf.clone(),
+                                        })));
+                                        ui.close_menu();
+                                    }
+                                    space(ui);
                                     // Place paths
                                     if sleek_button(ui, "(re)compute paths") {
                                         jobs.write(JobRequest::Run(Box::new(Job::PlacePaths {
@@ -930,9 +849,9 @@ pub fn update(
                                         })));
                                         ui.close_menu();
                                     }
-                                    // Optimize corners
-                                    if sleek_button(ui, "optimize") {
-                                        jobs.write(JobRequest::Run(Box::new(Job::SmoothenLayout {
+                                    // Optimize paths
+                                    if sleek_button(ui, "optimize paths") {
+                                        jobs.write(JobRequest::Run(Box::new(Job::PathStraightening {
                                             solution: solution.current_solution.clone(),
                                             configuration: conf.clone(),
                                         })));

@@ -403,3 +403,11 @@ pub const fn from_direction(direction: PrincipalDirection, perspective: Option<P
 pub fn to_bevy(color: Color) -> bevy::color::Color {
     bevy::color::Color::srgb(color[0], color[1], color[2])
 }
+
+pub fn bevy_random() -> bevy::color::Color {
+    // random hue between 0.0 and 360.0
+    let hue = rand::random::<f32>() * 360.0;
+    let saturation = rand::random::<f32>() * 0.5 + 0.5;
+    let lightness = rand::random::<f32>() * 0.5 + 0.5;
+    bevy::color::Color::hsl(hue, saturation, lightness)
+}

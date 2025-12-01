@@ -6,7 +6,6 @@ pub mod formats {
     pub mod flag;
     pub mod nlr;
     pub mod obj;
-    pub mod objplus;
 }
 
 pub trait Export {
@@ -17,9 +16,7 @@ pub trait Import {
     fn import(path: &std::path::Path) -> Result<dualcube::prelude::Solution, Box<dyn std::error::Error>>;
 }
 
-pub use crate::formats::{
-    backwards_compatability::BackwardsCompatibility, dcube::Dcube, dotgraph::Dotgraph, dsol::Dsol, flag::Flag, nlr::Nlr, obj::Obj, objplus::ObjPlus,
-};
+pub use crate::formats::{backwards_compatability::BackwardsCompatibility, dcube::Dcube, dotgraph::Dotgraph, dsol::Dsol, flag::Flag, nlr::Nlr, obj::Obj};
 use dualcube::prelude::Solution;
 use std::{path::PathBuf, sync::Arc};
 
