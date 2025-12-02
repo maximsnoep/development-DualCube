@@ -1,28 +1,28 @@
-mod TODO_eval;
 mod colors;
 mod controls;
 mod jobs;
 mod render;
 mod ui;
 
+use crate::controls::InteractiveMode;
+use crate::render::RenderObjectSettingStore;
 use crate::ui::UiResource;
-use crate::TODO_eval::HexEval;
 use bevy::diagnostic::{FrameTimeDiagnosticsPlugin, SystemInformationDiagnosticsPlugin};
 use bevy::prelude::*;
 use bevy::render::render_resource::AsBindGroup;
-use bevy::tasks::Task;
 use bevy::time::common_conditions::on_timer;
 use bevy::window::WindowMode;
 use bevy::winit::WinitWindows;
 use bevy::{reflect::TypePath, render::render_resource::ShaderRef};
 use bevy_egui::EguiPlugin;
+use dualcube::polycube::POLYCUBE;
 use dualcube::prelude::*;
 use dualcube::solutions::Solution;
 use itertools::Itertools;
 use mehsh::prelude::*;
 use ordered_float::OrderedFloat;
 use rayon::iter::{IntoParallelIterator, ParallelIterator};
-use render::{CameraFor, GizmosCache, MeshProperties, Objects, RenderObjectStore};
+use render::{CameraFor, MeshProperties, Objects, RenderObjectStore};
 use smooth_bevy_cameras::controllers::orbit::OrbitCameraPlugin;
 use smooth_bevy_cameras::LookTransformPlugin;
 use std::collections::HashMap;
@@ -34,44 +34,46 @@ use winit::window::Icon;
 /// This example uses a shader source file from the assets subdirectory
 const SHADER_ASSET_PATH: &str = "flat.wgsl";
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Phase {
+    None,
+    Input,
+    Loops,
+    Dual,
+    Layout,
+    Polycube,
+    Quad,
+}
+
 #[derive(Resource, Debug, Clone)]
 pub struct Configuration {
     pub direction: PrincipalDirection,
     pub alpha: f64,
 
+    pub unit: bool,
     pub omega: usize,
-
-    pub should_continue: bool,
+    pub iterations: usize,
+    pub pool1: usize,
+    pub pool2: usize,
 
     pub raycasted: Option<[EdgeID; 2]>,
     pub selected: Option<[EdgeID; 2]>,
 
+    pub loop_anchors: Vec<[EdgeID; 2]>,
+
     pub automatic: bool,
-    pub interactive: bool,
 
-    pub ui_is_hovered: [bool; 32],
+    pub interactive_mode: InteractiveMode,
+
     pub window_shows_object: [Objects; 2],
-    pub window_has_size: [f32; 4],
-    pub window_has_position: [(f32, f32); 4],
 
-    pub hex_mesh_status: HexMeshStatus,
+    pub camera_rotate_sensitivity: f32,
+    pub camera_translate_sensitivity: f32,
+    pub camera_zoom_sensitivity: f32,
 
-    pub show_gizmos_mesh: bool,
-    pub show_gizmos_mesh_granulated: bool,
-    pub show_gizmos_loops: [bool; 3],
-    pub show_gizmos_paths: bool,
-    pub show_gizmos_flat_edges: bool,
+    pub stop: Phase,
 
     pub clear_color: [u8; 3],
-
-    pub unit_cubes: bool,
-}
-
-#[derive(Clone, Debug)]
-pub enum HexMeshStatus {
-    None,
-    Loading,
-    Done(HexEval),
 }
 
 impl Default for Configuration {
@@ -79,37 +81,29 @@ impl Default for Configuration {
         Self {
             direction: PrincipalDirection::X,
             alpha: 0.5,
-            should_continue: false,
-            omega: 10,
+
+            unit: true,
+            omega: 5,
+            iterations: 10,
+            pool1: 10,
+            pool2: 30,
+
+            loop_anchors: vec![],
+
+            stop: Phase::None,
+
             raycasted: None,
             selected: None,
             automatic: false,
-            interactive: false,
-            ui_is_hovered: [false; 32],
+            interactive_mode: InteractiveMode::None,
             window_shows_object: [Objects::PolycubeMap, Objects::QuadMesh],
-            window_has_size: [256., 256., 256., 0.],
-            window_has_position: [(0., 0.); 4],
-            hex_mesh_status: HexMeshStatus::None,
-            show_gizmos_mesh: false,
-            show_gizmos_mesh_granulated: false,
-            show_gizmos_loops: [true, true, true],
-            show_gizmos_paths: true,
-            show_gizmos_flat_edges: false,
             clear_color: [27, 27, 27],
             // clear_color: [255, 255, 255],
-            unit_cubes: false,
+            camera_rotate_sensitivity: 0.2,
+            camera_translate_sensitivity: 2.,
+            camera_zoom_sensitivity: 0.2,
         }
     }
-}
-
-#[derive(Resource, Default)]
-pub struct Tasks {
-    generating_chunks: HashMap<ActionEvent, Task<Option<Solution>>>,
-}
-
-#[derive(Resource, Default)]
-pub struct HexTasks {
-    generating_chunks: HashMap<usize, Task<Option<HexEval>>>,
 }
 
 #[derive(Resource, Default)]
@@ -227,6 +221,7 @@ impl InputResource {
 pub struct SolutionResource {
     current_solution: Solution,
     next: [HashMap<[EdgeID; 2], Option<Solution>>; 3],
+    selected_corner: Option<VertKey<POLYCUBE>>,
 }
 
 impl Default for SolutionResource {
@@ -234,6 +229,7 @@ impl Default for SolutionResource {
         Self {
             current_solution: Solution::new(Arc::new(mehsh::mesh::connectivity::Mesh::default())),
             next: [HashMap::new(), HashMap::new(), HashMap::new()],
+            selected_corner: None,
         }
     }
 }
@@ -257,18 +253,21 @@ impl Material for FlatMaterial {
     }
 }
 
+// We can create our own gizmo config group!
+#[derive(Default, Reflect, GizmoConfigGroup)]
+struct PerpetualGizmos {}
+
 fn main() {
     App::new()
         .init_resource::<UiResource>()
         .init_resource::<InputResource>()
         .init_resource::<CacheResource>()
-        .init_resource::<GizmosCache>()
         .init_resource::<SolutionResource>()
         .init_resource::<Configuration>()
+        .init_resource::<RenderObjectSettingStore>()
         .init_resource::<RenderObjectStore>()
-        .init_resource::<Tasks>()
-        .init_resource::<HexTasks>()
         .init_resource::<CameraHandles>()
+        .init_gizmo_group::<PerpetualGizmos>()
         .insert_resource(AmbientLight {
             color: bevy::color::Color::WHITE,
             brightness: 1.0,
@@ -300,6 +299,16 @@ fn main() {
         .add_plugins(MaterialPlugin::<FlatMaterial>::default())
         // Jobs system
         .add_plugins(jobs::JobPlugin)
+        // Axes gizmo
+        .add_plugins(bevy_axes_gizmo::AxesGizmoPlugin {
+            colors: [
+                colors::to_bevy(colors::from_direction(PrincipalDirection::X, Some(Perspective::Primal), None)),
+                colors::to_bevy(colors::from_direction(PrincipalDirection::Y, Some(Perspective::Primal), None)),
+                colors::to_bevy(colors::from_direction(PrincipalDirection::Z, Some(Perspective::Primal), None)),
+            ],
+            width: 5.,
+            ..default()
+        })
         // Setups
         .add_systems(Startup, ui::setup)
         .add_systems(Startup, render::setup)
@@ -307,8 +316,9 @@ fn main() {
         // Updates
         .add_systems(Update, ui::update)
         .add_systems(Update, render::update)
-        .add_systems(Update, render::gizmos)
         .add_systems(FixedUpdate, render::respawn_renders.run_if(on_timer(Duration::from_millis(100))))
+        .add_systems(Update, render::update_camera_settings)
+        .add_systems(Update, render::update_render_settings)
         .add_systems(Update, controls::system)
         // .add_systems(Update, handle_tasks)
         .add_event::<ActionEvent>()

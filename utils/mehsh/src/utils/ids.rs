@@ -1,11 +1,12 @@
 use bimap::BiHashMap;
+use serde::{Deserialize, Serialize};
 use slotmap::DefaultKey;
 use slotmap::SecondaryMap;
 use slotmap::SlotMap;
 use std::hash::Hash;
 use std::marker::PhantomData;
 
-#[derive(Default, Copy, Clone, Eq)]
+#[derive(Default, Copy, Clone, Eq, Serialize, Deserialize)]
 pub struct Key<K, M> {
     raw: DefaultKey,
     _marker: PhantomData<(K, M)>,
@@ -47,7 +48,7 @@ impl<K, M> Key<K, M> {
     }
 }
 
-#[derive(Default, Clone, Debug)]
+#[derive(Default, Clone, Debug, Serialize, Deserialize)]
 pub struct IdxMap<K, M, V> {
     map: SlotMap<DefaultKey, V>,
     _marker: PhantomData<(K, M)>,
@@ -58,6 +59,17 @@ impl<K, M, V> IdxMap<K, M, V> {
     pub fn new() -> Self {
         Self {
             map: SlotMap::with_key(),
+            _marker: PhantomData,
+        }
+    }
+
+    #[must_use]
+    pub fn convert<T>(other: &IdxMap<K, T, V>) -> Self
+    where
+        V: Clone,
+    {
+        Self {
+            map: other.map.clone(),
             _marker: PhantomData,
         }
     }
@@ -104,7 +116,7 @@ impl<K, M, V> IdxMap<K, M, V> {
     }
 }
 
-#[derive(Default, Clone, Debug)]
+#[derive(Default, Clone, Debug, Serialize, Deserialize)]
 pub struct AssMap<K1, K2, M> {
     map: SecondaryMap<DefaultKey, DefaultKey>,
     _marker: PhantomData<(K1, K2, M)>,
@@ -115,6 +127,13 @@ impl<K1, K2, M> AssMap<K1, K2, M> {
     pub fn new() -> Self {
         Self {
             map: SecondaryMap::new(),
+            _marker: PhantomData,
+        }
+    }
+
+    pub fn convert<T>(other: &AssMap<K1, K2, T>) -> Self {
+        Self {
+            map: other.map.clone(),
             _marker: PhantomData,
         }
     }
@@ -154,7 +173,7 @@ impl<K1, K2, M> AssMap<K1, K2, M> {
     }
 }
 
-#[derive(Default, Clone, Debug)]
+#[derive(Default, Clone, Debug, Serialize, Deserialize)]
 pub struct IdMap<K, M>
 where
     K: Eq + Hash,
@@ -201,7 +220,7 @@ where
     }
 }
 
-#[derive(Default, Clone, Debug)]
+#[derive(Default, Clone, Debug, Serialize, Deserialize)]
 pub struct SecMap<K, M, V>
 where
     K: Eq + Hash,

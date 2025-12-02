@@ -1,17 +1,18 @@
 use crate::prelude::*;
 use rand::seq::IteratorRandom;
+use serde::{Deserialize, Serialize};
 use std::fmt::Debug;
 use thiserror::Error;
 
-#[derive(Default, Clone, Copy, Debug, PartialEq, Eq, Hash)]
+#[derive(Default, Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub struct VERT;
 pub type VertKey<M> = ids::Key<VERT, M>;
 
-#[derive(Default, Clone, Copy, Debug, PartialEq, Eq, Hash)]
+#[derive(Default, Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub struct FACE;
 pub type FaceKey<M> = ids::Key<FACE, M>;
 
-#[derive(Default, Clone, Copy, Debug, PartialEq, Eq, Hash)]
+#[derive(Default, Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub struct EDGE;
 pub type EdgeKey<M> = ids::Key<EDGE, M>;
 
@@ -54,7 +55,7 @@ macro_rules! define_tag {
 // 3) orientable: There exists a consistent normal for each face.
 // These requirements will be true per construction.
 // We use a doubly connected edge list (DCEL) data structure, also known as the half-edge data structure (HEDS).
-#[derive(Default, Clone, Debug)]
+#[derive(Default, Clone, Debug, Serialize, Deserialize)]
 pub struct Mesh<M: Tag> {
     pub verts: ids::IdxMap<VERT, M, Vector3D>,
     pub edges: ids::IdxMap<EDGE, M, u8>,
@@ -68,6 +69,21 @@ pub struct Mesh<M: Tag> {
 }
 
 impl<M: Tag> Mesh<M> {
+    // Create mesh from other mesh
+    pub fn convert<T: Tag>(other: &Mesh<T>) -> Self {
+        Self {
+            verts: ids::IdxMap::convert(&other.verts),
+            edges: ids::IdxMap::convert(&other.edges),
+            faces: ids::IdxMap::convert(&other.faces),
+            edge_root: ids::AssMap::convert(&other.edge_root),
+            edge_face: ids::AssMap::convert(&other.edge_face),
+            edge_next: ids::AssMap::convert(&other.edge_next),
+            edge_twin: ids::AssMap::convert(&other.edge_twin),
+            vert_repr: ids::AssMap::convert(&other.vert_repr),
+            face_repr: ids::AssMap::convert(&other.face_repr),
+        }
+    }
+
     // Adds a vertex to the mesh and returns its ID.
     pub fn add_vertex(&mut self, pos: Vector3D) -> VertKey<M> {
         self.verts.insert(pos)
@@ -233,6 +249,7 @@ pub trait HasFaces<K, M> {
 pub trait HasNeighbors<K, M> {
     #[must_use]
     fn neighbors(&self, id: ids::Key<K, M>) -> Vec<ids::Key<K, M>>;
+    fn neighbors_k(&self, id: ids::Key<K, M>, k: usize) -> Vec<ids::Key<K, M>>;
 }
 
 pub trait HasRing<K, M> {

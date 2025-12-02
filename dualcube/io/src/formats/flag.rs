@@ -11,7 +11,7 @@ impl Export for Flag {
     fn export(solution: &dualcube::prelude::Solution, path: &std::path::Path) -> Result<(), Box<dyn std::error::Error>> {
         let path_flag = path.with_extension("flag");
 
-        if let Ok(layout) = &solution.layout {
+        if let Some(layout) = &solution.layout {
             let face_map = layout
                 .granulated_mesh
                 .face_ids()
