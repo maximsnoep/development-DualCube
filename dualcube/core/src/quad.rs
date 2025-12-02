@@ -8,6 +8,7 @@ use faer_gmres::gmres;
 use itertools::Itertools;
 use mehsh::prelude::*;
 use rayon::iter::{IntoParallelIterator, ParallelIterator};
+use serde::{Deserialize, Deserializer, Serialize, Serializer};
 use std::collections::{HashMap, HashSet};
 
 mehsh::prelude::define_tag!(QUAD);
@@ -19,6 +20,27 @@ pub struct Quad {
     pub quad_mesh: Mesh<QUAD>,
     pub face_to_verts: HashMap<FaceKey<POLYCUBE>, Vec<Vec<VertKey<QUAD>>>>,
     pub edge_to_verts: HashMap<EdgeKey<POLYCUBE>, Vec<VertKey<QUAD>>>,
+    pub frozen: HashSet<VertKey<QUAD>>,
+}
+
+// serialize Quad to nothing
+impl Serialize for Quad {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: Serializer,
+    {
+        serializer.serialize_unit()
+    }
+}
+
+// deserialize Quad
+impl<'de> Deserialize<'de> for Quad {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        Ok(Quad::default())
+    }
 }
 
 impl Quad {
@@ -37,7 +59,7 @@ impl Quad {
     }
 
     #[must_use]
-    pub fn from_layout(layout: &Layout, polycube: &Polycube, omega: usize) -> Self {
+    pub fn from_layout(layout: &Layout, polycube: &Polycube, omega: usize) -> Option<Self> {
         let mut triangle_mesh_polycube = layout.granulated_mesh.clone();
 
         let mut edges_done: HashMap<EdgeKey<POLYCUBE>, Vec<usize>> = HashMap::new();
@@ -46,9 +68,15 @@ impl Quad {
         let mut faces = vec![];
         let mut vertex_positions = vec![];
 
+        // set of frozen vertices. Should be vertices that lie on important boundaries or features.
+        let mut frozen = HashSet::new();
+
         // For every patch in the layout (corresponding to a face in the polycube), we map this patch to a unit square
         // 1. Map the boundary of the patch to the boundary of a unit square via arc-length parameterization
         // 2. Map the interior of the patch to the interior of the unit square via mean-value coordinates (MVC)
+        // FOR SOME REASON IMPORTANT TO HAVE THE POLYCUBE WITH EDGELENGTHS = 1 FOR THE MAPPING, AND USE A SEPERATE SCALED ONE TO COMPUTE THE PROPER QUAD DISTRIBUTIONS
+        let mut polycube_resized = polycube.clone();
+        polycube_resized.resize(&layout.dual_ref, Some(layout));
         let polycube = &polycube.structure;
 
         let mut queue = vec![];
@@ -242,8 +270,12 @@ impl Quad {
             let faer_triplets = triplets.into_iter().map(|(i, j, v)| Triplet::new(i, j, v)).collect::<Vec<_>>();
             let a = SparseColMat::<usize, f64>::try_new_from_triplets(n, n, &faer_triplets).unwrap();
             if !interior_verts.is_empty() {
-                gmres(a.as_ref(), b_u.as_ref(), x_u.as_mut(), 1000, 1e-8, None).unwrap();
-                gmres(a.as_ref(), b_v.as_ref(), x_v.as_mut(), 1000, 1e-8, None).unwrap();
+                if gmres(a.as_ref(), b_u.as_ref(), x_u.as_mut(), 1000, 1e-8, None).is_err() {
+                    return None;
+                }
+                if gmres(a.as_ref(), b_v.as_ref(), x_v.as_mut(), 1000, 1e-8, None).is_err() {
+                    return None;
+                }
             }
 
             for &v in &all_verts {
@@ -272,12 +304,12 @@ impl Quad {
                 triangle_mesh_polycube.set_position(v, position);
             }
 
-            let grid_width = polycube.size(edge1);
-            assert!(polycube.size(edge3) == grid_width);
+            let grid_width = polycube_resized.structure.size(edge1) * 2.;
+            // assert!(polycube.size(edge3) == grid_width);
             let grid_n = grid_width as usize * omega + 1;
 
-            let grid_height = polycube.size(edge2);
-            assert!(polycube.size(edge4) == grid_height);
+            let grid_height = polycube_resized.structure.size(edge2) * 2.;
+            // assert!(polycube.size(edge4) == grid_height);
             let grid_m = grid_height as usize * omega + 1;
 
             let to_pos = |i: usize, j: usize| {
@@ -442,8 +474,6 @@ impl Quad {
 
         // Create the polycube quad mesh:
         if let Ok((quad_mesh_polycube, vert_id_map, _)) = Mesh::<QUAD>::from(&faces, &vertex_positions) {
-            let triangle_lookup = triangle_mesh_polycube.bvh();
-
             for (face_id, vert_ids) in &face_to_verts_usize {
                 // Convert usize to VertKey<QUAD>
                 let vert_keys = vert_ids
@@ -462,25 +492,42 @@ impl Quad {
                 edge_to_verts.insert(twin_id, rev_vert_keys);
             }
 
+            // For each vert_id in quad_mesh_polycube, check the surrounding normals. If surrounding normals are all equal, then this vertex is NOT frozen. Else it is frozen (its a boundary vertex)
+            for vert_id in quad_mesh_polycube.vert_ids() {
+                let mut surrounding_normals = HashSet::new();
+                for neighbor in quad_mesh_polycube.neighbors(vert_id) {
+                    surrounding_normals.insert(to_principal_direction(quad_mesh_polycube.normal(neighbor)));
+                }
+                if surrounding_normals.len() > 1 {
+                    frozen.insert(vert_id);
+                }
+            }
+
             // Create the quad mesh
             // First, create copy of quad_mesh_polycube
             let mut quad_mesh = quad_mesh_polycube.clone();
+            let triangle_lookup = triangle_mesh_polycube.bvh();
+
             // Now, we need to set the positions of the vertices in the quad mesh based on barycentric coordinates of the mapped triangles
             for vert_id in quad_mesh.vert_ids() {
                 // Get the nearest triangle in the triangle mesh (polycube map)
-                let point = quad_mesh.position(vert_id);
+                let point = quad_mesh_polycube.position(vert_id);
                 let triangle = triangle_lookup.nearest(&[point.x, point.y, point.z]);
                 let corners = triangle_mesh_polycube.vertices(triangle);
 
-                // // check distance from point to triangle
-                // let distance1 = mehsh::utils::geom::distance_to_triangle(
-                //     point,
-                //     (
-                //         triangle_mesh_polycube.position(corners[0]),
-                //         triangle_mesh_polycube.position(corners[1]),
-                //         triangle_mesh_polycube.position(corners[2]),
-                //     ),
-                // );
+                // check distance from point to triangle
+                let distance1 = mehsh::utils::geom::distance_to_triangle(
+                    point,
+                    (
+                        triangle_mesh_polycube.position(corners[0]),
+                        triangle_mesh_polycube.position(corners[1]),
+                        triangle_mesh_polycube.position(corners[2]),
+                    ),
+                );
+
+                if distance1 > 0.001 {
+                    log::warn!("Distance from point to triangle is very large: {distance1} (> 0.001)");
+                }
 
                 // Calculate the barycentric coordinates of the point in the triangle
                 let (u, v, w) = mehsh::utils::geom::calculate_barycentric_coordinates(
@@ -504,29 +551,27 @@ impl Quad {
                     ),
                 );
 
-                // if distance1 > 0.001 {
-                //     log::warn!("Distance from point to triangle is very large: {distance1} (> 0.001)");
-                // }
+                // quad_mesh.set_position(vert_id, new_position);
 
-                quad_mesh.set_position(vert_id, new_position);
+                if distance1 < 0.001 {
+                    quad_mesh.set_position(vert_id, new_position);
+                }
             }
 
-            Self {
+            Some(Self {
                 triangle_mesh_polycube,
                 quad_mesh_polycube,
                 quad_mesh,
                 face_to_verts,
                 edge_to_verts,
-            }
+                frozen,
+            })
         } else {
             panic!("Failed to create quad mesh from faces and vertex positions");
         }
     }
 
     pub fn smoothing(&mut self, _iterations: usize, reference: &Mesh<INPUT>, _fix_sharp: bool) {
-        let triangle_lookup = reference.bvh();
-        // let vertex_lookup = reference.kdtree();
-
         log::info!("Performing 200 iterations of Laplacian smoothing on the quad mesh.");
 
         for i in 0..200 {
@@ -535,56 +580,30 @@ impl Quad {
                 .quad_mesh
                 .vert_ids()
                 .into_par_iter()
+                .filter(|&vert_id| !self.frozen.contains(&vert_id))
                 .flat_map(|vert_id| {
-                    // If the vertex is a boundary vertex, e.g., it is on a sharp ridge both on the polycube, and on the mesh itself, we skip it
-                    // Grab the faces around the vertex, look for large angles
-                    // let labels = self
-                    //     .quad_mesh_polycube
-                    //     .faces(vert_id)
-                    //     .iter()
-                    //     .map(|&f| self.quad_mesh_polycube.normal(f))
-                    //     .map(to_principal_direction)
-                    //     .collect::<HashSet<_>>();
-
-                    // // Polycube ridge
-                    // if labels.len() >= 2 {
-                    //     // Get the nearest vertex in the input mesh
-                    //     let nearest_vert = vertex_lookup
-                    //         .nearest(&[
-                    //             self.quad_mesh.position(vert_id).x,
-                    //             self.quad_mesh.position(vert_id).y,
-                    //             self.quad_mesh.position(vert_id).z,
-                    //         ])
-                    //         .1;
-
-                    //     // If the vertex is also located on a sharp ridge in the mesh, we should "freeze" it
-                    //     let max_angle = reference
-                    //         .edges(nearest_vert)
-                    //         .iter()
-                    //         .map(|&e| reference.dihedral(e))
-                    //         .max_by(|a, b| a.partial_cmp(b).unwrap())
-                    //         .unwrap_or(0.0);
-                    //     if max_angle > std::f64::consts::FRAC_PI_4 {
-                    //         return None;
-                    //     }
-                    // }
+                    let mut p_i = self.quad_mesh.position(vert_id);
 
                     let neighbors = self.quad_mesh.neighbors(vert_id);
-                    if neighbors.is_empty() {
-                        return None;
+
+                    let sum = neighbors.iter().map(|&n| self.quad_mesh.position(n)).sum::<Vector3D>();
+                    let avg = sum / neighbors.len() as f64;
+                    let delta_p_i = avg - p_i;
+
+                    // inflate factor, > 0
+                    let lambda = 0.35;
+                    // shrink factor, < 0
+                    let mu = -0.34;
+
+                    if i % 2 == 0 {
+                        // shrink
+                        p_i += lambda * delta_p_i;
+                    } else {
+                        // inflate
+                        p_i += mu * delta_p_i;
                     }
-                    let avg_pos = neighbors.iter().map(|&n| self.quad_mesh.position(n)).sum::<Vector3D>() / neighbors.len() as f64;
 
-                    // find closest triangle to this position in original mesh
-                    let nearest_triangle = triangle_lookup.nearest(&[avg_pos.x, avg_pos.y, avg_pos.z]);
-
-                    // compute closest point on this triangle
-                    let corners = reference.vertices(nearest_triangle);
-                    let closest_point = mehsh::utils::geom::point_on_triangle(
-                        avg_pos,
-                        (reference.position(corners[0]), reference.position(corners[1]), reference.position(corners[2])),
-                    );
-                    Some((vert_id, closest_point))
+                    Some((vert_id, p_i))
                 })
                 .collect::<Vec<_>>();
 

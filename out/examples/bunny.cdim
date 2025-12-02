@@ -1,0 +1,56 @@
+'cdim file <>  -- automatically generated via DualCube (Maxim Snoep)'
+ NUMBER OF USER SPECIFIED EDGE DIMENSIONS:
+       27
+        EDGE       DIM
+       20111       5
+       20305       5
+       20245       5
+       20039       5
+       20141       5
+       20013       5
+       20034       5
+       20066       5
+       20002       5
+       20018       5
+       20009       5
+       20054       5
+       20056       5
+       20084       5
+       20047       5
+       20003       5
+       20026       5
+       20029       5
+       20132       5
+       20207       5
+       20041       5
+       20100       5
+       20027       5
+       20007       5
+       80105       350
+       80401       350
+       80102       350
+ GRID LEVEL OF BASIC GRID AND COMPUTATIONAL GRID:
+       1 1
+ NUMBER OF BLOCKS WITH LOCAL GRID REFINEMENT:
+       0
+ NUMBER OF EDGES IN I-DIRECTION IN CARTESIAN SPACE:
+       12
+  EDGES:
+    20111    20245    20141    20009    20054    20084    20047    20132    20041    20100    20027  80105
+ NUMBER OF EDGES IN J-DIRECTION IN CARTESIAN SPACE:
+       7
+  EDGES:
+    20039    20013    20034    20066    20002    20026  80401
+ NUMBER OF EDGES IN K-DIRECTION IN CARTESIAN SPACE:
+       8
+  EDGES:
+    20305    20018    20056    20003    20029    20207    20007  80102
+ NUMBER OF VERTICES WITH CARTESIAN COORDINATES:
+       2
+        VERT i j k
+       10001 -3 2 0
+       70001 -175 -175 -175
+SYMMETRY
+       0
+ORIENTATION
+       0

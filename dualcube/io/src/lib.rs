@@ -1,6 +1,8 @@
 pub mod formats {
     pub mod backwards_compatability;
     pub mod dcube;
+    pub mod dotgraph;
+    pub mod dsol;
     pub mod flag;
     pub mod nlr;
     pub mod obj;
@@ -14,7 +16,7 @@ pub trait Import {
     fn import(path: &std::path::Path) -> Result<dualcube::prelude::Solution, Box<dyn std::error::Error>>;
 }
 
-pub use crate::formats::{backwards_compatability::BackwardsCompatibility, dcube::Dcube, flag::Flag, nlr::Nlr, obj::Obj};
+pub use crate::formats::{backwards_compatability::BackwardsCompatibility, dcube::Dcube, dotgraph::Dotgraph, dsol::Dsol, flag::Flag, nlr::Nlr, obj::Obj};
 use dualcube::prelude::Solution;
 use std::{path::PathBuf, sync::Arc};
 
@@ -42,7 +44,7 @@ pub fn import_solution(path: PathBuf) -> Solution {
             if let Ok(sol) = Dcube::import(&path) {
                 sol
             } else {
-                panic!("Error while parsing DCube file {path:?}");
+                panic!("Error while parsing Dcube file {path:?}");
             }
         }
         Some("save") => {
@@ -51,6 +53,13 @@ pub fn import_solution(path: PathBuf) -> Solution {
                 sol
             } else {
                 panic!("Error while parsing save file {path:?}");
+            }
+        }
+        Some("dsol") => {
+            if let Ok(sol) = Dsol::import(&path) {
+                sol
+            } else {
+                panic!("Error while parsing Dsol file {path:?}");
             }
         }
         _ => {
