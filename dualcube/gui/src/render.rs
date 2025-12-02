@@ -855,35 +855,35 @@ pub fn refresh(solution: &Solution) -> RenderObjectStore {
                     // }
                 }
 
-                let mut color_map_flag = HashMap::new();
-                let mut gizmos_flag_paths = GizmoAsset::new();
-                if let Some(flags) = &solution.external_flag {
-                    for (face_id, label) in flags.iter() {
-                        let color = match label {
-                            0 => colors::RED,
-                            1 => colors::RED,
-                            4 => colors::YELLOW,
-                            5 => colors::YELLOW,
-                            2 => colors::BLUE,
-                            3 => colors::BLUE,
-                            _ => colors::BLACK,
-                        };
-                        color_map_flag.insert(face_id, color);
-                    }
+                // let mut color_map_flag = HashMap::new();
+                // let mut gizmos_flag_paths = GizmoAsset::new();
+                // if let Some(flags) = &solution.external_flag {
+                //     for (face_id, label) in flags.iter() {
+                //         let color = match label {
+                //             0 => colors::RED,
+                //             1 => colors::RED,
+                //             4 => colors::YELLOW,
+                //             5 => colors::YELLOW,
+                //             2 => colors::BLUE,
+                //             3 => colors::BLUE,
+                //             _ => colors::BLACK,
+                //         };
+                //         color_map_flag.insert(face_id, color);
+                //     }
 
-                    for edge_id in input.edge_ids() {
-                        let f1 = flags.get(&input.face(edge_id));
-                        let f2 = flags.get(&input.face(input.twin(edge_id)));
-                        if f1 != f2 {
-                            let endpoints = input.vertices(edge_id);
-                            let u = input.position(endpoints[0]);
-                            let v = input.position(endpoints[1]);
-                            let u_transformed = world_to_view(u, translation, scale);
-                            let v_transformed = world_to_view(v, translation, scale);
-                            gizmos_flag_paths.line(u_transformed, v_transformed, c);
-                        }
-                    }
-                }
+                //     for edge_id in input.edge_ids() {
+                //         let f1 = flags.get(&input.face(edge_id));
+                //         let f2 = flags.get(&input.face(input.twin(edge_id)));
+                //         if f1 != f2 {
+                //             let endpoints = input.vertices(edge_id);
+                //             let u = input.position(endpoints[0]);
+                //             let v = input.position(endpoints[1]);
+                //             let u_transformed = world_to_view(u, translation, scale);
+                //             let v_transformed = world_to_view(v, translation, scale);
+                //             gizmos_flag_paths.line(u_transformed, v_transformed, c);
+                //         }
+                //     }
+                // }
 
                 let features = dualcube::feature::feature_extraction(input, std::f64::consts::FRAC_PI_3, 1);
                 let mut gizmos_features = GizmoAsset::new();
@@ -910,6 +910,8 @@ pub fn refresh(solution: &Solution) -> RenderObjectStore {
                     granulated_mesh_gizmos = layout.granulated_mesh.gizmos(colors::GRAY);
                 }
 
+                println!("HELLO !!!");
+
                 render_object_store.add_object(
                     object,
                     RenderObject::default()
@@ -926,8 +928,8 @@ pub fn refresh(solution: &Solution) -> RenderObjectStore {
                         .gizmo(gizmos_zloops, 3., -0.000111, "Z-loops")
                         .gizmo(gizmos_paths, 4., -0.0001, "paths")
                         .gizmo(gizmos_flat_paths, 2., -0.00011, "flat paths")
-                        .mesh(input, &color_map_flag, "flag")
-                        .gizmo(gizmos_flag_paths, 2., -1e-4, "flag paths")
+                        // .mesh(input, &color_map_flag, "flag")
+                        // .gizmo(gizmos_flag_paths, 2., -1e-4, "flag paths")
                         .gizmo(gizmos_features, 5., -0.00012, "features")
                         .gizmo(granulated_mesh_gizmos, 0.5, -0.00001, "refined wireframe")
                         .to_owned(),

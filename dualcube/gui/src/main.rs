@@ -15,6 +15,7 @@ use bevy::window::WindowMode;
 use bevy::winit::WinitWindows;
 use bevy::{reflect::TypePath, render::render_resource::ShaderRef};
 use bevy_egui::EguiPlugin;
+use dualcube::polycube::POLYCUBE;
 use dualcube::prelude::*;
 use dualcube::solutions::Solution;
 use itertools::Itertools;
@@ -220,6 +221,7 @@ impl InputResource {
 pub struct SolutionResource {
     current_solution: Solution,
     next: [HashMap<[EdgeID; 2], Option<Solution>>; 3],
+    selected_corner: Option<VertKey<POLYCUBE>>,
 }
 
 impl Default for SolutionResource {
@@ -227,6 +229,7 @@ impl Default for SolutionResource {
         Self {
             current_solution: Solution::new(Arc::new(mehsh::mesh::connectivity::Mesh::default())),
             next: [HashMap::new(), HashMap::new(), HashMap::new()],
+            selected_corner: None,
         }
     }
 }

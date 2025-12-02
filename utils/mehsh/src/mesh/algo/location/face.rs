@@ -70,12 +70,22 @@ impl<M: Tag> PointDistance<f64, 3> for TriangleBvhShape<M> {
 
 impl<M: Tag> Bounded<f64, 3> for TriangleBvhShape<M> {
     fn aabb(&self) -> Aabb<f64, 3> {
-        let min_x = self.corners.iter().map(|v| v.x).fold(f64::MAX, f64::min);
-        let min_y = self.corners.iter().map(|v| v.y).fold(f64::MAX, f64::min);
-        let min_z = self.corners.iter().map(|v| v.z).fold(f64::MAX, f64::min);
-        let max_x = self.corners.iter().map(|v| v.x).fold(f64::MIN, f64::max);
-        let max_y = self.corners.iter().map(|v| v.y).fold(f64::MIN, f64::max);
-        let max_z = self.corners.iter().map(|v| v.z).fold(f64::MIN, f64::max);
+        let mut iter = self.corners.iter();
+        let first = iter.next().unwrap();
+
+        let (mut min_x, mut max_x) = (first.x, first.x);
+        let (mut min_y, mut max_y) = (first.y, first.y);
+        let (mut min_z, mut max_z) = (first.z, first.z);
+
+        for v in iter {
+            min_x = min_x.min(v.x);
+            max_x = max_x.max(v.x);
+            min_y = min_y.min(v.y);
+            max_y = max_y.max(v.y);
+            min_z = min_z.min(v.z);
+            max_z = max_z.max(v.z);
+        }
+
         let min = nalgebra::Point3::new(min_x, min_y, min_z);
         let max = nalgebra::Point3::new(max_x, max_y, max_z);
         Aabb::with_bounds(min, max)
