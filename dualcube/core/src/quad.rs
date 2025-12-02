@@ -74,6 +74,9 @@ impl Quad {
         // For every patch in the layout (corresponding to a face in the polycube), we map this patch to a unit square
         // 1. Map the boundary of the patch to the boundary of a unit square via arc-length parameterization
         // 2. Map the interior of the patch to the interior of the unit square via mean-value coordinates (MVC)
+        // FOR SOME REASON IMPORTANT TO HAVE THE POLYCUBE WITH EDGELENGTHS = 1 FOR THE MAPPING, AND USE A SEPERATE SCALED ONE TO COMPUTE THE PROPER QUAD DISTRIBUTIONS
+        let mut polycube_resized = polycube.clone();
+        polycube_resized.resize(&layout.dual_ref, Some(layout));
         let polycube = &polycube.structure;
 
         let mut queue = vec![];
@@ -301,12 +304,12 @@ impl Quad {
                 triangle_mesh_polycube.set_position(v, position);
             }
 
-            let grid_width = polycube.size(edge1);
-            assert!(polycube.size(edge3) == grid_width);
+            let grid_width = polycube_resized.structure.size(edge1) * 2.;
+            // assert!(polycube.size(edge3) == grid_width);
             let grid_n = grid_width as usize * omega + 1;
 
-            let grid_height = polycube.size(edge2);
-            assert!(polycube.size(edge4) == grid_height);
+            let grid_height = polycube_resized.structure.size(edge2) * 2.;
+            // assert!(polycube.size(edge4) == grid_height);
             let grid_m = grid_height as usize * omega + 1;
 
             let to_pos = |i: usize, j: usize| {
@@ -471,8 +474,6 @@ impl Quad {
 
         // Create the polycube quad mesh:
         if let Ok((quad_mesh_polycube, vert_id_map, _)) = Mesh::<QUAD>::from(&faces, &vertex_positions) {
-            let triangle_lookup = triangle_mesh_polycube.bvh();
-
             for (face_id, vert_ids) in &face_to_verts_usize {
                 // Convert usize to VertKey<QUAD>
                 let vert_keys = vert_ids
@@ -505,22 +506,28 @@ impl Quad {
             // Create the quad mesh
             // First, create copy of quad_mesh_polycube
             let mut quad_mesh = quad_mesh_polycube.clone();
+            let triangle_lookup = triangle_mesh_polycube.bvh();
+
             // Now, we need to set the positions of the vertices in the quad mesh based on barycentric coordinates of the mapped triangles
             for vert_id in quad_mesh.vert_ids() {
                 // Get the nearest triangle in the triangle mesh (polycube map)
-                let point = quad_mesh.position(vert_id);
+                let point = quad_mesh_polycube.position(vert_id);
                 let triangle = triangle_lookup.nearest(&[point.x, point.y, point.z]);
                 let corners = triangle_mesh_polycube.vertices(triangle);
 
-                // // check distance from point to triangle
-                // let distance1 = mehsh::utils::geom::distance_to_triangle(
-                //     point,
-                //     (
-                //         triangle_mesh_polycube.position(corners[0]),
-                //         triangle_mesh_polycube.position(corners[1]),
-                //         triangle_mesh_polycube.position(corners[2]),
-                //     ),
-                // );
+                // check distance from point to triangle
+                let distance1 = mehsh::utils::geom::distance_to_triangle(
+                    point,
+                    (
+                        triangle_mesh_polycube.position(corners[0]),
+                        triangle_mesh_polycube.position(corners[1]),
+                        triangle_mesh_polycube.position(corners[2]),
+                    ),
+                );
+
+                if distance1 > 0.001 {
+                    log::warn!("Distance from point to triangle is very large: {distance1} (> 0.001)");
+                }
 
                 // Calculate the barycentric coordinates of the point in the triangle
                 let (u, v, w) = mehsh::utils::geom::calculate_barycentric_coordinates(
@@ -544,11 +551,11 @@ impl Quad {
                     ),
                 );
 
-                // if distance1 > 0.001 {
-                //     log::warn!("Distance from point to triangle is very large: {distance1} (> 0.001)");
-                // }
+                // quad_mesh.set_position(vert_id, new_position);
 
-                quad_mesh.set_position(vert_id, new_position);
+                if distance1 < 0.001 {
+                    quad_mesh.set_position(vert_id, new_position);
+                }
             }
 
             Some(Self {
