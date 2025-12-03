@@ -9,20 +9,24 @@ members = [
 ]
 
 [profile.release]
+opt-level = 3
+lto = true
+incremental = true
 codegen-units = 1
 debug = 0
-incremental = true
-lto = true
-opt-level = 3
 strip = "debuginfo"
 
 [profile.dev]
+opt-level = 3
+lto = false
+incremental = true
 codegen-units = 256
 debug = 0
-incremental = true
-lto = false
-opt-level = 3
 strip = "debuginfo"
+
+[profile.dev-thin]
+inherits = "dev"
+lto = "thin"
 
 [workspace.lints.clippy]
 # cargo                           = { priority = -1, level = "warn"}

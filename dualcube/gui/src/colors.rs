@@ -17,23 +17,24 @@ pub const GRAY: Color = [0.25, 0.25, 0.25];
 pub const LIGHT_GRAY: Color = [0.5, 0.5, 0.5];
 pub const WHITE: Color = [1.0, 1.0, 1.0]; // 255 255 255
 
-pub const RED: Color = [0.95, 0.5, 0.5]; // #F07A75
-pub const RED_LIGHT: Color = [0.95, 0.61, 0.59]; // #F39B97
+pub const SNOEP_RED: Color = [242. / 255., 122. / 255., 117. / 255.];
+pub const SNOEP_BLUE: Color = [122. / 255., 117. / 255., 242. / 255.];
+pub const SNOEP_YELLOW: Color = [242. / 255., 242. / 255., 181. / 255.];
+// old yellow:
+// pub const YELLOW: Color = [0.95, 0.95, 0.7];
+pub const SNOEP_GREEN: Color = [181. / 255., 242. / 255., 117. / 255.];
+pub const SNOEP_ORANGE: Color = [242. / 255., 181. / 255., 117. / 255.];
+pub const SNOEP_PURPLE: Color = [181. / 255., 117. / 255., 242. / 255.];
 
-pub const BLUE: Color = [0.5, 0.5, 0.95]; // #7A75F0
-pub const BLUE_LIGHT: Color = [0.61, 0.59, 0.95]; // #9B97F3
+pub const RED_LIGHT: Color = [0.95, 0.61, 0.59];
 
-pub const YELLOW: Color = [0.95, 0.95, 0.7]; // #F5F7BA
-pub const YELLOW_LIGHT: Color = [0.97, 0.98, 0.80]; // #F7F9CB
+pub const BETTINA_RED: Color = [231. / 255., 0. / 255., 0. / 255.];
+pub const BETTINA_GREEN: Color = [71. / 255., 142. / 255., 0. / 255.];
+pub const BETTINA_BLUE: Color = [0. / 255., 102. / 255., 202. / 255.];
 
-pub const GREEN: Color = [0.7, 0.95, 0.5]; // #AFF075
-pub const GREEN_LIGHT: Color = [0.78, 0.95, 0.59]; // #C3F397
-
-pub const ORANGE: Color = [0.95, 0.7, 0.5]; // #F0B675
-pub const ORANGE_LIGHT: Color = [0.95, 0.78, 0.59]; // #F3C897
-
-pub const PURPLE: Color = [0.7, 0.5, 0.95]; // #B675F0
-pub const PURPLE_LIGHT: Color = [0.78, 0.59, 0.95]; // #C897F3
+pub const LIGHT_RED: Color = [255. / 255., 198. / 255., 194. / 255.];
+pub const ANTIQUE_WHITE: Color = [250. / 255., 233. / 255., 218. / 255.];
+pub const COLUMBIA_BLUE: Color = [195. / 255., 224. / 255., 221. / 255.];
 
 // MAGMA: https://github.com/BIDS/colormap/blob/master/option_a.py
 pub const SCALE_MAGMA: [Color; 256] = [
@@ -372,32 +373,59 @@ pub fn map(value: f32, colors: &[Color]) -> Color {
     colors.get(index).unwrap().to_owned()
 }
 
-// Directions to colors
 pub const fn from_direction(direction: PrincipalDirection, perspective: Option<Perspective>, orientation: Option<Orientation>) -> Color {
-    match (direction, perspective, orientation) {
-        // General
-        (PrincipalDirection::X, None, _) => RED,
-        (PrincipalDirection::Y, None, _) => YELLOW,
-        (PrincipalDirection::Z, None, _) => BLUE,
+    #[cfg(feature = "snoep6")]
+    {
+        return match (direction, perspective, orientation) {
+            // Primal
+            (PrincipalDirection::X, Some(Perspective::Primal), _) | (PrincipalDirection::X, None, _) => SNOEP_RED,
+            (PrincipalDirection::Y, Some(Perspective::Primal), _) | (PrincipalDirection::Y, None, _) => SNOEP_YELLOW,
+            (PrincipalDirection::Z, Some(Perspective::Primal), _) | (PrincipalDirection::Z, None, _) => SNOEP_BLUE,
 
-        // Primal
-        (PrincipalDirection::X, Some(Perspective::Primal), _) => RED,
-        (PrincipalDirection::Y, Some(Perspective::Primal), _) => YELLOW,
-        (PrincipalDirection::Z, Some(Perspective::Primal), _) => BLUE,
-
-        // Dual
-        (PrincipalDirection::X, Some(Perspective::Dual), None) => RED,
-        (PrincipalDirection::X, Some(Perspective::Dual), Some(Orientation::Forwards)) => RED,
-        (PrincipalDirection::X, Some(Perspective::Dual), Some(Orientation::Backwards)) => RED_LIGHT,
-
-        (PrincipalDirection::Y, Some(Perspective::Dual), None) => YELLOW,
-        (PrincipalDirection::Y, Some(Perspective::Dual), Some(Orientation::Forwards)) => YELLOW,
-        (PrincipalDirection::Y, Some(Perspective::Dual), Some(Orientation::Backwards)) => YELLOW_LIGHT,
-
-        (PrincipalDirection::Z, Some(Perspective::Dual), None) => BLUE,
-        (PrincipalDirection::Z, Some(Perspective::Dual), Some(Orientation::Forwards)) => BLUE,
-        (PrincipalDirection::Z, Some(Perspective::Dual), Some(Orientation::Backwards)) => BLUE_LIGHT,
+            // Dual
+            (PrincipalDirection::X, Some(Perspective::Dual), _) => SNOEP_GREEN,
+            (PrincipalDirection::Y, Some(Perspective::Dual), _) => SNOEP_PURPLE,
+            (PrincipalDirection::Z, Some(Perspective::Dual), _) => SNOEP_ORANGE,
+        };
     }
+
+    #[cfg(feature = "bettina")]
+    {
+        return match (direction, perspective, orientation) {
+            // General
+            (PrincipalDirection::X, _, _) => BETTINA_RED,
+            (PrincipalDirection::Y, _, _) => BETTINA_GREEN,
+            (PrincipalDirection::Z, _, _) => BETTINA_BLUE,
+        };
+    }
+
+    #[cfg(feature = "gray")]
+    {
+        return match (direction, perspective, orientation) {
+            // General
+            (PrincipalDirection::X, _, _) => [0.43, 0.43, 0.43],
+            (PrincipalDirection::Y, _, _) => [0.4, 0.4, 0.4],
+            (PrincipalDirection::Z, _, _) => [0.37, 0.37, 0.37],
+        };
+    }
+
+    #[cfg(feature = "pastel")]
+    {
+        return match (direction, perspective, orientation) {
+            // General
+            (PrincipalDirection::X, _, _) => LIGHT_RED,
+            (PrincipalDirection::Y, _, _) => ANTIQUE_WHITE,
+            (PrincipalDirection::Z, _, _) => COLUMBIA_BLUE,
+        };
+    }
+
+    // fallback / default
+    return match (direction, perspective, orientation) {
+        // General
+        (PrincipalDirection::X, _, _) => SNOEP_RED,
+        (PrincipalDirection::Y, _, _) => SNOEP_YELLOW,
+        (PrincipalDirection::Z, _, _) => SNOEP_BLUE,
+    };
 }
 
 pub fn to_bevy(color: Color) -> bevy::color::Color {

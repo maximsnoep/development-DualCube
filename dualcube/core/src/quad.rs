@@ -75,9 +75,10 @@ impl Quad {
         // 1. Map the boundary of the patch to the boundary of a unit square via arc-length parameterization
         // 2. Map the interior of the patch to the interior of the unit square via mean-value coordinates (MVC)
         // FOR SOME REASON IMPORTANT TO HAVE THE POLYCUBE WITH EDGELENGTHS = 1 FOR THE MAPPING, AND USE A SEPERATE SCALED ONE TO COMPUTE THE PROPER QUAD DISTRIBUTIONS
+        let polycube = Polycube::from_dual(&layout.dual_ref);
         let mut polycube_resized = polycube.clone();
         polycube_resized.resize(&layout.dual_ref, Some(layout));
-        let polycube = &polycube.structure;
+        let polycube = polycube.structure;
 
         let mut queue = vec![];
         queue.push(polycube.face_ids()[0]);

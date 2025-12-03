@@ -65,11 +65,12 @@ pub struct Configuration {
 
     pub interactive_mode: InteractiveMode,
 
-    pub window_shows_object: [Objects; 2],
+    pub window_shows_object: [Objects; 3],
 
     pub camera_rotate_sensitivity: f32,
     pub camera_translate_sensitivity: f32,
     pub camera_zoom_sensitivity: f32,
+    pub automatic_rotation_camera: bool,
 
     pub stop: Phase,
 
@@ -96,12 +97,13 @@ impl Default for Configuration {
             selected: None,
             automatic: false,
             interactive_mode: InteractiveMode::None,
-            window_shows_object: [Objects::PolycubeMap, Objects::QuadMesh],
+            window_shows_object: [Objects::PolycubeMap, Objects::QuadMesh, Objects::Polycube],
             clear_color: [27, 27, 27],
             // clear_color: [255, 255, 255],
             camera_rotate_sensitivity: 0.2,
             camera_translate_sensitivity: 2.,
             camera_zoom_sensitivity: 0.2,
+            automatic_rotation_camera: true,
         }
     }
 }
@@ -320,6 +322,7 @@ fn main() {
         .add_systems(Update, render::update_camera_settings)
         .add_systems(Update, render::update_render_settings)
         .add_systems(Update, controls::system)
+        .add_systems(FixedUpdate, render::automatic_rotation_camera.run_if(on_timer(Duration::from_millis(10))))
         // .add_systems(Update, handle_tasks)
         .add_event::<ActionEvent>()
         .run();
