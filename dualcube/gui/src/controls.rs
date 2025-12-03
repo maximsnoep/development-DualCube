@@ -77,8 +77,8 @@ pub fn segmentation_modification_system(
             let n = vector3d_to_vec3(layout.granulated_mesh.normal(corner_poly_vert));
 
             let isometry = Isometry3d::new(v_transformed, Quat::from_rotation_arc(Vec3::Z, n.normalize()));
-            gizmos.line(v_transformed, v_transformed + n, colors::to_bevy(colors::GREEN));
-            gizmos.circle(isometry, 0.1, colors::to_bevy(colors::GREEN));
+            gizmos.line(v_transformed, v_transformed + n, colors::to_bevy(colors::SNOEP_GREEN));
+            gizmos.circle(isometry, 0.1, colors::to_bevy(colors::SNOEP_GREEN));
 
             // Highlight the current position (where the vertex would be moved)
             let v1 = layout.granulated_mesh.position(nearest_granulated_vert);
@@ -86,10 +86,10 @@ pub fn segmentation_modification_system(
             let n1 = vector3d_to_vec3(layout.granulated_mesh.normal(nearest_granulated_vert));
 
             let isometry1 = Isometry3d::new(v1_transformed, Quat::from_rotation_arc(Vec3::Z, n1.normalize()));
-            gizmos.line(v1_transformed, v1_transformed + n1, colors::to_bevy(colors::GREEN));
-            gizmos.circle(isometry1, 0.1, colors::to_bevy(colors::GREEN));
+            gizmos.line(v1_transformed, v1_transformed + n1, colors::to_bevy(colors::SNOEP_GREEN));
+            gizmos.circle(isometry1, 0.1, colors::to_bevy(colors::SNOEP_GREEN));
 
-            gizmos.line(v_transformed + 0.1 * n, v1_transformed + 0.1 * n1, colors::to_bevy(colors::GREEN));
+            gizmos.line(v_transformed + 0.1 * n, v1_transformed + 0.1 * n1, colors::to_bevy(colors::SNOEP_GREEN));
         }
 
         // CONTROLS
@@ -316,20 +316,22 @@ pub fn system(
         return Ok(());
     }
 
-    let intersections = ray_map
+    let Some(&(ray, intersection)) = ray_map
         .iter()
         .filter_map(|(_, ray)| {
             let (_, hit) = ray_cast.cast_ray(*ray, &MeshRayCastSettings::default()).first()?;
-            Some(hit.point)
+            Some((*ray, hit.point))
         })
-        .collect_vec();
-
-    if intersections.is_empty() {
+        .collect_vec()
+        .first()
+    else {
         return Ok(());
-    }
+    };
 
-    let position = (vec3_to_vector3d(intersections[0]) - mesh_resmut.properties.translation) / mesh_resmut.properties.scale;
+    // Draw the ray !
+    gizmos.line(intersection, ray.origin, colors::to_bevy(colors::SNOEP_PURPLE));
 
+    let position = (vec3_to_vector3d(intersection) - mesh_resmut.properties.translation) / mesh_resmut.properties.scale;
     let nearest_face = mesh_resmut.triangle_lookup.nearest(&position.into());
 
     // get the nearest_vert (one of 3 corners of nearest_face)

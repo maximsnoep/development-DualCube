@@ -13,7 +13,7 @@ use enum_iterator::{all, Sequence};
 use itertools::Itertools;
 use mehsh::prelude::*;
 use smooth_bevy_cameras::controllers::orbit::{OrbitCameraBundle, OrbitCameraController};
-use smooth_bevy_cameras::Smoother;
+use smooth_bevy_cameras::{LookAngles, LookTransform, Smoother};
 use std::collections::{HashMap, HashSet};
 use std::ops::Index;
 
@@ -38,6 +38,7 @@ pub fn invert_transform_coordinates(position: Vector3D, translation: Vector3D, s
 pub enum Objects {
     InputMesh,
     #[default]
+    Polycube,
     PolycubeMap,
     QuadMesh,
 }
@@ -48,6 +49,7 @@ impl fmt::Display for Objects {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         let s = match self {
             Objects::InputMesh => "input mesh",
+            Objects::Polycube => "polycube",
             Objects::PolycubeMap => "polycube-map",
             Objects::QuadMesh => "quad mesh",
         };
@@ -174,21 +176,11 @@ impl RenderObjectStore {
     }
 }
 
-impl From<Objects> for String {
-    fn from(val: Objects) -> Self {
-        match val {
-            Objects::InputMesh => "input mesh",
-            Objects::PolycubeMap => "polycube-map",
-            Objects::QuadMesh => "quad mesh",
-        }
-        .to_owned()
-    }
-}
-
 impl From<Objects> for Vec3 {
     fn from(val: Objects) -> Self {
         match val {
             Objects::InputMesh => Self::new(0., 0., 0.),
+            Objects::Polycube => Self::new(0., 0., 1_000.),
             Objects::PolycubeMap => Self::new(0., 1_000., 1_000.),
             Objects::QuadMesh => Self::new(1_000., 0., 1_000.),
         }
@@ -284,7 +276,7 @@ pub fn reset(
     for object in all::<Objects>() {
         let handle = images.add(image.clone());
         handles.map.insert(CameraFor(object), handle.clone());
-        let projection = if object == Objects::PolycubeMap {
+        let projection = if object == Objects::PolycubeMap || object == Objects::Polycube {
             let mut proj = OrthographicProjection::default_3d();
             proj.scaling_mode = ScalingMode::FixedVertical { viewport_height: 30. };
             Projection::Orthographic(proj)
@@ -328,14 +320,15 @@ pub fn update_render_settings(render_object_store: Res<RenderObjectStore>, mut r
     let default = |object: &Objects, label: &str| {
         matches!(
             (object, label),
-            (Objects::InputMesh, "black")
-                | (Objects::InputMesh, "X-loops")
-                | (Objects::InputMesh, "Y-loops")
-                | (Objects::InputMesh, "Z-loops")
+            (Objects::InputMesh, "gray")
+                | (Objects::InputMesh, "wireframe")
+                | (Objects::Polycube, "gray")
+                | (Objects::Polycube, "paths")
+                | (Objects::Polycube, "flat paths")
                 | (Objects::PolycubeMap, "colored")
-                | (Objects::PolycubeMap, "paths")
-                | (Objects::QuadMesh, "colored")
-                | (Objects::QuadMesh, "paths")
+                | (Objects::PolycubeMap, "triangles")
+                | (Objects::QuadMesh, "gray")
+                | (Objects::QuadMesh, "wireframe")
         )
     };
 
@@ -423,7 +416,7 @@ pub fn respawn_renders(
                                         Rendered,
                                     ));
                                 }
-                                Objects::PolycubeMap => {
+                                Objects::PolycubeMap | Objects::Polycube => {
                                     commands.spawn((
                                         mesh_handle,
                                         MeshMaterial3d(flat_material.clone()),
@@ -598,11 +591,97 @@ pub fn refresh(solution: &Solution) -> RenderObjectStore {
                     render_object_store.add_object(
                         object,
                         RenderObject::default()
-                            // .mesh(&quad.quad_mesh, &default_color_map, "default", false)
+                            .mesh(&quad.quad_mesh, &default_color_map, "gray")
                             .mesh(&quad.quad_mesh, &color_map, "colored")
                             .gizmo(quad.quad_mesh.gizmos(colors::GRAY), 1.0, -0.001, "wireframe")
                             .gizmo(gizmos_paths, 4., -0.0001, "paths")
                             .gizmo(gizmos_flat_paths, 3., -0.00011, "flat paths")
+                            .to_owned(),
+                    );
+                }
+            }
+            Objects::Polycube => {
+                if let Some(polycube) = &solution.polycube {
+                    let mut gray_color_map = HashMap::new();
+                    let mut black_color_map = HashMap::new();
+                    let mut colored_color_map = HashMap::new();
+                    let mut gizmos_xloops = GizmoAsset::new();
+                    let mut gizmos_yloops = GizmoAsset::new();
+                    let mut gizmos_zloops = GizmoAsset::new();
+
+                    let (scale, translation) = polycube.structure.scale_translation();
+
+                    for face_id in polycube.structure.face_ids() {
+                        let normal = polycube.structure.normal(face_id);
+
+                        black_color_map.insert(face_id, colors::BLACK);
+                        gray_color_map.insert(face_id, colors::LIGHT_GRAY);
+                        colored_color_map.insert(face_id, {
+                            colors::from_direction(to_principal_direction(normal).0, Some(Perspective::Primal), None)
+                        });
+
+                        // draw loops
+                        let edges = polycube.structure.edges(face_id);
+                        let edge1_pos = polycube.structure.position(edges[0]);
+                        let edge1_pos_view = world_to_view(edge1_pos, translation, scale);
+                        let edge2_pos = polycube.structure.position(edges[1]);
+                        let edge2_pos_view = world_to_view(edge2_pos, translation, scale);
+                        let edge3_pos = polycube.structure.position(edges[2]);
+                        let edge3_pos_view = world_to_view(edge3_pos, translation, scale);
+                        let edge4_pos = polycube.structure.position(edges[3]);
+                        let edge4_pos_view = world_to_view(edge4_pos, translation, scale);
+
+                        // loop 1, from edge 1 to edge 3
+                        let dir = to_principal_direction(edge2_pos - edge4_pos).0;
+                        let c = colors::to_bevy(colors::from_direction(dir, Some(Perspective::Dual), None));
+                        match dir {
+                            PrincipalDirection::X => gizmos_xloops.line(edge1_pos_view, edge3_pos_view, c),
+                            PrincipalDirection::Y => gizmos_yloops.line(edge1_pos_view, edge3_pos_view, c),
+                            PrincipalDirection::Z => gizmos_zloops.line(edge1_pos_view, edge3_pos_view, c),
+                        }
+
+                        // loop 2, from edge 2 to edge 4
+                        let dir = to_principal_direction(edge1_pos - edge3_pos).0;
+                        let c = colors::to_bevy(colors::from_direction(dir, Some(Perspective::Dual), None));
+
+                        match dir {
+                            PrincipalDirection::X => gizmos_xloops.line(edge2_pos_view, edge4_pos_view, c),
+                            PrincipalDirection::Y => gizmos_yloops.line(edge2_pos_view, edge4_pos_view, c),
+                            PrincipalDirection::Z => gizmos_zloops.line(edge2_pos_view, edge4_pos_view, c),
+                        }
+                    }
+
+                    let mut gizmos_paths = GizmoAsset::new();
+                    let mut gizmos_flat_paths = GizmoAsset::new();
+
+                    let color = colors::GRAY;
+                    let c = bevy::color::Color::srgb(color[0], color[1], color[2]);
+
+                    for pedge_id in polycube.structure.edge_ids() {
+                        let f1 = polycube.structure.normal(polycube.structure.face(pedge_id));
+                        let f2 = polycube.structure.normal(polycube.structure.face(polycube.structure.twin(pedge_id)));
+                        let endpoints = polycube.structure.vertices(pedge_id);
+                        let u = polycube.structure.position(endpoints[0]);
+                        let v = polycube.structure.position(endpoints[1]);
+                        let u_transformed = world_to_view(u, translation, scale);
+                        let v_transformed = world_to_view(v, translation, scale);
+                        gizmos_flat_paths.line(u_transformed, v_transformed, c);
+                        if f1 != f2 {
+                            gizmos_paths.line(u_transformed, v_transformed, c);
+                        }
+                    }
+
+                    render_object_store.add_object(
+                        object,
+                        RenderObject::default()
+                            .mesh(&polycube.structure, &black_color_map, "black")
+                            .mesh(&polycube.structure, &gray_color_map, "gray")
+                            .mesh(&polycube.structure, &colored_color_map, "colored")
+                            .gizmo(gizmos_xloops, 6., -0.001, "x-loops")
+                            .gizmo(gizmos_yloops, 6., -0.0011, "y-loops")
+                            .gizmo(gizmos_zloops, 6., -0.00111, "z-loops")
+                            .gizmo(gizmos_paths, 7., -0.001, "paths")
+                            .gizmo(gizmos_flat_paths, 5., -0.0011, "flat paths")
                             .to_owned(),
                     );
                 }
@@ -614,50 +693,18 @@ pub fn refresh(solution: &Solution) -> RenderObjectStore {
             // triangles mapped on the polycube
             Objects::PolycubeMap => {
                 if let Some(quad) = &solution.quad {
-                    let mut default_color_map = HashMap::new();
-                    for face_id in quad.quad_mesh_polycube.face_ids() {
-                        default_color_map.insert(face_id, colors::LIGHT_GRAY);
-                    }
-
-                    let (scale, translation) = quad.quad_mesh_polycube.scale_translation();
-
                     let mut color_map = HashMap::new();
                     for face_id in quad.quad_mesh_polycube.face_ids() {
-                        let normal = quad.quad_mesh_polycube.normal(face_id);
-                        let color = colors::from_direction(to_principal_direction(normal).0, Some(Perspective::Primal), None);
+                        let color = colors::LIGHT_GRAY;
                         color_map.insert(face_id, [color[0] as f32, color[1] as f32, color[2] as f32]);
-                    }
-
-                    let mut gizmos_paths = GizmoAsset::new();
-                    let mut gizmos_flat_paths = GizmoAsset::new();
-                    if let (Some(lay), Some(polycube)) = (&solution.layout, &solution.polycube) {
-                        let color = colors::GRAY;
-                        let c = bevy::color::Color::srgb(color[0], color[1], color[2]);
-
-                        for &pedge_id in lay.edge_to_path.keys() {
-                            let f1 = polycube.structure.normal(polycube.structure.face(pedge_id));
-                            let f2 = polycube.structure.normal(polycube.structure.face(polycube.structure.twin(pedge_id)));
-                            let endpoints = polycube.structure.vertices(pedge_id);
-                            let u = polycube.structure.position(endpoints[0]);
-                            let v = polycube.structure.position(endpoints[1]);
-                            let u_transformed = world_to_view(u, translation, scale);
-                            let v_transformed = world_to_view(v, translation, scale);
-                            gizmos_flat_paths.line(u_transformed, v_transformed, c);
-                            if f1 != f2 {
-                                gizmos_paths.line(u_transformed, v_transformed, c);
-                            }
-                        }
                     }
 
                     render_object_store.add_object(
                         object,
                         RenderObject::default()
-                            // .mesh(&mut meshes, &quad.quad_mesh_polycube, &default_color_map, "default", false)
                             .mesh(&quad.quad_mesh_polycube, &color_map, "colored")
                             .gizmo(quad.quad_mesh_polycube.gizmos(colors::GRAY), 2., -0.01, "quads")
                             .gizmo(quad.triangle_mesh_polycube.gizmos(colors::GRAY), 2., -0.01, "triangles")
-                            .gizmo(gizmos_paths, 5., -0.001, "paths")
-                            .gizmo(gizmos_flat_paths, 4., -0.0011, "flat paths")
                             .to_owned(),
                     );
                 }
@@ -744,7 +791,7 @@ pub fn refresh(solution: &Solution) -> RenderObjectStore {
                         if let Some(&score) = solution.layout.as_ref().unwrap().alignment_per_triangle.get(&triangle_id) {
                             color_map_alignment.insert(triangle_id, colors::map(score as f32, &colors::SCALE_MAGMA));
                         } else {
-                            color_map_alignment.insert(triangle_id, colors::PURPLE_LIGHT);
+                            color_map_alignment.insert(triangle_id, colors::SNOEP_YELLOW);
                         }
                     }
 
@@ -923,9 +970,9 @@ pub fn refresh(solution: &Solution) -> RenderObjectStore {
                         .mesh(granulated_mesh, &color_map_d_area, "d_area")
                         .mesh(granulated_mesh, &color_map_d_angle, "d_angle")
                         .gizmo(input.gizmos(colors::GRAY), 0.5, -0.00001, "wireframe")
-                        .gizmo(gizmos_xloops, 3., -0.0001, "X-loops")
-                        .gizmo(gizmos_yloops, 3., -0.00011, "Y-loops")
-                        .gizmo(gizmos_zloops, 3., -0.000111, "Z-loops")
+                        .gizmo(gizmos_xloops, 3., -0.0001, "x-loops")
+                        .gizmo(gizmos_yloops, 3., -0.00011, "y-loops")
+                        .gizmo(gizmos_zloops, 3., -0.000111, "z-loops")
                         .gizmo(gizmos_paths, 4., -0.0001, "paths")
                         .gizmo(gizmos_flat_paths, 2., -0.00011, "flat paths")
                         // .mesh(input, &color_map_flag, "flag")
@@ -944,4 +991,15 @@ pub fn refresh(solution: &Solution) -> RenderObjectStore {
 pub fn world_to_view(v: Vector3D, translation: Vector3D, scale: f64) -> Vec3 {
     let vt = transform_coordinates(v, translation, scale);
     Vec3::new(vt.x as f32, vt.y as f32, vt.z as f32)
+}
+
+pub fn automatic_rotation_camera(mut cameras: Query<(&mut LookTransform, &mut Projection, &mut Camera, &CameraFor)>, configuration: Res<Configuration>) {
+    if !configuration.automatic_rotation_camera {
+        return;
+    }
+    let (mut transform, _, _, _) = cameras.iter_mut().find(|(_, _, _, camera_for)| camera_for.0 == Objects::InputMesh).unwrap();
+    let mut look_angles = LookAngles::from_vector(-transform.look_direction().unwrap());
+    let rotation_speed = configuration.camera_rotate_sensitivity / 100.; // radians per 10ms
+    look_angles.add_yaw(-rotation_speed);
+    transform.eye = transform.target + transform.radius() * look_angles.unit_vector();
 }

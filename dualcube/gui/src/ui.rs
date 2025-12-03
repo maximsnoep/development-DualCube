@@ -14,14 +14,22 @@ pub struct UiResource {
     pub tree: DockState<Objects>,
 }
 
-const RED: Color32 = Color32::from_rgb((colors::RED[0] * 255.) as u8, (colors::RED[1] * 255.) as u8, (colors::RED[2] * 255.) as u8);
+const RED: Color32 = Color32::from_rgb(
+    (colors::SNOEP_RED[0] * 255.) as u8,
+    (colors::SNOEP_RED[1] * 255.) as u8,
+    (colors::SNOEP_RED[2] * 255.) as u8,
+);
 const LIGHT_RED: Color32 = Color32::from_rgb(
     (colors::RED_LIGHT[0] * 255.) as u8,
     (colors::RED_LIGHT[1] * 255.) as u8,
     (colors::RED_LIGHT[2] * 255.) as u8,
 );
 
-const BLUE: Color32 = Color32::from_rgb((colors::BLUE[0] * 255.) as u8, (colors::BLUE[1] * 255.) as u8, (colors::BLUE[2] * 255.) as u8);
+const BLUE: Color32 = Color32::from_rgb(
+    (colors::SNOEP_BLUE[0] * 255.) as u8,
+    (colors::SNOEP_BLUE[1] * 255.) as u8,
+    (colors::SNOEP_BLUE[2] * 255.) as u8,
+);
 
 impl Default for UiResource {
     fn default() -> Self {
@@ -30,8 +38,9 @@ impl Default for UiResource {
                 let mut tree = DockState::new(vec![Objects::InputMesh]);
 
                 // You can modify the tree before constructing the dock
-                let right1 = tree.main_surface_mut().split_right(NodeIndex::root(), 0.8, vec![Objects::PolycubeMap])[1];
-                let _right2 = tree.main_surface_mut().split_below(right1, 0.5, vec![Objects::QuadMesh])[1];
+                let right1 = tree.main_surface_mut().split_right(NodeIndex::root(), 0.7, vec![Objects::Polycube])[1];
+                let _right3 = tree.main_surface_mut().split_right(right1, 0.5, vec![Objects::PolycubeMap])[1];
+                let _right2 = tree.main_surface_mut().split_below(right1, 0.4, vec![Objects::QuadMesh])[1];
 
                 tree
             },
@@ -60,7 +69,7 @@ impl egui_dock::TabViewer for TabViewer {
             Objects::InputMesh => {
                 default_style.tab_body.bg_fill = Color32::TRANSPARENT;
             }
-            Objects::PolycubeMap | Objects::QuadMesh => {
+            _ => {
                 default_style.tab_body.bg_fill = Color32::from_gray(27);
             }
         }
@@ -125,10 +134,11 @@ impl egui_dock::TabViewer for TabViewer {
                 let response = match tab {
                     Objects::InputMesh => ui.allocate_exact_size(ui.available_size(), Sense::all()),
 
-                    Objects::PolycubeMap | Objects::QuadMesh => {
+                    _ => {
                         let egui_handle = match tab {
                             Objects::PolycubeMap => self.egui_handles[0],
                             Objects::QuadMesh => self.egui_handles[1],
+                            Objects::Polycube => self.egui_handles[2],
                             _ => unreachable!(),
                         };
                         let [w, h] = ui.available_size().into();
@@ -346,38 +356,51 @@ fn header(
 
                     space(ui);
 
-                    if sleek_button(ui, "Input mesh") {
-                        let true_labels = ["gray", "wireframe"];
-                        for settings in render_object_settings_store.objects.values_mut() {
+                    if sleek_button(ui, "> Grayscale") {
+                        for (object, settings) in render_object_settings_store.objects.iter_mut() {
+                            let show = match object {
+                                Objects::InputMesh => vec!["gray", "wireframe"],
+                                Objects::Polycube => vec!["gray", "paths", "flat paths"],
+                                Objects::PolycubeMap => vec!["colored", "triangles"],
+                                Objects::QuadMesh => vec!["gray", "wireframe"],
+                            };
                             for (label, setting) in settings.settings.iter_mut() {
-                                setting.visible = true_labels.contains(&label.as_str());
+                                setting.visible = show.contains(&label.as_str());
                             }
                         }
                     }
 
                     space(ui);
 
-                    if sleek_button(ui, "Dual loops") {
-                        let true_labels = ["black", "X-loops", "Y-loops", "Z-loops", "colored"];
-                        for settings in render_object_settings_store.objects.values_mut() {
+                    if sleek_button(ui, "> Dual") {
+                        for (object, settings) in render_object_settings_store.objects.iter_mut() {
+                            let show = match object {
+                                Objects::InputMesh => vec!["black", "x-loops", "y-loops", "z-loops"],
+                                Objects::Polycube => vec!["black", "x-loops", "y-loops", "z-loops"],
+                                Objects::PolycubeMap => vec!["colored", "triangles"],
+                                Objects::QuadMesh => vec!["gray", "paths", "flat paths"],
+                            };
                             for (label, setting) in settings.settings.iter_mut() {
-                                setting.visible = true_labels.contains(&label.as_str());
+                                setting.visible = show.contains(&label.as_str());
                             }
                         }
                     }
 
                     space(ui);
 
-                    if sleek_button(ui, "Polycube segmentation") {
-                        let true_labels = ["segmentation", "colored", "paths", "flat paths"];
-                        for settings in render_object_settings_store.objects.values_mut() {
+                    if sleek_button(ui, "> Primal") {
+                        for (object, settings) in render_object_settings_store.objects.iter_mut() {
+                            let show = match object {
+                                Objects::InputMesh => vec!["segmentation", "paths", "flat paths", "wireframe"],
+                                Objects::Polycube => vec!["colored", "paths", "flat paths"],
+                                Objects::PolycubeMap => vec!["colored", "triangles"],
+                                Objects::QuadMesh => vec!["colored", "wireframe", "paths", "flat paths"],
+                            };
                             for (label, setting) in settings.settings.iter_mut() {
-                                setting.visible = true_labels.contains(&label.as_str());
+                                setting.visible = show.contains(&label.as_str());
                             }
                         }
                     }
-
-                    space(ui);
                 });
 
                 space(ui);
@@ -389,6 +412,15 @@ fn header(
                     let m = 2.0;
 
                     space(ui);
+
+                    label(ui, "Automatic", 12., Color32::WHITE);
+
+                    space(ui);
+
+                    // automatic rotation? yes or no
+                    ui.checkbox(&mut configuration.automatic_rotation_camera, "rotation");
+
+                    sep(ui);
 
                     label(ui, "Sensitivity", 12., Color32::WHITE);
 
@@ -412,7 +444,7 @@ fn header(
 
                     space(ui);
 
-                    if sleek_button(ui, "High-precision") {
+                    if sleek_button(ui, "High-precision mode") {
                         configuration.camera_rotate_sensitivity = 0.01;
                         configuration.camera_translate_sensitivity = 0.01;
                         configuration.camera_zoom_sensitivity = 0.01;
@@ -420,7 +452,7 @@ fn header(
 
                     space(ui);
 
-                    if sleek_button(ui, "Default") {
+                    if sleek_button(ui, "Reset to default") {
                         configuration.camera_rotate_sensitivity = 0.2;
                         configuration.camera_translate_sensitivity = 2.0;
                         configuration.camera_zoom_sensitivity = 0.2;
