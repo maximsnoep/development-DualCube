@@ -89,7 +89,7 @@ pub fn segmentation_modification_system(
             gizmos.line(v1_transformed, v1_transformed + n1, colors::to_bevy(colors::SNOEP_GREEN));
             gizmos.circle(isometry1, 0.1, colors::to_bevy(colors::SNOEP_GREEN));
 
-            gizmos.line(v_transformed + 0.1 * n, v1_transformed + 0.1 * n1, colors::to_bevy(colors::SNOEP_GREEN));
+            gizmos.line(v_transformed + 0.21 * n, v1_transformed + 0.1 * n1, colors::to_bevy(colors::SNOEP_GREEN));
         }
 
         // CONTROLS
@@ -338,8 +338,7 @@ pub fn system(
     let nearest_vert = mesh_resmut
         .mesh
         .vertices(nearest_face)
-        .iter()
-        .min_by_key(|&v| OrderedFloat(position.metric_distance(&mesh_resmut.mesh.position(*v))))
+        .min_by_key(|&v| OrderedFloat(position.metric_distance(&mesh_resmut.mesh.position(v))))
         .unwrap()
         .to_owned();
 

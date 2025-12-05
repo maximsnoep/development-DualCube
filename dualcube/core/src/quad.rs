@@ -7,7 +7,6 @@ use faer::Mat;
 use faer_gmres::gmres;
 use itertools::Itertools;
 use mehsh::prelude::*;
-use rayon::iter::{IntoParallelIterator, ParallelIterator};
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
 use std::collections::{HashMap, HashSet};
 
@@ -35,7 +34,7 @@ impl Serialize for Quad {
 
 // deserialize Quad
 impl<'de> Deserialize<'de> for Quad {
-    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    fn deserialize<D>(_deserializer: D) -> Result<Self, D::Error>
     where
         D: Deserializer<'de>,
     {
@@ -59,7 +58,7 @@ impl Quad {
     }
 
     #[must_use]
-    pub fn from_layout(layout: &Layout, polycube: &Polycube, omega: usize) -> Option<Self> {
+    pub fn from_layout(layout: &Layout, omega: usize) -> Option<Self> {
         let mut triangle_mesh_polycube = layout.granulated_mesh.clone();
 
         let mut edges_done: HashMap<EdgeKey<POLYCUBE>, Vec<usize>> = HashMap::new();
@@ -96,8 +95,7 @@ impl Quad {
                 continue;
             }
             patches_done.insert(patch_id);
-            let neighboring_patches = polycube.neighbors(patch_id);
-            for &neighbor in &neighboring_patches {
+            for neighbor in polycube.neighbors(patch_id) {
                 if !patches_done.contains(&neighbor) {
                     queue.push(neighbor);
                 }
@@ -106,27 +104,25 @@ impl Quad {
             // A map for each vertex in the patch to its corresponding 2D coordinate in the unit square
             let mut map_to_2d = HashMap::new();
 
-            let patch_edges = polycube.edges(patch_id);
+            let Some([edge1, edge2, edge3, edge4]) = polycube.edges(patch_id).collect_array::<4>() else {
+                panic!()
+            };
 
             // Edge1 is mapped to unit edge (0,1) -> (1,1)
-            let edge1 = patch_edges[0];
             let boundary1 = layout.edge_to_path.get(&edge1).unwrap();
-            let corner1 = polycube.vertices(edge1)[0];
+            let corner1 = polycube.vertices(edge1).next().unwrap();
 
             // Edge2 is mapped to unit edge (1,1) -> (1,0)
-            let edge2 = patch_edges[1];
             let boundary2 = layout.edge_to_path.get(&edge2).unwrap();
-            let corner2 = polycube.vertices(edge2)[0];
+            let corner2 = polycube.vertices(edge2).next().unwrap();
 
             // Edge3 is mapped to unit edge (1,0) -> (0,0)
-            let edge3 = patch_edges[2];
             let boundary3 = layout.edge_to_path.get(&edge3).unwrap();
-            let corner3 = polycube.vertices(edge3)[0];
+            let corner3 = polycube.vertices(edge3).next().unwrap();
 
             // Edge4 is mapped to unit edge (0,0) -> (0,1)
-            let edge4 = patch_edges[3];
             let boundary4 = layout.edge_to_path.get(&edge4).unwrap();
-            let corner4 = polycube.vertices(edge4)[0];
+            let corner4 = polycube.vertices(edge4).next().unwrap();
 
             // d3p1 = (x1, y1, z1)
             // d3p2 = (x2, y2, z2)
@@ -138,13 +134,13 @@ impl Quad {
             // d2p2 = (u2, v1)
             // d2p3 = (u2, v2)
             // d2p4 = (u1, v2)
-            let p1 = polycube.vertices(edge1)[0];
+            let p1 = polycube.vertices(edge1).next().unwrap();
             let d3p1 = polycube.position(p1);
-            let p2 = polycube.vertices(edge2)[0];
+            let p2 = polycube.vertices(edge2).next().unwrap();
             let d3p2 = polycube.position(p2);
-            let p3 = polycube.vertices(edge3)[0];
+            let p3 = polycube.vertices(edge3).next().unwrap();
             let d3p3 = polycube.position(p3);
-            let p4 = polycube.vertices(edge4)[0];
+            let p4 = polycube.vertices(edge4).next().unwrap();
             let d3p4 = polycube.position(p4);
 
             let coordinates = if d3p1.x == d3p2.x && d3p1.x == d3p3.x && d3p1.x == d3p4.x {
@@ -221,7 +217,7 @@ impl Quad {
                 let row = vert_to_id.get_by_left(&v0).unwrap().to_owned();
                 // For vi (all neighbors of v0), we calculate weight wi, where wi = tan(alpha_{i-1} / 2) + tan(alpha_i / 2) / || vi - v0 ||
 
-                let neighbors = layout.granulated_mesh.neighbors(v0);
+                let neighbors = layout.granulated_mesh.neighbors(v0).collect_vec();
                 let k = neighbors.len();
 
                 let w = (0..k)
@@ -514,15 +510,17 @@ impl Quad {
                 // Get the nearest triangle in the triangle mesh (polycube map)
                 let point = quad_mesh_polycube.position(vert_id);
                 let triangle = triangle_lookup.nearest(&[point.x, point.y, point.z]);
-                let corners = triangle_mesh_polycube.vertices(triangle);
+                let Some([a, b, c]) = triangle_mesh_polycube.vertices(triangle).collect_array::<3>() else {
+                    panic!("Triangle does not have 3 vertices!");
+                };
 
                 // check distance from point to triangle
                 let distance1 = mehsh::utils::geom::distance_to_triangle(
                     point,
                     (
-                        triangle_mesh_polycube.position(corners[0]),
-                        triangle_mesh_polycube.position(corners[1]),
-                        triangle_mesh_polycube.position(corners[2]),
+                        triangle_mesh_polycube.position(a),
+                        triangle_mesh_polycube.position(b),
+                        triangle_mesh_polycube.position(c),
                     ),
                 );
 
@@ -534,9 +532,9 @@ impl Quad {
                 let (u, v, w) = mehsh::utils::geom::calculate_barycentric_coordinates(
                     point,
                     (
-                        triangle_mesh_polycube.position(corners[0]),
-                        triangle_mesh_polycube.position(corners[1]),
-                        triangle_mesh_polycube.position(corners[2]),
+                        triangle_mesh_polycube.position(a),
+                        triangle_mesh_polycube.position(b),
+                        triangle_mesh_polycube.position(c),
                     ),
                 );
 
@@ -546,9 +544,9 @@ impl Quad {
                     v,
                     w,
                     (
-                        layout.granulated_mesh.position(corners[0]),
-                        layout.granulated_mesh.position(corners[1]),
-                        layout.granulated_mesh.position(corners[2]),
+                        layout.granulated_mesh.position(a),
+                        layout.granulated_mesh.position(b),
+                        layout.granulated_mesh.position(c),
                     ),
                 );
 
@@ -569,48 +567,6 @@ impl Quad {
             })
         } else {
             panic!("Failed to create quad mesh from faces and vertex positions");
-        }
-    }
-
-    pub fn smoothing(&mut self, _iterations: usize, reference: &Mesh<INPUT>, _fix_sharp: bool) {
-        log::info!("Performing 200 iterations of Laplacian smoothing on the quad mesh.");
-
-        for i in 0..200 {
-            log::info!("Smoothing iteration {}", i);
-            let new_positions = self
-                .quad_mesh
-                .vert_ids()
-                .into_par_iter()
-                .filter(|&vert_id| !self.frozen.contains(&vert_id))
-                .flat_map(|vert_id| {
-                    let mut p_i = self.quad_mesh.position(vert_id);
-
-                    let neighbors = self.quad_mesh.neighbors(vert_id);
-
-                    let sum = neighbors.iter().map(|&n| self.quad_mesh.position(n)).sum::<Vector3D>();
-                    let avg = sum / neighbors.len() as f64;
-                    let delta_p_i = avg - p_i;
-
-                    // inflate factor, > 0
-                    let lambda = 0.35;
-                    // shrink factor, < 0
-                    let mu = -0.34;
-
-                    if i % 2 == 0 {
-                        // shrink
-                        p_i += lambda * delta_p_i;
-                    } else {
-                        // inflate
-                        p_i += mu * delta_p_i;
-                    }
-
-                    Some((vert_id, p_i))
-                })
-                .collect::<Vec<_>>();
-
-            for (vert_id, closest_point) in new_positions {
-                self.quad_mesh.set_position(vert_id, closest_point);
-            }
         }
     }
 }

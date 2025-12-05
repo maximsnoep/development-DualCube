@@ -155,8 +155,10 @@ impl Dual {
 
     #[must_use]
     pub fn segment_to_endpoints(&self, segment: LoopSegmentID) -> (EdgeID, EdgeID) {
-        let endpoints = &self.loop_structure.vertices(segment);
-        (self.intersection_to_edge(endpoints[0]), self.intersection_to_edge(endpoints[1]))
+        let Some([start, end]) = self.loop_structure.vertices(segment).collect_array::<2>() else {
+            panic!("Expecting segment {segment:?} to have exactly two endpoints");
+        };
+        (self.intersection_to_edge(start), self.intersection_to_edge(end))
     }
 
     #[must_use]
@@ -452,9 +454,11 @@ impl Dual {
                     .insert(vertex_id, intersection_ids[vmap.id(&vertex_id).unwrap().to_owned()]);
             }
             for edge_id in douconel.edge_ids() {
-                let endpoints = douconel.vertices(edge_id);
-                let this = self.intersection_to_edge(endpoints[0]);
-                let next = self.intersection_to_edge(endpoints[1]);
+                let Some([this, next]) = douconel.vertices(edge_id).collect_array::<2>() else {
+                    panic!("Expecting edge {edge_id:?} to have exactly two vertices");
+                };
+                let this = self.intersection_to_edge(this);
+                let next = self.intersection_to_edge(next);
 
                 let (loop_id, _, orientation) = intersections[&this].iter().find(|&(_, x, _)| *x == next).unwrap().to_owned();
 
@@ -475,10 +479,11 @@ impl Dual {
         let blocked = self.loops_ref.values().flat_map(|lewp| lewp.edges.iter().copied()).collect::<HashSet<_>>();
         // Then all connected components of the mesh that are not blocked are loop regions
 
-        let loop_regions = grapff::fluid::FluidGraph::new(|vertex| {
-            let mut neighbors = self.mesh_ref.neighbors(vertex);
-            neighbors.retain(|&neighbor| !blocked.contains(&self.mesh_ref.edge_between_verts(vertex, neighbor).unwrap().0));
-            neighbors
+        let loop_regions = grapff::fluid::FluidGraph::new(|vertex: VertKey<INPUT>| {
+            self.mesh_ref
+                .neighbors(vertex)
+                .filter(|&neighbor| !blocked.contains(&self.mesh_ref.edge_between_verts(vertex, neighbor).unwrap().0))
+                .collect_vec()
         })
         .connected_components(&self.mesh_ref.vert_ids());
 
@@ -498,28 +503,29 @@ impl Dual {
             // Loop segment should simply have only two connected components (one for each side)
             // We do not check all its edges, but only the first one (since they should all be the same)
             let arbitrary_edge = self.segment_to_edges_excl(segment_id)[0];
-            let endpoints = self.mesh_ref.vertices(arbitrary_edge);
-            let component1 = loop_regions.iter().position(|cc| cc.contains(&endpoints[0])).unwrap();
-            let component2 = loop_regions.iter().position(|cc| cc.contains(&endpoints[1])).unwrap();
+            let Some([start, end]) = self.mesh_ref.vertices(arbitrary_edge).collect_array::<2>() else {
+                panic!("Expecting edge {arbitrary_edge:?} to have exactly two vertices");
+            };
+            let component1 = loop_regions.iter().position(|cc| cc.contains(&start)).unwrap();
+            let component2 = loop_regions.iter().position(|cc| cc.contains(&end)).unwrap();
             segment_to_components.insert(segment_id, [component1, component2]);
         }
 
         // For every loop region, get the connected component that is shared among its loop segments
         for &face_id in &self.loop_structure.face_ids() {
-            let loop_segments = self.loop_structure.edges(face_id);
+            let mut loop_segments = self.loop_structure.edges(face_id);
             // Select an arbitrary loop segment
-            let [component1, component2] = segment_to_components[&loop_segments[0]];
+            let [component1, component2] = segment_to_components[&self.loop_structure.edges(face_id).next().unwrap()];
             // Check whether all loop segments share the same connected component
-            let component1_is_shared = loop_segments.iter().all(|&segment| segment_to_components[&segment].contains(&component1));
-            let component2_is_shared = loop_segments.iter().all(|&segment| segment_to_components[&segment].contains(&component2));
+            let component1_is_shared = loop_segments.all(|segment| segment_to_components[&segment].contains(&component1));
 
             self.loop_regions.insert(
                 face_id,
                 LoopRegion {
-                    verts: match (component1_is_shared, component2_is_shared) {
-                        (true, false) => loop_regions[component1].clone(),
-                        (false, true) => loop_regions[component2].clone(),
-                        _ => panic!(),
+                    verts: if component1_is_shared {
+                        loop_regions[component1].clone()
+                    } else {
+                        loop_regions[component2].clone()
                     },
                 },
             );
@@ -542,8 +548,8 @@ impl Dual {
                 .collect::<HashSet<_>>();
 
             // Then all connected components of the loop structure that are not blocked are zones
-            let zones = grapff::fluid::FluidGraph::new(|loop_region_id| {
-                let mut neighbors = self.loop_structure.neighbors(loop_region_id);
+            let zones = grapff::fluid::FluidGraph::new(|loop_region_id: LoopRegionID| {
+                let mut neighbors = self.loop_structure.neighbors(loop_region_id).collect_vec();
                 neighbors.retain(|&neighbor_id| !blocked.contains(&self.loop_structure.edge_between_faces(loop_region_id, neighbor_id).unwrap().0));
                 neighbors
             })
@@ -691,16 +697,14 @@ impl Dual {
         // 1. is verified by construction, simply by the way we construct the loop structure.
 
         for face_id in self.loop_structure.face_ids() {
-            let edges = self.loop_structure.edges(face_id);
-
             // Verify 2.
-            if edges.len() < 3 {
+            if self.loop_structure.edges(face_id).count() < 3 {
                 return Err(PropertyViolationError::FaceWithDegreeLessThanThree);
             }
 
             // Verify 3.
             let mut label_count = [0; 6];
-            for edge in edges {
+            for edge in self.loop_structure.edges(face_id) {
                 let loop_id = self.segment_to_loop(edge);
                 let direction = self.loops_ref[loop_id].direction;
                 let orientation = self.segment_to_orientation(edge);

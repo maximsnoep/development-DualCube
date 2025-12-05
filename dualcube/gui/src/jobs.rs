@@ -96,8 +96,10 @@ async fn run_job(job: Job) -> Option<JobResult> {
 
         Job::ComputePolycube { configuration, solution } => {
             let mut solution_clone = solution.clone();
-            solution_clone.resize_polycube(configuration.unit);
-
+            if let Err(err) = solution_clone.resize_polycube(configuration.unit) {
+                warn!("Failed to resize polycube: {err:?}");
+                return None;
+            }
             Some(JobResult::PolycubeChanged((solution_clone, configuration)))
         }
 
@@ -107,12 +109,6 @@ async fn run_job(job: Job) -> Option<JobResult> {
                 warn!("Failed to construct quad: {err:?}");
                 return None;
             }
-            Some(JobResult::QuadChanged((solution_clone, configuration)))
-        }
-
-        Job::SmoothenQuad { solution, configuration } => {
-            let mut solution_clone = solution.clone();
-            solution_clone.optimize_quad();
             Some(JobResult::QuadChanged((solution_clone, configuration)))
         }
 
@@ -511,10 +507,6 @@ pub enum Job {
         configuration: Configuration,
         solution: Solution,
     },
-    SmoothenQuad {
-        configuration: Configuration,
-        solution: Solution,
-    },
     Refresh {
         solution: Solution,
     },
@@ -571,7 +563,6 @@ pub enum JobType {
     Recompute,
     Refresh,
     SmoothenLayout,
-    SmoothenQuad,
     ComputeDual,
     PlaceCorners,
     MoveCorner,
@@ -593,7 +584,6 @@ impl std::fmt::Display for JobType {
             JobType::AddLoop => write!(f, "adding loop"),
             JobType::RemoveLoop => write!(f, "removing loop"),
             JobType::SmoothenLayout => write!(f, "smoothening layout"),
-            JobType::SmoothenQuad => write!(f, "smoothening quad"),
             JobType::InitializeLoops => write!(f, "initializing loops"),
             JobType::ComputeDual => write!(f, "computing dual"),
             JobType::PlaceCorners => write!(f, "placing corners"),
@@ -619,7 +609,6 @@ impl Job {
             Job::AddLoop { .. } => JobType::AddLoop,
             Job::RemoveLoop { .. } => JobType::RemoveLoop,
             Job::SmoothenLayout { .. } => JobType::SmoothenLayout,
-            Job::SmoothenQuad { .. } => JobType::SmoothenQuad,
             Job::InitializeLoops { .. } => JobType::InitializeLoops,
             Job::ComputeDual { .. } => JobType::ComputeDual,
             Job::PlaceCorners { .. } => JobType::PlaceCorners,

@@ -960,14 +960,6 @@ pub fn update(
                                     }
 
                                     slider(ui, "omega", &mut conf.omega, 1..=20);
-
-                                    if sleek_button(ui, "optimize") {
-                                        jobs.write(JobRequest::Run(Box::new(Job::SmoothenQuad {
-                                            solution: solution.current_solution.clone(),
-                                            configuration: conf.clone(),
-                                        })));
-                                        ui.close_menu();
-                                    }
                                 });
 
                                 label(ui, "(Ok)", 12., Color32::GRAY);

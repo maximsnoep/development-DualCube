@@ -41,18 +41,16 @@ impl<M: Tag> Mesh<M> {
 
     #[must_use]
     pub fn common_endpoint(&self, edge_a: EdgeKey<M>, edge_b: EdgeKey<M>) -> Option<VertKey<M>> {
-        let vertices_a = self.vertices(edge_a);
-        let a0 = vertices_a[0];
-        let a1 = vertices_a[1];
-        let vertices_b = self.vertices(edge_b);
-        let b0 = vertices_b[0];
-        let b1 = vertices_b[1];
-        if a0 == b0 || a0 == b1 {
-            Some(a0)
-        } else if a1 == b0 || a1 == b1 {
-            Some(a1)
+        if let (Some([a0, a1]), Some([b0, b1])) = (self.vertices(edge_a).collect_array::<2>(), self.vertices(edge_b).collect_array::<2>()) {
+            if a0 == b0 || a0 == b1 {
+                Some(a0)
+            } else if a1 == b0 || a1 == b1 {
+                Some(a1)
+            } else {
+                None
+            }
         } else {
-            None
+            panic!("Expected exactly two vertices for edges {edge_a:?} and {edge_b:?}");
         }
     }
 
@@ -68,10 +66,11 @@ impl<M: Tag> Mesh<M> {
     // Get vector of a given edge.
     #[must_use]
     pub fn vector(&self, id: EdgeKey<M>) -> Vector3D {
-        let vertices = self.vertices(id);
-        let u = vertices[0];
-        let v = vertices[1];
-        self.position(v) - self.position(u)
+        if let Some([u, v]) = self.vertices(id).collect_array::<2>() {
+            self.position(v) - self.position(u)
+        } else {
+            panic!("Expected exactly two vertices for edge {id:?}");
+        }
     }
 
     // Get angle (in radians) between two edges `u` and `v`.
@@ -83,10 +82,11 @@ impl<M: Tag> Mesh<M> {
     // Get the dihedral angle (in radians) between the two faces of `u`.
     #[must_use]
     pub fn dihedral(&self, u: EdgeKey<M>) -> Float {
-        let faces = self.faces(u);
-        let n1 = self.normal(faces[0]);
-        let n2 = self.normal(faces[1]);
-        n1.angle(&n2)
+        if let Some([f1, f2]) = self.faces(u).collect_array::<2>() {
+            self.normal(f1).angle(&self.normal(f2))
+        } else {
+            panic!("Expected exactly two faces for edge {u:?}");
+        }
     }
 }
 
@@ -98,9 +98,10 @@ impl<M: Tag> HasPosition<EDGE, M> for Mesh<M> {
 
 impl<M: Tag> HasNormal<EDGE, M> for Mesh<M> {
     fn normal(&self, id: EdgeKey<M>) -> Vector3D {
-        match self.faces(id)[..] {
-            [f1, f2] => (self.normal(f1) + self.normal(f2)).normalize(),
-            _ => panic!("Expected exactly two faces for edge {id:?}"),
+        if let Some([f1, f2]) = self.faces(id).collect_array::<2>() {
+            (self.normal(f1) + self.normal(f2)).normalize()
+        } else {
+            panic!("Expected exactly two faces for edge {id:?}");
         }
     }
 }
@@ -112,32 +113,28 @@ impl<M: Tag> HasSize<EDGE, M> for Mesh<M> {
 }
 
 impl<M: Tag> HasVertices<EDGE, M> for Mesh<M> {
-    fn vertices(&self, id: EdgeKey<M>) -> Vec<VertKey<M>> {
-        vec![self.root(id), self.root(self.next(id))]
+    fn vertices(&self, id: EdgeKey<M>) -> impl Iterator<Item = VertKey<M>> {
+        std::iter::once(self.root(id)).chain(std::iter::once(self.root(self.next(id))))
     }
 }
 
 impl<M: Tag> HasFaces<EDGE, M> for Mesh<M> {
-    fn faces(&self, id: EdgeKey<M>) -> Vec<FaceKey<M>> {
-        vec![self.face(id), self.face(self.twin(id))]
+    fn faces(&self, id: EdgeKey<M>) -> impl Iterator<Item = FaceKey<M>> {
+        std::iter::once(self.face(id)).chain(std::iter::once(self.face(self.twin(id))))
     }
 }
 
 // This is incorrect ;)
 impl<M: Tag> HasNeighbors<EDGE, M> for Mesh<M> {
-    fn neighbors(&self, id: EdgeKey<M>) -> Vec<EdgeKey<M>> {
-        let mut nexts = vec![];
+    fn neighbors(&self, id: EdgeKey<M>) -> impl Iterator<Item = EdgeKey<M>> {
         let mut cur = id;
-        loop {
+        std::iter::from_fn(move || {
             cur = self.next(cur);
-            if cur == id {
-                return nexts;
-            }
-            nexts.push(cur);
-        }
+            if cur == id { None } else { Some(cur) }
+        })
     }
 
-    fn neighbors_k(&self, id: ids::Key<EDGE, M>, k: usize) -> Vec<ids::Key<EDGE, M>> {
+    fn neighbors_k(&self, id: ids::Key<EDGE, M>, k: usize) -> impl Iterator<Item = ids::Key<EDGE, M>> {
         let mut neighbors = vec![id];
         for _ in 0..k {
             neighbors = neighbors
@@ -148,7 +145,7 @@ impl<M: Tag> HasNeighbors<EDGE, M> for Mesh<M> {
                 .collect();
         }
         neighbors.retain(|&n| n != id);
-        neighbors
+        neighbors.into_iter()
     }
 }
 
@@ -156,12 +153,13 @@ impl<M: Tag> HasNeighbors<EDGE, M> for Mesh<M> {
 impl<M: Tag> Mesh<M> {
     pub fn neighbors2(&self, id: EdgeKey<M>) -> HashSet<EdgeKey<M>> {
         let mut neighbors = HashSet::new();
-
-        let es1 = self.edges(self.vertices(id)[0]).into_iter().flat_map(|e| [e, self.twin(e)]);
-        let es2 = self.edges(self.vertices(id)[1]).into_iter().flat_map(|e| [e, self.twin(e)]);
-        neighbors.extend(es1);
-        neighbors.extend(es2);
-        neighbors.retain(|&e| e != id);
-        neighbors
+        if let Some([v0, v1]) = self.vertices(id).collect_array::<2>() {
+            neighbors.extend(self.edges(v0).flat_map(|e| [e, self.twin(e)]));
+            neighbors.extend(self.edges(v1).flat_map(|e| [e, self.twin(e)]));
+            neighbors.retain(|&e| e != id);
+            neighbors
+        } else {
+            panic!("Expected exactly two vertices for edge {id:?}");
+        }
     }
 }

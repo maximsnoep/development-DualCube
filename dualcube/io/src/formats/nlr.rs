@@ -106,22 +106,24 @@ impl Export for Nlr {
                     .iter()
                     .map(|face_id| {
                         let face_int = face_to_id.get_by_left(face_id).unwrap();
-                        let edges = polycube.structure.edges(*face_id);
+                        let Some([e0, e1, e2, e3]) = polycube.structure.edges(*face_id).collect_array::<4>() else {
+                            panic!("Expecting face {face_id:?} to have exactly four edges");
+                        };
                         let edge_int1 = edge_to_id
-                            .get_by_left(&edges[0])
-                            .or_else(|| edge_to_id.get_by_left(&polycube.structure.twin(edges[0])))
+                            .get_by_left(&e0)
+                            .or_else(|| edge_to_id.get_by_left(&polycube.structure.twin(e0)))
                             .unwrap();
                         let edge_int2 = edge_to_id
-                            .get_by_left(&edges[2])
-                            .or_else(|| edge_to_id.get_by_left(&polycube.structure.twin(edges[2])))
+                            .get_by_left(&e1)
+                            .or_else(|| edge_to_id.get_by_left(&polycube.structure.twin(e1)))
                             .unwrap();
                         let edge_int3 = edge_to_id
-                            .get_by_left(&edges[1])
-                            .or_else(|| edge_to_id.get_by_left(&polycube.structure.twin(edges[1])))
+                            .get_by_left(&e2)
+                            .or_else(|| edge_to_id.get_by_left(&polycube.structure.twin(e2)))
                             .unwrap();
                         let edge_int4 = edge_to_id
-                            .get_by_left(&edges[3])
-                            .or_else(|| edge_to_id.get_by_left(&polycube.structure.twin(edges[3])))
+                            .get_by_left(&e3)
+                            .or_else(|| edge_to_id.get_by_left(&polycube.structure.twin(e3)))
                             .unwrap();
                         format!("       {face_int}       {edge_int1}       {edge_int2}       {edge_int3}       {edge_int4}       'FACE'")
                     })
@@ -154,9 +156,11 @@ impl Export for Nlr {
                     .iter()
                     .filter_map(|edge_id| {
                         edge_to_id.get_by_left(edge_id).map(|edge_int| {
-                            let verts = polycube.structure.vertices(*edge_id);
-                            let vert_int1 = vert_to_id.get_by_left(&verts[0]).unwrap();
-                            let vert_int2 = vert_to_id.get_by_left(&verts[1]).unwrap();
+                            let Some([v0, v1]) = polycube.structure.vertices(*edge_id).collect_array::<2>() else {
+                                panic!("Expecting edge {edge_id:?} to have exactly two vertices");
+                            };
+                            let vert_int1 = vert_to_id.get_by_left(&v0).unwrap();
+                            let vert_int2 = vert_to_id.get_by_left(&v1).unwrap();
                             format!("       {edge_int}       {vert_int1}       {vert_int2}       'EDGE'")
                         })
                     })
@@ -206,7 +210,7 @@ impl Export for Nlr {
                     .vert_ids()
                     .iter()
                     .map(|vert_id| {
-                        let edge_id = polycube.structure.edges(*vert_id)[0];
+                        let edge_id = polycube.structure.edges(*vert_id).next().unwrap();
                         let path = layout.edge_to_path.get(&edge_id).unwrap();
                         let first_vertex = path[0];
                         let vert_int = vert_to_id.get_by_left(vert_id).unwrap();
@@ -372,12 +376,11 @@ impl Export for Nlr {
                         .find(|&segment_id| dual.segment_to_loop(segment_id) == loop_id)
                         .unwrap()
                 })
-                .map(|segment_id| dual.loop_structure.faces(segment_id))
-                .map(|face| [face[0], face[1]])
-                .map(|[region1, region2]| {
+                .flat_map(|segment_id| dual.loop_structure.faces(segment_id).collect_array::<2>())
+                .map(|[face1, face2]| {
                     (
-                        polycube.region_to_vertex.get_by_left(&region1).unwrap().to_owned(),
-                        polycube.region_to_vertex.get_by_left(&region2).unwrap().to_owned(),
+                        polycube.region_to_vertex.get_by_left(&face1).unwrap().to_owned(),
+                        polycube.region_to_vertex.get_by_left(&face2).unwrap().to_owned(),
                     )
                 })
                 .map(|(vertex1, vertex2)| polycube.structure.edge_between_verts(vertex1, vertex2).unwrap().0);

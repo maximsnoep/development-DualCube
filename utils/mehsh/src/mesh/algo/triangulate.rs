@@ -1,3 +1,5 @@
+use itertools::Itertools;
+
 use crate::prelude::*;
 use std::collections::HashMap;
 
@@ -9,7 +11,7 @@ impl<M: Tag> Mesh<M> {
         let mut new_faces = HashMap::new();
 
         for face in self.face_ids() {
-            if self.vertices(face).len() > 3 {
+            if self.vertices(face).count() > 3 {
                 for new_face in new_mesh.triangulate_face(face)? {
                     // Insert the new face into the new mesh
                     new_faces.insert(new_face, face);
@@ -23,9 +25,9 @@ impl<M: Tag> Mesh<M> {
     }
 
     pub fn triangulate_face(&mut self, face: FaceKey<M>) -> Result<Vec<FaceKey<M>>, MeshError<M>> {
-        let edges = self.edges(face);
-        let original_edges = self.edges(face).iter().map(|&e| self.vertices(e)).collect::<Vec<_>>();
-        let original_vertices = self.vertices(face);
+        let edges = self.edges(face).collect_vec();
+        let original_edges = self.edges(face).map(|e| self.vertices(e).collect_vec()).collect_vec();
+        let original_vertices = self.vertices(face).collect_vec();
 
         let triangles = [[1, 0, 3], [3, 2, 1]]; // For testing purposes, replace with actual triangulation for higher degree faces.
 

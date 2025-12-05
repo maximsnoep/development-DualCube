@@ -111,8 +111,7 @@ impl Layout {
             // Super strict vertex placement:
 
             let face_labels = polycube_faces
-                .iter()
-                .map(|&f| to_principal_direction(self.polycube_ref.structure.normal(f)))
+                .map(|f| to_principal_direction(self.polycube_ref.structure.normal(f)))
                 .collect::<HashSet<_>>()
                 .into_iter()
                 .collect_vec();
@@ -315,8 +314,10 @@ impl Layout {
         let polycube = &self.polycube_ref.structure;
         let mut granulated_mesh = self.granulated_mesh.clone();
 
-        let endpoints = polycube.vertices(edge_id);
-        let (Some(&u), Some(&v)) = (self.vert_to_corner.get_by_left(&endpoints[0]), self.vert_to_corner.get_by_left(&endpoints[1])) else {
+        let Some([pu, pv]) = polycube.vertices(edge_id).collect_array::<2>() else {
+            return Err(LayoutError::UnknownError);
+        };
+        let (Some(&u), Some(&v)) = (self.vert_to_corner.get_by_left(&pu), self.vert_to_corner.get_by_left(&pv)) else {
             return Err(LayoutError::UnknownError);
         };
 
@@ -331,8 +332,10 @@ impl Layout {
                     // Only allowed if the edge between the two faces is not occupied.
                     let blocked = |f1: FaceID, f2: FaceID| {
                         let (edge_id, _) = granulated_mesh.edge_between_faces(f1, f2).unwrap();
-                        let endpoints = granulated_mesh.vertices(edge_id);
-                        occupied_edges.contains(&(endpoints[0], endpoints[1]))
+                        let Some([u, v]) = granulated_mesh.vertices(edge_id).collect_array::<2>() else {
+                            panic!("Expected edge {edge_id:?} to have exactly two vertices");
+                        };
+                        occupied_edges.contains(&(u, v))
                     };
                     granulated_mesh
                         .neighbors(f_id)
@@ -513,13 +516,12 @@ impl Layout {
             // check if edge is separating (in combination with the edges already done)
             let covered_edges = self.edge_to_path.keys().chain([&edge_id]).collect::<HashSet<_>>();
 
-            let ccs = grapff::fluid::FluidGraph::new(|face_id| {
+            let ccs = grapff::fluid::FluidGraph::new(|face_id: FaceKey<POLYCUBE>| -> Vec<FaceKey<POLYCUBE>> {
                 primal
                     .structure
                     .neighbors(face_id)
-                    .into_iter()
                     .filter(|&n_id| !covered_edges.contains(&primal.structure.edge_between_faces(face_id, n_id).unwrap().0))
-                    .collect()
+                    .collect::<Vec<FaceKey<POLYCUBE>>>()
             })
             .connected_components(&primal.structure.face_ids());
 
@@ -538,17 +540,19 @@ impl Layout {
                 continue;
             }
 
-            let endpoints = primal.structure.vertices(edge_id);
+            let Some([pu, pv]) = primal.structure.vertices(edge_id).collect_array::<2>() else {
+                panic!("Expected edge {edge_id:?} to have exactly two vertices");
+            };
 
             let (u, v) = (
-                self.vert_to_corner.get_by_left(&endpoints[0]).unwrap().to_owned(),
-                self.vert_to_corner.get_by_left(&endpoints[1]).unwrap().to_owned(),
+                self.vert_to_corner.get_by_left(&pu).unwrap().to_owned(),
+                self.vert_to_corner.get_by_left(&pv).unwrap().to_owned(),
             );
 
             // Find edge in `u_new`
             let edges_done_in_u_new = primal
                 .structure
-                .edges(endpoints[0])
+                .edges(pu)
                 .into_iter()
                 .filter(|&e| self.edge_to_path.contains_key(&e) || e == edge_id)
                 .collect_vec();
@@ -601,8 +605,7 @@ impl Layout {
             // Find edge in `v_new`
             let edges_done_in_v_new = primal
                 .structure
-                .edges(endpoints[1])
-                .into_iter()
+                .edges(pv)
                 .filter(|&e| self.edge_to_path.contains_key(&e) || e == twin_id)
                 .collect_vec();
 
@@ -750,15 +753,13 @@ impl Layout {
 
         // For every patch, get the connected component that is shared among its paths
         for &face_id in &self.polycube_ref.structure.face_ids() {
-            let paths = self.polycube_ref.structure.edges(face_id);
-
             // Select an arbitrary path
-            let arbitrary_path = paths[0];
+            let arbitrary_path = self.polycube_ref.structure.edges(face_id).next().unwrap();
             let [cc1, cc2] = path_to_ccs[&arbitrary_path];
 
             // Check whether all paths share the same connected component
-            let cc1_shared = paths.iter().all(|&path| path_to_ccs[&path].contains(&cc1));
-            let cc2_shared = paths.iter().all(|&path| path_to_ccs[&path].contains(&cc2));
+            let cc1_shared = self.polycube_ref.structure.edges(face_id).all(|path| path_to_ccs[&path].contains(&cc1));
+            let cc2_shared = self.polycube_ref.structure.edges(face_id).all(|path| path_to_ccs[&path].contains(&cc2));
             if !(cc1_shared ^ cc2_shared) {
                 return Err(LayoutError::InvalidPatches);
             }
@@ -845,7 +846,7 @@ impl Layout {
     }
 
     pub fn move_corner(&mut self, vert: VertKey<POLYCUBE>, new_vert: VertID) -> Result<(), LayoutError> {
-        let edges = self.polycube_ref.structure.edges(vert);
+        let edges = self.polycube_ref.structure.edges(vert).collect_vec();
 
         // Remove adjacent paths
         for &edge in &edges {
@@ -912,13 +913,16 @@ impl Layout {
                 polycube
                     .structure
                     .faces(corner)
-                    .iter()
-                    .map(|&face_id| polycube.structure.edges_in_face_with_vert(face_id, corner).unwrap())
+                    .map(|face_id| polycube.structure.edges_in_face_with_vert(face_id, corner).unwrap())
                     .collect::<Vec<_>>()
             })
             .map(|[edge1, edge2]| {
-                let [u, v] = polycube.structure.vertices(edge1)[..2] else { panic!() };
-                let [v2, w] = polycube.structure.vertices(edge2)[..2] else { panic!() };
+                let Some([u, v]) = polycube.structure.vertices(edge1).collect_array::<2>() else {
+                    panic!()
+                };
+                let Some([v2, w]) = polycube.structure.vertices(edge2).collect_array::<2>() else {
+                    panic!()
+                };
                 assert!(v == v2);
                 let u_in_mesh = self.vert_to_corner.get_by_left(&u).unwrap().to_owned();
                 let v_in_mesh = self.vert_to_corner.get_by_left(&v).unwrap().to_owned();

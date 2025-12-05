@@ -117,7 +117,7 @@ impl<M: Tag> Mesh<M> {
     }
 
     pub fn split_face(&mut self, face_id: FaceKey<M>) -> (VertKey<M>, [FaceKey<M>; 3]) {
-        let edges = self.edges(face_id);
+        let edges = self.edges(face_id).collect_vec();
         // let centroid = self.centroid(face_id);
 
         // Original face
@@ -195,14 +195,14 @@ impl<M: Tag> Mesh<M> {
         let edge = self.edge_between_verts(a, b).unwrap().0;
 
         // Get the two faces adjacent to the two edges
-        let faces = self.faces(edge);
-        let f1 = faces[0];
-        let f2 = faces[1];
+        let Some([f1, f2]) = self.faces(edge).collect_array::<2>() else {
+            panic!("Expected exactly two faces for edge {edge:?}");
+        };
 
         // Get the anchor vertex of f1 (the vertex that is not a or b)
-        let c1 = self.vertices(f1).iter().find(|&&v| v != a && v != b).unwrap().to_owned();
+        let c1 = self.vertices(f1).find(|&v| v != a && v != b).unwrap();
         // Get the anchor vertex of f2 (the vertex that is not a or b)
-        let c2 = self.vertices(f2).iter().find(|&&v| v != a && v != b).unwrap().to_owned();
+        let c2 = self.vertices(f2).find(|&v| v != a && v != b).unwrap();
 
         // Get all required edges
         let a_c1 = self.edge_between_verts(a, c1).unwrap().0;

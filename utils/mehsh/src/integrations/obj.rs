@@ -73,10 +73,7 @@ where
                 .map(|face_id| {
                     format!(
                         "f {}",
-                        self.vertices(face_id)
-                            .iter()
-                            .map(|vert_id| format!("{}", vert_ids.id(vert_id).unwrap()))
-                            .join(" ")
+                        self.vertices(face_id).map(|vert_id| format!("{}", vert_ids.id(&vert_id).unwrap())).join(" ")
                     )
                 })
                 .join("\n")

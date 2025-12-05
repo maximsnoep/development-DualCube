@@ -105,21 +105,6 @@ pub struct RenderFeatureSetting {
     pub visible: bool,
 }
 
-#[derive(Clone, PartialEq)]
-pub struct RenderFlag {
-    pub label: String,
-    pub visible: bool,
-}
-
-impl RenderFeatureSetting {
-    pub fn flag(&self) -> RenderFlag {
-        RenderFlag {
-            label: self.label.clone(),
-            visible: self.visible,
-        }
-    }
-}
-
 impl PartialEq for RenderFeatureSetting {
     fn eq(&self, other: &Self) -> bool {
         self.label == other.label && self.visible == other.visible
@@ -548,8 +533,7 @@ pub fn refresh(solution: &Solution) -> RenderObjectStore {
                             let faces = quad.quad_mesh.faces(vert_id);
                             // Get the labels of the faces around
                             let labels = faces
-                                .iter()
-                                .map(|&face_id| to_principal_direction(quad.quad_mesh_polycube.normal(face_id)).0)
+                                .map(|face_id| to_principal_direction(quad.quad_mesh_polycube.normal(face_id)).0)
                                 .collect::<HashSet<_>>();
                             // If 3+ labels, its irregular
                             if labels.len() >= 3 {
@@ -560,8 +544,7 @@ pub fn refresh(solution: &Solution) -> RenderObjectStore {
                         // Get all edges going out irregular vertices
                         let mut irregular_edges = HashSet::new();
                         for &vert_id in &irregular_vertices {
-                            let edges = quad.quad_mesh.edges(vert_id);
-                            for &edge_id in &edges {
+                            for edge_id in quad.quad_mesh.edges(vert_id) {
                                 let mut next_twin_next = quad.quad_mesh.next(quad.quad_mesh.twin(quad.quad_mesh.next(edge_id)));
                                 while !irregular_edges.contains(&next_twin_next) {
                                     irregular_edges.insert(next_twin_next);
@@ -572,12 +555,16 @@ pub fn refresh(solution: &Solution) -> RenderObjectStore {
 
                         // Draw all irregular edges
                         for edge_id in irregular_edges {
-                            let faces = quad.quad_mesh.faces(edge_id);
-                            let n1 = quad.quad_mesh_polycube.normal(faces[0]);
-                            let n2 = quad.quad_mesh_polycube.normal(faces[1]);
-                            let endpoints = quad.quad_mesh.vertices(edge_id);
-                            let u = quad.quad_mesh.position(endpoints[0]);
-                            let v = quad.quad_mesh.position(endpoints[1]);
+                            let Some([f1, f2]) = quad.quad_mesh.faces(edge_id).collect_array::<2>() else {
+                                panic!("Expected two faces for edge {edge_id:?}");
+                            };
+                            let n1 = quad.quad_mesh_polycube.normal(f1);
+                            let n2 = quad.quad_mesh_polycube.normal(f2);
+                            let Some([e1, e2]) = quad.quad_mesh.vertices(edge_id).collect_array::<2>() else {
+                                panic!("Expected two vertices for edge {edge_id:?}");
+                            };
+                            let u = quad.quad_mesh.position(e1);
+                            let v = quad.quad_mesh.position(e2);
                             let u_transformed = world_to_view(u, translation, scale);
                             let v_transformed = world_to_view(v, translation, scale);
                             if n1 == n2 {
@@ -621,14 +608,16 @@ pub fn refresh(solution: &Solution) -> RenderObjectStore {
                         });
 
                         // draw loops
-                        let edges = polycube.structure.edges(face_id);
-                        let edge1_pos = polycube.structure.position(edges[0]);
+                        let Some([e1, e2, e3, e4]) = polycube.structure.edges(face_id).collect_array::<4>() else {
+                            panic!("Expected four edges for face {face_id:?}");
+                        };
+                        let edge1_pos = polycube.structure.position(e1);
                         let edge1_pos_view = world_to_view(edge1_pos, translation, scale);
-                        let edge2_pos = polycube.structure.position(edges[1]);
+                        let edge2_pos = polycube.structure.position(e2);
                         let edge2_pos_view = world_to_view(edge2_pos, translation, scale);
-                        let edge3_pos = polycube.structure.position(edges[2]);
+                        let edge3_pos = polycube.structure.position(e3);
                         let edge3_pos_view = world_to_view(edge3_pos, translation, scale);
-                        let edge4_pos = polycube.structure.position(edges[3]);
+                        let edge4_pos = polycube.structure.position(e4);
                         let edge4_pos_view = world_to_view(edge4_pos, translation, scale);
 
                         // loop 1, from edge 1 to edge 3
@@ -660,9 +649,11 @@ pub fn refresh(solution: &Solution) -> RenderObjectStore {
                     for pedge_id in polycube.structure.edge_ids() {
                         let f1 = polycube.structure.normal(polycube.structure.face(pedge_id));
                         let f2 = polycube.structure.normal(polycube.structure.face(polycube.structure.twin(pedge_id)));
-                        let endpoints = polycube.structure.vertices(pedge_id);
-                        let u = polycube.structure.position(endpoints[0]);
-                        let v = polycube.structure.position(endpoints[1]);
+                        let Some([e1, e2]) = polycube.structure.vertices(pedge_id).collect_array::<2>() else {
+                            panic!("Expected two vertices for edge {pedge_id:?}");
+                        };
+                        let u = polycube.structure.position(e1);
+                        let v = polycube.structure.position(e2);
                         let u_transformed = world_to_view(u, translation, scale);
                         let v_transformed = world_to_view(v, translation, scale);
                         gizmos_flat_paths.line(u_transformed, v_transformed, c);
@@ -696,7 +687,7 @@ pub fn refresh(solution: &Solution) -> RenderObjectStore {
                     let mut color_map = HashMap::new();
                     for face_id in quad.quad_mesh_polycube.face_ids() {
                         let color = colors::LIGHT_GRAY;
-                        color_map.insert(face_id, [color[0] as f32, color[1] as f32, color[2] as f32]);
+                        color_map.insert(face_id, color);
                     }
 
                     render_object_store.add_object(
@@ -765,9 +756,11 @@ pub fn refresh(solution: &Solution) -> RenderObjectStore {
                                 continue;
                             }
                             let edge_id = granulated_mesh.edge_between_verts(vertexpair[0], vertexpair[1]).unwrap().0;
-                            let endpoints = granulated_mesh.vertices(edge_id);
-                            let u = granulated_mesh.position(endpoints[0]);
-                            let v = granulated_mesh.position(endpoints[1]);
+                            let Some([e1, e2]) = granulated_mesh.vertices(edge_id).collect_array::<2>() else {
+                                panic!("Expected two vertices for edge {edge_id:?}");
+                            };
+                            let u = granulated_mesh.position(e1);
+                            let v = granulated_mesh.position(e2);
                             let u_transformed = world_to_view(u, translation, scale);
                             let v_transformed = world_to_view(v, translation, scale);
                             gizmos_flat_paths.line(u_transformed, v_transformed, c);
@@ -943,9 +936,11 @@ pub fn refresh(solution: &Solution) -> RenderObjectStore {
                     let color = cs[i];
                     let feature_edges = &features[i];
                     for &edge_id in feature_edges {
-                        let endpoints = input.vertices(edge_id);
-                        let u = input.position(endpoints[0]);
-                        let v = input.position(endpoints[1]);
+                        let Some([v1, v2]) = input.vertices(edge_id).collect_array::<2>() else {
+                            panic!("Expected two vertices for edge {edge_id:?}");
+                        };
+                        let u = input.position(v1);
+                        let v = input.position(v2);
                         let u_transformed = world_to_view(u, translation, scale);
                         let v_transformed = world_to_view(v, translation, scale);
                         gizmos_features.line(u_transformed, v_transformed, color);

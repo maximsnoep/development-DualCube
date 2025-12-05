@@ -50,7 +50,9 @@ pub fn feature_extraction(mesh: &Mesh<INPUT>, angle_threshold: f64, min_connecte
     let mut labeled_features = [HashSet::new(), HashSet::new(), HashSet::new()];
 
     for edge_id in features {
-        let [f1, f2] = [mesh.faces(edge_id)[0], mesh.faces(edge_id)[1]];
+        let Some([f1, f2]) = mesh.faces(edge_id).collect_array::<2>() else {
+            panic!("Expected edge {edge_id:?} to have exactly two faces");
+        };
         let [n1, n2] = [mesh.normal(f1), mesh.normal(f2)];
         let [l1, l2] = [to_principal_direction(n1).0, to_principal_direction(n2).0];
         match (l1, l2) {
