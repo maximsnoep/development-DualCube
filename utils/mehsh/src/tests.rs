@@ -13,7 +13,7 @@ fn from_manual() {
         assert!(douconel.nr_faces() == 4);
 
         for face_id in douconel.faces.ids() {
-            assert!(douconel.vertices(face_id).len() == 3);
+            assert!(douconel.vertices(face_id).count() == 3);
         }
     }
 }
@@ -29,7 +29,7 @@ fn from_blub_stl() {
         assert!(douconel.nr_faces() == 1886);
 
         for face_id in douconel.faces.ids() {
-            assert!(douconel.vertices(face_id).len() == 3);
+            assert!(douconel.vertices(face_id).count() == 3);
         }
     }
 }
@@ -45,7 +45,7 @@ fn from_blub_obj() {
         assert!(douconel.nr_faces() == 1886);
 
         for face_id in douconel.faces.ids() {
-            assert!(douconel.vertices(face_id).len() == 3);
+            assert!(douconel.vertices(face_id).count() == 3);
         }
     }
 }
@@ -61,7 +61,7 @@ fn from_nefertiti_stl() {
         assert!(douconel.nr_faces() == 99938);
 
         for face_id in douconel.faces.ids() {
-            assert!(douconel.vertices(face_id).len() == 3);
+            assert!(douconel.vertices(face_id).count() == 3);
         }
     }
 }
@@ -77,7 +77,7 @@ fn from_hexahedron_obj() {
         assert!(douconel.nr_faces() == 6);
 
         for face_id in douconel.faces.ids() {
-            assert!(douconel.vertices(face_id).len() == 4);
+            assert!(douconel.vertices(face_id).count() == 4);
         }
     }
 }
@@ -93,7 +93,7 @@ fn from_tetrahedron_obj() {
         assert!(douconel.nr_faces() == 4);
 
         for face_id in douconel.faces.ids() {
-            assert!(douconel.vertices(face_id).len() == 3);
+            assert!(douconel.vertices(face_id).count() == 3);
         }
     }
 }

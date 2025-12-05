@@ -34,7 +34,7 @@ impl Polycube {
         // By creating the primal faces
         let faces = primal_faces
             .iter()
-            .map(|&dual_vert_id| dual.loop_structure.faces(dual_vert_id).into_iter().rev().collect_vec())
+            .map(|&dual_vert_id| dual.loop_structure.faces(dual_vert_id).collect_vec().into_iter().rev().collect_vec())
             .collect_vec();
         let int_faces = faces.iter().map(|face| face.iter().map(|vert| vert_to_int[vert]).collect_vec()).collect_vec();
 
@@ -160,7 +160,12 @@ impl Polycube {
             writeln!(
                 file,
                 "{}",
-                vertices.iter().map(|vert_id| format!("{}", vert_ids.id(vert_id).unwrap())).rev().join(" ")
+                vertices
+                    .map(|vert_id| format!("{}", vert_ids.id(&vert_id).unwrap()))
+                    .collect_vec()
+                    .into_iter()
+                    .rev()
+                    .join(" ")
             )?;
         }
 
@@ -169,7 +174,6 @@ impl Polycube {
         let mut edge_strings = vec![];
         let mut edge_lengths = vec![];
         for edge_id in polycube.structure.edge_ids() {
-            let verts = polycube.structure.vertices(edge_id);
             let direction_vector = polycube.structure.vector(edge_id).normalize();
             let (direction, orientation) = to_principal_direction(direction_vector);
             if orientation == Orientation::Backwards {
@@ -180,7 +184,10 @@ impl Polycube {
                 PrincipalDirection::Y => "Y",
                 PrincipalDirection::Z => "Z",
             };
-            edge_strings.push(format!("{} {} {label}", vert_ids.id(&verts[0]).unwrap(), vert_ids.id(&verts[1]).unwrap()));
+            let Some([v1, v2]) = polycube.structure.vertices(edge_id).collect_array::<2>() else {
+                panic!()
+            };
+            edge_strings.push(format!("{} {} {label}", vert_ids.id(&v1).unwrap(), vert_ids.id(&v2).unwrap()));
 
             let path = layout.edge_to_path.get(&edge_id).unwrap();
             let length_of_path = path.windows(2).map(|w| layout.granulated_mesh.distance(w[0], w[1])).sum::<f64>();

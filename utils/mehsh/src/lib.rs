@@ -47,6 +47,7 @@ pub mod prelude {
     pub use crate::utils::ids;
     pub use crate::utils::math;
     pub use crate::utils::primitives::*;
+    pub use itertools::Itertools;
 }
 
 #[cfg(test)]

@@ -35,14 +35,15 @@ impl<M: Tag> Mesh<M> {
             .face_ids()
             .iter()
             .enumerate()
-            .map(|(i, &face_id)| TriangleBvhShape {
-                corners: [
-                    self.position(self.vertices(face_id)[0]),
-                    self.position(self.vertices(face_id)[1]),
-                    self.position(self.vertices(face_id)[2]),
-                ],
-                node_index: i,
-                real_index: face_id,
+            .map(|(i, &face_id)| {
+                let Some([v0, v1, v2]) = self.vertices(face_id).collect_array::<3>() else {
+                    panic!("Expected exactly three vertices for face {face_id:?}");
+                };
+                TriangleBvhShape {
+                    corners: [self.position(v0), self.position(v1), self.position(v2)],
+                    node_index: i,
+                    real_index: face_id,
+                }
             })
             .collect_vec();
 

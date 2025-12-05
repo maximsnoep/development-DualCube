@@ -32,7 +32,7 @@ impl Export for Dcube {
         let mut faces = vec![];
         for face_id in solution.mesh_ref.face_ids() {
             let vertices = solution.mesh_ref.vertices(face_id);
-            let face_verts = vertices.iter().map(|vert_id| vert_ids.id(vert_id).unwrap().to_owned()).collect::<Vec<_>>();
+            let face_verts = vertices.map(|vert_id| vert_ids.id(&vert_id).unwrap().to_owned()).collect::<Vec<_>>();
             faces.push(face_verts);
         }
 
@@ -49,8 +49,10 @@ impl Export for Dcube {
                 .clone()
                 .into_iter()
                 .map(|edge_id| {
-                    let vs = solution.mesh_ref.vertices(edge_id);
-                    (vs[0], vs[1])
+                    let Some([v0, v1]) = solution.mesh_ref.vertices(edge_id).collect_array::<2>() else {
+                        panic!("Expecting edge {edge_id:?} to have exactly two vertices");
+                    };
+                    (v0, v1)
                 })
                 .map(|(start, end)| (vert_ids.id(&start).unwrap().to_owned(), vert_ids.id(&end).unwrap().to_owned()))
                 .collect::<Vec<_>>();

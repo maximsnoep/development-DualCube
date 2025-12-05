@@ -473,18 +473,8 @@ impl Solution {
 
     // Construct quad
     pub fn construct_quad(&mut self, omega: usize) -> Result<(), PropertyViolationError> {
-        self.quad = Quad::from_layout(self.layout.as_ref().unwrap(), self.polycube.as_ref().unwrap(), omega);
+        self.quad = Quad::from_layout(self.layout.as_ref().unwrap(), omega);
         Ok(())
-    }
-
-    // Optimize quad
-    pub fn optimize_quad(&mut self) -> Option<()> {
-        if let Some(quad) = self.quad.as_mut() {
-            quad.smoothing(10, &self.mesh_ref, false);
-            Some(())
-        } else {
-            None
-        }
     }
 
     /// REST OF THE FUNCS
@@ -562,9 +552,11 @@ impl Solution {
         let offset = (i + 1.) / (n + 1.);
         // define the loop segment, starting point is p, ending point is q
 
-        let endpoints = self.mesh_ref.vertices(e);
-        let p = self.mesh_ref.position(endpoints[0]);
-        let q = self.mesh_ref.position(endpoints[1]);
+        let Some([v1, v2]) = self.mesh_ref.vertices(e).collect_array::<2>() else {
+            panic!()
+        };
+        let p = self.mesh_ref.position(v1);
+        let q = self.mesh_ref.position(v2);
         // compute the coordinates
         p + offset * (q - p)
     }
@@ -633,8 +625,7 @@ impl Solution {
             .flat_map(|(edge_id, loops_on_edge)| {
                 self.mesh_ref
                     .edges(self.mesh_ref.face(edge_id))
-                    .iter()
-                    .flat_map(|&neighbor_id| {
+                    .flat_map(|neighbor_id| {
                         if loops_on_edge.iter().any(|loop_on_edge| self.loops_on_edge(neighbor_id).contains(loop_on_edge)) {
                             vec![(edge_id, neighbor_id), (neighbor_id, edge_id)]
                         } else {
@@ -945,7 +936,7 @@ impl Solution {
 
         log::info!("The constructed solution has quality: {:?}", self.get_quality());
 
-        self.quad = Quad::from_layout(self.layout.as_ref().unwrap(), self.polycube.as_ref().unwrap(), omega);
+        self.quad = Quad::from_layout(self.layout.as_ref().unwrap(), omega);
 
         Ok(())
     }

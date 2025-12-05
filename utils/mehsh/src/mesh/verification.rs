@@ -100,7 +100,7 @@ impl<M: Tag> Mesh<M> {
     pub fn is_polygonal(&self) -> Result<(), MeshError<M>> {
         // Make sure the mesh is polygonal
         for face_id in self.face_ids() {
-            let corners = self.vertices(face_id);
+            let corners = self.vertices(face_id).collect_vec();
 
             // Check that the face is a polygon
             if corners.len() < 3 {

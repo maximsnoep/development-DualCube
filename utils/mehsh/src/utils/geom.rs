@@ -1,7 +1,5 @@
-use log::warn;
-use nalgebra::DMatrix;
-
 use crate::utils::primitives::{EPS, Vector2D, Vector3D};
+use nalgebra::DMatrix;
 
 /// Represents the orientation of three points in 3D space.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -211,7 +209,6 @@ pub fn calculate_barycentric_coordinates(p: Vector3D, t: (Vector3D, Vector3D, Ve
     let d21 = ap2.dot(&ac);
 
     if denom.abs() < 1e-12 {
-        println!("WARN!!!!!!!!!!!!!!!!!!!!!!: Degenerate triangle case");
         // Degenerate case: the triangle is a line or a point
         // We'll fall back to 1D parameterization along the longest edge
 
@@ -238,16 +235,6 @@ pub fn calculate_barycentric_coordinates(p: Vector3D, t: (Vector3D, Vector3D, Ve
     let bar_b = (d11 * d20 - d01 * d21) / denom;
     let bar_c = (d00 * d21 - d01 * d20) / denom;
     let bar_a = 1.0 - bar_b - bar_c;
-
-    if bar_a < 0.0 || bar_a > 1.0 {
-        warn!("Barycentric coordinate out of bounds: {}", bar_a);
-    }
-    if bar_b < 0.0 || bar_b > 1.0 {
-        warn!("Barycentric coordinate out of bounds: {}", bar_b);
-    }
-    if bar_c < 0.0 || bar_c > 1.0 {
-        warn!("Barycentric coordinate out of bounds: {}", bar_c);
-    }
 
     (bar_a, bar_b, bar_c)
 }

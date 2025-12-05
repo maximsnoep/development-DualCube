@@ -23,7 +23,7 @@ impl<M: Tag> Mesh<M> {
     // https://en.wikipedia.org/wiki/Angular_defect
     #[must_use]
     pub fn defect(&self, id: VertKey<M>) -> Float {
-        let sum_of_angles = self.edges(id).iter().fold(0., |sum, &outgoing_edge_id| {
+        let sum_of_angles = self.edges(id).fold(0., |sum, outgoing_edge_id| {
             let incoming_edge_id = self.twin(outgoing_edge_id);
             let next_edge_id = self.next(incoming_edge_id);
             let angle = self.angle(outgoing_edge_id, next_edge_id);
@@ -38,13 +38,29 @@ impl<M: Tag> Mesh<M> {
     pub fn outer_arcs(&self, a: VertKey<M>, b: VertKey<M>, c: VertKey<M>) -> (Vec<VertKey<M>>, Vec<VertKey<M>>) {
         // First arc is a to c (around b)
         let arc1 = std::iter::once(a)
-            .chain(self.neighbors(b).into_iter().cycle().skip_while(|&v| v != a).skip(1).take_while(|&v| v != c))
+            .chain(
+                self.neighbors(b)
+                    .collect_vec()
+                    .into_iter()
+                    .cycle()
+                    .skip_while(|&v| v != a)
+                    .skip(1)
+                    .take_while(|&v| v != c),
+            )
             .chain([c])
             .collect_vec();
 
         // Second arc is c to a (around b)
         let arc2 = std::iter::once(c)
-            .chain(self.neighbors(b).into_iter().cycle().skip_while(|&v| v != c).skip(1).take_while(|&v| v != a))
+            .chain(
+                self.neighbors(b)
+                    .collect_vec()
+                    .into_iter()
+                    .cycle()
+                    .skip_while(|&v| v != c)
+                    .skip(1)
+                    .take_while(|&v| v != a),
+            )
             .chain([a])
             .collect_vec();
 
@@ -68,21 +84,16 @@ impl<M: Tag> Mesh<M> {
     pub fn verts_to_edges(&self, verts: &[VertKey<M>]) -> Vec<EdgeKey<M>> {
         verts
             .iter()
-            .flat_map(|&vert_id| {
-                self.edges(vert_id)
-                    .into_iter()
-                    .filter(|&edge_id| verts.contains(&self.toor(edge_id)))
-                    .collect_vec()
-            })
+            .flat_map(|&vert_id| self.edges(vert_id).filter(|&edge_id| verts.contains(&self.toor(edge_id))).collect_vec())
             .collect_vec()
     }
 
     // Returns the edge between the two vertices. Returns None if the vertices are not connected.
     #[must_use]
     pub fn edge_between_verts(&self, id_a: VertKey<M>, id_b: VertKey<M>) -> Option<(EdgeKey<M>, EdgeKey<M>)> {
-        for &edge_a_id in &self.edges(id_a) {
+        for edge_a_id in self.edges(id_a) {
             let id_a2 = self.toor(edge_a_id);
-            for &edge_b_id in &self.edges(id_b) {
+            for edge_b_id in self.edges(id_b) {
                 let id_b2 = self.toor(edge_b_id);
                 if id_a2 == id_b && id_b2 == id_a {
                     return Some((edge_a_id, edge_b_id));
@@ -111,45 +122,45 @@ impl<M: Tag> HasPosition<VERT, M> for Mesh<M> {
 
 impl<M: Tag> HasNormal<VERT, M> for Mesh<M> {
     fn normal(&self, id: VertKey<M>) -> Vector3D {
-        self.faces(id).iter().map(|&face_id| self.normal(face_id)).sum::<Vector3D>().normalize()
+        self.faces(id).map(|face_id| self.normal(face_id)).sum::<Vector3D>().normalize()
     }
 }
 
 impl<M: Tag> HasEdges<VERT, M> for Mesh<M> {
-    fn edges(&self, id: VertKey<M>) -> Vec<EdgeKey<M>> {
-        let mut edges = vec![self.vrep(id)];
-        loop {
-            let next_of_twin = self.next(self.twin(edges.last().copied().unwrap()));
-            if edges.contains(&next_of_twin) {
-                return edges;
+    fn edges(&self, id: VertKey<M>) -> impl Iterator<Item = EdgeKey<M>> {
+        let start = self.vrep(id);
+        let mut cur = self.vrep(id);
+        std::iter::once(start).chain(std::iter::from_fn(move || {
+            let next = self.next(self.twin(cur));
+            if next == start {
+                return None;
             }
-            edges.push(next_of_twin);
-        }
+            cur = next;
+            Some(next)
+        }))
     }
 }
 
 impl<M: Tag> HasFaces<VERT, M> for Mesh<M> {
-    fn faces(&self, id: VertKey<M>) -> Vec<FaceKey<M>> {
-        self.edges(id).iter().map(|&edge_id| self.face(edge_id)).collect()
+    fn faces(&self, id: VertKey<M>) -> impl Iterator<Item = FaceKey<M>> {
+        self.edges(id).map(|edge_id| self.face(edge_id))
     }
 }
 
 impl<M: Tag> HasNeighbors<VERT, M> for Mesh<M> {
-    fn neighbors(&self, id: VertKey<M>) -> Vec<VertKey<M>> {
-        self.edges(id).iter().map(|&edge_id| self.root(self.twin(edge_id))).collect()
+    fn neighbors(&self, id: VertKey<M>) -> impl Iterator<Item = VertKey<M>> {
+        self.edges(id).map(|edge_id| self.root(self.twin(edge_id)))
     }
 
-    fn neighbors_k(&self, id: ids::Key<VERT, M>, k: usize) -> Vec<ids::Key<VERT, M>> {
-        let mut neighbors = vec![id];
+    fn neighbors_k(&self, id: ids::Key<VERT, M>, k: usize) -> impl Iterator<Item = ids::Key<VERT, M>> {
+        let mut ring: HashSet<_> = std::iter::once(id).collect();
         for _ in 0..k {
-            neighbors = neighbors
+            ring = ring
                 .into_iter()
-                .flat_map(|n| self.neighbors(n))
-                .collect::<HashSet<_>>()
-                .into_iter()
-                .collect();
+                .flat_map(|n| self.neighbors(n)) // assume neighbors() -> impl Iterator
+                .collect::<HashSet<_>>(); // dedup at each step
         }
-        neighbors.retain(|&n| n != id);
-        neighbors
+        ring.remove(&id); // don't include the center
+        ring.into_iter()
     }
 }

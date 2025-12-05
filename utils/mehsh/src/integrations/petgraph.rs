@@ -30,15 +30,13 @@ where
             .edges
             .ids()
             .filter(|&id| !filter_edges.contains(&id) && !filter_verts.contains(&self.root(id)) && !filter_verts.contains(&self.root(self.twin(id))))
-            .map(|id| {
-                let vertices = self.vertices(id);
-                let u = vertices[0];
-                let v = vertices[1];
-                (
+            .flat_map(|id| {
+                let [u, v] = self.vertices(id).collect_array::<2>()?;
+                Some((
                     key_to_int.id(&u).unwrap().to_owned(),
                     key_to_int.id(&v).unwrap().to_owned(),
                     weight_function(id),
-                )
+                ))
             })
             .sorted_by_key(|&(u, v, _)| (u, v))
             .map(|(u, v, weight)| (u as u32, v as u32, weight))

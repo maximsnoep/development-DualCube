@@ -37,8 +37,8 @@ pub enum MeshError<M> {
 }
 
 // Define a new trait that combines all required supertraits.
-pub trait Tag: Default + Debug + Clone + Copy + PartialEq + Eq + std::hash::Hash {}
-impl<T> Tag for T where T: Default + Debug + Clone + Copy + PartialEq + Eq + std::hash::Hash {}
+pub trait Tag: Default + Debug + Clone + Copy + PartialEq + Eq + std::hash::Hash + Send + Sync {}
+impl<T> Tag for T where T: Default + Debug + Clone + Copy + PartialEq + Eq + std::hash::Hash + Send + Sync {}
 
 #[macro_export]
 macro_rules! define_tag {
@@ -152,7 +152,7 @@ impl<M: Tag> Mesh<M> {
 
     // TODO: make this more ergonamic
     pub fn neighbor_function_primal(&self) -> impl Fn(VertKey<M>) -> Vec<VertKey<M>> + '_ {
-        |v_id| self.neighbors(v_id)
+        |v_id| self.neighbors(v_id).collect()
     }
 
     // TODO: make this more ergonamic
@@ -174,9 +174,11 @@ impl<M: Tag> Mesh<M> {
         self.edge_ids()
             .iter()
             .map(|&edge_id| {
-                let vertices = self.vertices(edge_id);
-                let (u, v) = (vertices[0], vertices[1]);
-                (self.position(u), self.position(v))
+                if let Some([u, v]) = self.vertices(edge_id).collect_array::<2>() {
+                    (self.position(u), self.position(v))
+                } else {
+                    panic!("Expected exactly two vertices for edge {edge_id:?}");
+                }
             })
             .collect()
     }
@@ -233,23 +235,23 @@ pub trait HasSize<K, M> {
 
 pub trait HasVertices<K, M> {
     #[must_use]
-    fn vertices(&self, id: ids::Key<K, M>) -> Vec<ids::Key<VERT, M>>;
+    fn vertices(&self, id: ids::Key<K, M>) -> impl Iterator<Item = VertKey<M>>;
 }
 
 pub trait HasEdges<K, M> {
     #[must_use]
-    fn edges(&self, id: ids::Key<K, M>) -> Vec<ids::Key<EDGE, M>>;
+    fn edges(&self, id: ids::Key<K, M>) -> impl Iterator<Item = EdgeKey<M>>;
 }
 
 pub trait HasFaces<K, M> {
     #[must_use]
-    fn faces(&self, id: ids::Key<K, M>) -> Vec<ids::Key<FACE, M>>;
+    fn faces(&self, id: ids::Key<K, M>) -> impl Iterator<Item = FaceKey<M>>;
 }
 
 pub trait HasNeighbors<K, M> {
     #[must_use]
-    fn neighbors(&self, id: ids::Key<K, M>) -> Vec<ids::Key<K, M>>;
-    fn neighbors_k(&self, id: ids::Key<K, M>, k: usize) -> Vec<ids::Key<K, M>>;
+    fn neighbors(&self, id: ids::Key<K, M>) -> impl Iterator<Item = ids::Key<K, M>>;
+    fn neighbors_k(&self, id: ids::Key<K, M>, k: usize) -> impl Iterator<Item = ids::Key<K, M>>;
 }
 
 pub trait HasRing<K, M> {

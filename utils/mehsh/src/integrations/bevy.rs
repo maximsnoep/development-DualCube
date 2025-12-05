@@ -1,6 +1,7 @@
 use crate::prelude::*;
 use bevy_math::Vec3;
 use itertools::Itertools;
+use rayon::prelude::*;
 use std::collections::HashMap;
 
 #[derive(Default)]
@@ -61,7 +62,7 @@ impl MeshBuilder {
 /// Requires a `color_map` to assign colors to faces. If no color is assigned to a face, it will default to black.
 impl<M: Tag> Mesh<M>
 where
-    M: std::default::Default + std::cmp::Eq + std::hash::Hash + Copy + Clone,
+    M: std::default::Default + std::cmp::Eq + std::hash::Hash + Copy + Clone + Send + Sync,
 {
     #[must_use]
     pub fn bevy(&self, color_map: &HashMap<FaceKey<M>, [f32; 3]>) -> (bevy_render::mesh::Mesh, Vector3D, f64) {
@@ -77,70 +78,36 @@ where
     // Fast (non-storage) triangulation
     fn fast_bevy_mesh(&self, color_map: &HashMap<FaceKey<M>, [f32; 3]>) -> MeshBuilder {
         log::info!("Building Bevy mesh {}", self.nr_verts());
-        let k = self.vertices(self.faces.ids().next().unwrap()).len();
 
-        let positions = self
+        let triangulated = self
             .face_ids()
-            .into_iter()
-            .flat_map(|face_id| {
-                let corners = self.vertices(face_id);
-
-                match corners.len() {
-                    3 => {
-                        let a = to_bevy_vec(&self.position(corners[0]));
-                        let b = to_bevy_vec(&self.position(corners[1]));
-                        let c = to_bevy_vec(&self.position(corners[2]));
-                        vec![a, b, c]
-                    }
-                    4 => {
-                        let a = to_bevy_vec(&self.position(corners[0]));
-                        let b = to_bevy_vec(&self.position(corners[1]));
-                        let c = to_bevy_vec(&self.position(corners[2]));
-                        let d = to_bevy_vec(&self.position(corners[3]));
-                        vec![d, a, b, b, c, d]
-                    }
-                    _ => vec![],
+            .into_par_iter()
+            .flat_map(|face_id| match self.vertices(face_id).collect_vec()[..] {
+                [v0, v1, v2] => {
+                    vec![v0, v1, v2]
                 }
-            })
-            .collect_vec();
-
-        let normals = self
-            .face_ids()
-            .into_iter()
-            .flat_map(|face| {
-                let corners = self.vertices(face);
-                match corners.len() {
-                    3 => {
-                        let a = to_bevy_vec(&self.normal(corners[0]));
-                        let b = to_bevy_vec(&self.normal(corners[1]));
-                        let c = to_bevy_vec(&self.normal(corners[2]));
-                        vec![a, b, c]
-                    }
-                    4 => {
-                        let a = to_bevy_vec(&self.normal(corners[0]));
-                        let b = to_bevy_vec(&self.normal(corners[1]));
-                        let c = to_bevy_vec(&self.normal(corners[2]));
-                        let d = to_bevy_vec(&self.normal(corners[3]));
-                        vec![d, a, b, b, c, d]
-                    }
-                    _ => vec![],
+                [v0, v1, v2, v3] => {
+                    vec![v3, v0, v1, v1, v2, v3]
                 }
+                _ => vec![],
             })
-            .collect_vec();
+            .collect::<Vec<_>>();
 
+        let positions = triangulated.par_iter().map(|&v| to_bevy_vec(&self.position(v))).collect::<Vec<_>>();
+        let normals = triangulated.par_iter().map(|&v| to_bevy_vec(&self.normal(v))).collect::<Vec<_>>();
         let colors = self
             .face_ids()
-            .into_iter()
+            .into_par_iter()
             .flat_map(|face| {
-                let color = color_map.get(&face).unwrap_or(&[0., 0., 0.]).to_owned();
+                let color = color_map.get(&face).unwrap_or(&[0., 0., 0.]);
                 let bevy_color = bevy_color::ColorToComponents::to_f32_array(bevy_color::Color::srgb(color[0], color[1], color[2]).to_linear());
-                match k {
+                match self.vertices(face).count() {
                     3 => vec![bevy_color; 3],
                     4 => vec![bevy_color; 6],
                     _ => vec![],
                 }
             })
-            .collect_vec();
+            .collect::<Vec<_>>();
 
         let uvs = vec![[0., 0.]; positions.len()];
 

@@ -1,3 +1,7 @@
+# compile and run dev build: cargo run
+# compile and run release build: cargo run --release
+# profiling command: cargo samply --profile profiling
+
 [workspace]
 resolver = "3"
 members = [
@@ -9,24 +13,30 @@ members = [
 ]
 
 [profile.release]
-opt-level = 3
-lto = true
-incremental = true
+opt-level = 2
+lto = "thin"
+incremental = false
 codegen-units = 1
 debug = 0
 strip = "debuginfo"
 
 [profile.dev]
-opt-level = 3
+opt-level = 2
 lto = false
 incremental = true
 codegen-units = 256
 debug = 0
 strip = "debuginfo"
 
-[profile.dev-thin]
-inherits = "dev"
-lto = "thin"
+[profile.profiling]
+inherits = "release"
+opt-level = 2
+lto = false
+incremental = false
+codegen-units = 4
+debug = true
+strip = false
+
 
 [workspace.lints.clippy]
 # cargo                           = { priority = -1, level = "warn"}
@@ -43,3 +53,4 @@ perf                            = { priority = -1, level = "warn"}
 style                           = { priority = -1, level = "warn"}
     excessive_precision = "allow"
 suspicious                      = { priority = -1, level = "warn"}
+

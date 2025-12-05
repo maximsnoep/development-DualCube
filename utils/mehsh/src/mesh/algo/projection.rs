@@ -6,13 +6,12 @@ impl<M: Tag> Mesh<M> {
     pub fn project(&self, face: FaceKey<M>) -> Vec<Vector2D> {
         // TODO: Find a better plane
         let normal = self.normal(face);
-        let edge = self.vector(*self.edges(face).first().unwrap());
+        let edge = self.vector(self.edges(face).next().unwrap());
         let plane = (edge.normalize(), edge.cross(&normal).normalize());
-        let reference = self.position(self.vertices(face)[0]);
+        let reference = self.position(self.vertices(face).next().unwrap());
 
         self.vertices(face)
-            .iter()
-            .map(|&v| geom::project_point_onto_plane(self.position(v), plane, reference))
+            .map(|v| geom::project_point_onto_plane(self.position(v), plane, reference))
             .collect()
     }
 }
