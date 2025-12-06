@@ -132,6 +132,10 @@ impl<M: Tag> Mesh<M> {
         self.faces.ids().collect()
     }
 
+    pub fn face_ids_iter(&self) -> impl Iterator<Item = FaceKey<M>> {
+        self.faces.ids()
+    }
+
     // Return `n` random vertices.
     #[must_use]
     pub fn random_verts(&self, n: usize) -> Vec<VertKey<M>> {

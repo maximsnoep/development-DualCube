@@ -34,7 +34,7 @@ opt-level = 2
 lto = false
 incremental = false
 codegen-units = 4
-debug = true
+debug = 2
 strip = false
 
 

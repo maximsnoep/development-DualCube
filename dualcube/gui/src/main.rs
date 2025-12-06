@@ -2,18 +2,18 @@ mod colors;
 mod controls;
 mod jobs;
 mod render;
+mod toons;
 mod ui;
 
 use crate::controls::InteractiveMode;
 use crate::render::RenderObjectSettingStore;
+use crate::toons::ToonsMaterialPlugin;
 use crate::ui::UiResource;
 use bevy::diagnostic::{FrameTimeDiagnosticsPlugin, SystemInformationDiagnosticsPlugin};
 use bevy::prelude::*;
-use bevy::render::render_resource::AsBindGroup;
 use bevy::time::common_conditions::on_timer;
 use bevy::window::WindowMode;
 use bevy::winit::WinitWindows;
-use bevy::{reflect::TypePath, render::render_resource::ShaderRef};
 use bevy_egui::EguiPlugin;
 use dualcube::polycube::POLYCUBE;
 use dualcube::prelude::*;
@@ -30,9 +30,6 @@ use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Duration;
 use winit::window::Icon;
-
-/// This example uses a shader source file from the assets subdirectory
-const SHADER_ASSET_PATH: &str = "flat.wgsl";
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Phase {
@@ -236,25 +233,6 @@ impl Default for SolutionResource {
     }
 }
 
-// This struct defines the data that will be passed to your shader
-#[derive(Asset, TypePath, AsBindGroup, Debug, Clone)]
-struct FlatMaterial {
-    #[uniform(0)]
-    pub view_dir: Vec3,
-}
-
-/// The Material trait is very configurable, but comes with sensible defaults for all methods.
-/// You only need to implement functions for features that need non-default behavior. See the Material api docs for details!
-impl Material for FlatMaterial {
-    fn fragment_shader() -> ShaderRef {
-        SHADER_ASSET_PATH.into()
-    }
-
-    fn alpha_mode(&self) -> AlphaMode {
-        AlphaMode::Opaque
-    }
-}
-
 // We can create our own gizmo config group!
 #[derive(Default, Reflect, GizmoConfigGroup)]
 struct PerpetualGizmos {}
@@ -276,19 +254,14 @@ fn main() {
             affects_lightmapped_meshes: true,
         })
         // Load default plugins
-        .add_plugins(
-            DefaultPlugins.set(WindowPlugin {
-                primary_window: Some(Window {
-                    title: "DualCube".to_string(),
-                    mode: WindowMode::Windowed,
-                    ..Default::default()
-                }),
+        .add_plugins(DefaultPlugins.set(WindowPlugin {
+            primary_window: Some(Window {
+                title: "DualCube".to_string(),
+                mode: WindowMode::Windowed,
                 ..Default::default()
-            }), // .set(LogPlugin {
-                //     level: bevy::log::Level::ERROR,
-                //     ..Default::default()
-                // }),
-        )
+            }),
+            ..Default::default()
+        }))
         // Plugin for diagnostics
         .add_plugins((FrameTimeDiagnosticsPlugin::default(), SystemInformationDiagnosticsPlugin))
         // Plugin for GUI
@@ -298,7 +271,7 @@ fn main() {
         // Plugin for smooth camera
         .add_plugins((LookTransformPlugin, OrbitCameraPlugin::default()))
         // Material
-        .add_plugins(MaterialPlugin::<FlatMaterial>::default())
+        .add_plugins(ToonsMaterialPlugin)
         // Jobs system
         .add_plugins(jobs::JobPlugin)
         // Axes gizmo
@@ -329,13 +302,10 @@ fn main() {
 }
 
 fn set_window_icon(windows: NonSend<WinitWindows>) {
+    let path = "dualcube/gui/assets/logo-32.png";
     let window = windows.windows.iter().next().unwrap().1;
-    let set_icon = |path: &str, set_fn: fn(&winit::window::Window, Option<Icon>)| {
-        let image = image::open(path).expect("Failed to open icon path").into_rgba8();
-        set_fn(window, Some(Icon::from_rgba(image.clone().into_raw(), image.width(), image.height()).unwrap()));
-    };
-    set_icon("dualcube/gui/assets/logo-32.png", winit::window::Window::set_window_icon);
-    // set_icon("assets/logo-512.png", winit::window::Window::set_taskbar_icon);
+    let image = image::open(path).expect("Failed to open icon path").into_rgba8();
+    winit::window::Window::set_window_icon(window, Some(Icon::from_rgba(image.clone().into_raw(), image.width(), image.height()).unwrap()));
 }
 
 #[inline]

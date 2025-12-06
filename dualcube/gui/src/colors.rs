@@ -420,12 +420,12 @@ pub const fn from_direction(direction: PrincipalDirection, perspective: Option<P
     }
 
     // fallback / default
-    return match (direction, perspective, orientation) {
+    match (direction, perspective, orientation) {
         // General
         (PrincipalDirection::X, _, _) => SNOEP_RED,
         (PrincipalDirection::Y, _, _) => SNOEP_YELLOW,
         (PrincipalDirection::Z, _, _) => SNOEP_BLUE,
-    };
+    }
 }
 
 pub fn to_bevy(color: Color) -> bevy::color::Color {

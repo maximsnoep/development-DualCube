@@ -1,6 +1,7 @@
+use crate::toons::ToonsMaterial;
 use crate::ui::UiResource;
-use crate::{colors, PerpetualGizmos};
-use crate::{to_principal_direction, vector3d_to_vec3, CameraHandles, Configuration, FlatMaterial, Perspective, PrincipalDirection, Rendered};
+use crate::{colors, MainMesh, PerpetualGizmos};
+use crate::{to_principal_direction, vector3d_to_vec3, CameraHandles, Configuration, Perspective, PrincipalDirection, Rendered};
 use bevy::core_pipeline::tonemapping::Tonemapping;
 use bevy::prelude::*;
 use bevy::render::camera::ScalingMode;
@@ -28,7 +29,6 @@ pub fn transform_coordinates(position: Vector3D, translation: Vector3D, scale: f
 }
 
 // (p' - t) / s = p
-#[allow(dead_code)]
 #[must_use]
 pub fn invert_transform_coordinates(position: Vector3D, translation: Vector3D, scale: f64) -> Vector3D {
     (position - translation) / scale
@@ -346,7 +346,7 @@ pub fn respawn_renders(
     mut meshes: ResMut<Assets<bevy::render::mesh::Mesh>>,
     mut gizmos: ResMut<Assets<GizmoAsset>>,
     mut materials: ResMut<Assets<StandardMaterial>>,
-    mut custom_materials: ResMut<Assets<FlatMaterial>>,
+    mut custom_materials: ResMut<Assets<ToonsMaterial>>,
     configuration: Res<Configuration>,
     render_object_store: Res<RenderObjectStore>,
     render_settings_store: Res<RenderObjectSettingStore>,
@@ -368,7 +368,7 @@ pub fn respawn_renders(
         }
 
         let flat_material = materials.add(StandardMaterial { unlit: true, ..default() });
-        let toon_material = custom_materials.add(FlatMaterial {
+        let toon_material = custom_materials.add(ToonsMaterial {
             view_dir: Vec3::new(0.0, 0.0, 1.0),
         });
         let background_material = materials.add(StandardMaterial {
@@ -390,7 +390,19 @@ pub fn respawn_renders(
                         RenderAsset::Mesh(mesh) => {
                             let mesh_handle = MeshBundle::new(meshes.add(mesh.clone())).0;
                             match object {
-                                Objects::InputMesh | Objects::QuadMesh => {
+                                Objects::InputMesh => {
+                                    commands.spawn((
+                                        mesh_handle,
+                                        MeshMaterial3d(toon_material.clone()),
+                                        Transform {
+                                            translation: Vec3::from(object),
+                                            ..Default::default()
+                                        },
+                                        Rendered,
+                                        MainMesh,
+                                    ));
+                                }
+                                Objects::QuadMesh => {
                                     commands.spawn((
                                         mesh_handle,
                                         MeshMaterial3d(toon_material.clone()),
@@ -443,7 +455,7 @@ pub fn respawn_renders(
 
 pub fn update(
     ui_resource: Res<UiResource>,
-    mut custom_materials: ResMut<Assets<FlatMaterial>>,
+    mut custom_materials: ResMut<Assets<ToonsMaterial>>,
     window: Single<&Window>,
     mut cameras: Query<(&mut Transform, &mut Projection, &mut Camera, &CameraFor)>,
 ) {
@@ -717,10 +729,6 @@ pub fn refresh(solution: &Solution) -> RenderObjectStore {
                 }
                 let mut color_map_segmentation = HashMap::new();
                 let mut color_map_alignment = HashMap::new();
-                let mut color_map_planarity = HashMap::new();
-
-                let mut color_map_d_area = HashMap::new();
-                let mut color_map_d_angle = HashMap::new();
 
                 let color = colors::GRAY;
                 let c = bevy::color::Color::srgb(color[0], color[1], color[2]);
@@ -787,143 +795,7 @@ pub fn refresh(solution: &Solution) -> RenderObjectStore {
                             color_map_alignment.insert(triangle_id, colors::SNOEP_YELLOW);
                         }
                     }
-
-                    for &face_id in &polycube.structure.face_ids() {
-                        let normal = (polycube.structure.normal(face_id) as Vector3D).normalize();
-                        let patch = &lay.face_to_patch[&face_id].faces;
-                        let patch_vertices = patch.iter().flat_map(|&face_id| granulated_mesh.vertices(face_id)).collect::<HashSet<_>>();
-                        let patch_positions = patch_vertices.into_iter().map(|v| granulated_mesh.position(v)).collect::<Vec<_>>();
-                        let (plane, rms) = mehsh::prelude::geom::fit_plane(&patch_positions);
-
-                        let color = colors::map(1. - rms as f32, &colors::SCALE_MAGMA);
-                        for &triangle_id in &lay.face_to_patch[&face_id].faces {
-                            color_map_planarity.insert(triangle_id, color);
-                        }
-                    }
-
-                    if let Some(quad) = &solution.quad {
-                        for &triangle_id in &granulated_mesh.face_ids() {
-                            // Compute Jacobian
-                            let triangle = granulated_mesh
-                                .vertices(triangle_id)
-                                .into_iter()
-                                .map(|v| granulated_mesh.position(v))
-                                .collect_vec();
-
-                            if quad.triangle_mesh_polycube.normal(triangle_id).x.is_nan() {
-                                continue;
-                            }
-
-                            let mapped_triangle = quad
-                                .triangle_mesh_polycube
-                                .vertices(triangle_id)
-                                .into_iter()
-                                .map(|v| quad.triangle_mesh_polycube.position(v))
-                                .collect_vec();
-
-                            /// Compute local 2D coordinates of a triangle in its tangent frame
-                            fn local_transfo(v0: Vector3D, v1: Vector3D, v2: Vector3D, normal: Vector3D) -> Matrix22 {
-                                // local axes
-                                let mut local_axis1 = v1 - v0;
-                                let norm1 = local_axis1.norm();
-                                local_axis1 /= norm1; // normalize
-
-                                let local_axis2 = normal.cross(&local_axis1);
-
-                                // local coordinates
-                                let local_coords1 = Vector2D::new(norm1, 0.0);
-
-                                let diff = v2 - v0;
-                                let local_coords2 = Vector2D::new(diff.dot(&local_axis1), diff.dot(&local_axis2));
-
-                                // build 2x2 matrix A
-                                let mut a = Matrix22::zeros();
-                                a.set_column(0, &local_coords1);
-                                a.set_column(1, &local_coords2);
-
-                                a
-                            }
-
-                            /// Compute the Jacobian of a single triangle mapping from V1 → V2
-                            pub fn compute_jacobian(
-                                v1_0: Vector3D,
-                                v1_1: Vector3D,
-                                v1_2: Vector3D,
-                                normal1: Vector3D,
-                                v2_0: Vector3D,
-                                v2_1: Vector3D,
-                                v2_2: Vector3D,
-                                normal2: Vector3D,
-                            ) -> Matrix22 {
-                                let a1 = local_transfo(v1_0, v1_1, v1_2, normal1);
-                                let a2 = local_transfo(v2_0, v2_1, v2_2, normal2);
-
-                                a2 * a1.try_inverse().expect("Triangle is degenerate")
-                            }
-
-                            let p1 = triangle[0];
-                            let p2 = triangle[1];
-                            let p3 = triangle[2];
-
-                            let q1 = mapped_triangle[0];
-                            let q2 = mapped_triangle[1];
-                            let q3 = mapped_triangle[2];
-
-                            let n1 = (p2 - p1).cross(&(p3 - p1)).normalize();
-                            let n2 = (q2 - q1).cross(&(q3 - q1)).normalize();
-
-                            let jac = compute_jacobian(p1, p2, p3, n1, q1, q2, q3, n2);
-
-                            let svd = jac.svd(true, true);
-                            let svals = svd.singular_values;
-                            let sigma1 = svals[0];
-                            let sigma2 = svals[1];
-
-                            // Distortion metrics
-                            let area_distortion = 0.5 * (sigma1 * sigma2 + 1.0 / (sigma1 * sigma2));
-                            let angle_distortion = 0.5 * (sigma1 / sigma2 + sigma2 / sigma1);
-
-                            color_map_d_area.insert(triangle_id, colors::map(2. - area_distortion as f32, &colors::SCALE_MAGMA));
-                            color_map_d_angle.insert(triangle_id, colors::map(2. - angle_distortion as f32, &colors::SCALE_MAGMA));
-                        }
-                    }
-
-                    // for &triangle_id in &granulated_mesh.face_ids() {
-                    //     let score = *solution.alignment_per_triangle.get_or_panic(triangle_id);
-                    //     let color = colors::map(score as f32, &colors::SCALE_MAGMA);
-                    //     color_map_alignment.insert(triangle_id, color);
-                    // }
                 }
-
-                // let mut color_map_flag = HashMap::new();
-                // let mut gizmos_flag_paths = GizmoAsset::new();
-                // if let Some(flags) = &solution.external_flag {
-                //     for (face_id, label) in flags.iter() {
-                //         let color = match label {
-                //             0 => colors::RED,
-                //             1 => colors::RED,
-                //             4 => colors::YELLOW,
-                //             5 => colors::YELLOW,
-                //             2 => colors::BLUE,
-                //             3 => colors::BLUE,
-                //             _ => colors::BLACK,
-                //         };
-                //         color_map_flag.insert(face_id, color);
-                //     }
-
-                //     for edge_id in input.edge_ids() {
-                //         let f1 = flags.get(&input.face(edge_id));
-                //         let f2 = flags.get(&input.face(input.twin(edge_id)));
-                //         if f1 != f2 {
-                //             let endpoints = input.vertices(edge_id);
-                //             let u = input.position(endpoints[0]);
-                //             let v = input.position(endpoints[1]);
-                //             let u_transformed = world_to_view(u, translation, scale);
-                //             let v_transformed = world_to_view(v, translation, scale);
-                //             gizmos_flag_paths.line(u_transformed, v_transformed, c);
-                //         }
-                //     }
-                // }
 
                 let features = dualcube::feature::feature_extraction(input, std::f64::consts::FRAC_PI_3, 1);
                 let mut gizmos_features = GizmoAsset::new();
@@ -952,8 +824,6 @@ pub fn refresh(solution: &Solution) -> RenderObjectStore {
                     granulated_mesh_gizmos = layout.granulated_mesh.gizmos(colors::GRAY);
                 }
 
-                println!("HELLO !!!");
-
                 render_object_store.add_object(
                     object,
                     RenderObject::default()
@@ -961,9 +831,6 @@ pub fn refresh(solution: &Solution) -> RenderObjectStore {
                         .mesh(input, &black_color_map, "black")
                         .mesh(granulated_mesh, &color_map_segmentation, "segmentation")
                         .mesh(granulated_mesh, &color_map_alignment, "alignment")
-                        .mesh(granulated_mesh, &color_map_planarity, "planarity")
-                        .mesh(granulated_mesh, &color_map_d_area, "d_area")
-                        .mesh(granulated_mesh, &color_map_d_angle, "d_angle")
                         .gizmo(input.gizmos(colors::GRAY), 0.5, -0.00001, "wireframe")
                         .gizmo(gizmos_xloops, 3., -0.0001, "x-loops")
                         .gizmo(gizmos_yloops, 3., -0.00011, "y-loops")
@@ -986,6 +853,11 @@ pub fn refresh(solution: &Solution) -> RenderObjectStore {
 pub fn world_to_view(v: Vector3D, translation: Vector3D, scale: f64) -> Vec3 {
     let vt = transform_coordinates(v, translation, scale);
     Vec3::new(vt.x as f32, vt.y as f32, vt.z as f32)
+}
+
+pub fn view_to_world(v: Vec3, translation: Vector3D, scale: f64) -> Vector3D {
+    let v_world = Vector3D::new(v.x as f64, v.y as f64, v.z as f64);
+    invert_transform_coordinates(v_world, translation, scale)
 }
 
 pub fn automatic_rotation_camera(mut cameras: Query<(&mut LookTransform, &mut Projection, &mut Camera, &CameraFor)>, configuration: Res<Configuration>) {
