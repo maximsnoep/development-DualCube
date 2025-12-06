@@ -149,18 +149,20 @@ impl<T: Eq + Hash + Clone + Copy + Default, E: Copy> Grapff<T, E> for FixedGraph
     }
 
     fn shortest_path_heuristic(&self, a: T, b: T, w: impl Fn(E) -> Float, h: impl Fn((T, T)) -> Float) -> Option<(Vec<T>, Float)> {
-        if let Some((cost, path)) = petgraph::algo::astar(
+        if !self.node_exists(a) || !self.node_exists(b) {
+            return None;
+        }
+        let shortest_path = petgraph::algo::astar(
             &self.petgraph,
             self.node_to_index(&a).unwrap(),
             |finish| finish == self.node_to_index(&b).unwrap(),
             |e| w(e.weight().to_owned()),
             |v| h((self.index_to_node(v).unwrap().to_owned(), b)),
-        ) {
-            let path_nodes = path.into_iter().map(|index| self.index_to_node(index).unwrap().to_owned()).collect();
-            Some((path_nodes, cost))
-        } else {
-            None
-        }
+        );
+
+        let (cost, path) = shortest_path?;
+        let path_nodes = path.into_iter().map(|index| self.index_to_node(index).unwrap().to_owned()).collect();
+        Some((path_nodes, cost))
     }
 
     fn connected_component(&self, _v: T) -> std::collections::HashSet<T> {

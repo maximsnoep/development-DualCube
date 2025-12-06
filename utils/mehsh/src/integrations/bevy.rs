@@ -1,7 +1,7 @@
 use crate::prelude::*;
 use bevy_math::Vec3;
 use itertools::Itertools;
-use rayon::prelude::*;
+use orx_parallel::*;
 use std::collections::HashMap;
 
 #[derive(Default)]
@@ -69,19 +69,16 @@ where
         if self.faces.is_empty() {
             return (MeshBuilder::with_capacity(0).build(), Vector3D::new(0., 0., 0.), 1.);
         }
-        let mut bevy_mesh_builder = self.fast_bevy_mesh(color_map);
+        let mut bevy_mesh_builder = self.bevy_builder(color_map);
         let (scale, translation) = self.scale_translation();
         bevy_mesh_builder.normalize(scale, translation);
         (bevy_mesh_builder.build(), translation, scale)
     }
 
-    // Fast (non-storage) triangulation
-    fn fast_bevy_mesh(&self, color_map: &HashMap<FaceKey<M>, [f32; 3]>) -> MeshBuilder {
-        log::info!("Building Bevy mesh {}", self.nr_verts());
-
+    fn bevy_builder(&self, color_map: &HashMap<FaceKey<M>, [f32; 3]>) -> MeshBuilder {
         let triangulated = self
-            .face_ids()
-            .into_par_iter()
+            .face_ids_iter()
+            .iter_into_par()
             .flat_map(|face_id| match self.vertices(face_id).collect_vec()[..] {
                 [v0, v1, v2] => {
                     vec![v0, v1, v2]
@@ -92,15 +89,16 @@ where
                 _ => vec![],
             })
             .collect::<Vec<_>>();
+        let positions = triangulated.par().map(|&v| to_bevy_vec(&self.position(v))).collect::<Vec<_>>();
+        let normals = triangulated.par().map(|&v| to_bevy_vec(&self.normal(v))).collect::<Vec<_>>();
 
-        let positions = triangulated.par_iter().map(|&v| to_bevy_vec(&self.position(v))).collect::<Vec<_>>();
-        let normals = triangulated.par_iter().map(|&v| to_bevy_vec(&self.normal(v))).collect::<Vec<_>>();
         let colors = self
-            .face_ids()
-            .into_par_iter()
+            .face_ids_iter()
+            .iter_into_par()
             .flat_map(|face| {
-                let color = color_map.get(&face).unwrap_or(&[0., 0., 0.]);
-                let bevy_color = bevy_color::ColorToComponents::to_f32_array(bevy_color::Color::srgb(color[0], color[1], color[2]).to_linear());
+                let bevy_color = bevy_color::ColorToComponents::to_f32_array(
+                    bevy_color::Color::srgb_from_array(color_map.get(&face).unwrap_or(&[0., 0., 0.]).to_owned()).to_linear(),
+                );
                 match self.vertices(face).count() {
                     3 => vec![bevy_color; 3],
                     4 => vec![bevy_color; 6],
@@ -111,6 +109,7 @@ where
 
         let uvs = vec![[0., 0.]; positions.len()];
 
+        log::info!("Built bevy mesh with size {}x4", positions.len());
         MeshBuilder {
             positions,
             normals,
@@ -124,13 +123,13 @@ where
     pub fn gizmos(&self, color: [f32; 3]) -> bevy_gizmos::GizmoAsset {
         let mut gizmo = bevy_gizmos::GizmoAsset::new();
         let (scale, translation) = self.scale_translation();
-
         for &(u, v) in &self.edges_positions() {
-            let ut = u * scale + translation;
-            let vt = v * scale + translation;
-            gizmo.line(to_bevy_vec(&ut), to_bevy_vec(&vt), bevy_color::Color::srgb(color[0], color[1], color[2]));
+            gizmo.line(
+                to_bevy_vec(&(u * scale + translation)),
+                to_bevy_vec(&(v * scale + translation)),
+                bevy_color::Color::srgb_from_array(color),
+            );
         }
-
         gizmo
     }
 

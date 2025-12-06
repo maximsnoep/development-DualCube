@@ -1012,7 +1012,7 @@ pub fn update(
             let mut tab_viewer = TabViewer {
                 egui_handles: egui_handles.clone(),
                 render_settings: settings_copy.clone(),
-                axes_handle: axes_texture.clone(),
+                axes_handle: axes_texture,
             };
             dock_area.style(dock_area_style).show(ui.ctx(), &mut tab_viewer);
 

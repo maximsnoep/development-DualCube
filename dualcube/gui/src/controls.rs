@@ -1,6 +1,6 @@
 use crate::jobs::{Job, JobRequest};
-use crate::render::world_to_view;
-use crate::{colors, vec3_to_vector3d, vector3d_to_vec3, CacheResource, Configuration, InputResource, PerpetualGizmos, SolutionResource};
+use crate::render::{view_to_world, world_to_view};
+use crate::{colors, vec3_to_vector3d, vector3d_to_vec3, CacheResource, Configuration, InputResource, MainMesh, PerpetualGizmos, SolutionResource};
 use bevy::picking::backend::ray::RayMap;
 use bevy::prelude::*;
 use dualcube::prelude::*;
@@ -16,8 +16,6 @@ pub enum InteractiveMode {
 }
 
 pub fn segmentation_modification_system(
-    ray_map: Res<RayMap>,
-    mut ray_cast: MeshRayCast,
     mouse: Res<ButtonInput<MouseButton>>,
     keyboard: Res<ButtonInput<KeyCode>>,
     mesh_resmut: Res<InputResource>,
@@ -28,8 +26,6 @@ pub fn segmentation_modification_system(
     mut jobs: EventWriter<JobRequest>,
     position: Vector3D,
     nearest_face: FaceID,
-    nearest_vert: VertID,
-    edgepair: [EdgeID; 2],
 ) -> Result<(), BevyError> {
     if mesh_resmut.mesh.nr_verts() == 0 {
         return Ok(());
@@ -77,8 +73,8 @@ pub fn segmentation_modification_system(
             let n = vector3d_to_vec3(layout.granulated_mesh.normal(corner_poly_vert));
 
             let isometry = Isometry3d::new(v_transformed, Quat::from_rotation_arc(Vec3::Z, n.normalize()));
-            gizmos.line(v_transformed, v_transformed + n, colors::to_bevy(colors::SNOEP_GREEN));
-            gizmos.circle(isometry, 0.1, colors::to_bevy(colors::SNOEP_GREEN));
+            gizmos.line(v_transformed, v_transformed + n, colors::to_bevy(colors::BLACK));
+            gizmos.circle(isometry, 0.1, colors::to_bevy(colors::BLACK));
 
             // Highlight the current position (where the vertex would be moved)
             let v1 = layout.granulated_mesh.position(nearest_granulated_vert);
@@ -86,10 +82,10 @@ pub fn segmentation_modification_system(
             let n1 = vector3d_to_vec3(layout.granulated_mesh.normal(nearest_granulated_vert));
 
             let isometry1 = Isometry3d::new(v1_transformed, Quat::from_rotation_arc(Vec3::Z, n1.normalize()));
-            gizmos.line(v1_transformed, v1_transformed + n1, colors::to_bevy(colors::SNOEP_GREEN));
-            gizmos.circle(isometry1, 0.1, colors::to_bevy(colors::SNOEP_GREEN));
+            gizmos.line(v1_transformed, v1_transformed + n1, colors::to_bevy(colors::BLACK));
+            gizmos.circle(isometry1, 0.1, colors::to_bevy(colors::BLACK));
 
-            gizmos.line(v_transformed + 0.21 * n, v1_transformed + 0.1 * n1, colors::to_bevy(colors::SNOEP_GREEN));
+            gizmos.arrow(v_transformed + 0.2 * n, v1_transformed + 0.1 * n1, colors::to_bevy(colors::BLACK));
         }
 
         // CONTROLS
@@ -119,6 +115,7 @@ pub fn segmentation_modification_system(
                         corner: corner_poly,
                         new_vertex: nearest_granulated_vert,
                     })));
+                    solution.selected_corner = None;
                 }
             }
             // Action3:
@@ -133,8 +130,6 @@ pub fn segmentation_modification_system(
 }
 
 pub fn loop_modification_system(
-    ray_map: Res<RayMap>,
-    mut ray_cast: MeshRayCast,
     mouse: Res<ButtonInput<MouseButton>>,
     keyboard: Res<ButtonInput<KeyCode>>,
     mesh_resmut: Res<InputResource>,
@@ -146,12 +141,20 @@ pub fn loop_modification_system(
 
     position: Vector3D,
     nearest_face: FaceID,
-    nearest_vert: VertID,
-    edgepair: [EdgeID; 2],
 ) -> Result<(), BevyError> {
     if mesh_resmut.mesh.nr_verts() == 0 {
         return Ok(());
     }
+
+    // get the nearest_vert (one of 3 corners of nearest_face)
+    let nearest_vert = mesh_resmut
+        .mesh
+        .vertices(nearest_face)
+        .min_by_key(|&v| OrderedFloat(position.metric_distance(&mesh_resmut.mesh.position(v))))
+        .unwrap()
+        .to_owned();
+
+    let edgepair = mesh_resmut.mesh.edges_in_face_with_vert(nearest_face, nearest_vert).unwrap();
 
     // Render all current solutions  (for currently selected direction)
     for (&edgepair, sol) in &solution.next[configuration.direction as usize] {
@@ -296,6 +299,7 @@ pub fn loop_modification_system(
 pub fn system(
     ray_map: Res<RayMap>,
     mut ray_cast: MeshRayCast,
+    foo_query: Query<(), With<MainMesh>>,
     mouse: Res<ButtonInput<MouseButton>>,
     keyboard: Res<ButtonInput<KeyCode>>,
     mesh_resmut: Res<InputResource>,
@@ -316,10 +320,14 @@ pub fn system(
         return Ok(());
     }
 
-    let Some(&(ray, intersection)) = ray_map
+    // Only ray cast against entities with the `Foo` component.
+    let filter = |entity| foo_query.contains(entity);
+    let settings = MeshRayCastSettings::default().with_filter(&filter);
+
+    let Some(&(_, intersection)) = ray_map
         .iter()
         .filter_map(|(_, ray)| {
-            let (_, hit) = ray_cast.cast_ray(*ray, &MeshRayCastSettings::default()).first()?;
+            let (_, hit) = ray_cast.cast_ray(*ray, &settings).first()?;
             Some((*ray, hit.point))
         })
         .collect_vec()
@@ -328,27 +336,19 @@ pub fn system(
         return Ok(());
     };
 
-    // Draw the ray !
-    gizmos.line(intersection, ray.origin, colors::to_bevy(colors::SNOEP_PURPLE));
-
-    let position = (vec3_to_vector3d(intersection) - mesh_resmut.properties.translation) / mesh_resmut.properties.scale;
+    let position = view_to_world(intersection, mesh_resmut.properties.translation, mesh_resmut.properties.scale);
     let nearest_face = mesh_resmut.triangle_lookup.nearest(&position.into());
 
-    // get the nearest_vert (one of 3 corners of nearest_face)
-    let nearest_vert = mesh_resmut
-        .mesh
-        .vertices(nearest_face)
-        .min_by_key(|&v| OrderedFloat(position.metric_distance(&mesh_resmut.mesh.position(v))))
-        .unwrap()
-        .to_owned();
-
-    let edgepair = mesh_resmut.mesh.edges_in_face_with_vert(nearest_face, nearest_vert).unwrap();
+    // Draw the ray !
+    let isometry1 = Isometry3d::new(
+        intersection,
+        Quat::from_rotation_arc(Vec3::Z, vector3d_to_vec3(mesh_resmut.mesh.normal(nearest_face)).normalize()),
+    );
+    gizmos.circle(isometry1, 0.1, colors::to_bevy(colors::BLACK));
 
     match configuration.interactive_mode {
         InteractiveMode::None => Ok(()),
         InteractiveMode::LoopModification => loop_modification_system(
-            ray_map,
-            ray_cast,
             mouse,
             keyboard,
             mesh_resmut,
@@ -359,12 +359,8 @@ pub fn system(
             jobs,
             position,
             nearest_face,
-            nearest_vert,
-            edgepair,
         ),
         InteractiveMode::SegmentationModification => segmentation_modification_system(
-            ray_map,
-            ray_cast,
             mouse,
             keyboard,
             mesh_resmut,
@@ -375,8 +371,6 @@ pub fn system(
             jobs,
             position,
             nearest_face,
-            nearest_vert,
-            edgepair,
         ),
     }
 }

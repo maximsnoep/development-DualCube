@@ -4,8 +4,10 @@ use crate::prelude::*;
 use bimap::BiHashMap;
 use grapff::Grapff;
 use itertools::Itertools;
+use log::warn;
 use mehsh::prelude::*;
 use ordered_float::OrderedFloat;
+use orx_parallel::{IterIntoParIter, ParIter};
 use rand::seq::SliceRandom;
 use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, HashSet, VecDeque};
@@ -128,13 +130,7 @@ impl Layout {
 
                 for &vert in &verts {
                     let mut scores = vec![0.; face_labels.len()];
-                    let normals = self
-                        .dual_ref
-                        .mesh_ref
-                        .faces(vert)
-                        .into_iter()
-                        .map(|face| self.dual_ref.mesh_ref.normal(face))
-                        .collect_vec();
+                    let normals = self.dual_ref.mesh_ref.faces(vert).map(|face| self.dual_ref.mesh_ref.normal(face)).collect_vec();
 
                     for normal in normals {
                         for i in 0..face_labels.len() {
@@ -305,14 +301,14 @@ impl Layout {
     }
 
     pub fn compute_path(
-        &self,
+        &mut self,
         edge_id: EdgeKey<POLYCUBE>,
         occupied_vertices: &HashSet<VertID>,
         occupied_edges: &HashSet<(VertID, VertID)>,
         occupied_faces: &HashSet<FaceID>,
-    ) -> Result<(Vec<VertID>, Mesh<INPUT>), LayoutError> {
+    ) -> Result<Vec<VertID>, LayoutError> {
         let polycube = &self.polycube_ref.structure;
-        let mut granulated_mesh = self.granulated_mesh.clone();
+        let granulated_mesh = &mut self.granulated_mesh;
 
         let Some([pu, pv]) = polycube.vertices(edge_id).collect_array::<2>() else {
             return Err(LayoutError::UnknownError);
@@ -339,12 +335,11 @@ impl Layout {
                     };
                     granulated_mesh
                         .neighbors(f_id)
-                        .into_iter()
                         .filter(|&n_id| !blocked(f_id, n_id))
                         .map(NodeType::Face)
                         .collect_vec()
                 };
-                let v_neighbors = granulated_mesh.vertices(f_id).into_iter().map(NodeType::Vertex).collect_vec();
+                let v_neighbors = granulated_mesh.vertices(f_id).map(NodeType::Vertex).collect_vec();
                 [v_neighbors, f_neighbors].concat()
             }
             NodeType::Vertex(v_id) => {
@@ -352,8 +347,8 @@ impl Layout {
                 if occupied_vertices.contains(&v_id) && v_id != u && v_id != v {
                     return vec![];
                 }
-                let v_neighbors = granulated_mesh.neighbors(v_id).into_iter().map(NodeType::Vertex).collect_vec();
-                let f_neighbors = granulated_mesh.faces(v_id).into_iter().map(NodeType::Face).collect_vec();
+                let v_neighbors = granulated_mesh.neighbors(v_id).map(NodeType::Vertex).collect_vec();
+                let f_neighbors = granulated_mesh.faces(v_id).map(NodeType::Face).collect_vec();
                 [v_neighbors, f_neighbors].concat()
             }
         };
@@ -453,21 +448,17 @@ impl Layout {
             return Err(LayoutError::InvalidPath);
         }
 
-        Ok((granulated_path, granulated_mesh))
+        Ok(granulated_path)
     }
 
     pub fn place_path(&mut self, edge_id: EdgeKey<POLYCUBE>) -> Result<(), LayoutError> {
         let (occupied_vertices, occupied_edges) = self.compute_occupied();
 
-        let (path, granulated_mesh) = self.compute_path(edge_id, &occupied_vertices, &occupied_edges, &HashSet::new())?;
-        let path_reversed = path.clone().into_iter().rev().collect_vec();
-
-        // Update the granulated mesh
-        self.granulated_mesh = granulated_mesh;
-
+        // Compute the path
+        let path = self.compute_path(edge_id, &occupied_vertices, &occupied_edges, &HashSet::new())?;
+        let path_reversed = path.iter().cloned().rev().collect_vec();
         // Insert the calculated path
         self.edge_to_path.insert(edge_id, path);
-        // Also insert for the twin, the calculated path
         self.edge_to_path.insert(self.polycube_ref.structure.twin(edge_id), path_reversed);
 
         Ok(())
@@ -475,23 +466,16 @@ impl Layout {
 
     // TODO: Make this robust
     pub fn place_all_paths(&mut self) -> Result<(), LayoutError> {
-        let primal = &self.polycube_ref;
-
         self.edge_to_path.clear();
 
-        for vert in primal.structure.vert_ids() {
-            assert!(
-                self.vert_to_corner.get_by_left(&vert).is_some(),
-                "Missing corner vertex for primal vertex {:?}",
-                vert
-            );
-        }
+        let primal = self.polycube_ref.structure.clone();
 
-        let mut edge_queue = primal.structure.edge_ids();
+        let mut occupied_vertices = HashSet::new();
+        let mut occupied_edges = HashSet::new();
 
-        edge_queue.shuffle(&mut rand::rng());
-
-        let mut edge_queue = VecDeque::from(edge_queue);
+        let mut edges = primal.edge_ids();
+        edges.shuffle(&mut rand::rng());
+        let mut edge_queue = VecDeque::from(edges);
 
         let mut first_separating_edge = None;
         let mut is_maximal = false;
@@ -499,38 +483,29 @@ impl Layout {
         let mut counter = 0;
 
         while let Some(edge_id) = edge_queue.pop_front() {
-            //println!("Edge queue: {}", edge_queue.len());
-
-            let (mut occupied_vertices, occupied_edges) = self.compute_occupied();
-
-            // if already found (because of twin), skip
+            // If already found, skip
             if self.edge_to_path.contains_key(&edge_id) {
                 continue;
             }
 
             if counter > 1000 {
+                warn!("Stuck in path placement loop...");
                 return Err(LayoutError::InvalidPath);
             }
             counter += 1;
 
             // check if edge is separating (in combination with the edges already done)
             let covered_edges = self.edge_to_path.keys().chain([&edge_id]).collect::<HashSet<_>>();
-
             let ccs = grapff::fluid::FluidGraph::new(|face_id: FaceKey<POLYCUBE>| -> Vec<FaceKey<POLYCUBE>> {
                 primal
-                    .structure
                     .neighbors(face_id)
-                    .filter(|&n_id| !covered_edges.contains(&primal.structure.edge_between_faces(face_id, n_id).unwrap().0))
+                    .filter(|&n_id| !covered_edges.contains(&primal.edge_between_faces(face_id, n_id).unwrap().0))
                     .collect::<Vec<FaceKey<POLYCUBE>>>()
             })
-            .connected_components(&primal.structure.face_ids());
-
-            //println!("cc: {:?} == {:?}", cc.len(), primal.structure.faces.len());
-
+            .connected_components(&primal.face_ids());
             if !is_maximal && first_separating_edge == Some(edge_id) {
                 is_maximal = true;
             }
-
             if ccs.len() != 1 && !is_maximal {
                 // separating edge -> add to the end of the queue
                 if first_separating_edge.is_none() {
@@ -540,22 +515,15 @@ impl Layout {
                 continue;
             }
 
-            let Some([pu, pv]) = primal.structure.vertices(edge_id).collect_array::<2>() else {
+            let Some([pu, pv]) = primal.vertices(edge_id).collect_array::<2>() else {
                 panic!("Expected edge {edge_id:?} to have exactly two vertices");
             };
-
-            let (u, v) = (
-                self.vert_to_corner.get_by_left(&pu).unwrap().to_owned(),
-                self.vert_to_corner.get_by_left(&pv).unwrap().to_owned(),
-            );
+            let (Some(&u), Some(&v)) = (self.vert_to_corner.get_by_left(&pu), self.vert_to_corner.get_by_left(&pv)) else {
+                panic!("Expected corner vertices for primal vertices {:?} and {:?}", pu, pv);
+            };
 
             // Find edge in `u_new`
-            let edges_done_in_u_new = primal
-                .structure
-                .edges(pu)
-                .into_iter()
-                .filter(|&e| self.edge_to_path.contains_key(&e) || e == edge_id)
-                .collect_vec();
+            let edges_done_in_u_new = primal.edges(pu).filter(|&e| self.edge_to_path.contains_key(&e) || e == edge_id).collect_vec();
 
             let mut occupied_faces = HashSet::new();
             // If this is 3 or larger, this means we must make sure the new edge is placed inbetween existing edges, in the correct order
@@ -579,20 +547,17 @@ impl Layout {
                 let below_edge_start_plus_one = below_edge_obj[1];
                 let below_edge_real_edge = self.granulated_mesh.edge_between_verts(below_edge_start, below_edge_start_plus_one).unwrap().0;
                 // so starting from below edge, we insert all faces up until the above edge
-                let all_edges = self
+                let allowed_edges = self
                     .granulated_mesh
                     .edges(u)
-                    .into_iter()
                     .flat_map(|e| [e, self.granulated_mesh.twin(e)])
-                    .collect_vec();
-                let allowed_edges = all_edges
+                    .collect_vec()
                     .into_iter()
                     .cycle()
                     .skip_while(|&e| e != below_edge_real_edge)
                     .skip(1)
-                    .take_while(|&e| e != above_edge_real_edge)
-                    .collect_vec();
-                let allowed_faces = allowed_edges.into_iter().map(|e| self.granulated_mesh.face(e)).collect_vec();
+                    .take_while(|&e| e != above_edge_real_edge);
+                let allowed_faces = allowed_edges.map(|e| self.granulated_mesh.face(e)).collect_vec();
                 assert!(!allowed_faces.is_empty());
                 for face_id in self.granulated_mesh.faces(u) {
                     if !allowed_faces.contains(&face_id) {
@@ -601,13 +566,9 @@ impl Layout {
                 }
             }
 
-            let twin_id = primal.structure.twin(edge_id);
+            let twin_id = primal.twin(edge_id);
             // Find edge in `v_new`
-            let edges_done_in_v_new = primal
-                .structure
-                .edges(pv)
-                .filter(|&e| self.edge_to_path.contains_key(&e) || e == twin_id)
-                .collect_vec();
+            let edges_done_in_v_new = primal.edges(pv).filter(|&e| self.edge_to_path.contains_key(&e) || e == twin_id).collect_vec();
 
             // If this is 3 or larger, this means we must make sure the new edge is placed inbetween existing edges, in the correct order
             if edges_done_in_v_new.len() >= 3 {
@@ -630,19 +591,16 @@ impl Layout {
                 let below_edge_start_plus_one = below_edge_obj[1];
                 let below_edge_real_edge = self.granulated_mesh.edge_between_verts(below_edge_start, below_edge_start_plus_one).unwrap().0;
                 // so starting from below edge, we insert all faces up until the above edge
-                let all_edges = self
+                let allowed_edges = self
                     .granulated_mesh
                     .edges(v)
-                    .into_iter()
                     .flat_map(|e| [e, self.granulated_mesh.twin(e)])
-                    .collect_vec();
-                let allowed_edges = all_edges
+                    .collect_vec()
                     .into_iter()
                     .cycle()
                     .skip_while(|&e| e != below_edge_real_edge)
                     .skip(1)
-                    .take_while(|&e| e != above_edge_real_edge)
-                    .collect_vec();
+                    .take_while(|&e| e != above_edge_real_edge);
                 let allowed_faces = allowed_edges.into_iter().map(|e| self.granulated_mesh.face(e)).collect_vec();
                 assert!(!allowed_faces.is_empty());
                 for face_id in self.granulated_mesh.faces(v) {
@@ -652,22 +610,26 @@ impl Layout {
                 }
             }
 
+            let mut local_copy_occupied_vertices = occupied_vertices.clone();
             for &occupied_face in &occupied_faces {
-                occupied_vertices.extend(self.granulated_mesh.vertices(occupied_face));
+                local_copy_occupied_vertices.extend(self.granulated_mesh.vertices(occupied_face));
             }
-
-            println!("computing for {:?}", edge_id);
-
-            let (path, granulated_mesh) = self.compute_path(edge_id, &occupied_vertices, &occupied_edges, &occupied_faces)?;
+            let path = self.compute_path(edge_id, &local_copy_occupied_vertices, &occupied_edges, &occupied_faces)?;
             let path_reversed = path.clone().into_iter().rev().collect_vec();
 
-            // Update the granulated mesh
-            self.granulated_mesh = granulated_mesh;
+            // Update occupied vertices and edges
+            for window in path.windows(2) {
+                let (a, b) = (window[0], window[1]);
+                occupied_edges.insert((a, b));
+                occupied_edges.insert((b, a));
+                occupied_vertices.insert(a);
+                occupied_vertices.insert(b);
+            }
 
             // Insert the calculated path
             self.edge_to_path.insert(edge_id, path);
             // Also insert for the twin, the calculated path
-            self.edge_to_path.insert(self.polycube_ref.structure.twin(edge_id), path_reversed);
+            self.edge_to_path.insert(primal.twin(edge_id), path_reversed);
 
             counter = 0;
         }
@@ -791,18 +753,15 @@ impl Layout {
 
     fn compute_occupied(&self) -> (HashSet<VertID>, HashSet<(VertID, VertID)>) {
         let mut occupied_vertices = HashSet::new();
+        occupied_vertices.extend(self.edge_to_path.values().iter_into_par().flatten().collect::<Vec<_>>());
         let mut occupied_edges = HashSet::new();
-        for path in self.edge_to_path.values() {
-            for &v_id in path {
-                occupied_vertices.insert(v_id);
-            }
-
-            for edgepair in path.windows(2) {
-                let (u, v) = (edgepair[0], edgepair[1]);
-                occupied_edges.insert((u, v));
-                occupied_edges.insert((v, u));
-            }
-        }
+        occupied_edges.extend(
+            self.edge_to_path
+                .values()
+                .iter_into_par()
+                .flat_map(|path| path.windows(2).map(|pair| (pair[0], pair[1])))
+                .collect::<Vec<_>>(),
+        );
         (occupied_vertices, occupied_edges)
     }
 

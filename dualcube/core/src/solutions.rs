@@ -11,8 +11,8 @@ use grapff::Grapff;
 use itertools::Itertools;
 use mehsh::prelude::*;
 use ordered_float::OrderedFloat;
+use orx_parallel::*;
 use rand::{rng, seq::IteratorRandom};
-use rayon::iter::{IntoParallelIterator, ParallelIterator};
 use serde::{Deserialize, Serialize};
 use slotmap::SlotMap;
 use std::{collections::HashSet, hash::Hash, sync::Arc};
@@ -159,7 +159,7 @@ impl Solution {
             .collect_vec();
 
         let candidate_solutions = combinations
-            .into_par_iter()
+            .into_par()
             .filter_map(|(x_loop, y_loop, z_loop)| {
                 let mut solution = self.clone();
                 solution.add_loop(Loop {
@@ -197,7 +197,7 @@ impl Solution {
         let mut pool1 = vec![(self.clone(), self.get_quality().unwrap()); pool1_size];
         for _ in 0..iterations {
             let pool2 = (0..pool2_size)
-                .into_par_iter()
+                .into_par()
                 .map(|_| {
                     // Grab a random solution from pool1
                     let index = rand::Rng::random_range(&mut rand::rng(), 0..pool1.len());
@@ -799,11 +799,13 @@ impl Solution {
             for (&start, &end) in anchors_flattened.iter().tuple_windows() {
                 println!("{:?} {:?}", start, end);
                 if let Some((mut part, _)) = self.construct_part_of_loop([start, end], &g, &measure) {
+                    if part.is_empty() {
+                        return None;
+                    }
                     part.pop().unwrap();
-                    println!("{}", part.len());
                     new_loop.extend(part);
                 } else {
-                    panic!("Failed to construct part of loop");
+                    return None;
                 }
             }
 
@@ -883,8 +885,7 @@ impl Solution {
                 OrderedFloat(measure(flow_graphs[axis as usize].get_weight(n1, n2).to_owned()))
             })
             .take(n.pow(2))
-            .collect_vec()
-            .into_par_iter()
+            .iter_into_par()
             .filter_map(|es| self.construct_unbounded_loop(es, axis, &flow_graphs[axis as usize], &measure))
             .collect::<Vec<_>>()
             .into_iter()
