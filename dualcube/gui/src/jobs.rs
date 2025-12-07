@@ -651,7 +651,7 @@ pub struct JobState {
     current: Option<Task<Option<JobResult>>>,
 }
 
-#[derive(Event)]
+#[derive(Message)]
 pub enum JobRequest {
     Run(Box<Job>),
     Cancel,

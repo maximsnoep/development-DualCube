@@ -14,7 +14,7 @@ use bevy::prelude::*;
 use bevy::time::common_conditions::on_timer;
 use bevy::window::WindowMode;
 use bevy::winit::WinitWindows;
-use bevy_egui::EguiPlugin;
+use bevy_egui::{EguiPlugin, EguiPrimaryContextPass, EguiStartupSet};
 use dualcube::polycube::POLYCUBE;
 use dualcube::prelude::*;
 use dualcube::solutions::Solution;
@@ -119,7 +119,7 @@ pub struct Rendered;
 #[derive(Component)]
 pub struct MainMesh;
 
-#[derive(Event, Debug, Eq, Hash, PartialEq)]
+#[derive(Message, Debug, Eq, Hash, PartialEq)]
 pub enum ActionEvent {
     LoadFile(PathBuf),
     ExportAll,
@@ -265,9 +265,7 @@ fn main() {
         // Plugin for diagnostics
         .add_plugins((FrameTimeDiagnosticsPlugin::default(), SystemInformationDiagnosticsPlugin))
         // Plugin for GUI
-        .add_plugins(EguiPlugin {
-            enable_multipass_for_primary_context: false,
-        })
+        .add_plugins(EguiPlugin::default())
         // Plugin for smooth camera
         .add_plugins((LookTransformPlugin, OrbitCameraPlugin::default()))
         // Material
@@ -285,11 +283,11 @@ fn main() {
             ..default()
         })
         // Setups
-        .add_systems(Startup, ui::setup)
         .add_systems(Startup, render::setup)
-        .add_systems(Startup, set_window_icon)
+        .add_observer(ui::setup)
+        // .add_systems(Startup, set_window_icon)
         // Updates
-        .add_systems(Update, ui::update)
+        .add_systems(EguiPrimaryContextPass, ui::update)
         .add_systems(Update, render::update)
         .add_systems(FixedUpdate, render::respawn_renders.run_if(on_timer(Duration::from_millis(100))))
         .add_systems(Update, render::update_camera_settings)
@@ -297,16 +295,16 @@ fn main() {
         .add_systems(Update, controls::system)
         .add_systems(FixedUpdate, render::automatic_rotation_camera.run_if(on_timer(Duration::from_millis(10))))
         // .add_systems(Update, handle_tasks)
-        .add_event::<ActionEvent>()
+        .add_message::<ActionEvent>()
         .run();
 }
 
-fn set_window_icon(windows: NonSend<WinitWindows>) {
-    let path = "dualcube/gui/assets/logo-32.png";
-    let window = windows.windows.iter().next().unwrap().1;
-    let image = image::open(path).expect("Failed to open icon path").into_rgba8();
-    winit::window::Window::set_window_icon(window, Some(Icon::from_rgba(image.clone().into_raw(), image.width(), image.height()).unwrap()));
-}
+// fn set_window_icon(windows: NonSend<WinitWindows>) {
+//     let path = "dualcube/gui/assets/logo-32.png";
+//     let window = windows.windows.iter().next().unwrap().1;
+//     let image = image::open(path).expect("Failed to open icon path").into_rgba8();
+//     winit::window::Window::set_window_icon(window, Some(Icon::from_rgba(image.clone().into_raw(), image.width(), image.height()).unwrap()));
+// }
 
 #[inline]
 fn vec3_to_vector3d(v: Vec3) -> Vector3D {

@@ -2,14 +2,14 @@ use crate::toons::ToonsMaterial;
 use crate::ui::UiResource;
 use crate::{colors, MainMesh, PerpetualGizmos};
 use crate::{to_principal_direction, vector3d_to_vec3, CameraHandles, Configuration, Perspective, PrincipalDirection, Rendered};
+use bevy::camera::Viewport;
 use bevy::core_pipeline::tonemapping::Tonemapping;
 use bevy::prelude::*;
-use bevy::render::camera::ScalingMode;
-use bevy::render::camera::Viewport;
 use bevy::render::render_resource::{Extent3d, TextureDescriptor, TextureDimension, TextureFormat, TextureUsages};
 use bevy_axes_gizmo::AxesGizmoSyncCamera;
 use core::f32;
 use dualcube::prelude::*;
+use egui_dock::LeafNode;
 use enum_iterator::{all, Sequence};
 use itertools::Itertools;
 use mehsh::prelude::*;
@@ -59,14 +59,14 @@ impl fmt::Display for Objects {
 
 #[derive(Clone)]
 pub enum RenderAsset {
-    Mesh(bevy::render::mesh::Mesh),
+    Mesh(bevy::mesh::Mesh),
     Gizmo((GizmoAsset, f32, f32)),
 }
 
 #[derive(Clone, PartialEq)]
 pub struct MeshBundle(Mesh3d);
 impl MeshBundle {
-    pub const fn new(handle: Handle<bevy::render::mesh::Mesh>) -> Self {
+    pub const fn new(handle: Handle<bevy::mesh::Mesh>) -> Self {
         Self(Mesh3d(handle))
     }
 }
@@ -172,15 +172,6 @@ impl From<Objects> for Vec3 {
     }
 }
 
-// pub fn update_camera_settings(mut cameras: Query<(&mut Transform, &mut Projection, &mut Camera, &CameraFor)>, configuration: &ResMut<Configuration>) {
-//     if let Ok(mut main_camera) = cameras.single_mut() {
-//         // main_camera.0.mouse_rotate_sensitivity = configuration.camera_rotate_sensitivity;
-//         // main_camera.0.mouse_translate_sensitivity = configuration.camera_translate_sensitivity;
-//         // main_camera.0.mouse_wheel_zoom_sensitivity = configuration.camera_zoom_sensitivity;
-//         // main_camera.0.smoothing_weight = configuration.camera_smoothing_weight;
-//     }
-// }
-
 pub fn update_camera_settings(mut cameras: Query<(&mut OrbitCameraController, &mut Smoother)>, configuration: ResMut<Configuration>) {
     if let Ok((mut main_camera, mut smoother)) = cameras.single_mut() {
         *main_camera = OrbitCameraController {
@@ -223,6 +214,7 @@ pub fn reset(
             },
             AxesGizmoSyncCamera,
             Tonemapping::None,
+            // PrimaryEguiContext,
         ))
         .insert((OrbitCameraBundle::new(
             OrbitCameraController {
@@ -263,7 +255,7 @@ pub fn reset(
         handles.map.insert(CameraFor(object), handle.clone());
         let projection = if object == Objects::PolycubeMap || object == Objects::Polycube {
             let mut proj = OrthographicProjection::default_3d();
-            proj.scaling_mode = ScalingMode::FixedVertical { viewport_height: 30. };
+            proj.scale = 0.1;
             Projection::Orthographic(proj)
         } else {
             bevy::prelude::Projection::default()
@@ -343,7 +335,7 @@ pub struct MeshProperties {
 
 pub fn respawn_renders(
     mut commands: Commands,
-    mut meshes: ResMut<Assets<bevy::render::mesh::Mesh>>,
+    mut meshes: ResMut<Assets<bevy::mesh::Mesh>>,
     mut gizmos: ResMut<Assets<GizmoAsset>>,
     mut materials: ResMut<Assets<StandardMaterial>>,
     mut custom_materials: ResMut<Assets<ToonsMaterial>>,
@@ -465,7 +457,7 @@ pub fn update(
     let main_surface = ui_resource.tree.main_surface().clone();
     let main_node = main_surface.index(node_index);
     let main_surface_viewport = match main_node {
-        egui_dock::Node::Leaf { viewport, .. } => *viewport,
+        egui_dock::Node::Leaf(LeafNode { viewport, .. }) => *viewport,
         _ => unreachable!(),
     };
 
@@ -500,7 +492,7 @@ pub fn update(
         // println!("translate: {:?}", sub_transform.translation);
         sub_transform.rotation = normalized_rotation;
         if let Projection::Orthographic(orthographic) = sub_projection.as_mut() {
-            orthographic.scaling_mode = ScalingMode::FixedVertical { viewport_height: distance };
+            // orthographic.scaling_mode = ScalingMode::FixedVertical { viewport_height: distance };
         }
     }
 
@@ -867,6 +859,9 @@ pub fn automatic_rotation_camera(mut cameras: Query<(&mut LookTransform, &mut Pr
     let (mut transform, _, _, _) = cameras.iter_mut().find(|(_, _, _, camera_for)| camera_for.0 == Objects::InputMesh).unwrap();
     let mut look_angles = LookAngles::from_vector(-transform.look_direction().unwrap());
     let rotation_speed = configuration.camera_rotate_sensitivity / 100.; // radians per 10ms
+    println!(" rotation speed: {}", rotation_speed);
+    println!(" before look angles: {:?}", look_angles);
+
     look_angles.add_yaw(-rotation_speed);
     transform.eye = transform.target + transform.radius() * look_angles.unit_vector();
 }

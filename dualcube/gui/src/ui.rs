@@ -5,7 +5,7 @@ use crate::{colors, ActionEvent, CameraHandles, Configuration, InputResource, Pe
 use bevy::diagnostic::{DiagnosticsStore, FrameTimeDiagnosticsPlugin, SystemInformationDiagnosticsPlugin};
 use bevy::prelude::*;
 use bevy_egui::egui::FontFamily::Proportional;
-use bevy_egui::egui::*;
+use bevy_egui::{egui::*, PrimaryEguiContext};
 use egui_dock::{DockArea, DockState, NodeIndex, Style};
 use std::collections::HashMap;
 
@@ -183,8 +183,8 @@ impl egui_dock::TabViewer for TabViewer {
 
     fn on_tab_button(&mut self, _tab: &mut Self::Tab, _response: &bevy_egui::egui::Response) {}
 
-    fn on_close(&mut self, _tab: &mut Self::Tab) -> bool {
-        true
+    fn on_close(&mut self, _tab: &mut Self::Tab) -> egui_dock::tab_viewer::OnCloseResponse {
+        egui_dock::tab_viewer::OnCloseResponse::Close
     }
 
     fn on_add(&mut self, _surface: egui_dock::SurfaceIndex, _node: NodeIndex) {}
@@ -200,37 +200,37 @@ impl egui_dock::TabViewer for TabViewer {
     }
 }
 
-pub fn setup(mut ui: bevy_egui::EguiContexts) {
+pub fn setup(_: On<Add, PrimaryEguiContext>, mut ui: bevy_egui::EguiContexts) -> Result<(), BevyError> {
     // Font
-    let mut fonts = bevy_egui::egui::FontDefinitions::default();
-    fonts.font_data.insert(
-        "font".to_owned(),
-        bevy_egui::egui::FontData::from_static(include_bytes!("../assets/font.ttf")).into(),
-    );
-    fonts.font_data.insert(
-        "UEXM".to_owned(),
-        bevy_egui::egui::FontData::from_static(include_bytes!("../assets/UnifontExMono.ttf")).into(),
-    );
+    // let mut fonts = bevy_egui::egui::FontDefinitions::default();
+    // fonts.font_data.insert(
+    //     "font".to_owned(),
+    //     bevy_egui::egui::FontData::from_static(include_bytes!("../assets/font.ttf")).into(),
+    // );
+    // fonts.font_data.insert(
+    //     "UEXM".to_owned(),
+    //     bevy_egui::egui::FontData::from_static(include_bytes!("../assets/UnifontExMono.ttf")).into(),
+    // );
 
-    fonts.families.insert(
-        FontFamily::Monospace,
-        vec![
-            "font".to_owned(),
-            "UEXM".to_owned(), // fallback for some ascii symbols like →
-        ],
-    );
-    fonts.families.insert(
-        FontFamily::Proportional,
-        vec![
-            "font".to_owned(),
-            "UEXM".to_owned(), // fallback
-        ],
-    );
+    // fonts.families.insert(
+    //     FontFamily::Monospace,
+    //     vec![
+    //         "font".to_owned(),
+    //         "UEXM".to_owned(), // fallback for some ascii symbols like →
+    //     ],
+    // );
+    // fonts.families.insert(
+    //     FontFamily::Proportional,
+    //     vec![
+    //         "font".to_owned(),
+    //         "UEXM".to_owned(), // fallback
+    //     ],
+    // );
 
-    ui.ctx_mut().set_fonts(fonts);
+    // ui.ctx_mut()?.set_fonts(fonts);
 
     // Theme
-    ui.ctx_mut().style_mut(|style| {
+    ui.ctx_mut()?.style_mut(|style| {
         let zero = CornerRadius::same(0);
         let mut visuals = bevy_egui::egui::Visuals::dark();
         visuals.widgets.open.corner_radius = zero;
@@ -267,6 +267,8 @@ pub fn setup(mut ui: bevy_egui::EguiContexts) {
 
         style.interaction.selectable_labels = false;
     });
+
+    Ok(())
 }
 
 fn sep(ui: &mut Ui) {
@@ -282,8 +284,8 @@ fn space(ui: &mut Ui) {
 fn header(
     ui: &mut Ui,
     solution: &mut SolutionResource,
-    ev_w: &mut EventWriter<ActionEvent>,
-    jobs: &mut EventWriter<JobRequest>,
+    ev_w: &mut MessageWriter<ActionEvent>,
+    jobs: &mut MessageWriter<JobRequest>,
     configuration: &mut ResMut<Configuration>,
     render_object_settings_store: &mut ResMut<RenderObjectSettingStore>,
     time: &Res<Time>,
@@ -545,11 +547,11 @@ fn footer(
     solution: &SolutionResource,
     diagnostics: &Res<DiagnosticsStore>,
     job_state: &Res<JobState>,
-    jobs: &mut EventWriter<JobRequest>,
+    jobs: &mut MessageWriter<JobRequest>,
     time: &Res<Time>,
     axes_texture: TextureId,
-) {
-    TopBottomPanel::bottom("footer").show_separator_line(false).show(egui_ctx.ctx_mut(), |ui| {
+) -> Result<(), BevyError> {
+    TopBottomPanel::bottom("footer").show_separator_line(false).show(egui_ctx.ctx_mut()?, |ui| {
         ui.separator();
 
         ui.add_space(5.);
@@ -692,6 +694,8 @@ fn footer(
 
         ui.add_space(5.);
     });
+
+    Ok(())
 }
 
 fn display_label(job: &mut text::LayoutJob, label: &str) {
@@ -700,8 +704,8 @@ fn display_label(job: &mut text::LayoutJob, label: &str) {
 
 pub fn update(
     mut egui_ctx: bevy_egui::EguiContexts,
-    mut ev_w: EventWriter<ActionEvent>,
-    mut jobs: EventWriter<JobRequest>,
+    mut ev_w: MessageWriter<ActionEvent>,
+    mut jobs: MessageWriter<JobRequest>,
     mut conf: ResMut<Configuration>,
     job_state: Res<JobState>,
     mut solution: ResMut<SolutionResource>,
@@ -714,10 +718,8 @@ pub fn update(
     axes_texture: Res<bevy_axes_gizmo::AxesGizmoTexture>,
     mut gizmo_assets: ResMut<Assets<GizmoAsset>>,
     mut commands: Commands,
-) {
-    let axes_texture = egui_ctx.add_image(axes_texture.0.clone());
-
-    TopBottomPanel::top("panel").show_separator_line(false).show(egui_ctx.ctx_mut(), |ui| {
+) -> Result<(), BevyError> {
+    TopBottomPanel::top("panel").show_separator_line(false).show(egui_ctx.ctx_mut()?, |ui| {
         ui.add_space(10.);
 
         if job_state.request.is_some() {
@@ -973,11 +975,13 @@ pub fn update(
         });
     });
 
+    let axes_texture = egui_ctx.add_image(bevy_egui::EguiTextureHandle::Strong(axes_texture.0.clone()));
+
     footer(&mut egui_ctx, &mut conf, &solution, &diagnostics, &job_state, &mut jobs, &time, axes_texture);
 
     let mut egui_handles = vec![];
     for obj in conf.window_shows_object.iter() {
-        let egui_handle = egui_ctx.add_image(image_handle.map.get(&CameraFor(*obj)).unwrap().clone());
+        let egui_handle = egui_ctx.add_image(bevy_egui::EguiTextureHandle::Strong(image_handle.map.get(&CameraFor(*obj)).unwrap().clone()));
         egui_handles.push(egui_handle);
     }
 
@@ -990,7 +994,7 @@ pub fn update(
             fill: Color32::TRANSPARENT,
             ..default()
         })
-        .show(egui_ctx.ctx_mut(), |ui| {
+        .show(egui_ctx.ctx_mut()?, |ui| {
             let dock_area = DockArea::new(&mut ui_resource.tree)
                 .show_leaf_collapse_buttons(false)
                 .show_leaf_close_all_buttons(false);
@@ -1020,6 +1024,8 @@ pub fn update(
                 render_setting_store.objects = tab_viewer.render_settings.clone();
             }
         });
+
+    Ok(())
 }
 
 fn slider<T: emath::Numeric>(ui: &mut Ui, label: &str, value: &mut T, range: std::ops::RangeInclusive<T>) {

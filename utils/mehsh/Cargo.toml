@@ -10,7 +10,7 @@ categories = ["graphics", "data-structures"]
 
 [features]
 default = []
-bevy = ["dep:bevy_math", "dep:bevy_color", "dep:bevy_gizmos", "dep:bevy_render"]
+bevy = ["dep:bevy_math", "dep:bevy_color", "dep:bevy_gizmos", "dep:bevy_render", "dep:bevy_mesh", "dep:bevy_asset"]
 petgraph = ["dep:petgraph"]
 obj = ["dep:obj"]
 stl = ["dep:stl_io"]
@@ -30,10 +30,12 @@ kdtree = "0.7.0" # for vertex lookup
 bvh = "0.11.0" # for face lookup
 orx-parallel = "3.4.0"
 # Optional features
-bevy_math = { version = "0.16.0", optional = true }
-bevy_color = { version = "0.16.0", optional = true }
-bevy_gizmos = { version = "0.16.0", optional = true }
-bevy_render = { version = "0.16.0", optional = true }
+bevy_math = { version = "0.17.3", optional = true }
+bevy_color = { version = "0.17.3", optional = true }
+bevy_gizmos = { version = "0.17.3", optional = true }
+bevy_render = { version = "0.17.3", optional = true }
+bevy_mesh = { version = "0.17.3", optional = true }
+bevy_asset = { version = "0.17.3", optional = true }
 petgraph = { version = "0.8.2", optional = true }
 obj = { version = "0.10.2", optional = true }
 stl_io = { version = "0.8.5", optional = true }
