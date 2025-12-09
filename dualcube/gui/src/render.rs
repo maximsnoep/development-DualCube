@@ -1,11 +1,16 @@
 use crate::toons::ToonsMaterial;
 use crate::ui::UiResource;
 use crate::{colors, MainMesh, PerpetualGizmos};
-use crate::{to_principal_direction, vector3d_to_vec3, CameraHandles, Configuration, Perspective, PrincipalDirection, Rendered};
+use crate::{
+    to_principal_direction, vector3d_to_vec3, CameraHandles, Configuration, Perspective,
+    PrincipalDirection, Rendered,
+};
 use bevy::camera::Viewport;
 use bevy::core_pipeline::tonemapping::Tonemapping;
 use bevy::prelude::*;
-use bevy::render::render_resource::{Extent3d, TextureDescriptor, TextureDimension, TextureFormat, TextureUsages};
+use bevy::render::render_resource::{
+    Extent3d, TextureDescriptor, TextureDimension, TextureFormat, TextureUsages,
+};
 use bevy_axes_gizmo::AxesGizmoSyncCamera;
 use core::f32;
 use dualcube::prelude::*;
@@ -13,8 +18,7 @@ use egui_dock::LeafNode;
 use enum_iterator::{all, Sequence};
 use itertools::Itertools;
 use mehsh::prelude::*;
-use smooth_bevy_cameras::controllers::orbit::{OrbitCameraBundle, OrbitCameraController};
-use smooth_bevy_cameras::{LookAngles, LookTransform, Smoother};
+use smooth_bevy_cameras::*;
 use std::collections::{HashMap, HashSet};
 use std::ops::Index;
 
@@ -30,7 +34,11 @@ pub fn transform_coordinates(position: Vector3D, translation: Vector3D, scale: f
 
 // (p' - t) / s = p
 #[must_use]
-pub fn invert_transform_coordinates(position: Vector3D, translation: Vector3D, scale: f64) -> Vector3D {
+pub fn invert_transform_coordinates(
+    position: Vector3D,
+    translation: Vector3D,
+    scale: f64,
+) -> Vector3D {
     (position - translation) / scale
 }
 
@@ -130,12 +138,23 @@ impl RenderObject {
         self
     }
 
-    pub fn mesh<M: Tag>(&mut self, mesh: &mehsh::prelude::Mesh<M>, color_map: &HashMap<FaceKey<M>, colors::Color>, label: &str) -> &mut Self {
-        self.add(label, RenderFeature::new(RenderAsset::Mesh(mesh.bevy(color_map).0)))
+    pub fn mesh<M: Tag>(
+        &mut self,
+        mesh: &mehsh::prelude::Mesh<M>,
+        color_map: &HashMap<FaceKey<M>, colors::Color>,
+        label: &str,
+    ) -> &mut Self {
+        self.add(
+            label,
+            RenderFeature::new(RenderAsset::Mesh(mesh.bevy(color_map).0)),
+        )
     }
 
     pub fn gizmo(&mut self, gizmo: GizmoAsset, width: f32, depth: f32, label: &str) -> &mut Self {
-        self.add(label, RenderFeature::new(RenderAsset::Gizmo((gizmo, width, depth))))
+        self.add(
+            label,
+            RenderFeature::new(RenderAsset::Gizmo((gizmo, width, depth))),
+        )
     }
 }
 
@@ -172,9 +191,12 @@ impl From<Objects> for Vec3 {
     }
 }
 
-pub fn update_camera_settings(mut cameras: Query<(&mut OrbitCameraController, &mut Smoother)>, configuration: ResMut<Configuration>) {
+pub fn update_camera_settings(
+    mut cameras: Query<(&mut Controller, &mut Smoother)>,
+    configuration: ResMut<Configuration>,
+) {
     if let Ok((mut main_camera, mut smoother)) = cameras.single_mut() {
-        *main_camera = OrbitCameraController {
+        *main_camera = Controller {
             mouse_rotate_sensitivity: Vec2::splat(configuration.camera_rotate_sensitivity),
             mouse_translate_sensitivity: Vec2::splat(configuration.camera_translate_sensitivity),
             mouse_wheel_zoom_sensitivity: configuration.camera_zoom_sensitivity,
@@ -217,7 +239,7 @@ pub fn reset(
             // PrimaryEguiContext,
         ))
         .insert((OrbitCameraBundle::new(
-            OrbitCameraController {
+            Controller {
                 mouse_rotate_sensitivity: Vec2::splat(0.2),
                 mouse_translate_sensitivity: Vec2::splat(2.),
                 mouse_wheel_zoom_sensitivity: 0.2,
@@ -243,7 +265,9 @@ pub fn reset(
             format: TextureFormat::Bgra8UnormSrgb,
             mip_level_count: 1,
             sample_count: 1,
-            usage: TextureUsages::TEXTURE_BINDING | TextureUsages::COPY_DST | TextureUsages::RENDER_ATTACHMENT,
+            usage: TextureUsages::TEXTURE_BINDING
+                | TextureUsages::COPY_DST
+                | TextureUsages::RENDER_ATTACHMENT,
             view_formats: &[],
         },
         ..default()
@@ -290,10 +314,19 @@ pub fn setup(
     let (perp_gizmos, _) = config_store.config_mut::<PerpetualGizmos>();
     perp_gizmos.depth_bias = -1.0;
 
-    self::reset(&mut commands, &cameras, &mut images, &mut handles, &configuration);
+    self::reset(
+        &mut commands,
+        &cameras,
+        &mut images,
+        &mut handles,
+        &configuration,
+    );
 }
 
-pub fn update_render_settings(render_object_store: Res<RenderObjectStore>, mut render_settings_store: ResMut<RenderObjectSettingStore>) {
+pub fn update_render_settings(
+    render_object_store: Res<RenderObjectStore>,
+    mut render_settings_store: ResMut<RenderObjectSettingStore>,
+) {
     let default = |object: &Objects, label: &str| {
         matches!(
             (object, label),
@@ -312,12 +345,17 @@ pub fn update_render_settings(render_object_store: Res<RenderObjectStore>, mut r
     if render_object_store.is_changed() {
         for (object, render_object) in &render_object_store.objects {
             let labels = render_object.labels.clone();
-            let mut settings = render_settings_store.objects.get(object).map_or_else(HashMap::new, |s| s.settings.clone());
+            let mut settings = render_settings_store
+                .objects
+                .get(object)
+                .map_or_else(HashMap::new, |s| s.settings.clone());
             for feature_label in render_object.features.keys() {
-                settings.entry(feature_label.clone()).or_insert(RenderFeatureSetting {
-                    label: feature_label.clone(),
-                    visible: default(object, feature_label),
-                });
+                settings
+                    .entry(feature_label.clone())
+                    .or_insert(RenderFeatureSetting {
+                        label: feature_label.clone(),
+                        visible: default(object, feature_label),
+                    });
             }
             render_settings_store
                 .objects
@@ -359,12 +397,19 @@ pub fn respawn_renders(
             materials.remove(material);
         }
 
-        let flat_material = materials.add(StandardMaterial { unlit: true, ..default() });
+        let flat_material = materials.add(StandardMaterial {
+            unlit: true,
+            ..default()
+        });
         let toon_material = custom_materials.add(ToonsMaterial {
             view_dir: Vec3::new(0.0, 0.0, 1.0),
         });
         let background_material = materials.add(StandardMaterial {
-            base_color: bevy::prelude::Color::srgb_u8(configuration.clear_color[0], configuration.clear_color[1], configuration.clear_color[2]),
+            base_color: bevy::prelude::Color::srgb_u8(
+                configuration.clear_color[0],
+                configuration.clear_color[1],
+                configuration.clear_color[2],
+            ),
             unlit: true,
             ..default()
         });
@@ -419,7 +464,8 @@ pub fn respawn_renders(
                             }
                         }
                         RenderAsset::Gizmo(gizmo) => {
-                            let gizmo_handle = GizmoBundle::new(gizmos.add(gizmo.0.clone()), gizmo.1, gizmo.2).0;
+                            let gizmo_handle =
+                                GizmoBundle::new(gizmos.add(gizmo.0.clone()), gizmo.1, gizmo.2).0;
                             commands.spawn((
                                 (
                                     gizmo_handle,
@@ -451,7 +497,11 @@ pub fn update(
     window: Single<&Window>,
     mut cameras: Query<(&mut Transform, &mut Projection, &mut Camera, &CameraFor)>,
 ) {
-    let mut main_camera = cameras.iter_mut().find(|(_, _, _, camera_for)| camera_for.0 == Objects::InputMesh).unwrap().2;
+    let mut main_camera = cameras
+        .iter_mut()
+        .find(|(_, _, _, camera_for)| camera_for.0 == Objects::InputMesh)
+        .unwrap()
+        .2;
 
     let (_, node_index, _) = ui_resource.tree.find_tab(&Objects::InputMesh).unwrap();
     let main_surface = ui_resource.tree.main_surface().clone();
@@ -464,7 +514,11 @@ pub fn update(
     let viewport_width = main_surface_viewport.max[0] - main_surface_viewport.min[0];
     let viewport_height = main_surface_viewport.max[1] - main_surface_viewport.min[1];
 
-    if window.physical_size().x == 0 || window.physical_size().y == 0 || viewport_width == 0. || viewport_height == 0. {
+    if window.physical_size().x == 0
+        || window.physical_size().y == 0
+        || viewport_width == 0.
+        || viewport_height == 0.
+    {
         main_camera.is_active = false;
     } else {
         main_camera.is_active = true;
@@ -481,7 +535,11 @@ pub fn update(
         });
     }
 
-    let main_transform = cameras.iter().find(|(_, _, _, camera_for)| camera_for.0 == Objects::InputMesh).unwrap().0;
+    let main_transform = cameras
+        .iter()
+        .find(|(_, _, _, camera_for)| camera_for.0 == Objects::InputMesh)
+        .unwrap()
+        .0;
     let normalized_translation = main_transform.translation - Vec3::from(Objects::InputMesh);
     let normalized_rotation = main_transform.rotation;
 
@@ -492,13 +550,19 @@ pub fn update(
         // println!("translate: {:?}", sub_transform.translation);
         sub_transform.rotation = normalized_rotation;
         if let Projection::Orthographic(orthographic) = sub_projection.as_mut() {
-            // orthographic.scaling_mode = ScalingMode::FixedVertical { viewport_height: distance };
+            dbg!(distance);
+            orthographic.scale = 1. / distance.max(0.1);
         }
     }
 
     for material in custom_materials.iter_mut() {
         // current location of the camera, to (0, 0, 0)
-        material.1.view_dir = Vec3::new(normalized_translation.x, normalized_translation.y, normalized_translation.z).normalize();
+        material.1.view_dir = Vec3::new(
+            normalized_translation.x,
+            normalized_translation.y,
+            normalized_translation.z,
+        )
+        .normalize();
     }
 }
 
@@ -521,8 +585,13 @@ pub fn refresh(solution: &Solution) -> RenderObjectStore {
                     let mut color_map = HashMap::new();
                     for face_id in quad.quad_mesh.face_ids() {
                         let normal = quad.quad_mesh_polycube.normal(face_id);
-                        let color = colors::from_direction(to_principal_direction(normal).0, Some(Perspective::Primal), None);
-                        color_map.insert(face_id, [color[0] as f32, color[1] as f32, color[2] as f32]);
+                        let color = colors::from_direction(
+                            to_principal_direction(normal).0,
+                            Some(Perspective::Primal),
+                            None,
+                        );
+                        color_map
+                            .insert(face_id, [color[0] as f32, color[1] as f32, color[2] as f32]);
                     }
 
                     let mut gizmos_paths = GizmoAsset::new();
@@ -537,7 +606,10 @@ pub fn refresh(solution: &Solution) -> RenderObjectStore {
                             let faces = quad.quad_mesh.faces(vert_id);
                             // Get the labels of the faces around
                             let labels = faces
-                                .map(|face_id| to_principal_direction(quad.quad_mesh_polycube.normal(face_id)).0)
+                                .map(|face_id| {
+                                    to_principal_direction(quad.quad_mesh_polycube.normal(face_id))
+                                        .0
+                                })
                                 .collect::<HashSet<_>>();
                             // If 3+ labels, its irregular
                             if labels.len() >= 3 {
@@ -549,22 +621,29 @@ pub fn refresh(solution: &Solution) -> RenderObjectStore {
                         let mut irregular_edges = HashSet::new();
                         for &vert_id in &irregular_vertices {
                             for edge_id in quad.quad_mesh.edges(vert_id) {
-                                let mut next_twin_next = quad.quad_mesh.next(quad.quad_mesh.twin(quad.quad_mesh.next(edge_id)));
+                                let mut next_twin_next = quad
+                                    .quad_mesh
+                                    .next(quad.quad_mesh.twin(quad.quad_mesh.next(edge_id)));
                                 while !irregular_edges.contains(&next_twin_next) {
                                     irregular_edges.insert(next_twin_next);
-                                    next_twin_next = quad.quad_mesh.next(quad.quad_mesh.twin(quad.quad_mesh.next(next_twin_next)));
+                                    next_twin_next = quad.quad_mesh.next(
+                                        quad.quad_mesh.twin(quad.quad_mesh.next(next_twin_next)),
+                                    );
                                 }
                             }
                         }
 
                         // Draw all irregular edges
                         for edge_id in irregular_edges {
-                            let Some([f1, f2]) = quad.quad_mesh.faces(edge_id).collect_array::<2>() else {
+                            let Some([f1, f2]) = quad.quad_mesh.faces(edge_id).collect_array::<2>()
+                            else {
                                 panic!("Expected two faces for edge {edge_id:?}");
                             };
                             let n1 = quad.quad_mesh_polycube.normal(f1);
                             let n2 = quad.quad_mesh_polycube.normal(f2);
-                            let Some([e1, e2]) = quad.quad_mesh.vertices(edge_id).collect_array::<2>() else {
+                            let Some([e1, e2]) =
+                                quad.quad_mesh.vertices(edge_id).collect_array::<2>()
+                            else {
                                 panic!("Expected two vertices for edge {edge_id:?}");
                             };
                             let u = quad.quad_mesh.position(e1);
@@ -584,7 +663,12 @@ pub fn refresh(solution: &Solution) -> RenderObjectStore {
                         RenderObject::default()
                             .mesh(&quad.quad_mesh, &default_color_map, "gray")
                             .mesh(&quad.quad_mesh, &color_map, "colored")
-                            .gizmo(quad.quad_mesh.gizmos(colors::GRAY), 1.0, -0.001, "wireframe")
+                            .gizmo(
+                                quad.quad_mesh.gizmos(colors::GRAY),
+                                1.0,
+                                -0.001,
+                                "wireframe",
+                            )
                             .gizmo(gizmos_paths, 4., -0.0001, "paths")
                             .gizmo(gizmos_flat_paths, 3., -0.00011, "flat paths")
                             .to_owned(),
@@ -608,11 +692,17 @@ pub fn refresh(solution: &Solution) -> RenderObjectStore {
                         black_color_map.insert(face_id, colors::BLACK);
                         gray_color_map.insert(face_id, colors::LIGHT_GRAY);
                         colored_color_map.insert(face_id, {
-                            colors::from_direction(to_principal_direction(normal).0, Some(Perspective::Primal), None)
+                            colors::from_direction(
+                                to_principal_direction(normal).0,
+                                Some(Perspective::Primal),
+                                None,
+                            )
                         });
 
                         // draw loops
-                        let Some([e1, e2, e3, e4]) = polycube.structure.edges(face_id).collect_array::<4>() else {
+                        let Some([e1, e2, e3, e4]) =
+                            polycube.structure.edges(face_id).collect_array::<4>()
+                        else {
                             panic!("Expected four edges for face {face_id:?}");
                         };
                         let edge1_pos = polycube.structure.position(e1);
@@ -626,21 +716,41 @@ pub fn refresh(solution: &Solution) -> RenderObjectStore {
 
                         // loop 1, from edge 1 to edge 3
                         let dir = to_principal_direction(edge2_pos - edge4_pos).0;
-                        let c = colors::to_bevy(colors::from_direction(dir, Some(Perspective::Dual), None));
+                        let c = colors::to_bevy(colors::from_direction(
+                            dir,
+                            Some(Perspective::Dual),
+                            None,
+                        ));
                         match dir {
-                            PrincipalDirection::X => gizmos_xloops.line(edge1_pos_view, edge3_pos_view, c),
-                            PrincipalDirection::Y => gizmos_yloops.line(edge1_pos_view, edge3_pos_view, c),
-                            PrincipalDirection::Z => gizmos_zloops.line(edge1_pos_view, edge3_pos_view, c),
+                            PrincipalDirection::X => {
+                                gizmos_xloops.line(edge1_pos_view, edge3_pos_view, c)
+                            }
+                            PrincipalDirection::Y => {
+                                gizmos_yloops.line(edge1_pos_view, edge3_pos_view, c)
+                            }
+                            PrincipalDirection::Z => {
+                                gizmos_zloops.line(edge1_pos_view, edge3_pos_view, c)
+                            }
                         }
 
                         // loop 2, from edge 2 to edge 4
                         let dir = to_principal_direction(edge1_pos - edge3_pos).0;
-                        let c = colors::to_bevy(colors::from_direction(dir, Some(Perspective::Dual), None));
+                        let c = colors::to_bevy(colors::from_direction(
+                            dir,
+                            Some(Perspective::Dual),
+                            None,
+                        ));
 
                         match dir {
-                            PrincipalDirection::X => gizmos_xloops.line(edge2_pos_view, edge4_pos_view, c),
-                            PrincipalDirection::Y => gizmos_yloops.line(edge2_pos_view, edge4_pos_view, c),
-                            PrincipalDirection::Z => gizmos_zloops.line(edge2_pos_view, edge4_pos_view, c),
+                            PrincipalDirection::X => {
+                                gizmos_xloops.line(edge2_pos_view, edge4_pos_view, c)
+                            }
+                            PrincipalDirection::Y => {
+                                gizmos_yloops.line(edge2_pos_view, edge4_pos_view, c)
+                            }
+                            PrincipalDirection::Z => {
+                                gizmos_zloops.line(edge2_pos_view, edge4_pos_view, c)
+                            }
                         }
                     }
 
@@ -652,8 +762,12 @@ pub fn refresh(solution: &Solution) -> RenderObjectStore {
 
                     for pedge_id in polycube.structure.edge_ids() {
                         let f1 = polycube.structure.normal(polycube.structure.face(pedge_id));
-                        let f2 = polycube.structure.normal(polycube.structure.face(polycube.structure.twin(pedge_id)));
-                        let Some([e1, e2]) = polycube.structure.vertices(pedge_id).collect_array::<2>() else {
+                        let f2 = polycube
+                            .structure
+                            .normal(polycube.structure.face(polycube.structure.twin(pedge_id)));
+                        let Some([e1, e2]) =
+                            polycube.structure.vertices(pedge_id).collect_array::<2>()
+                        else {
                             panic!("Expected two vertices for edge {pedge_id:?}");
                         };
                         let u = polycube.structure.position(e1);
@@ -698,8 +812,18 @@ pub fn refresh(solution: &Solution) -> RenderObjectStore {
                         object,
                         RenderObject::default()
                             .mesh(&quad.quad_mesh_polycube, &color_map, "colored")
-                            .gizmo(quad.quad_mesh_polycube.gizmos(colors::GRAY), 2., -0.01, "quads")
-                            .gizmo(quad.triangle_mesh_polycube.gizmos(colors::GRAY), 2., -0.01, "triangles")
+                            .gizmo(
+                                quad.quad_mesh_polycube.gizmos(colors::GRAY),
+                                2.,
+                                -0.01,
+                                "quads",
+                            )
+                            .gizmo(
+                                quad.triangle_mesh_polycube.gizmos(colors::GRAY),
+                                2.,
+                                -0.01,
+                                "triangles",
+                            )
                             .to_owned(),
                     );
                 }
@@ -729,13 +853,18 @@ pub fn refresh(solution: &Solution) -> RenderObjectStore {
                     let direction = solution.loop_to_direction(lewp_id);
 
                     let mut positions = vec![];
-                    for u in [lewp.edges.clone(), vec![lewp.edges[0]], vec![lewp.edges[1]]].concat() {
+                    for u in [lewp.edges.clone(), vec![lewp.edges[0]], vec![lewp.edges[1]]].concat()
+                    {
                         let ut = transform_coordinates(input.position(u), translation, scale);
                         // gizmos_loop.line(line.u, line.v, c);
                         positions.push(vector3d_to_vec3(ut));
                     }
 
-                    let color = colors::from_direction(direction, Some(Perspective::Dual), Some(Orientation::Forwards));
+                    let color = colors::from_direction(
+                        direction,
+                        Some(Perspective::Dual),
+                        Some(Orientation::Forwards),
+                    );
                     let c = bevy::color::Color::srgb(color[0], color[1], color[2]);
                     match direction {
                         PrincipalDirection::X => gizmos_xloops.linestrip(positions, c),
@@ -749,14 +878,27 @@ pub fn refresh(solution: &Solution) -> RenderObjectStore {
 
                     for (&pedge_id, path) in &lay.edge_to_path {
                         let f1 = polycube.structure.normal(polycube.structure.face(pedge_id));
-                        let f2 = polycube.structure.normal(polycube.structure.face(polycube.structure.twin(pedge_id)));
+                        let f2 = polycube
+                            .structure
+                            .normal(polycube.structure.face(polycube.structure.twin(pedge_id)));
                         for vertexpair in path.windows(2) {
-                            if granulated_mesh.edge_between_verts(vertexpair[0], vertexpair[1]).is_none() {
-                                println!("Edge between {:?} and {:?} does not exist", vertexpair[0], vertexpair[1]);
+                            if granulated_mesh
+                                .edge_between_verts(vertexpair[0], vertexpair[1])
+                                .is_none()
+                            {
+                                println!(
+                                    "Edge between {:?} and {:?} does not exist",
+                                    vertexpair[0], vertexpair[1]
+                                );
                                 continue;
                             }
-                            let edge_id = granulated_mesh.edge_between_verts(vertexpair[0], vertexpair[1]).unwrap().0;
-                            let Some([e1, e2]) = granulated_mesh.vertices(edge_id).collect_array::<2>() else {
+                            let edge_id = granulated_mesh
+                                .edge_between_verts(vertexpair[0], vertexpair[1])
+                                .unwrap()
+                                .0;
+                            let Some([e1, e2]) =
+                                granulated_mesh.vertices(edge_id).collect_array::<2>()
+                            else {
                                 panic!("Expected two vertices for edge {edge_id:?}");
                             };
                             let u = granulated_mesh.position(e1);
@@ -774,22 +916,33 @@ pub fn refresh(solution: &Solution) -> RenderObjectStore {
                         let normal = (polycube.structure.normal(face_id) as Vector3D).normalize();
 
                         let (dir, side) = to_principal_direction(normal);
-                        let color = colors::from_direction(dir, Some(Perspective::Primal), Some(side));
+                        let color =
+                            colors::from_direction(dir, Some(Perspective::Primal), Some(side));
                         for &triangle_id in &lay.face_to_patch[&face_id].faces {
                             color_map_segmentation.insert(triangle_id, color);
                         }
                     }
 
                     for triangle_id in lay.granulated_mesh.face_ids() {
-                        if let Some(&score) = solution.layout.as_ref().unwrap().alignment_per_triangle.get(&triangle_id) {
-                            color_map_alignment.insert(triangle_id, colors::map(score as f32, &colors::SCALE_MAGMA));
+                        if let Some(&score) = solution
+                            .layout
+                            .as_ref()
+                            .unwrap()
+                            .alignment_per_triangle
+                            .get(&triangle_id)
+                        {
+                            color_map_alignment.insert(
+                                triangle_id,
+                                colors::map(score as f32, &colors::SCALE_MAGMA),
+                            );
                         } else {
                             color_map_alignment.insert(triangle_id, colors::SNOEP_YELLOW);
                         }
                     }
                 }
 
-                let features = dualcube::feature::feature_extraction(input, std::f64::consts::FRAC_PI_3, 1);
+                let features =
+                    dualcube::feature::feature_extraction(input, std::f64::consts::FRAC_PI_3, 1);
                 let mut gizmos_features = GizmoAsset::new();
                 let cs = [
                     colors::to_bevy(colors::from_direction(PrincipalDirection::X, None, None)),
@@ -852,16 +1005,19 @@ pub fn view_to_world(v: Vec3, translation: Vector3D, scale: f64) -> Vector3D {
     invert_transform_coordinates(v_world, translation, scale)
 }
 
-pub fn automatic_rotation_camera(mut cameras: Query<(&mut LookTransform, &mut Projection, &mut Camera, &CameraFor)>, configuration: Res<Configuration>) {
+pub fn automatic_rotation_camera(
+    mut cameras: Query<(&mut LookTransform, &mut Projection, &mut Camera, &CameraFor)>,
+    configuration: Res<Configuration>,
+) {
     if !configuration.automatic_rotation_camera {
         return;
     }
-    let (mut transform, _, _, _) = cameras.iter_mut().find(|(_, _, _, camera_for)| camera_for.0 == Objects::InputMesh).unwrap();
+    let (mut transform, _, _, _) = cameras
+        .iter_mut()
+        .find(|(_, _, _, camera_for)| camera_for.0 == Objects::InputMesh)
+        .unwrap();
     let mut look_angles = LookAngles::from_vector(-transform.look_direction().unwrap());
     let rotation_speed = configuration.camera_rotate_sensitivity / 100.; // radians per 10ms
-    println!(" rotation speed: {}", rotation_speed);
-    println!(" before look angles: {:?}", look_angles);
-
     look_angles.add_yaw(-rotation_speed);
     transform.eye = transform.target + transform.radius() * look_angles.unit_vector();
 }

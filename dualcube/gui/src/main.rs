@@ -23,8 +23,7 @@ use mehsh::prelude::*;
 use ordered_float::OrderedFloat;
 use rayon::iter::{IntoParallelIterator, ParallelIterator};
 use render::{CameraFor, MeshProperties, Objects, RenderObjectStore};
-use smooth_bevy_cameras::controllers::orbit::OrbitCameraPlugin;
-use smooth_bevy_cameras::LookTransformPlugin;
+use smooth_bevy_cameras::*;
 use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -174,7 +173,11 @@ impl InputResource {
 
         let nodes = mesh.edge_ids();
 
-        for axis in [PrincipalDirection::X, PrincipalDirection::Y, PrincipalDirection::Z] {
+        for axis in [
+            PrincipalDirection::X,
+            PrincipalDirection::Y,
+            PrincipalDirection::Z,
+        ] {
             let edges = nodes
                 .clone()
                 .into_par_iter()
@@ -263,11 +266,14 @@ fn main() {
             ..Default::default()
         }))
         // Plugin for diagnostics
-        .add_plugins((FrameTimeDiagnosticsPlugin::default(), SystemInformationDiagnosticsPlugin))
+        .add_plugins((
+            FrameTimeDiagnosticsPlugin::default(),
+            SystemInformationDiagnosticsPlugin,
+        ))
         // Plugin for GUI
         .add_plugins(EguiPlugin::default())
         // Plugin for smooth camera
-        .add_plugins((LookTransformPlugin, OrbitCameraPlugin::default()))
+        .add_plugins(OrbitCameraPlugin)
         // Material
         .add_plugins(ToonsMaterialPlugin)
         // Jobs system
@@ -275,9 +281,21 @@ fn main() {
         // Axes gizmo
         .add_plugins(bevy_axes_gizmo::AxesGizmoPlugin {
             colors: [
-                colors::to_bevy(colors::from_direction(PrincipalDirection::X, Some(Perspective::Primal), None)),
-                colors::to_bevy(colors::from_direction(PrincipalDirection::Y, Some(Perspective::Primal), None)),
-                colors::to_bevy(colors::from_direction(PrincipalDirection::Z, Some(Perspective::Primal), None)),
+                colors::to_bevy(colors::from_direction(
+                    PrincipalDirection::X,
+                    Some(Perspective::Primal),
+                    None,
+                )),
+                colors::to_bevy(colors::from_direction(
+                    PrincipalDirection::Y,
+                    Some(Perspective::Primal),
+                    None,
+                )),
+                colors::to_bevy(colors::from_direction(
+                    PrincipalDirection::Z,
+                    Some(Perspective::Primal),
+                    None,
+                )),
             ],
             width: 5.,
             ..default()
@@ -289,12 +307,17 @@ fn main() {
         // Updates
         .add_systems(EguiPrimaryContextPass, ui::update)
         .add_systems(Update, render::update)
-        .add_systems(FixedUpdate, render::respawn_renders.run_if(on_timer(Duration::from_millis(100))))
+        .add_systems(
+            FixedUpdate,
+            render::respawn_renders.run_if(on_timer(Duration::from_millis(100))),
+        )
         .add_systems(Update, render::update_camera_settings)
         .add_systems(Update, render::update_render_settings)
         .add_systems(Update, controls::system)
-        .add_systems(FixedUpdate, render::automatic_rotation_camera.run_if(on_timer(Duration::from_millis(10))))
-        // .add_systems(Update, handle_tasks)
+        .add_systems(
+            FixedUpdate,
+            render::automatic_rotation_camera.run_if(on_timer(Duration::from_millis(10))),
+        )
         .add_message::<ActionEvent>()
         .run();
 }
