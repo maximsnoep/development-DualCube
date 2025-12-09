@@ -12,7 +12,10 @@ use crate::Export;
 pub struct Nlr;
 
 impl Export for Nlr {
-    fn export(solution: &Solution, path: &std::path::Path) -> Result<(), Box<dyn std::error::Error>> {
+    fn export(
+        solution: &Solution,
+        path: &std::path::Path,
+    ) -> Result<(), Box<dyn std::error::Error>> {
         let path_topol = path.with_extension("topol");
         let path_geom = path.with_extension("geom");
         let path_cdim = path.with_extension("cdim");
@@ -20,11 +23,16 @@ impl Export for Nlr {
         let path_xloops = path.with_extension("xloops.seg");
         let path_yloops = path.with_extension("yloops.seg");
         let path_zloops = path.with_extension("zloops.seg");
-        let path_xpatches = path.with_extension("xpatches.seg");
-        let path_ypatches = path.with_extension("ypatches.seg");
-        let path_zpatches = path.with_extension("zpatches.seg");
+        // let path_xpatches = path.with_extension("xpatches.seg");
+        // let path_ypatches = path.with_extension("ypatches.seg");
+        // let path_zpatches = path.with_extension("zpatches.seg");
 
-        if let (Ok(dual), Some(layout), Some(polycube), Some(quad)) = (&solution.dual, &solution.layout, &solution.polycube, &solution.quad) {
+        if let (Ok(dual), Some(layout), Some(polycube), Some(quad)) = (
+            &solution.dual,
+            &solution.layout,
+            &solution.polycube,
+            &solution.quad,
+        ) {
             let signature = " -- automatically generated via DualCube (Maxim Snoep)";
 
             // Minimum dimension of smallest edge in polycube (cartesian representation)
@@ -51,7 +59,12 @@ impl Export for Nlr {
                 .min_by_key(|&vert| OrderedFloat(polycube.structure.position(vert).x))
                 .unwrap();
 
-            let v1 = real_center - Vector3D::new(ff_mult * real_scale, ff_mult * real_scale, ff_mult * real_scale);
+            let v1 = real_center
+                - Vector3D::new(
+                    ff_mult * real_scale,
+                    ff_mult * real_scale,
+                    ff_mult * real_scale,
+                );
             let v2 = v1 + 2. * Vector3D::new(0., 0., ff_mult * real_scale);
             let v3 = v2 + 2. * Vector3D::new(0., ff_mult * real_scale, 0.);
             let v4 = v3 - 2. * Vector3D::new(0., 0., ff_mult * real_scale);
@@ -62,7 +75,13 @@ impl Export for Nlr {
             let v8 = v7 - 2. * Vector3D::new(0., 0., ff_mult * real_scale);
 
             assert!(polycube.structure.verts.len() < 10000);
-            let vert_to_id: BiHashMap<VertKey<POLYCUBE>, usize> = polycube.structure.vert_ids().iter().enumerate().map(|(i, &id)| (id, 10001 + i)).collect();
+            let vert_to_id: BiHashMap<VertKey<POLYCUBE>, usize> = polycube
+                .structure
+                .vert_ids()
+                .iter()
+                .enumerate()
+                .map(|(i, &id)| (id, 10001 + i))
+                .collect();
 
             assert!(polycube.structure.edges.len() < 10000);
             let edge_to_id: BiHashMap<EdgeKey<POLYCUBE>, usize> = polycube
@@ -75,7 +94,13 @@ impl Export for Nlr {
                 .collect();
 
             assert!(polycube.structure.faces.len() < 10000);
-            let face_to_id: BiHashMap<FaceKey<POLYCUBE>, usize> = polycube.structure.face_ids().iter().enumerate().map(|(i, &id)| (id, 30001 + i)).collect();
+            let face_to_id: BiHashMap<FaceKey<POLYCUBE>, usize> = polycube
+                .structure
+                .face_ids()
+                .iter()
+                .enumerate()
+                .map(|(i, &id)| (id, 30001 + i))
+                .collect();
 
             // ------------------------
             // --- WRITE TOPOL FILE ---
@@ -86,10 +111,16 @@ impl Export for Nlr {
             let mut file_topol = std::fs::File::create(path_topol)?;
 
             // Write info (should apparently be 5 lines)
-            write!(file_topol, "'topol file <> {signature}'\n'2nd line'\n'3rd line'\n'4th line'\n'5th line'")?;
+            write!(
+                file_topol,
+                "'topol file <> {signature}'\n'2nd line'\n'3rd line'\n'4th line'\n'5th line'"
+            )?;
 
             // Write blocks and compound blocks (we do not define any)
-            write!(file_topol, "\n NUMBER OF BLOCKS:\n       0\n NUMBER OF COMPOUND BLOCKS:\n       0")?;
+            write!(
+                file_topol,
+                "\n NUMBER OF BLOCKS:\n       0\n NUMBER OF COMPOUND BLOCKS:\n       0"
+            )?;
 
             // Write faces
             write!(
@@ -132,12 +163,30 @@ impl Export for Nlr {
             )?;
             // Add the bounding box faces
 
-            write!(file_topol, "\n       91234       80102       80304       80203       80401       'FACE'")?;
-            write!(file_topol, "\n       97658       80506       80708       80805       80607       'FACE'")?;
-            write!(file_topol, "\n       91485       80105       80408       80401       80805       'FACE'")?;
-            write!(file_topol, "\n       97326       80206       80307       80607       80203       'FACE'")?;
-            write!(file_topol, "\n       91562       80102       80506       80105       80206       'FACE'")?;
-            write!(file_topol, "\n       97843       80304       80708       80307       80408       'FACE'")?;
+            write!(
+                file_topol,
+                "\n       91234       80102       80304       80203       80401       'FACE'"
+            )?;
+            write!(
+                file_topol,
+                "\n       97658       80506       80708       80805       80607       'FACE'"
+            )?;
+            write!(
+                file_topol,
+                "\n       91485       80105       80408       80401       80805       'FACE'"
+            )?;
+            write!(
+                file_topol,
+                "\n       97326       80206       80307       80607       80203       'FACE'"
+            )?;
+            write!(
+                file_topol,
+                "\n       91562       80102       80506       80105       80206       'FACE'"
+            )?;
+            write!(
+                file_topol,
+                "\n       97843       80304       80708       80307       80408       'FACE'"
+            )?;
 
             write!(file_topol, "\n NUMBER OF COMPOUND FACES:\n       0\n")?;
 
@@ -168,20 +217,56 @@ impl Export for Nlr {
                     .join("\n")
             )?;
             // Add the bounding box edges
-            write!(file_topol, "\n       80102       70001       70002       'EDGE'")?;
-            write!(file_topol, "\n       80203       70002       70003       'EDGE'")?;
-            write!(file_topol, "\n       80304       70003       70004       'EDGE'")?;
-            write!(file_topol, "\n       80401       70004       70001       'EDGE'")?;
+            write!(
+                file_topol,
+                "\n       80102       70001       70002       'EDGE'"
+            )?;
+            write!(
+                file_topol,
+                "\n       80203       70002       70003       'EDGE'"
+            )?;
+            write!(
+                file_topol,
+                "\n       80304       70003       70004       'EDGE'"
+            )?;
+            write!(
+                file_topol,
+                "\n       80401       70004       70001       'EDGE'"
+            )?;
 
-            write!(file_topol, "\n       80506       70005       70006       'EDGE'")?;
-            write!(file_topol, "\n       80607       70006       70007       'EDGE'")?;
-            write!(file_topol, "\n       80708       70007       70008       'EDGE'")?;
-            write!(file_topol, "\n       80805       70008       70005       'EDGE'")?;
+            write!(
+                file_topol,
+                "\n       80506       70005       70006       'EDGE'"
+            )?;
+            write!(
+                file_topol,
+                "\n       80607       70006       70007       'EDGE'"
+            )?;
+            write!(
+                file_topol,
+                "\n       80708       70007       70008       'EDGE'"
+            )?;
+            write!(
+                file_topol,
+                "\n       80805       70008       70005       'EDGE'"
+            )?;
 
-            write!(file_topol, "\n       80105       70001       70005       'EDGE'")?;
-            write!(file_topol, "\n       80206       70002       70006       'EDGE'")?;
-            write!(file_topol, "\n       80307       70003       70007       'EDGE'")?;
-            write!(file_topol, "\n       80408       70004       70008       'EDGE'")?;
+            write!(
+                file_topol,
+                "\n       80105       70001       70005       'EDGE'"
+            )?;
+            write!(
+                file_topol,
+                "\n       80206       70002       70006       'EDGE'"
+            )?;
+            write!(
+                file_topol,
+                "\n       80307       70003       70007       'EDGE'"
+            )?;
+            write!(
+                file_topol,
+                "\n       80408       70004       70008       'EDGE'"
+            )?;
 
             write!(file_topol, "\n NUMBER OF COMPOUND EDGES:\n       0")?;
 
@@ -319,7 +404,11 @@ impl Export for Nlr {
             )?;
 
             // Write all faces
-            write!(file_geom, "\n NUMBER OF FACES:\n       {}", polycube.structure.nr_faces())?;
+            write!(
+                file_geom,
+                "\n NUMBER OF FACES:\n       {}",
+                polycube.structure.nr_faces()
+            )?;
 
             write!(file_geom, "\n FACE        X  Y\n")?;
             write!(
@@ -334,7 +423,12 @@ impl Export for Nlr {
                         let mut lines = vec![];
                         let width = verts.len();
                         let height = verts[0].len();
-                        lines.push(format!("       {}       {}  {}", face_to_id.get_by_left(face_id).unwrap(), width, height));
+                        lines.push(format!(
+                            "       {}       {}  {}",
+                            face_to_id.get_by_left(face_id).unwrap(),
+                            width,
+                            height
+                        ));
                         for j in 0..height {
                             #[allow(clippy::needless_range_loop)]
                             for i in 0..width {
@@ -379,11 +473,25 @@ impl Export for Nlr {
                 .flat_map(|segment_id| dual.loop_structure.faces(segment_id).collect_array::<2>())
                 .map(|[face1, face2]| {
                     (
-                        polycube.region_to_vertex.get_by_left(&face1).unwrap().to_owned(),
-                        polycube.region_to_vertex.get_by_left(&face2).unwrap().to_owned(),
+                        polycube
+                            .region_to_vertex
+                            .get_by_left(&face1)
+                            .unwrap()
+                            .to_owned(),
+                        polycube
+                            .region_to_vertex
+                            .get_by_left(&face2)
+                            .unwrap()
+                            .to_owned(),
                     )
                 })
-                .map(|(vertex1, vertex2)| polycube.structure.edge_between_verts(vertex1, vertex2).unwrap().0);
+                .map(|(vertex1, vertex2)| {
+                    polycube
+                        .structure
+                        .edge_between_verts(vertex1, vertex2)
+                        .unwrap()
+                        .0
+                });
             write!(
                 file_cdim,
                 "\n NUMBER OF USER SPECIFIED EDGE DIMENSIONS:\n       {}\n        EDGE       DIM\n",
@@ -406,20 +514,41 @@ impl Export for Nlr {
                     .join("\n")
             )?;
 
-            write!(file_cdim, "\n       80105       {}", cartesian_scale * ff_mult * 2.)?;
-            write!(file_cdim, "\n       80401       {}", cartesian_scale * ff_mult * 2.)?;
-            write!(file_cdim, "\n       80102       {}", cartesian_scale * ff_mult * 2.)?;
+            write!(
+                file_cdim,
+                "\n       80105       {}",
+                cartesian_scale * ff_mult * 2.
+            )?;
+            write!(
+                file_cdim,
+                "\n       80401       {}",
+                cartesian_scale * ff_mult * 2.
+            )?;
+            write!(
+                file_cdim,
+                "\n       80102       {}",
+                cartesian_scale * ff_mult * 2.
+            )?;
 
             // Write grid levels
-            write!(file_cdim, "\n GRID LEVEL OF BASIC GRID AND COMPUTATIONAL GRID:\n       1 1")?;
+            write!(
+                file_cdim,
+                "\n GRID LEVEL OF BASIC GRID AND COMPUTATIONAL GRID:\n       1 1"
+            )?;
 
             // Write refinement
-            write!(file_cdim, "\n NUMBER OF BLOCKS WITH LOCAL GRID REFINEMENT:\n       0")?;
+            write!(
+                file_cdim,
+                "\n NUMBER OF BLOCKS WITH LOCAL GRID REFINEMENT:\n       0"
+            )?;
 
             // Write edges in x (i) direction
             let x_edges = edge_per_loop
                 .clone()
-                .filter(|&edge_id| to_principal_direction(polycube.structure.vector(edge_id)).0 == PrincipalDirection::X)
+                .filter(|&edge_id| {
+                    to_principal_direction(polycube.structure.vector(edge_id)).0
+                        == PrincipalDirection::X
+                })
                 .map(|edge_id| {
                     edge_to_id
                         .get_by_left(&edge_id)
@@ -435,14 +564,21 @@ impl Export for Nlr {
             write!(
                 file_cdim,
                 "{}",
-                x_edges.iter().map(|edge_id| format!("  {edge_id}")).collect::<Vec<_>>().join("  ")
+                x_edges
+                    .iter()
+                    .map(|edge_id| format!("  {edge_id}"))
+                    .collect::<Vec<_>>()
+                    .join("  ")
             )?;
             write!(file_cdim, "  80105")?;
 
             // Write edges in y (j) direction
             let y_edges = edge_per_loop
                 .clone()
-                .filter(|&edge_id| to_principal_direction(polycube.structure.vector(edge_id)).0 == PrincipalDirection::Y)
+                .filter(|&edge_id| {
+                    to_principal_direction(polycube.structure.vector(edge_id)).0
+                        == PrincipalDirection::Y
+                })
                 .map(|edge_id| {
                     edge_to_id
                         .get_by_left(&edge_id)
@@ -458,14 +594,21 @@ impl Export for Nlr {
             write!(
                 file_cdim,
                 "{}",
-                y_edges.iter().map(|edge_id| format!("  {edge_id}")).collect::<Vec<_>>().join("  ")
+                y_edges
+                    .iter()
+                    .map(|edge_id| format!("  {edge_id}"))
+                    .collect::<Vec<_>>()
+                    .join("  ")
             )?;
             write!(file_cdim, "  80401")?;
 
             // Write edges in z (k) direction
             let z_edges = edge_per_loop
                 .clone()
-                .filter(|&edge_id| to_principal_direction(polycube.structure.vector(edge_id)).0 == PrincipalDirection::Z)
+                .filter(|&edge_id| {
+                    to_principal_direction(polycube.structure.vector(edge_id)).0
+                        == PrincipalDirection::Z
+                })
                 .map(|edge_id| {
                     edge_to_id
                         .get_by_left(&edge_id)
@@ -481,12 +624,19 @@ impl Export for Nlr {
             write!(
                 file_cdim,
                 "{}",
-                z_edges.iter().map(|edge_id| format!("  {edge_id}")).collect::<Vec<_>>().join("  ")
+                z_edges
+                    .iter()
+                    .map(|edge_id| format!("  {edge_id}"))
+                    .collect::<Vec<_>>()
+                    .join("  ")
             )?;
             write!(file_cdim, "  80102")?;
 
             // Write reference (origin) vertex
-            write!(file_cdim, "\n NUMBER OF VERTICES WITH CARTESIAN COORDINATES:\n       2\n        VERT i j k\n")?;
+            write!(
+                file_cdim,
+                "\n NUMBER OF VERTICES WITH CARTESIAN COORDINATES:\n       2\n        VERT i j k\n"
+            )?;
             let center_to_ref = polycube.structure.position(refv) - cartesian_center;
 
             let i = vert_to_id.get_by_left(&refv).unwrap();
@@ -562,7 +712,12 @@ impl Export for Nlr {
                         })
                         .collect::<Vec<_>>()
                         .join("\n");
-                    write!(file_seg, "    1\n    {}\n    1D SEGMENT\n{}\n", positions_on_loop.len(), lines)?;
+                    write!(
+                        file_seg,
+                        "    1\n    {}\n    1D SEGMENT\n{}\n",
+                        positions_on_loop.len(),
+                        lines
+                    )?;
                 }
             }
         }

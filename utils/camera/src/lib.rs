@@ -1,11 +1,9 @@
 mod control;
-mod look_angles;
-mod look_transform;
 mod plugin;
+mod transform;
 
 pub use control::Controller;
-pub use look_angles::LookAngles;
-pub use look_transform::LookTransform;
-pub use look_transform::Smoother;
+pub use control::LookAngles;
 pub use plugin::OrbitCameraBundle;
 pub use plugin::OrbitCameraPlugin;
+pub use transform::LookTransform;

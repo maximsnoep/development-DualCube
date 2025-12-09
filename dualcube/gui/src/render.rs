@@ -192,20 +192,20 @@ impl From<Objects> for Vec3 {
 }
 
 pub fn update_camera_settings(
-    mut cameras: Query<(&mut Controller, &mut Smoother)>,
+    mut camera_controller: Query<&mut Controller>,
     configuration: ResMut<Configuration>,
 ) {
-    if let Ok((mut main_camera, mut smoother)) = cameras.single_mut() {
-        *main_camera = Controller {
-            mouse_rotate_sensitivity: Vec2::splat(configuration.camera_rotate_sensitivity),
-            mouse_translate_sensitivity: Vec2::splat(configuration.camera_translate_sensitivity),
-            mouse_wheel_zoom_sensitivity: configuration.camera_zoom_sensitivity,
-            smoothing_weight: 0.8,
-            ..Default::default()
-        };
+    let Ok(mut main_camera) = camera_controller.single_mut() else {
+        warn!("No main camera controller.");
+        return;
+    };
 
-        *smoother = Smoother::new(0.8);
-    }
+    *main_camera = Controller {
+        mouse_rotate_sensitivity: Vec2::splat(configuration.camera_rotate_sensitivity),
+        mouse_translate_sensitivity: Vec2::splat(configuration.camera_translate_sensitivity),
+        mouse_wheel_zoom_sensitivity: configuration.camera_zoom_sensitivity,
+        ..Default::default()
+    };
 }
 
 #[derive(Component, PartialEq, Eq, Hash, Debug, Copy, Clone, Default)]
@@ -239,13 +239,7 @@ pub fn reset(
             // PrimaryEguiContext,
         ))
         .insert((OrbitCameraBundle::new(
-            Controller {
-                mouse_rotate_sensitivity: Vec2::splat(0.2),
-                mouse_translate_sensitivity: Vec2::splat(2.),
-                mouse_wheel_zoom_sensitivity: 0.2,
-                smoothing_weight: 0.8,
-                ..Default::default()
-            },
+            Controller::default(),
             DEFAULT_CAMERA_EYE + Vec3::from(Objects::InputMesh),
             DEFAULT_CAMERA_TARGET + Vec3::from(Objects::InputMesh),
             Vec3::Y,
@@ -495,13 +489,14 @@ pub fn update(
     ui_resource: Res<UiResource>,
     mut custom_materials: ResMut<Assets<ToonsMaterial>>,
     window: Single<&Window>,
-    mut cameras: Query<(&mut Transform, &mut Projection, &mut Camera, &CameraFor)>,
+    mut main_camera: Query<(&LookTransform, &Transform, &mut Camera), With<Controller>>,
+    mut other_cameras: Query<
+        (&mut Transform, &mut Projection, &mut Camera, &CameraFor),
+        Without<Controller>,
+    >,
 ) {
-    let mut main_camera = cameras
-        .iter_mut()
-        .find(|(_, _, _, camera_for)| camera_for.0 == Objects::InputMesh)
-        .unwrap()
-        .2;
+    let (_, main_transform, mut main_camera) = main_camera.single_mut().unwrap();
+    // dbg!(main_transform);
 
     let (_, node_index, _) = ui_resource.tree.find_tab(&Objects::InputMesh).unwrap();
     let main_surface = ui_resource.tree.main_surface().clone();
@@ -513,45 +508,41 @@ pub fn update(
 
     let viewport_width = main_surface_viewport.max[0] - main_surface_viewport.min[0];
     let viewport_height = main_surface_viewport.max[1] - main_surface_viewport.min[1];
+    // dbg!(viewport_width, viewport_height);
 
-    if window.physical_size().x == 0
-        || window.physical_size().y == 0
-        || viewport_width == 0.
-        || viewport_height == 0.
-    {
-        main_camera.is_active = false;
-    } else {
-        main_camera.is_active = true;
-        main_camera.viewport = Some(Viewport {
-            physical_position: UVec2 {
-                x: main_surface_viewport.min[0] as u32,
-                y: main_surface_viewport.min[1] as u32,
-            },
-            physical_size: UVec2 {
-                x: viewport_width as u32,
-                y: viewport_height as u32,
-            },
-            ..Default::default()
-        });
-    }
+    // if window.physical_size().x == 0
+    //     || window.physical_size().y == 0
+    //     || viewport_width == 0.
+    //     || viewport_height == 0.
+    //     || viewport_width.is_infinite()
+    //     || viewport_height.is_infinite()
+    // {
+    //     main_camera.is_active = false;
+    // } else {
+    //     main_camera.is_active = true;
+    //     main_camera.viewport = Some(Viewport {
+    //         physical_position: UVec2 {
+    //             x: main_surface_viewport.min[0] as u32,
+    //             y: main_surface_viewport.min[1] as u32,
+    //         },
+    //         physical_size: UVec2 {
+    //             x: (viewport_width as u32).max(100u32),
+    //             y: (viewport_height as u32).max(100u32),
+    //         },
+    //         ..Default::default()
+    //     });
+    // }
 
-    let main_transform = cameras
-        .iter()
-        .find(|(_, _, _, camera_for)| camera_for.0 == Objects::InputMesh)
-        .unwrap()
-        .0;
     let normalized_translation = main_transform.translation - Vec3::from(Objects::InputMesh);
     let normalized_rotation = main_transform.rotation;
+    let distance = normalized_translation.length() / 1000.;
 
-    let distance = normalized_translation.length();
-
-    for (mut sub_transform, mut sub_projection, _sub_camera, sub_object) in &mut cameras {
+    for (mut sub_transform, mut sub_projection, _sub_camera, sub_object) in &mut other_cameras {
         sub_transform.translation = normalized_translation + Vec3::from(sub_object.0);
         // println!("translate: {:?}", sub_transform.translation);
         sub_transform.rotation = normalized_rotation;
         if let Projection::Orthographic(orthographic) = sub_projection.as_mut() {
-            dbg!(distance);
-            orthographic.scale = 1. / distance.max(0.1);
+            orthographic.scale = distance;
         }
     }
 

@@ -1,11 +1,12 @@
 pub struct OrbitCameraPlugin;
 use crate::control::*;
-use crate::look_transform::*;
+use crate::transform::*;
 use bevy::prelude::*;
 
 impl Plugin for OrbitCameraPlugin {
     fn build(&self, app: &mut App) {
-        app.add_systems(Update, control_system).add_systems(Update, look_transform_system);
+        app.add_systems(Update, control_system)
+            .add_systems(Update, transform_system);
     }
 }
 
@@ -14,7 +15,6 @@ pub struct OrbitCameraBundle {
     controller: Controller,
     look_transform: LookTransform,
     transform: Transform,
-    smoother: Smoother,
 }
 
 impl OrbitCameraBundle {
@@ -23,7 +23,6 @@ impl OrbitCameraBundle {
             controller,
             look_transform: LookTransform::new(eye, target, up),
             transform: Transform::from_translation(eye).looking_at(target, up),
-            smoother: Smoother::new(controller.smoothing_weight),
         }
     }
 }
