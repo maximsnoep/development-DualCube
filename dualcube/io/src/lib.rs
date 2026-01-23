@@ -9,14 +9,22 @@ pub mod formats {
 }
 
 pub trait Export {
-    fn export(solution: &dualcube::prelude::Solution, path: &std::path::Path) -> Result<(), Box<dyn std::error::Error>>;
+    fn export(
+        solution: &dualcube::prelude::Solution,
+        path: &std::path::Path,
+    ) -> Result<(), Box<dyn std::error::Error>>;
 }
 
 pub trait Import {
-    fn import(path: &std::path::Path) -> Result<dualcube::prelude::Solution, Box<dyn std::error::Error>>;
+    fn import(
+        path: &std::path::Path,
+    ) -> Result<dualcube::prelude::Solution, Box<dyn std::error::Error>>;
 }
 
-pub use crate::formats::{backwards_compatability::BackwardsCompatibility, dcube::Dcube, dotgraph::Dotgraph, dsol::Dsol, flag::Flag, nlr::Nlr, obj::Obj};
+pub use crate::formats::{
+    backwards_compatability::BackwardsCompatibility, dcube::Dcube, dotgraph::Dotgraph, dsol::Dsol,
+    flag::Flag, nlr::Nlr, obj::Obj,
+};
 use dualcube::prelude::Solution;
 use std::{path::PathBuf, sync::Arc};
 

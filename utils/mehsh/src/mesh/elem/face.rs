@@ -5,12 +5,18 @@ use std::collections::HashSet;
 impl<M: Tag> Mesh<M> {
     #[must_use]
     pub fn frep(&self, id: FaceKey<M>) -> EdgeKey<M> {
-        self.face_repr.get(id).unwrap_or_else(|| panic!("{id:?} has no frep"))
+        self.face_repr
+            .get(id)
+            .unwrap_or_else(|| panic!("{id:?} has no frep"))
     }
 
     // Returns the two edges of a given face that are connected to the given vertex.
     #[must_use]
-    pub fn edges_in_face_with_vert(&self, face_id: FaceKey<M>, vert_id: VertKey<M>) -> Option<[EdgeKey<M>; 2]> {
+    pub fn edges_in_face_with_vert(
+        &self,
+        face_id: FaceKey<M>,
+        vert_id: VertKey<M>,
+    ) -> Option<[EdgeKey<M>; 2]> {
         let edges = self.edges(face_id);
         edges
             .into_iter()
@@ -21,7 +27,11 @@ impl<M: Tag> Mesh<M> {
 
     // Returns the edge between the two faces. Returns None if the faces do not share an edge.
     #[must_use]
-    pub fn edge_between_faces(&self, id_a: FaceKey<M>, id_b: FaceKey<M>) -> Option<(EdgeKey<M>, EdgeKey<M>)> {
+    pub fn edge_between_faces(
+        &self,
+        id_a: FaceKey<M>,
+        id_b: FaceKey<M>,
+    ) -> Option<(EdgeKey<M>, EdgeKey<M>)> {
         for edge_a_id in self.edges(id_a) {
             for edge_b_id in self.edges(id_b) {
                 if self.twin(edge_a_id) == edge_b_id {
@@ -35,9 +45,11 @@ impl<M: Tag> Mesh<M> {
     // Returns the face with given vertices.
     #[must_use]
     pub fn face_with_verts(&self, verts: &[VertKey<M>]) -> Option<FaceKey<M>> {
-        self.faces(verts[0])
-            .into_iter()
-            .find(|&face_id| verts.iter().all(|&vert_id| self.faces(vert_id).contains(&face_id)))
+        self.faces(verts[0]).into_iter().find(|&face_id| {
+            verts
+                .iter()
+                .all(|&vert_id| self.faces(vert_id).contains(&face_id))
+        })
     }
 
     // Vector area of a given face.
@@ -49,6 +61,12 @@ impl<M: Tag> Mesh<M> {
             sum + u.cross(&v)
         })
     }
+
+    // Area of a given triangle.
+    #[must_use]
+    pub fn triangle_area(&self, id: FaceKey<M>) -> Float {
+        self.vector_area(id).magnitude() / 2.0
+    }
 }
 
 impl<M: Tag> HasPosition<FACE, M> for Mesh<M> {
@@ -56,7 +74,10 @@ impl<M: Tag> HasPosition<FACE, M> for Mesh<M> {
     // https://en.wikipedia.org/wiki/Centroid
     // Be careful with concave faces, the centroid might lay outside the face.
     fn position(&self, id: FaceKey<M>) -> Vector3D {
-        math::calculate_average_f64(self.edges(id).map(|edge_id| self.position(self.root(edge_id))))
+        math::calculate_average_f64(
+            self.edges(id)
+                .map(|edge_id| self.position(self.root(edge_id))),
+        )
     }
 }
 
@@ -98,7 +119,11 @@ impl<M: Tag> HasNeighbors<FACE, M> for Mesh<M> {
         self.edges(id).map(|edge_id| self.face(self.twin(edge_id)))
     }
 
-    fn neighbors_k(&self, id: ids::Key<FACE, M>, k: usize) -> impl Iterator<Item = ids::Key<FACE, M>> {
+    fn neighbors_k(
+        &self,
+        id: ids::Key<FACE, M>,
+        k: usize,
+    ) -> impl Iterator<Item = ids::Key<FACE, M>> {
         let mut neighbors = vec![id];
         for _ in 0..k {
             neighbors = neighbors
@@ -125,7 +150,10 @@ impl<M: Tag> HasRing<FACE, M> for Mesh<M> {
             let mut next_ring = vec![];
             for &face_id in last_ring {
                 for neighbor in self.neighbors(face_id) {
-                    if !next_ring.contains(&neighbor) && neighbor != id && !last_ring.contains(&neighbor) {
+                    if !next_ring.contains(&neighbor)
+                        && neighbor != id
+                        && !last_ring.contains(&neighbor)
+                    {
                         next_ring.push(neighbor);
                     }
                 }

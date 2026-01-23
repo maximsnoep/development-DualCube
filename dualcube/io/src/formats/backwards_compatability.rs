@@ -77,26 +77,37 @@ pub struct SaveStateObject {
     loops: Vec<Loop>,
 }
 
-impl<VertID: slotmap::Key, V: Default, EdgeID: Key, E: Default, FaceID: Key, F: Default> Douconel<VertID, V, EdgeID, E, FaceID, F> {
+impl<VertID: slotmap::Key, V: Default, EdgeID: Key, E: Default, FaceID: Key, F: Default>
+    Douconel<VertID, V, EdgeID, E, FaceID, F>
+{
     // Returns the "representative" edge of the given vertex.
     // Panics if the vertex has no representative edge defined.
     #[must_use]
     pub fn vrep(&self, id: VertID) -> EdgeID {
-        self.vert_rep.get(id).copied().unwrap_or_else(|| panic!("{id:?} has no vrep"))
+        self.vert_rep
+            .get(id)
+            .copied()
+            .unwrap_or_else(|| panic!("{id:?} has no vrep"))
     }
 
     // Returns the "representative" edge of the given face.
     // Panics if the face has no representative edge defined.
     #[must_use]
     pub fn frep(&self, id: FaceID) -> EdgeID {
-        self.face_rep.get(id).copied().unwrap_or_else(|| panic!("{id:?} has no frep"))
+        self.face_rep
+            .get(id)
+            .copied()
+            .unwrap_or_else(|| panic!("{id:?} has no frep"))
     }
 
     // Returns the root vertex of the given edge.
     // Panics if the edge has no root defined or if the root does not exist.
     #[must_use]
     pub fn root(&self, id: EdgeID) -> VertID {
-        self.edge_root.get(id).copied().unwrap_or_else(|| panic!("{id:?} has no root"))
+        self.edge_root
+            .get(id)
+            .copied()
+            .unwrap_or_else(|| panic!("{id:?} has no root"))
     }
 
     // Returns the root of the twin edge of the given edge. (also named toor, reverse of root)
@@ -110,7 +121,10 @@ impl<VertID: slotmap::Key, V: Default, EdgeID: Key, E: Default, FaceID: Key, F: 
     // Panics if the edge has no twin defined or if the twin does not exist.
     #[must_use]
     pub fn twin(&self, id: EdgeID) -> EdgeID {
-        self.edge_twin.get(id).copied().unwrap_or_else(|| panic!("{id:?} has no twin"))
+        self.edge_twin
+            .get(id)
+            .copied()
+            .unwrap_or_else(|| panic!("{id:?} has no twin"))
     }
 
     // Returns the next edge of the given edge.
@@ -118,7 +132,10 @@ impl<VertID: slotmap::Key, V: Default, EdgeID: Key, E: Default, FaceID: Key, F: 
     #[inline]
     #[must_use]
     pub fn next(&self, id: EdgeID) -> EdgeID {
-        self.edge_next.get(id).copied().unwrap_or_else(|| panic!("{id:?} has no next"))
+        self.edge_next
+            .get(id)
+            .copied()
+            .unwrap_or_else(|| panic!("{id:?} has no next"))
     }
 
     #[inline]
@@ -152,7 +169,10 @@ impl<VertID: slotmap::Key, V: Default, EdgeID: Key, E: Default, FaceID: Key, F: 
     #[inline]
     #[must_use]
     pub fn face(&self, id: EdgeID) -> FaceID {
-        self.edge_face.get(id).copied().unwrap_or_else(|| panic!("{id:?} has no face"))
+        self.edge_face
+            .get(id)
+            .copied()
+            .unwrap_or_else(|| panic!("{id:?} has no face"))
     }
 
     // Returns the start and end vertex IDs of the given edge.
@@ -167,7 +187,10 @@ impl<VertID: slotmap::Key, V: Default, EdgeID: Key, E: Default, FaceID: Key, F: 
     #[inline]
     #[must_use]
     pub fn corners(&self, id: FaceID) -> Vec<VertID> {
-        self.edges(id).into_iter().map(|edge_id| self.root(edge_id)).collect()
+        self.edges(id)
+            .into_iter()
+            .map(|edge_id| self.root(edge_id))
+            .collect()
     }
 
     // Returns the outgoing edges of a given vertex. (clockwise order)
@@ -195,7 +218,10 @@ impl<VertID: slotmap::Key, V: Default, EdgeID: Key, E: Default, FaceID: Key, F: 
     #[inline]
     #[must_use]
     pub fn star(&self, id: VertID) -> Vec<FaceID> {
-        self.outgoing(id).iter().map(|&edge_id| self.face(edge_id)).collect()
+        self.outgoing(id)
+            .iter()
+            .map(|&edge_id| self.face(edge_id))
+            .collect()
     }
 
     // Returns the faces around a given edge.
@@ -251,13 +277,19 @@ impl<VertID: slotmap::Key, V: Default, EdgeID: Key, E: Default, FaceID: Key, F: 
     // Returns the neighbors of a given vertex.
     #[must_use]
     pub fn vneighbors(&self, id: VertID) -> Vec<VertID> {
-        self.outgoing(id).iter().map(|&edge_id| self.root(self.twin(edge_id))).collect()
+        self.outgoing(id)
+            .iter()
+            .map(|&edge_id| self.root(self.twin(edge_id)))
+            .collect()
     }
 
     // Returns the (edge-wise) neighbors of a given face.
     #[must_use]
     pub fn fneighbors(&self, id: FaceID) -> Vec<FaceID> {
-        self.edges(id).into_iter().map(|edge_id| self.face(self.twin(edge_id))).collect()
+        self.edges(id)
+            .into_iter()
+            .map(|edge_id| self.face(self.twin(edge_id)))
+            .collect()
     }
 
     // Returns the number of vertices in the mesh.
@@ -297,11 +329,20 @@ impl<VertID: slotmap::Key, V: Default, EdgeID: Key, E: Default, FaceID: Key, F: 
 pub struct BackwardsCompatibility;
 
 impl Import for BackwardsCompatibility {
-    fn import(path: &std::path::Path) -> Result<dualcube::prelude::Solution, Box<dyn std::error::Error>> {
+    fn import(
+        path: &std::path::Path,
+    ) -> Result<dualcube::prelude::Solution, Box<dyn std::error::Error>> {
         let res = serde_json::from_reader::<_, SaveStateObject>(std::fs::File::open(path)?);
         if let Ok(loaded_state) = res {
             // Create the mesh
-            let original_vert_map = SecondaryMap::<VertID, usize>::from_iter(loaded_state.mesh.verts.keys().enumerate().map(|(i, vert_id)| (vert_id, i)));
+            let original_vert_map = SecondaryMap::<VertID, usize>::from_iter(
+                loaded_state
+                    .mesh
+                    .verts
+                    .keys()
+                    .enumerate()
+                    .map(|(i, vert_id)| (vert_id, i)),
+            );
 
             let fs = loaded_state
                 .mesh
@@ -316,7 +357,12 @@ impl Import for BackwardsCompatibility {
                         .collect::<Vec<_>>()
                 })
                 .collect::<Vec<_>>();
-            let vs = loaded_state.mesh.verts.values().map(|v| v.position()).collect::<Vec<_>>();
+            let vs = loaded_state
+                .mesh
+                .verts
+                .values()
+                .map(|v| v.position())
+                .collect::<Vec<_>>();
 
             let mesh_result = mehsh::prelude::Mesh::<dualcube::prelude::INPUT>::from(&fs, &vs);
             let Ok((mesh, vert_map, _)) = mesh_result else {
@@ -351,6 +397,9 @@ impl Import for BackwardsCompatibility {
 
             return Ok(solution);
         }
-        Err(Box::new(std::io::Error::new(std::io::ErrorKind::InvalidData, "Failed to load save state")))
+        Err(Box::new(std::io::Error::new(
+            std::io::ErrorKind::InvalidData,
+            "Failed to load save state",
+        )))
     }
 }

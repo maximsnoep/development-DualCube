@@ -6,7 +6,9 @@ use std::collections::HashSet;
 impl<M: Tag> Mesh<M> {
     #[must_use]
     pub fn vrep(&self, id: VertKey<M>) -> EdgeKey<M> {
-        self.vert_repr.get(id).unwrap_or_else(|| panic!("{id:?} has no vrep"))
+        self.vert_repr
+            .get(id)
+            .unwrap_or_else(|| panic!("{id:?} has no vrep"))
     }
 
     #[must_use]
@@ -34,8 +36,28 @@ impl<M: Tag> Mesh<M> {
         Float::from(2.0).mul_add(PI, -sum_of_angles)
     }
 
+    // Tangent frame at a vertex
+    pub fn tangent_frame(&self, v_id: VertKey<M>) -> (Vector3D, Vector3D, Vector3D) {
+        let n = self.normal(v_id);
+        let a = if n.x.abs() < 0.9 {
+            Vector3D::new(1.0, 0.0, 0.0)
+        } else {
+            Vector3D::new(0.0, 1.0, 0.0)
+        };
+
+        let t1 = (a - n * a.dot(&n)).normalize();
+        let t2 = n.cross(&t1); // already normalized
+
+        (t1, t2, n)
+    }
+
     #[must_use]
-    pub fn outer_arcs(&self, a: VertKey<M>, b: VertKey<M>, c: VertKey<M>) -> (Vec<VertKey<M>>, Vec<VertKey<M>>) {
+    pub fn outer_arcs(
+        &self,
+        a: VertKey<M>,
+        b: VertKey<M>,
+        c: VertKey<M>,
+    ) -> (Vec<VertKey<M>>, Vec<VertKey<M>>) {
         // First arc is a to c (around b)
         let arc1 = std::iter::once(a)
             .chain(
@@ -70,27 +92,46 @@ impl<M: Tag> Mesh<M> {
 
     #[must_use]
     pub fn arc_alpha(&self, (b, arc): (VertKey<M>, &[VertKey<M>])) -> f64 {
-        arc.windows(2).map(|vs| self.vertex_angle(vs[0], b, vs[1])).sum::<f64>()
+        arc.windows(2)
+            .map(|vs| self.vertex_angle(vs[0], b, vs[1]))
+            .sum::<f64>()
     }
 
     #[must_use]
-    pub fn arc_with_min_alpha(&self, a: VertKey<M>, b: VertKey<M>, c: VertKey<M>) -> (Vec<VertKey<M>>, f64) {
+    pub fn arc_with_min_alpha(
+        &self,
+        a: VertKey<M>,
+        b: VertKey<M>,
+        c: VertKey<M>,
+    ) -> (Vec<VertKey<M>>, f64) {
         let (w1, w2) = self.outer_arcs(a, b, c);
         let (a1, a2) = (self.arc_alpha((b, &w1)), self.arc_alpha((b, &w2)));
-        if a1 < a2 { (w1, a1) } else { (w2.into_iter().rev().collect_vec(), a2) }
+        if a1 < a2 {
+            (w1, a1)
+        } else {
+            (w2.into_iter().rev().collect_vec(), a2)
+        }
     }
 
     #[must_use]
     pub fn verts_to_edges(&self, verts: &[VertKey<M>]) -> Vec<EdgeKey<M>> {
         verts
             .iter()
-            .flat_map(|&vert_id| self.edges(vert_id).filter(|&edge_id| verts.contains(&self.toor(edge_id))).collect_vec())
+            .flat_map(|&vert_id| {
+                self.edges(vert_id)
+                    .filter(|&edge_id| verts.contains(&self.toor(edge_id)))
+                    .collect_vec()
+            })
             .collect_vec()
     }
 
     // Returns the edge between the two vertices. Returns None if the vertices are not connected.
     #[must_use]
-    pub fn edge_between_verts(&self, id_a: VertKey<M>, id_b: VertKey<M>) -> Option<(EdgeKey<M>, EdgeKey<M>)> {
+    pub fn edge_between_verts(
+        &self,
+        id_a: VertKey<M>,
+        id_b: VertKey<M>,
+    ) -> Option<(EdgeKey<M>, EdgeKey<M>)> {
         for edge_a_id in self.edges(id_a) {
             let id_a2 = self.toor(edge_a_id);
             for edge_b_id in self.edges(id_b) {
@@ -116,13 +157,19 @@ impl<M: Tag> SetPosition<VERT, M> for Mesh<M> {
 
 impl<M: Tag> HasPosition<VERT, M> for Mesh<M> {
     fn position(&self, id: VertKey<M>) -> Vector3D {
-        self.verts.get(id).copied().unwrap_or_else(|| panic!("V:{id:?} not initialized"))
+        self.verts
+            .get(id)
+            .copied()
+            .unwrap_or_else(|| panic!("V:{id:?} not initialized"))
     }
 }
 
 impl<M: Tag> HasNormal<VERT, M> for Mesh<M> {
     fn normal(&self, id: VertKey<M>) -> Vector3D {
-        self.faces(id).map(|face_id| self.normal(face_id)).sum::<Vector3D>().normalize()
+        self.faces(id)
+            .map(|face_id| self.normal(face_id))
+            .sum::<Vector3D>()
+            .normalize()
     }
 }
 
@@ -152,7 +199,11 @@ impl<M: Tag> HasNeighbors<VERT, M> for Mesh<M> {
         self.edges(id).map(|edge_id| self.root(self.twin(edge_id)))
     }
 
-    fn neighbors_k(&self, id: ids::Key<VERT, M>, k: usize) -> impl Iterator<Item = ids::Key<VERT, M>> {
+    fn neighbors_k(
+        &self,
+        id: ids::Key<VERT, M>,
+        k: usize,
+    ) -> impl Iterator<Item = ids::Key<VERT, M>> {
         let mut ring: HashSet<_> = std::iter::once(id).collect();
         for _ in 0..k {
             ring = ring

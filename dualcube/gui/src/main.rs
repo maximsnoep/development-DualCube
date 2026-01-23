@@ -1,3 +1,4 @@
+mod bloom;
 mod colors;
 mod controls;
 mod jobs;
@@ -174,7 +175,11 @@ impl InputResource {
 
         let nodes = mesh.edge_ids();
 
-        for axis in [PrincipalDirection::X, PrincipalDirection::Y, PrincipalDirection::Z] {
+        for axis in [
+            PrincipalDirection::X,
+            PrincipalDirection::Y,
+            PrincipalDirection::Z,
+        ] {
             let edges = nodes
                 .clone()
                 .into_par_iter()
@@ -263,11 +268,15 @@ fn main() {
             ..Default::default()
         }))
         // Plugin for diagnostics
-        .add_plugins((FrameTimeDiagnosticsPlugin::default(), SystemInformationDiagnosticsPlugin))
+        .add_plugins((
+            FrameTimeDiagnosticsPlugin::default(),
+            SystemInformationDiagnosticsPlugin,
+        ))
         // Plugin for GUI
         .add_plugins(EguiPlugin {
             enable_multipass_for_primary_context: false,
         })
+        .add_plugins((bloom::BloomPlugin))
         // Plugin for smooth camera
         .add_plugins((LookTransformPlugin, OrbitCameraPlugin::default()))
         // Material
@@ -277,9 +286,21 @@ fn main() {
         // Axes gizmo
         .add_plugins(bevy_axes_gizmo::AxesGizmoPlugin {
             colors: [
-                colors::to_bevy(colors::from_direction(PrincipalDirection::X, Some(Perspective::Primal), None)),
-                colors::to_bevy(colors::from_direction(PrincipalDirection::Y, Some(Perspective::Primal), None)),
-                colors::to_bevy(colors::from_direction(PrincipalDirection::Z, Some(Perspective::Primal), None)),
+                colors::to_bevy(colors::from_direction(
+                    PrincipalDirection::X,
+                    Some(Perspective::Primal),
+                    None,
+                )),
+                colors::to_bevy(colors::from_direction(
+                    PrincipalDirection::Y,
+                    Some(Perspective::Primal),
+                    None,
+                )),
+                colors::to_bevy(colors::from_direction(
+                    PrincipalDirection::Z,
+                    Some(Perspective::Primal),
+                    None,
+                )),
             ],
             width: 5.,
             ..default()
@@ -291,11 +312,18 @@ fn main() {
         // Updates
         .add_systems(Update, ui::update)
         .add_systems(Update, render::update)
-        .add_systems(FixedUpdate, render::respawn_renders.run_if(on_timer(Duration::from_millis(100))))
+        .add_systems(
+            FixedUpdate,
+            render::respawn_renders.run_if(on_timer(Duration::from_millis(100))),
+        )
         .add_systems(Update, render::update_camera_settings)
         .add_systems(Update, render::update_render_settings)
         .add_systems(Update, controls::system)
-        .add_systems(FixedUpdate, render::automatic_rotation_camera.run_if(on_timer(Duration::from_millis(10))))
+        .add_systems(Update, update_field)
+        .add_systems(
+            FixedUpdate,
+            render::automatic_rotation_camera.run_if(on_timer(Duration::from_millis(10))),
+        )
         // .add_systems(Update, handle_tasks)
         .add_event::<ActionEvent>()
         .run();
@@ -304,8 +332,13 @@ fn main() {
 fn set_window_icon(windows: NonSend<WinitWindows>) {
     let path = "dualcube/gui/assets/logo-32.png";
     let window = windows.windows.iter().next().unwrap().1;
-    let image = image::open(path).expect("Failed to open icon path").into_rgba8();
-    winit::window::Window::set_window_icon(window, Some(Icon::from_rgba(image.clone().into_raw(), image.width(), image.height()).unwrap()));
+    let image = image::open(path)
+        .expect("Failed to open icon path")
+        .into_rgba8();
+    winit::window::Window::set_window_icon(
+        window,
+        Some(Icon::from_rgba(image.clone().into_raw(), image.width(), image.height()).unwrap()),
+    );
 }
 
 #[inline]
@@ -316,4 +349,18 @@ fn vec3_to_vector3d(v: Vec3) -> Vector3D {
 #[inline]
 fn vector3d_to_vec3(v: Vector3D) -> Vec3 {
     Vec3::new(v.x as f32, v.y as f32, v.z as f32)
+}
+
+pub fn update_field(mut sol_res: ResMut<SolutionResource>) {
+    // If field_res is empty (None), then initialize it
+    if sol_res.current_solution.fields.is_none() {
+        let field_x = dualcube::field::Field::from_mesh(&sol_res.current_solution.mesh_ref);
+        let field_y = dualcube::field::Field::from_mesh(&sol_res.current_solution.mesh_ref);
+        let field_z = dualcube::field::Field::from_mesh(&sol_res.current_solution.mesh_ref);
+        sol_res.current_solution.fields = Some(dualcube::field::Fields {
+            field_x,
+            field_y,
+            field_z,
+        });
+    }
 }

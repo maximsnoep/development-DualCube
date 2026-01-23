@@ -18,7 +18,13 @@ use std::path::PathBuf;
 async fn run_job(job: Job) -> Option<JobResult> {
     match job {
         Job::Hex { .. } => None,
-        Job::Import { path, configuration } => Some(JobResult::Imported((io::import_solution(path), configuration))),
+        Job::Import {
+            path,
+            configuration,
+        } => Some(JobResult::Imported((
+            io::import_solution(path),
+            configuration,
+        ))),
 
         Job::InitializeLoops {
             solution,
@@ -36,7 +42,12 @@ async fn run_job(job: Job) -> Option<JobResult> {
             flowgraphs,
             configuration,
         } => {
-            if let Some(new_sol) = solution.evolve(configuration.iterations, configuration.pool1, configuration.pool2, &flowgraphs) {
+            if let Some(new_sol) = solution.evolve(
+                configuration.iterations,
+                configuration.pool1,
+                configuration.pool2,
+                &flowgraphs,
+            ) {
                 Some(JobResult::LoopsChanged((new_sol, configuration)))
             } else {
                 warn!("Failed to evolve solution.");
@@ -44,7 +55,10 @@ async fn run_job(job: Job) -> Option<JobResult> {
             }
         }
 
-        Job::ComputeDual { solution, configuration } => {
+        Job::ComputeDual {
+            solution,
+            configuration,
+        } => {
             let mut solution_clone = solution.clone();
             if let Err(err) = solution_clone.construct_dual_and_polycube() {
                 warn!("Failed to construct dual and polycube: {err:?}");
@@ -53,7 +67,10 @@ async fn run_job(job: Job) -> Option<JobResult> {
             Some(JobResult::DualChanged((solution_clone, configuration)))
         }
 
-        Job::PlaceCorners { solution, configuration } => {
+        Job::PlaceCorners {
+            solution,
+            configuration,
+        } => {
             let mut solution_clone = solution.clone();
             if let Err(err) = solution_clone.place_corners() {
                 warn!("Failed to place corners and paths: {err:?}");
@@ -76,7 +93,10 @@ async fn run_job(job: Job) -> Option<JobResult> {
             Some(JobResult::LayoutChanged((solution_clone, configuration)))
         }
 
-        Job::PlacePaths { solution, configuration } => {
+        Job::PlacePaths {
+            solution,
+            configuration,
+        } => {
             let mut solution_clone = solution.clone();
             if let Err(err) = solution_clone.place_paths() {
                 warn!("Failed to place paths: {err:?}");
@@ -85,7 +105,10 @@ async fn run_job(job: Job) -> Option<JobResult> {
             Some(JobResult::LayoutChanged((solution_clone, configuration)))
         }
 
-        Job::SmoothenLayout { solution, configuration } => {
+        Job::SmoothenLayout {
+            solution,
+            configuration,
+        } => {
             let mut solution_clone = solution.clone();
             if let Err(err) = solution_clone.optimize_corners() {
                 warn!("Failed to optimize corners: {err:?}");
@@ -94,7 +117,10 @@ async fn run_job(job: Job) -> Option<JobResult> {
             Some(JobResult::LayoutChanged((solution_clone, configuration)))
         }
 
-        Job::ComputePolycube { configuration, solution } => {
+        Job::ComputePolycube {
+            configuration,
+            solution,
+        } => {
             let mut solution_clone = solution.clone();
             if let Err(err) = solution_clone.resize_polycube(configuration.unit) {
                 warn!("Failed to resize polycube: {err:?}");
@@ -103,7 +129,10 @@ async fn run_job(job: Job) -> Option<JobResult> {
             Some(JobResult::PolycubeChanged((solution_clone, configuration)))
         }
 
-        Job::ComputeQuad { solution, configuration } => {
+        Job::ComputeQuad {
+            solution,
+            configuration,
+        } => {
             let mut solution_clone = solution.clone();
             if let Err(err) = solution_clone.construct_quad(configuration.omega) {
                 warn!("Failed to construct quad: {err:?}");
@@ -120,7 +149,11 @@ async fn run_job(job: Job) -> Option<JobResult> {
             direction,
             flowgraph,
         } => {
-            let Some((candidate_loop, _)) = solution.construct_loop_with_anchors(&anchors, direction, &flowgraph, |a: f64| OrderedFloat(a.powi(3))) else {
+            let Some((candidate_loop, _)) =
+                solution.construct_loop_with_anchors(&anchors, direction, &flowgraph, |a: f64| {
+                    OrderedFloat(a.powi(3))
+                })
+            else {
                 return Some(JobResult::AddedLoop((anchors, direction, None)));
             };
             let mut candidate_solution = solution.clone();
@@ -134,7 +167,11 @@ async fn run_job(job: Job) -> Option<JobResult> {
                     return Some(JobResult::AddedLoop((anchors, direction, None)));
                 }
             }
-            Some(JobResult::AddedLoop((anchors, direction, Some(candidate_solution))))
+            Some(JobResult::AddedLoop((
+                anchors,
+                direction,
+                Some(candidate_solution),
+            )))
         }
         Job::RemoveLoop {
             solution,
@@ -145,7 +182,10 @@ async fn run_job(job: Job) -> Option<JobResult> {
             let mut candidate_solution = solution.clone();
             candidate_solution.del_loop(loop_id);
             // if candidate_solution.reconstruct_solution(true, 8).is_ok() || force {
-            Some(JobResult::RemovedLoop(Some((candidate_solution, configuration))))
+            Some(JobResult::RemovedLoop(Some((
+                candidate_solution,
+                configuration,
+            ))))
             // } else {
             //     Some(JobResult::RemovedLoop(None))
             // }
@@ -184,7 +224,10 @@ async fn run_job(job: Job) -> Option<JobResult> {
             }
             None
         }
-        Job::PathStraightening { solution, configuration } => {
+        Job::PathStraightening {
+            solution,
+            configuration,
+        } => {
             if let Some(layout) = &solution.layout {
                 let mut solution_clone = solution.clone();
                 for _ in 0..3 {
@@ -194,9 +237,15 @@ async fn run_job(job: Job) -> Option<JobResult> {
                     info!("Writing OBJ+ file to {input_path:?}");
                     let vertex_map = layout.granulated_mesh.to_obj(&input_path).unwrap();
                     // open the file and write the lines to it
-                    let mut file = OpenOptions::new().append(true).open(input_path.clone()).unwrap();
+                    let mut file = OpenOptions::new()
+                        .append(true)
+                        .open(input_path.clone())
+                        .unwrap();
                     for path in layout.edge_to_path.values() {
-                        let line = path.iter().map(|vert_id| format!("{}", vertex_map.id(vert_id).unwrap())).join(" ");
+                        let line = path
+                            .iter()
+                            .map(|vert_id| format!("{}", vertex_map.id(vert_id).unwrap()))
+                            .join(" ");
                         writeln!(file, "l {}", line).unwrap();
                     }
 
@@ -218,7 +267,12 @@ async fn run_job(job: Job) -> Option<JobResult> {
                     // Split into lines
                     let mut lines = paths.lines();
 
-                    let mut mesh = solution_clone.layout.as_ref().unwrap().granulated_mesh.clone();
+                    let mut mesh = solution_clone
+                        .layout
+                        .as_ref()
+                        .unwrap()
+                        .granulated_mesh
+                        .clone();
 
                     // Go through lines
                     while let Some(line) = lines.next() {
@@ -227,7 +281,11 @@ async fn run_job(job: Job) -> Option<JobResult> {
                             continue;
                         }
                         // Next line should end with a integer
-                        let n: usize = line.split_whitespace().last().and_then(|s| s.parse().ok()).unwrap();
+                        let n: usize = line
+                            .split_whitespace()
+                            .last()
+                            .and_then(|s| s.parse().ok())
+                            .unwrap();
 
                         // let random = random_range(0. ..360.);
                         for i in 0..n {
@@ -249,14 +307,18 @@ async fn run_job(job: Job) -> Option<JobResult> {
                                         if t_value < 0.001 || t_value > 0.999 {
                                             continue;
                                         }
-                                        if let (Some(&start_vert), Some(&end_vert)) = (vertex_map.key(start), vertex_map.key(end)) {
+                                        if let (Some(&start_vert), Some(&end_vert)) =
+                                            (vertex_map.key(start), vertex_map.key(end))
+                                        {
                                             let start_pos = mesh.position(start_vert);
                                             let end_pos = mesh.position(end_vert);
                                             // get the position T_VALUE from start_pos towards end_pos
                                             let position = start_pos.lerp(&end_pos, t_value);
 
                                             // split edge at value t
-                                            if let Some((edge_id, _)) = mesh.edge_between_verts(start_vert, end_vert) {
+                                            if let Some((edge_id, _)) =
+                                                mesh.edge_between_verts(start_vert, end_vert)
+                                            {
                                                 let new_vert_id = mesh.split_edge(edge_id).0;
                                                 mesh.set_position(new_vert_id, position);
                                             }
@@ -269,18 +331,46 @@ async fn run_job(job: Job) -> Option<JobResult> {
                         // Find in the layout, the path that starts and ends with the selected vertices
                     }
 
-                    println!("nr of verts: {}", solution_clone.layout.as_mut().unwrap().granulated_mesh.nr_verts());
+                    println!(
+                        "nr of verts: {}",
+                        solution_clone
+                            .layout
+                            .as_mut()
+                            .unwrap()
+                            .granulated_mesh
+                            .nr_verts()
+                    );
 
                     solution_clone.layout.as_mut().unwrap().granulated_mesh = mesh;
 
-                    println!("nr of verts: {}", solution_clone.layout.as_mut().unwrap().granulated_mesh.nr_verts());
+                    println!(
+                        "nr of verts: {}",
+                        solution_clone
+                            .layout
+                            .as_mut()
+                            .unwrap()
+                            .granulated_mesh
+                            .nr_verts()
+                    );
 
                     loop {
-                        if solution_clone.layout.as_mut().unwrap().place_all_paths().is_err() {
+                        if solution_clone
+                            .layout
+                            .as_mut()
+                            .unwrap()
+                            .place_all_paths()
+                            .is_err()
+                        {
                             println!("Error placing paths");
                             continue;
                         };
-                        if solution_clone.layout.as_mut().unwrap().assign_all_patches().is_err() {
+                        if solution_clone
+                            .layout
+                            .as_mut()
+                            .unwrap()
+                            .assign_all_patches()
+                            .is_err()
+                        {
                             println!("Error assigning patches");
                             continue;
                         }
@@ -411,7 +501,9 @@ fn poll_jobs(
                     }
                 }
 
-                Some(JobResult::Refreshed(new_render_object_store)) => *render_object_store = new_render_object_store,
+                Some(JobResult::Refreshed(new_render_object_store)) => {
+                    *render_object_store = new_render_object_store
+                }
 
                 None => {
                     info!("Job ended with no result (silently, cancelled or failed)");
@@ -429,13 +521,17 @@ pub struct JobPlugin;
 
 impl Plugin for JobPlugin {
     fn build(&self, app: &mut App) {
-        app.init_resource::<JobState>().add_event::<JobRequest>().add_systems(
-            Update,
-            (
-                submit_jobs,
-                poll_jobs.run_if(bevy::time::common_conditions::on_timer(std::time::Duration::from_millis(1000))),
-            ),
-        );
+        app.init_resource::<JobState>()
+            .add_event::<JobRequest>()
+            .add_systems(
+                Update,
+                (
+                    submit_jobs,
+                    poll_jobs.run_if(bevy::time::common_conditions::on_timer(
+                        std::time::Duration::from_millis(1000),
+                    )),
+                ),
+            );
     }
 }
 
