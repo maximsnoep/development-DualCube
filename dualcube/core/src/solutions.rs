@@ -53,13 +53,21 @@ pub enum SolutionError {
 
 #[must_use]
 pub fn wrap_pairs<T: Copy>(sequence: &[T]) -> Vec<(T, T)> {
-    sequence.iter().cycle().copied().take(sequence.len() + 1).tuple_windows().collect()
+    sequence
+        .iter()
+        .cycle()
+        .copied()
+        .take(sequence.len() + 1)
+        .tuple_windows()
+        .collect()
 }
 
 impl Loop {
     #[must_use]
     pub fn contains_pair(&self, needle: (EdgeID, EdgeID)) -> bool {
-        wrap_pairs(&self.edges).into_iter().any(|(a, b)| a == needle.0 && b == needle.1)
+        wrap_pairs(&self.edges)
+            .into_iter()
+            .any(|(a, b)| a == needle.0 && b == needle.1)
     }
 
     #[must_use]
@@ -111,6 +119,8 @@ pub struct Solution {
     pub layout: Option<Layout>,
     pub quad: Option<Quad>,
 
+    pub fields: Option<crate::field::Fields<INPUT>>,
+
     pub external_flag: Option<ids::SecMap<FACE, INPUT, usize>>,
 }
 
@@ -137,6 +147,7 @@ impl Solution {
             quad: None,
             external_flag: None,
             last_loop: None,
+            fields: None,
         }
     }
 
@@ -192,7 +203,13 @@ impl Solution {
     }
 
     // Evolve loop structure
-    pub fn evolve(&self, iterations: usize, pool1_size: usize, pool2_size: usize, flowgraphs: &[grapff::fixed::FixedGraph<EdgeID, f64>; 3]) -> Option<Self> {
+    pub fn evolve(
+        &self,
+        iterations: usize,
+        pool1_size: usize,
+        pool2_size: usize,
+        flowgraphs: &[grapff::fixed::FixedGraph<EdgeID, f64>; 3],
+    ) -> Option<Self> {
         let flowgraphs_clone = flowgraphs.clone();
         let mut pool1 = vec![(self.clone(), self.get_quality().unwrap()); pool1_size];
         for _ in 0..iterations {
@@ -249,7 +266,10 @@ impl Solution {
         }
 
         // Grab the best solution
-        let (sol, quality) = pool1.into_iter().max_by(|(_, a), (_, b)| a.partial_cmp(b).unwrap()).unwrap();
+        let (sol, quality) = pool1
+            .into_iter()
+            .max_by(|(_, a), (_, b)| a.partial_cmp(b).unwrap())
+            .unwrap();
         println!("Picked solution with quality: {quality}");
         Some(sol)
     }
@@ -294,7 +314,11 @@ impl Solution {
     }
 
     // Move a corner
-    pub fn move_corner_to(&mut self, corner: VertKey<POLYCUBE>, new_vertex: VertID) -> Result<(), SolutionError> {
+    pub fn move_corner_to(
+        &mut self,
+        corner: VertKey<POLYCUBE>,
+        new_vertex: VertID,
+    ) -> Result<(), SolutionError> {
         if self.layout.is_none() {
             return Err(SolutionError::NoPrimal);
         }
@@ -420,7 +444,10 @@ impl Solution {
                 //     continue;
                 // }
 
-                if layout.laplacian_corner_shoot(polycube_vertex, &vert_lookup).is_err() {
+                if layout
+                    .laplacian_corner_shoot(polycube_vertex, &vert_lookup)
+                    .is_err()
+                {
                     solution_clone = solution_backup.clone();
                     continue;
                 }
@@ -564,7 +591,13 @@ impl Solution {
     pub fn get_loops_in_direction(&self, direction: PrincipalDirection) -> Vec<LoopID> {
         self.loops
             .iter()
-            .filter_map(|(id, l)| if l.direction == direction { Some(id) } else { None })
+            .filter_map(|(id, l)| {
+                if l.direction == direction {
+                    Some(id)
+                } else {
+                    None
+                }
+            })
             .collect()
     }
 
@@ -583,7 +616,13 @@ impl Solution {
     pub fn get_pairs_of_sequence(&self, sequence: &[EdgeID]) -> Vec<[EdgeID; 2]> {
         sequence
             .windows(2)
-            .filter_map(|w| if self.mesh_ref.twin(w[0]) == w[1] { None } else { Some([w[0], w[1]]) })
+            .filter_map(|w| {
+                if self.mesh_ref.twin(w[0]) == w[1] {
+                    None
+                } else {
+                    Some([w[0], w[1]])
+                }
+            })
             .collect()
     }
 
@@ -605,7 +644,10 @@ impl Solution {
             if let Some(loops_e2) = self.occupied.get(&e2) {
                 for &loop_e1 in loops_e1 {
                     for &loop_e2 in loops_e2 {
-                        if loop_e1 == loop_e2 && (self.loops[loop_e1].contains_pair((e1, e2)) || self.loops[loop_e1].contains_pair((e2, e1))) {
+                        if loop_e1 == loop_e2
+                            && (self.loops[loop_e1].contains_pair((e1, e2))
+                                || self.loops[loop_e1].contains_pair((e2, e1)))
+                        {
                             return Some(loop_e1);
                         }
                     }
@@ -626,7 +668,9 @@ impl Solution {
                 self.mesh_ref
                     .edges(self.mesh_ref.face(edge_id))
                     .flat_map(|neighbor_id| {
-                        if loops_on_edge.iter().any(|loop_on_edge| self.loops_on_edge(neighbor_id).contains(loop_on_edge)) {
+                        if loops_on_edge.iter().any(|loop_on_edge| {
+                            self.loops_on_edge(neighbor_id).contains(loop_on_edge)
+                        }) {
                             vec![(edge_id, neighbor_id), (neighbor_id, edge_id)]
                         } else {
                             vec![]
@@ -719,27 +763,39 @@ impl Solution {
         domain: &grapff::fixed::FixedGraph<EdgeID, f64>,
         measure: &impl Fn(f64) -> OrderedFloat<f64>,
     ) -> Option<(Vec<EdgeID>, f64)> {
-        if !domain.node_exists(e1) || !domain.node_exists(e2) || !domain.edge_exists(e1, e2) || !domain.edge_exists(e2, e1) {
+        if !domain.node_exists(e1)
+            || !domain.node_exists(e2)
+            || !domain.edge_exists(e1, e2)
+            || !domain.edge_exists(e2, e1)
+        {
             return None;
         }
 
         if let (Some(n1), Some(n2)) = (domain.node_to_index(&e1), domain.node_to_index(&e2)) {
             // Get the better direction
-            let (n1, n2) = if measure(domain.get_weight(n1, n2).to_owned()) < measure(domain.get_weight(n2, n1).to_owned()) {
+            let (n1, n2) = if measure(domain.get_weight(n1, n2).to_owned())
+                < measure(domain.get_weight(n2, n1).to_owned())
+            {
                 (e1, e2)
             } else {
                 (e2, e1)
             };
 
-            let (cost, solution) = domain.shortest_cycle_edge((n1, n2), measure).unwrap_or_default();
+            let (cost, solution) = domain
+                .shortest_cycle_edge((n1, n2), measure)
+                .unwrap_or_default();
 
             let flatten = solution;
 
             // If three edges share the same face, remove the middle edge
             let mut short = vec![];
             for i in 0..flatten.len() {
-                if self.mesh_ref.face(flatten[i]) == self.mesh_ref.face(flatten[(i + flatten.len() - 1) % flatten.len()])
-                    && self.mesh_ref.face(flatten[i]) == self.mesh_ref.face(flatten[(i + 1) % flatten.len()])
+                if self.mesh_ref.face(flatten[i])
+                    == self
+                        .mesh_ref
+                        .face(flatten[(i + flatten.len() - 1) % flatten.len()])
+                    && self.mesh_ref.face(flatten[i])
+                        == self.mesh_ref.face(flatten[(i + 1) % flatten.len()])
                 {
                     continue;
                 }
@@ -767,7 +823,12 @@ impl Solution {
         // Filter the original flow graph
         let occupied = self.occupied_edgepairs();
         let filter_edges = |edge: (&EdgeID, &EdgeID)| !occupied.contains(&(*edge.0, *edge.1));
-        let filter_nodes = |&node: &EdgeID| !self.loops_on_edge(node).iter().any(|&loop_id| self.loops[loop_id].direction == direction);
+        let filter_nodes = |&node: &EdgeID| {
+            !self
+                .loops_on_edge(node)
+                .iter()
+                .any(|&loop_id| self.loops[loop_id].direction == direction)
+        };
         let g = flow_graph.filter_edges(filter_edges);
         let g = g.filter_nodes(filter_nodes);
 
@@ -775,10 +836,14 @@ impl Solution {
         for reverse in [true, false] {
             let mut flipped_anchors = vec![];
             for &[e1, e2] in anchors {
-                if let (Some(n1), Some(n2)) = (flow_graph.node_to_index(&e1), flow_graph.node_to_index(&e2)) {
+                if let (Some(n1), Some(n2)) =
+                    (flow_graph.node_to_index(&e1), flow_graph.node_to_index(&e2))
+                {
                     // Get the better direction
                     println!("{:?} {:?}", e1, e2);
-                    let (new_e1, new_e2) = if measure(flow_graph.get_weight(n1, n2).to_owned()) < measure(flow_graph.get_weight(n2, n1).to_owned()) {
+                    let (new_e1, new_e2) = if measure(flow_graph.get_weight(n1, n2).to_owned())
+                        < measure(flow_graph.get_weight(n2, n1).to_owned())
+                    {
                         (e1, e2)
                     } else {
                         (e2, e1)
@@ -798,7 +863,8 @@ impl Solution {
 
             for (&start, &end) in anchors_flattened.iter().tuple_windows() {
                 println!("{:?} {:?}", start, end);
-                if let Some((mut part, _)) = self.construct_part_of_loop([start, end], &g, &measure) {
+                if let Some((mut part, _)) = self.construct_part_of_loop([start, end], &g, &measure)
+                {
                     if part.is_empty() {
                         return None;
                     }
@@ -812,8 +878,12 @@ impl Solution {
             // If three edges share the same face, remove the middle edge
             let mut short = vec![];
             for i in 0..new_loop.len() {
-                if self.mesh_ref.face(new_loop[i]) == self.mesh_ref.face(new_loop[(i + new_loop.len() - 1) % new_loop.len()])
-                    && self.mesh_ref.face(new_loop[i]) == self.mesh_ref.face(new_loop[(i + 1) % new_loop.len()])
+                if self.mesh_ref.face(new_loop[i])
+                    == self
+                        .mesh_ref
+                        .face(new_loop[(i + new_loop.len() - 1) % new_loop.len()])
+                    && self.mesh_ref.face(new_loop[i])
+                        == self.mesh_ref.face(new_loop[(i + 1) % new_loop.len()])
                 {
                     continue;
                 }
@@ -847,7 +917,12 @@ impl Solution {
         // Filter the original flow graph
         let occupied = self.occupied_edgepairs();
         let filter_edges = |edge: (&EdgeID, &EdgeID)| !occupied.contains(&(*edge.0, *edge.1));
-        let filter_nodes = |&node: &EdgeID| !self.loops_on_edge(node).iter().any(|&loop_id| self.loops[loop_id].direction == direction);
+        let filter_nodes = |&node: &EdgeID| {
+            !self
+                .loops_on_edge(node)
+                .iter()
+                .any(|&loop_id| self.loops[loop_id].direction == direction)
+        };
         let g = flow_graph.filter_edges(filter_edges);
         let g = g.filter_nodes(filter_nodes);
 
@@ -855,7 +930,10 @@ impl Solution {
             let mut cleaned_option = vec![];
             for edge_id in &option {
                 if cleaned_option.contains(&edge_id) {
-                    cleaned_option = cleaned_option.into_iter().take_while(|&x| x != edge_id).collect_vec();
+                    cleaned_option = cleaned_option
+                        .into_iter()
+                        .take_while(|&x| x != edge_id)
+                        .collect_vec();
                 }
                 cleaned_option.push(edge_id);
             }
@@ -875,18 +953,27 @@ impl Solution {
     ) -> Vec<Vec<EdgeID>> {
         (0..n.pow(4))
             .map(|_| {
-                let e1 = self.mesh_ref.edge_ids().into_iter().choose(&mut rng()).unwrap();
+                let e1 = self
+                    .mesh_ref
+                    .edge_ids()
+                    .into_iter()
+                    .choose(&mut rng())
+                    .unwrap();
                 let e2 = self.mesh_ref.next(e1);
                 [e1, e2]
             })
             .sorted_by_key(|&[e1, e2]| {
                 let n1 = flow_graphs[axis as usize].node_to_index(&e1).unwrap();
                 let n2 = flow_graphs[axis as usize].node_to_index(&e2).unwrap();
-                OrderedFloat(measure(flow_graphs[axis as usize].get_weight(n1, n2).to_owned()))
+                OrderedFloat(measure(
+                    flow_graphs[axis as usize].get_weight(n1, n2).to_owned(),
+                ))
             })
             .take(n.pow(2))
             .iter_into_par()
-            .filter_map(|es| self.construct_unbounded_loop(es, axis, &flow_graphs[axis as usize], &measure))
+            .filter_map(|es| {
+                self.construct_unbounded_loop(es, axis, &flow_graphs[axis as usize], &measure)
+            })
             .collect::<Vec<_>>()
             .into_iter()
             .sorted_by_key(|(path, s)| OrderedFloat(score((path, *s))))
@@ -906,7 +993,12 @@ impl Solution {
             return Ok(());
         }
 
-        log::info!("Reconstructing solution ({} loops) with unit: {}, omega: {}.", self.loops.len(), unit, omega);
+        log::info!(
+            "Reconstructing solution ({} loops) with unit: {}, omega: {}.",
+            self.loops.len(),
+            unit,
+            omega
+        );
 
         let dual = Dual::from(self.mesh_ref.clone(), &self.loops)?;
         let polycube = Polycube::from_dual(&dual);
@@ -935,7 +1027,10 @@ impl Solution {
 
         self.resize_polycube(unit);
 
-        log::info!("The constructed solution has quality: {:?}", self.get_quality());
+        log::info!(
+            "The constructed solution has quality: {:?}",
+            self.get_quality()
+        );
 
         self.quad = Quad::from_layout(self.layout.as_ref().unwrap(), omega);
 
@@ -978,7 +1073,10 @@ impl Solution {
         }
     }
 
-    pub fn mutation(&self, flow_graphs: &[grapff::fixed::FixedGraph<EdgeID, f64>; 3]) -> Option<Self> {
+    pub fn mutation(
+        &self,
+        flow_graphs: &[grapff::fixed::FixedGraph<EdgeID, f64>; 3],
+    ) -> Option<Self> {
         // Three types of mutation:
         // 1. Add loop(s)
         // 2. Remove loop(s)
@@ -1028,7 +1126,10 @@ impl Solution {
                 // Iteratively add the loops, save result if result if valid.
                 for (lewp, axis) in x_loops.into_iter().chain(y_loops).chain(z_loops) {
                     let mut candidate_solution = mutated_solution.clone();
-                    candidate_solution.add_loop(Loop { edges: lewp, direction: axis });
+                    candidate_solution.add_loop(Loop {
+                        edges: lewp,
+                        direction: axis,
+                    });
                     // Check solution
                     if candidate_solution.dual_is_ok() {
                         mutated_solution = candidate_solution;

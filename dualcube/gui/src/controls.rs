@@ -1,6 +1,9 @@
 use crate::jobs::{Job, JobRequest};
 use crate::render::{view_to_world, world_to_view};
-use crate::{colors, vec3_to_vector3d, vector3d_to_vec3, CacheResource, Configuration, InputResource, MainMesh, PerpetualGizmos, SolutionResource};
+use crate::{
+    colors, vec3_to_vector3d, vector3d_to_vec3, CacheResource, Configuration, InputResource,
+    MainMesh, PerpetualGizmos, SolutionResource,
+};
 use bevy::picking::backend::ray::RayMap;
 use bevy::prelude::*;
 use dualcube::prelude::*;
@@ -37,27 +40,36 @@ pub fn segmentation_modification_system(
 
         // Look for nearest segmentation corner
         let modification = if (solution.selected_corner).is_none() {
-            let (current_polycube_corner, current_segmentation_corner) = layout
-                .vert_to_corner
-                .iter()
-                .min_by_key(|(_, &corner)| {
-                    OrderedFloat(
-                        layout
-                            .granulated_mesh
-                            .position(corner)
-                            .metric_distance(&layout.granulated_mesh.position(nearest_granulated_vert)),
-                    )
-                })
-                .map(|(&poly_vert, &seg_vert)| (poly_vert, seg_vert))
-                .unwrap();
+            let (current_polycube_corner, current_segmentation_corner) =
+                layout
+                    .vert_to_corner
+                    .iter()
+                    .min_by_key(|(_, &corner)| {
+                        OrderedFloat(layout.granulated_mesh.position(corner).metric_distance(
+                            &layout.granulated_mesh.position(nearest_granulated_vert),
+                        ))
+                    })
+                    .map(|(&poly_vert, &seg_vert)| (poly_vert, seg_vert))
+                    .unwrap();
 
             // Highlight this vertex
             let v = layout.granulated_mesh.position(current_segmentation_corner);
-            let v_transformed = world_to_view(v, mesh_resmut.properties.translation, mesh_resmut.properties.scale);
+            let v_transformed = world_to_view(
+                v,
+                mesh_resmut.properties.translation,
+                mesh_resmut.properties.scale,
+            );
             let n = vector3d_to_vec3(layout.granulated_mesh.normal(current_segmentation_corner));
 
-            let isometry = Isometry3d::new(v_transformed, Quat::from_rotation_arc(Vec3::Z, n.normalize()));
-            gizmos.line(v_transformed, v_transformed + n, colors::to_bevy(colors::DARK_GRAY));
+            let isometry = Isometry3d::new(
+                v_transformed,
+                Quat::from_rotation_arc(Vec3::Z, n.normalize()),
+            );
+            gizmos.line(
+                v_transformed,
+                v_transformed + n,
+                colors::to_bevy(colors::DARK_GRAY),
+            );
             gizmos.circle(isometry, 0.2, colors::to_bevy(colors::DARK_GRAY));
 
             Some(current_polycube_corner)
@@ -67,25 +79,55 @@ pub fn segmentation_modification_system(
 
         if let Some(corner_poly) = solution.selected_corner {
             // Highlight selected corner
-            let corner_poly_vert = layout.vert_to_corner.get_by_left(&corner_poly).unwrap().to_owned();
+            let corner_poly_vert = layout
+                .vert_to_corner
+                .get_by_left(&corner_poly)
+                .unwrap()
+                .to_owned();
             let v = layout.granulated_mesh.position(corner_poly_vert);
-            let v_transformed = world_to_view(v, mesh_resmut.properties.translation, mesh_resmut.properties.scale);
+            let v_transformed = world_to_view(
+                v,
+                mesh_resmut.properties.translation,
+                mesh_resmut.properties.scale,
+            );
             let n = vector3d_to_vec3(layout.granulated_mesh.normal(corner_poly_vert));
 
-            let isometry = Isometry3d::new(v_transformed, Quat::from_rotation_arc(Vec3::Z, n.normalize()));
-            gizmos.line(v_transformed, v_transformed + n, colors::to_bevy(colors::BLACK));
+            let isometry = Isometry3d::new(
+                v_transformed,
+                Quat::from_rotation_arc(Vec3::Z, n.normalize()),
+            );
+            gizmos.line(
+                v_transformed,
+                v_transformed + n,
+                colors::to_bevy(colors::BLACK),
+            );
             gizmos.circle(isometry, 0.1, colors::to_bevy(colors::BLACK));
 
             // Highlight the current position (where the vertex would be moved)
             let v1 = layout.granulated_mesh.position(nearest_granulated_vert);
-            let v1_transformed = world_to_view(v1, mesh_resmut.properties.translation, mesh_resmut.properties.scale);
+            let v1_transformed = world_to_view(
+                v1,
+                mesh_resmut.properties.translation,
+                mesh_resmut.properties.scale,
+            );
             let n1 = vector3d_to_vec3(layout.granulated_mesh.normal(nearest_granulated_vert));
 
-            let isometry1 = Isometry3d::new(v1_transformed, Quat::from_rotation_arc(Vec3::Z, n1.normalize()));
-            gizmos.line(v1_transformed, v1_transformed + n1, colors::to_bevy(colors::BLACK));
+            let isometry1 = Isometry3d::new(
+                v1_transformed,
+                Quat::from_rotation_arc(Vec3::Z, n1.normalize()),
+            );
+            gizmos.line(
+                v1_transformed,
+                v1_transformed + n1,
+                colors::to_bevy(colors::BLACK),
+            );
             gizmos.circle(isometry1, 0.1, colors::to_bevy(colors::BLACK));
 
-            gizmos.arrow(v_transformed + 0.2 * n, v1_transformed + 0.1 * n1, colors::to_bevy(colors::BLACK));
+            gizmos.arrow(
+                v_transformed + 0.2 * n,
+                v1_transformed + 0.1 * n1,
+                colors::to_bevy(colors::BLACK),
+            );
         }
 
         // CONTROLS
@@ -154,7 +196,10 @@ pub fn loop_modification_system(
         .unwrap()
         .to_owned();
 
-    let edgepair = mesh_resmut.mesh.edges_in_face_with_vert(nearest_face, nearest_vert).unwrap();
+    let edgepair = mesh_resmut
+        .mesh
+        .edges_in_face_with_vert(nearest_face, nearest_vert)
+        .unwrap();
 
     // Render all current solutions  (for currently selected direction)
     for (&edgepair, sol) in &solution.next[configuration.direction as usize] {
@@ -162,12 +207,24 @@ pub fn loop_modification_system(
         let v = mesh_resmut.mesh.position(edgepair[1]);
 
         let color = match sol {
-            Some(_) => colors::from_direction(configuration.direction, Some(Perspective::Dual), Some(Orientation::Backwards)),
+            Some(_) => colors::from_direction(
+                configuration.direction,
+                Some(Perspective::Dual),
+                Some(Orientation::Backwards),
+            ),
             None => colors::BLACK,
         };
 
-        let u_transformed = world_to_view(u, mesh_resmut.properties.translation, mesh_resmut.properties.scale);
-        let v_transformed = world_to_view(v, mesh_resmut.properties.translation, mesh_resmut.properties.scale);
+        let u_transformed = world_to_view(
+            u,
+            mesh_resmut.properties.translation,
+            mesh_resmut.properties.scale,
+        );
+        let v_transformed = world_to_view(
+            v,
+            mesh_resmut.properties.translation,
+            mesh_resmut.properties.scale,
+        );
         gizmos.line(u_transformed, v_transformed, colors::to_bevy(color));
     }
 
@@ -176,8 +233,16 @@ pub fn loop_modification_system(
         let u = mesh_resmut.mesh.position(anchor[0]);
         let v = mesh_resmut.mesh.position(anchor[1]);
         let color = colors::from_direction(configuration.direction, Some(Perspective::Dual), None);
-        let u_transformed = world_to_view(u, mesh_resmut.properties.translation, mesh_resmut.properties.scale);
-        let v_transformed = world_to_view(v, mesh_resmut.properties.translation, mesh_resmut.properties.scale);
+        let u_transformed = world_to_view(
+            u,
+            mesh_resmut.properties.translation,
+            mesh_resmut.properties.scale,
+        );
+        let v_transformed = world_to_view(
+            v,
+            mesh_resmut.properties.translation,
+            mesh_resmut.properties.scale,
+        );
         gizmos.line(u_transformed, v_transformed, colors::to_bevy(color));
     }
 
@@ -185,8 +250,16 @@ pub fn loop_modification_system(
     let v = mesh_resmut.mesh.position(edgepair[1]);
     let color = colors::from_direction(configuration.direction, Some(Perspective::Dual), None);
 
-    let u_transformed = world_to_view(u, mesh_resmut.properties.translation, mesh_resmut.properties.scale);
-    let v_transformed = world_to_view(v, mesh_resmut.properties.translation, mesh_resmut.properties.scale);
+    let u_transformed = world_to_view(
+        u,
+        mesh_resmut.properties.translation,
+        mesh_resmut.properties.scale,
+    );
+    let v_transformed = world_to_view(
+        v,
+        mesh_resmut.properties.translation,
+        mesh_resmut.properties.scale,
+    );
 
     gizmos.line(u_transformed, v_transformed, colors::to_bevy(color));
 
@@ -214,7 +287,9 @@ pub fn loop_modification_system(
         .iter()
         .map(|(&edgepair, sol)| {
             (
-                ((mesh_resmut.mesh.position(edgepair[0]) + mesh_resmut.mesh.position(edgepair[1])) / 2.).metric_distance(&position),
+                ((mesh_resmut.mesh.position(edgepair[0]) + mesh_resmut.mesh.position(edgepair[1]))
+                    / 2.)
+                    .metric_distance(&position),
                 sol,
                 edgepair,
             )
@@ -224,7 +299,10 @@ pub fn loop_modification_system(
     match (shift, lmb, delete, alt) {
         // Action1
         (false, true, false, false) => {
-            let selected_edges = mesh_resmut.mesh.edges_in_face_with_vert(nearest_face, nearest_vert).unwrap();
+            let selected_edges = mesh_resmut
+                .mesh
+                .edges_in_face_with_vert(nearest_face, nearest_vert)
+                .unwrap();
             let mut anchors = configuration.loop_anchors.clone();
             configuration.loop_anchors.clear();
             anchors.push(selected_edges);
@@ -241,12 +319,24 @@ pub fn loop_modification_system(
                 configuration.selected = Some(signature);
                 let loop_id = some_solution.last_loop.unwrap();
                 let direction = some_solution.loop_to_direction(loop_id);
-                let color = colors::from_direction(direction, Some(Perspective::Dual), Some(Orientation::Backwards));
+                let color = colors::from_direction(
+                    direction,
+                    Some(Perspective::Dual),
+                    Some(Orientation::Backwards),
+                );
                 for &edgepair in &some_solution.get_pairs_of_loop(loop_id) {
                     let u = mesh_resmut.mesh.position(edgepair[0]);
                     let v = mesh_resmut.mesh.position(edgepair[1]);
-                    let u_transformed = world_to_view(u, mesh_resmut.properties.translation, mesh_resmut.properties.scale);
-                    let v_transformed = world_to_view(v, mesh_resmut.properties.translation, mesh_resmut.properties.scale);
+                    let u_transformed = world_to_view(
+                        u,
+                        mesh_resmut.properties.translation,
+                        mesh_resmut.properties.scale,
+                    );
+                    let v_transformed = world_to_view(
+                        v,
+                        mesh_resmut.properties.translation,
+                        mesh_resmut.properties.scale,
+                    );
                     gizmos.line(u_transformed, v_transformed, colors::to_bevy(color));
                 }
             }
@@ -336,13 +426,20 @@ pub fn system(
         return Ok(());
     };
 
-    let position = view_to_world(intersection, mesh_resmut.properties.translation, mesh_resmut.properties.scale);
+    let position = view_to_world(
+        intersection,
+        mesh_resmut.properties.translation,
+        mesh_resmut.properties.scale,
+    );
     let nearest_face = mesh_resmut.triangle_lookup.nearest(&position.into());
 
     // Draw the ray !
     let isometry1 = Isometry3d::new(
         intersection,
-        Quat::from_rotation_arc(Vec3::Z, vector3d_to_vec3(mesh_resmut.mesh.normal(nearest_face)).normalize()),
+        Quat::from_rotation_arc(
+            Vec3::Z,
+            vector3d_to_vec3(mesh_resmut.mesh.normal(nearest_face)).normalize(),
+        ),
     );
     gizmos.circle(isometry1, 0.1, colors::to_bevy(colors::BLACK));
 

@@ -1,7 +1,9 @@
 use bevy::asset::{load_internal_asset, weak_handle};
 use bevy::prelude::*;
 
-#[derive(Asset, bevy::reflect::TypePath, bevy::render::render_resource::AsBindGroup, Debug, Clone)]
+#[derive(
+    Asset, bevy::reflect::TypePath, bevy::render::render_resource::AsBindGroup, Debug, Clone,
+)]
 pub struct ToonsMaterial {
     #[uniform(0)]
     pub view_dir: Vec3,
@@ -23,7 +25,12 @@ pub struct ToonsMaterialPlugin;
 
 impl Plugin for ToonsMaterialPlugin {
     fn build(&self, app: &mut App) {
-        load_internal_asset!(app, SHADER_HANDLE, "../assets/toons.wgsl", Shader::from_wgsl);
+        load_internal_asset!(
+            app,
+            SHADER_HANDLE,
+            "../assets/toons.wgsl",
+            Shader::from_wgsl
+        );
         app.add_plugins(MaterialPlugin::<ToonsMaterial>::default());
     }
 }

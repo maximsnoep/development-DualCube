@@ -373,14 +373,21 @@ pub fn map(value: f32, colors: &[Color]) -> Color {
     colors.get(index).unwrap().to_owned()
 }
 
-pub const fn from_direction(direction: PrincipalDirection, perspective: Option<Perspective>, orientation: Option<Orientation>) -> Color {
+pub const fn from_direction(
+    direction: PrincipalDirection,
+    perspective: Option<Perspective>,
+    orientation: Option<Orientation>,
+) -> Color {
     #[cfg(feature = "snoep6")]
     {
         return match (direction, perspective, orientation) {
             // Primal
-            (PrincipalDirection::X, Some(Perspective::Primal), _) | (PrincipalDirection::X, None, _) => SNOEP_RED,
-            (PrincipalDirection::Y, Some(Perspective::Primal), _) | (PrincipalDirection::Y, None, _) => SNOEP_YELLOW,
-            (PrincipalDirection::Z, Some(Perspective::Primal), _) | (PrincipalDirection::Z, None, _) => SNOEP_BLUE,
+            (PrincipalDirection::X, Some(Perspective::Primal), _)
+            | (PrincipalDirection::X, None, _) => SNOEP_RED,
+            (PrincipalDirection::Y, Some(Perspective::Primal), _)
+            | (PrincipalDirection::Y, None, _) => SNOEP_YELLOW,
+            (PrincipalDirection::Z, Some(Perspective::Primal), _)
+            | (PrincipalDirection::Z, None, _) => SNOEP_BLUE,
 
             // Dual
             (PrincipalDirection::X, Some(Perspective::Dual), _) => SNOEP_GREEN,

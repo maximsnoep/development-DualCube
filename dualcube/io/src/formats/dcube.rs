@@ -16,7 +16,10 @@ pub struct DcubeSerialization {
 }
 
 impl Export for Dcube {
-    fn export(solution: &dualcube::prelude::Solution, path: &std::path::Path) -> Result<(), Box<dyn std::error::Error>> {
+    fn export(
+        solution: &dualcube::prelude::Solution,
+        path: &std::path::Path,
+    ) -> Result<(), Box<dyn std::error::Error>> {
         // Mesh to a list of faces and vertices (positions)
         let mut positions = vec![];
         let mut vert_ids = ids::IdMap::<VERT, INPUT>::new();
@@ -32,7 +35,9 @@ impl Export for Dcube {
         let mut faces = vec![];
         for face_id in solution.mesh_ref.face_ids() {
             let vertices = solution.mesh_ref.vertices(face_id);
-            let face_verts = vertices.map(|vert_id| vert_ids.id(&vert_id).unwrap().to_owned()).collect::<Vec<_>>();
+            let face_verts = vertices
+                .map(|vert_id| vert_ids.id(&vert_id).unwrap().to_owned())
+                .collect::<Vec<_>>();
             faces.push(face_verts);
         }
 
@@ -49,12 +54,18 @@ impl Export for Dcube {
                 .clone()
                 .into_iter()
                 .map(|edge_id| {
-                    let Some([v0, v1]) = solution.mesh_ref.vertices(edge_id).collect_array::<2>() else {
+                    let Some([v0, v1]) = solution.mesh_ref.vertices(edge_id).collect_array::<2>()
+                    else {
                         panic!("Expecting edge {edge_id:?} to have exactly two vertices");
                     };
                     (v0, v1)
                 })
-                .map(|(start, end)| (vert_ids.id(&start).unwrap().to_owned(), vert_ids.id(&end).unwrap().to_owned()))
+                .map(|(start, end)| {
+                    (
+                        vert_ids.id(&start).unwrap().to_owned(),
+                        vert_ids.id(&end).unwrap().to_owned(),
+                    )
+                })
                 .collect::<Vec<_>>();
             loops.push((d, loop_edges));
         }
@@ -81,13 +92,19 @@ impl Export for Dcube {
 }
 
 impl Import for Dcube {
-    fn import(path: &std::path::Path) -> Result<dualcube::prelude::Solution, Box<dyn std::error::Error>> {
+    fn import(
+        path: &std::path::Path,
+    ) -> Result<dualcube::prelude::Solution, Box<dyn std::error::Error>> {
         let file = std::fs::File::open(path)?;
         let reader = std::io::BufReader::new(file);
         let decompressed = zstd::decode_all(reader)?;
         let serialized: DcubeSerialization = bitcode::decode(&decompressed)?;
 
-        let positions = serialized.verts.into_iter().map(|(x, y, z)| Vector3D::new(x, y, z)).collect::<Vec<_>>();
+        let positions = serialized
+            .verts
+            .into_iter()
+            .map(|(x, y, z)| Vector3D::new(x, y, z))
+            .collect::<Vec<_>>();
 
         // Create the mesh
         let mesh_result = mehsh::prelude::Mesh::<INPUT>::from(&serialized.faces, &positions);

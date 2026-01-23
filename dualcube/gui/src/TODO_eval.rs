@@ -73,7 +73,13 @@ fn run(script: &str, args: &[&str]) -> Result<std::process::Output, BevyError> {
 }
 
 pub fn seg_eval(obj_path_in: &PathBuf, flag_path_in: &PathBuf) {
-    let Ok(out) = run(SEGMENTATION_EVALUATOR, &[obj_path_in.to_str().unwrap(), flag_path_in.to_str().unwrap()]) else {
+    let Ok(out) = run(
+        SEGMENTATION_EVALUATOR,
+        &[
+            obj_path_in.to_str().unwrap(),
+            flag_path_in.to_str().unwrap(),
+        ],
+    ) else {
         eprintln!("Failed to run segmentation evaluation script.");
         return;
     };
@@ -81,7 +87,11 @@ pub fn seg_eval(obj_path_in: &PathBuf, flag_path_in: &PathBuf) {
     println!("Seg output: {:?}", out);
 }
 
-pub fn hexer(obj_path_in: &PathBuf, flag_path_in: &PathBuf, hex_path_out: &PathBuf) -> Option<HexData> {
+pub fn hexer(
+    obj_path_in: &PathBuf,
+    flag_path_in: &PathBuf,
+    hex_path_out: &PathBuf,
+) -> Option<HexData> {
     let Ok(out) = run(
         HEXMESH_PIPELINE,
         &[
@@ -106,7 +116,10 @@ pub fn hexer(obj_path_in: &PathBuf, flag_path_in: &PathBuf, hex_path_out: &PathB
 }
 
 pub fn evaluator(hex_path_in: &PathBuf, obj_path_in: &PathBuf) -> Option<HexEval> {
-    let Ok(out) = run(HEXMESH_EVALUATOR, &[hex_path_in.to_str().unwrap(), obj_path_in.to_str().unwrap()]) else {
+    let Ok(out) = run(
+        HEXMESH_EVALUATOR,
+        &[hex_path_in.to_str().unwrap(), obj_path_in.to_str().unwrap()],
+    ) else {
         eprintln!("Failed to run hexmesh evaluation script.");
         return None;
     };

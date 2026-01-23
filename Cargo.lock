@@ -1792,7 +1792,7 @@ checksum = "e4fd03539bf70239ca2190a58d28255ff4e8df537530d6a11828d953878e86c5"
 dependencies = [
  "approx",
  "log",
- "nalgebra",
+ "nalgebra 0.33.2",
  "num",
  "rand 0.9.1",
  "rayon",
@@ -3360,10 +3360,12 @@ dependencies = [
  "itertools 0.14.0",
  "log",
  "mehsh",
+ "nalgebra 0.32.6",
  "ordered-float 5.0.0",
  "rand 0.9.1",
  "rayon",
  "rfd",
+ "slotmap",
  "smooth-bevy-cameras",
  "winit",
 ]
@@ -3698,7 +3700,7 @@ dependencies = [
  "itertools 0.14.0",
  "log",
  "mehsh",
- "nalgebra",
+ "nalgebra 0.33.2",
  "ordered-float 5.0.0",
  "rmp-serde",
  "ryu",
@@ -4033,7 +4035,7 @@ dependencies = [
  "itertools 0.14.0",
  "kdtree",
  "log",
- "nalgebra",
+ "nalgebra 0.33.2",
  "obj",
  "orx-parallel",
  "petgraph 0.8.2",
@@ -4144,6 +4146,22 @@ dependencies = [
 
 [[package]]
 name = "nalgebra"
+version = "0.32.6"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "7b5c17de023a86f59ed79891b2e5d5a94c705dbe904a5b5c9c952ea6221b03e4"
+dependencies = [
+ "approx",
+ "matrixmultiply",
+ "nalgebra-macros",
+ "num-complex",
+ "num-rational",
+ "num-traits",
+ "simba 0.8.1",
+ "typenum",
+]
+
+[[package]]
+name = "nalgebra"
 version = "0.33.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "26aecdf64b707efd1310e3544d709c5c0ac61c13756046aaaba41be5c4f66a3b"
@@ -4155,7 +4173,7 @@ dependencies = [
  "num-rational",
  "num-traits",
  "serde",
- "simba",
+ "simba 0.9.0",
  "typenum",
 ]
 
@@ -6015,6 +6033,19 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "9203b8055f63a2a00e2f593bb0510367fe707d7ff1e5c872de2f537b339e5410"
 dependencies = [
  "libc",
+]
+
+[[package]]
+name = "simba"
+version = "0.8.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "061507c94fc6ab4ba1c9a0305018408e312e17c041eb63bef8aa726fa33aceae"
+dependencies = [
+ "approx",
+ "num-complex",
+ "num-traits",
+ "paste",
+ "wide",
 ]
 
 [[package]]

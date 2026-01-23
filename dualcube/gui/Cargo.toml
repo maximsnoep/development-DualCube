@@ -32,6 +32,8 @@ image = "0.25.6"
 rfd = "0.15.3"
 enum-iterator = "2.1.0"
 
+slotmap = "1.0.7"
+nalgebra = "0.32.4"
 
 
 [lints]
