@@ -26,7 +26,7 @@ pub fn segmentation_modification_system(
     mut cache: ResMut<CacheResource>,
     mut gizmos: Gizmos<PerpetualGizmos>,
     mut configuration: ResMut<Configuration>,
-    mut jobs: EventWriter<JobRequest>,
+    mut jobs: MessageWriter<JobRequest>,
     position: Vector3D,
     nearest_face: FaceID,
 ) -> Result<(), BevyError> {
@@ -179,7 +179,7 @@ pub fn loop_modification_system(
     mut cache: ResMut<CacheResource>,
     mut gizmos: Gizmos<PerpetualGizmos>,
     mut configuration: ResMut<Configuration>,
-    mut jobs: EventWriter<JobRequest>,
+    mut jobs: MessageWriter<JobRequest>,
 
     position: Vector3D,
     nearest_face: FaceID,
@@ -397,7 +397,7 @@ pub fn system(
     mut cache: ResMut<CacheResource>,
     mut gizmos: Gizmos<PerpetualGizmos>,
     mut configuration: ResMut<Configuration>,
-    mut jobs: EventWriter<JobRequest>,
+    mut jobs: MessageWriter<JobRequest>,
 ) -> Result<(), BevyError> {
     configuration.raycasted = None;
     configuration.selected = None;

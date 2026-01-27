@@ -27,16 +27,17 @@ impl MeshBuilder {
     pub fn add_vertex(&mut self, position: &Vector3D, normal: &Vector3D, color: &Color) {
         self.positions.push(to_bevy_vec(position));
         self.normals.push(to_bevy_vec(normal));
-        self.colors.push(bevy_color::ColorToComponents::to_f32_array(
-            bevy_color::Color::srgb(color[0], color[1], color[2]).to_linear(),
-        ));
+        self.colors
+            .push(bevy_color::ColorToComponents::to_f32_array(
+                bevy_color::Color::srgb_from_array(*color).to_linear(),
+            ));
         self.uvs.push([0., 0.]);
     }
 
     #[allow(clippy::cast_possible_truncation)]
     pub fn normalize(&mut self, scale: f64, translation: Vector3D) {
         for position in &mut self.positions {
-            *position = Vec3::new(
+            *position = bevy_math::Vec3::new(
                 position.x.mul_add(scale as f32, translation.x as f32),
                 position.y.mul_add(scale as f32, translation.y as f32),
                 position.z.mul_add(scale as f32, translation.z as f32),
@@ -45,16 +46,18 @@ impl MeshBuilder {
     }
 
     #[must_use]
-    pub fn build(self) -> bevy_render::mesh::Mesh {
-        bevy_render::mesh::Mesh::new(
-            bevy_render::mesh::PrimitiveTopology::TriangleList,
-            bevy_render::render_asset::RenderAssetUsages::RENDER_WORLD | bevy_render::render_asset::RenderAssetUsages::MAIN_WORLD,
+    pub fn build(self) -> bevy_mesh::Mesh {
+        bevy_mesh::Mesh::new(
+            bevy_mesh::PrimitiveTopology::TriangleList,
+            bevy_asset::RenderAssetUsages::RENDER_WORLD | bevy_asset::RenderAssetUsages::MAIN_WORLD,
         )
-        .with_inserted_indices(bevy_render::mesh::Indices::U32((0..u32::try_from(self.positions.len()).unwrap()).collect()))
-        .with_inserted_attribute(bevy_render::mesh::Mesh::ATTRIBUTE_POSITION, self.positions)
-        .with_inserted_attribute(bevy_render::mesh::Mesh::ATTRIBUTE_NORMAL, self.normals)
-        .with_inserted_attribute(bevy_render::mesh::Mesh::ATTRIBUTE_COLOR, self.colors)
-        .with_inserted_attribute(bevy_render::mesh::Mesh::ATTRIBUTE_UV_0, self.uvs)
+        .with_inserted_indices(bevy_mesh::Indices::U32(
+            (0..u32::try_from(self.positions.len()).unwrap()).collect(),
+        ))
+        .with_inserted_attribute(bevy_mesh::Mesh::ATTRIBUTE_POSITION, self.positions)
+        .with_inserted_attribute(bevy_mesh::Mesh::ATTRIBUTE_NORMAL, self.normals)
+        .with_inserted_attribute(bevy_mesh::Mesh::ATTRIBUTE_COLOR, self.colors)
+        .with_inserted_attribute(bevy_mesh::Mesh::ATTRIBUTE_UV_0, self.uvs)
     }
 }
 
@@ -65,9 +68,16 @@ where
     M: std::default::Default + std::cmp::Eq + std::hash::Hash + Copy + Clone + Send + Sync,
 {
     #[must_use]
-    pub fn bevy(&self, color_map: &HashMap<FaceKey<M>, [f32; 3]>) -> (bevy_render::mesh::Mesh, Vector3D, f64) {
+    pub fn bevy(
+        &self,
+        color_map: &HashMap<FaceKey<M>, [f32; 3]>,
+    ) -> (bevy_mesh::Mesh, Vector3D, f64) {
         if self.faces.is_empty() {
-            return (MeshBuilder::with_capacity(0).build(), Vector3D::new(0., 0., 0.), 1.);
+            return (
+                MeshBuilder::with_capacity(0).build(),
+                Vector3D::new(0., 0., 0.),
+                1.,
+            );
         }
         let mut bevy_mesh_builder = self.bevy_builder(color_map);
         let (scale, translation) = self.scale_translation();
@@ -89,15 +99,24 @@ where
                 _ => vec![],
             })
             .collect::<Vec<_>>();
-        let positions = triangulated.par().map(|&v| to_bevy_vec(&self.position(v))).collect::<Vec<_>>();
-        let normals = triangulated.par().map(|&v| to_bevy_vec(&self.normal(v))).collect::<Vec<_>>();
+        let positions = triangulated
+            .par()
+            .map(|&v| to_bevy_vec(&self.position(v)))
+            .collect::<Vec<_>>();
+        let normals = triangulated
+            .par()
+            .map(|&v| to_bevy_vec(&self.normal(v)))
+            .collect::<Vec<_>>();
 
         let colors = self
             .face_ids_iter()
             .iter_into_par()
             .flat_map(|face| {
                 let bevy_color = bevy_color::ColorToComponents::to_f32_array(
-                    bevy_color::Color::srgb_from_array(color_map.get(&face).unwrap_or(&[0., 0., 0.]).to_owned()).to_linear(),
+                    bevy_color::Color::srgb_from_array(
+                        color_map.get(&face).unwrap_or(&[0., 0., 0.]).to_owned(),
+                    )
+                    .to_linear(),
                 );
                 match self.vertices(face).count() {
                     3 => vec![bevy_color; 3],

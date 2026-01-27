@@ -15,12 +15,11 @@ io = {path = "../io" }
 mehsh = { path = "../../utils/mehsh", features = ["bevy", "obj", "stl", "petgraph"] }
 grapff = { path = "../../utils/grapff" }
 
-bevy = "0.16.1"
-bevy_egui = "0.34.1"
-egui_dock = "0.16.0"
-smooth-bevy-cameras = "0.14.0"
-bevy-axes-gizmo = "0.1.2"
-bevy_wind_waker_shader = "0.4.0"
+bevy = "0.18.0"
+bevy_egui = "0.39.0"
+egui_dock = "0.18.0"
+bevy-orbit-camera = "0.2.0"
+bevy-axes-gizmo = "0.3.0"
 
 rayon = "1.8.1"
 itertools = "0.14.0"
@@ -34,6 +33,7 @@ enum-iterator = "2.1.0"
 
 slotmap = "1.0.7"
 nalgebra = "0.32.4"
+wgpu-types = "27.0"
 
 
 [lints]
