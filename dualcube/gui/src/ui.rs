@@ -2,8 +2,8 @@ use crate::controls::InteractiveMode;
 use crate::jobs::{Job, JobRequest, JobState};
 use crate::render::{CameraFor, Objects, RenderObjectSetting, RenderObjectSettingStore};
 use crate::{
-    colors, ActionEvent, CameraHandles, Configuration, InputResource, Perspective, Phase,
-    PrincipalDirection, SolutionResource,
+    colors, CameraHandles, Configuration, InputResource, Perspective, Phase, PrincipalDirection,
+    SolutionResource,
 };
 use bevy::diagnostic::{
     DiagnosticsStore, FrameTimeDiagnosticsPlugin, SystemInformationDiagnosticsPlugin,
@@ -12,6 +12,7 @@ use bevy::prelude::*;
 use bevy_egui::egui::FontFamily::Proportional;
 use bevy_egui::egui::*;
 use bevy_egui::PrimaryEguiContext;
+use bevy_orbit_camera::automatic::AutomaticRotation;
 use egui_dock::tab_viewer::OnCloseResponse;
 use egui_dock::{DockArea, DockState, NodeIndex, Style};
 use std::collections::HashMap;
@@ -321,6 +322,7 @@ fn header(
     solution: &mut SolutionResource,
     jobs: &mut MessageWriter<JobRequest>,
     configuration: &mut ResMut<Configuration>,
+    automatic_rotation: &mut ResMut<AutomaticRotation>,
     render_object_settings_store: &mut ResMut<RenderObjectSettingStore>,
 ) {
     ui.with_layout(Layout::left_to_right(Align::TOP), |ui| {
@@ -456,16 +458,22 @@ fn header(
 
                     space(ui);
 
-                    label(ui, "Automatic", 12., Color32::WHITE);
+                    label(ui, "Automatic camera rotation", 12., Color32::WHITE);
 
                     space(ui);
 
                     // automatic rotation? yes or no
-                    ui.checkbox(&mut configuration.automatic_rotation_camera, "rotation");
+                    ui.checkbox(&mut automatic_rotation.enabled, "enabled");
+                    slider(
+                        ui,
+                        "sensitivity",
+                        &mut automatic_rotation.sensitivity,
+                        0.1..=std::f32::consts::PI,
+                    );
 
                     sep(ui);
 
-                    label(ui, "Sensitivity", 12., Color32::WHITE);
+                    label(ui, "Manual camera control sensitivity", 12., Color32::WHITE);
 
                     space(ui);
 
@@ -821,7 +829,6 @@ fn display_label(job: &mut text::LayoutJob, label: &str) {
 
 pub fn update(
     mut egui_ctx: bevy_egui::EguiContexts,
-    mut ev_w: MessageWriter<ActionEvent>,
     mut jobs: MessageWriter<JobRequest>,
     mut conf: ResMut<Configuration>,
     job_state: Res<JobState>,
@@ -835,6 +842,7 @@ pub fn update(
     axes_texture: Res<bevy_axes_gizmo::AxesGizmoTexture>,
     mut gizmo_assets: ResMut<Assets<GizmoAsset>>,
     mut commands: Commands,
+    mut automatic_rotation: ResMut<AutomaticRotation>,
 ) -> Result<(), BevyError> {
     let axes_texture =
         egui_ctx.add_image(bevy_egui::EguiTextureHandle::Strong(axes_texture.0.clone()));
@@ -856,6 +864,7 @@ pub fn update(
                         &mut solution,
                         &mut jobs,
                         &mut conf,
+                        &mut automatic_rotation,
                         &mut render_setting_store,
                     );
 

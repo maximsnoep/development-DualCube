@@ -1,4 +1,3 @@
-use crate::toons::ToonsMaterial;
 use crate::ui::UiResource;
 use crate::{colors, MainMesh, PerpetualGizmos};
 use crate::{
@@ -18,6 +17,7 @@ use bevy_axes_gizmo::AxesGizmoSyncCamera;
 use bevy_egui::EguiGlobalSettings;
 use bevy_egui::PrimaryEguiContext;
 use bevy_orbit_camera::*;
+use bevy_toon::ToonMaterial;
 use core::f32;
 use dualcube::prelude::*;
 use egui_dock::LeafNode;
@@ -260,6 +260,8 @@ pub fn reset(
             // RenderTarget::Window()
             AxesGizmoSyncCamera,
             Tonemapping::None,
+            bevy_blossom::CameraMarker,
+            bevy_orbit_camera::automatic::Marker,
         ))
         .insert((OrbitCameraBundle::new(
             Controller {
@@ -312,6 +314,7 @@ pub fn reset(
         commands.spawn((
             Camera3d::default(),
             RenderTarget::Image(handle.into()),
+            bevy_blossom::CameraMarker,
             Camera {
                 clear_color: ClearColorConfig::Custom(bevy::prelude::Color::srgb_u8(
                     configuration.clear_color[0],
@@ -404,7 +407,7 @@ pub fn respawn_renders(
     mut meshes: ResMut<Assets<bevy::mesh::Mesh>>,
     mut gizmos: ResMut<Assets<GizmoAsset>>,
     mut materials: ResMut<Assets<StandardMaterial>>,
-    mut custom_materials: ResMut<Assets<ToonsMaterial>>,
+    mut custom_materials: ResMut<Assets<ToonMaterial>>,
     configuration: Res<Configuration>,
     render_object_store: Res<RenderObjectStore>,
     render_settings_store: Res<RenderObjectSettingStore>,
@@ -429,7 +432,7 @@ pub fn respawn_renders(
             unlit: true,
             ..default()
         });
-        let toon_material = custom_materials.add(ToonsMaterial {
+        let toon_material = custom_materials.add(ToonMaterial {
             view_dir: Vec3::new(0.0, 0.0, 1.0),
         });
         let background_material = materials.add(StandardMaterial {
@@ -521,7 +524,7 @@ pub fn respawn_renders(
 
 pub fn update(
     ui_resource: Res<UiResource>,
-    mut custom_materials: ResMut<Assets<ToonsMaterial>>,
+    mut custom_materials: ResMut<Assets<ToonMaterial>>,
     window: Single<&Window>,
     mut main_camera: Query<(&LookTransform, &Transform, &mut Camera), With<Controller>>,
     mut other_cameras: Query<
@@ -1263,21 +1266,4 @@ pub fn world_to_view(v: Vector3D, translation: Vector3D, scale: f64) -> Vec3 {
 pub fn view_to_world(v: Vec3, translation: Vector3D, scale: f64) -> Vector3D {
     let v_world = Vector3D::new(v.x as f64, v.y as f64, v.z as f64);
     invert_transform_coordinates(v_world, translation, scale)
-}
-
-pub fn automatic_rotation_camera(
-    mut cameras: Query<(&mut LookTransform, &mut Projection, &mut Camera, &CameraFor)>,
-    configuration: Res<Configuration>,
-) {
-    if !configuration.automatic_rotation_camera {
-        return;
-    }
-    let (mut transform, _, _, _) = cameras
-        .iter_mut()
-        .find(|(_, _, _, camera_for)| camera_for.0 == Objects::InputMesh)
-        .unwrap();
-    let mut look_angles = LookAngles::from_vector(-transform.look_direction().unwrap());
-    let rotation_speed = configuration.camera_rotate_sensitivity / 100.; // radians per 10ms
-    look_angles.add_yaw(-rotation_speed);
-    transform.eye = transform.target + transform.radius() * look_angles.unit_vector();
 }

@@ -18,23 +18,26 @@ grapff = { path = "../../utils/grapff" }
 bevy = "0.18.0"
 bevy_egui = "0.39.0"
 egui_dock = "0.18.0"
-bevy-orbit-camera = "0.2.0"
+bevy-orbit-camera = "0.2.2"
+# bevy-orbit-camera = { path = "../../../bevy-orbit-camera" }
 bevy-axes-gizmo = "0.3.0"
+bevy-blossom = "0.2.0"
+bevy-toon = "0.2.0"
+bevy-wicon = "0.18.1"
 
 rayon = "1.8.1"
 itertools = "0.14.0"
 ordered-float = "5.0.0"
 log = "0.4.27"
 rand = "0.9.1"
-winit = "0.30.11"
-image = "0.25.6"
+
+
 rfd = "0.15.3"
 enum-iterator = "2.1.0"
 
 slotmap = "1.0.7"
 nalgebra = "0.32.4"
 wgpu-types = "27.0"
-
 
 [lints]
 workspace = true
