@@ -1,23 +1,18 @@
-mod bloom;
 mod colors;
 mod controls;
 mod jobs;
 mod render;
-mod toons;
 mod ui;
 
 use crate::controls::InteractiveMode;
 use crate::render::RenderObjectSettingStore;
-use crate::toons::ToonsMaterialPlugin;
 use crate::ui::UiResource;
 use bevy::diagnostic::{FrameTimeDiagnosticsPlugin, SystemInformationDiagnosticsPlugin};
 use bevy::prelude::*;
 use bevy::time::common_conditions::on_timer;
 use bevy::ui::UiScale;
 use bevy::window::{WindowMode, WindowResolution};
-use bevy::winit::WinitWindows;
 use bevy_egui::{EguiPlugin, EguiPrimaryContextPass};
-use bevy_orbit_camera::OrbitCameraPlugin;
 use dualcube::polycube::POLYCUBE;
 use dualcube::prelude::*;
 use dualcube::solutions::Solution;
@@ -27,10 +22,8 @@ use ordered_float::OrderedFloat;
 use rayon::iter::{IntoParallelIterator, ParallelIterator};
 use render::{CameraFor, MeshProperties, Objects, RenderObjectStore};
 use std::collections::HashMap;
-use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Duration;
-use winit::window::Icon;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Phase {
@@ -112,35 +105,10 @@ pub struct CameraHandles {
 }
 
 #[derive(Component)]
-pub struct RenderedMesh;
-
-#[derive(Component)]
 pub struct Rendered;
 
 #[derive(Component)]
 pub struct MainMesh;
-
-#[derive(Message, Debug, Eq, Hash, PartialEq)]
-pub enum ActionEvent {
-    LoadFile(PathBuf),
-    ExportAll,
-    ExportState,
-    ExportSolution,
-    ExportNLR,
-    ToHexmesh,
-    ResetCamera,
-    Mutate,
-    SmoothenQuad,
-    Recompute,
-    Initialize,
-}
-
-#[derive(Debug, Clone)]
-pub enum ActionEventStatus {
-    None,
-    Loading,
-    Done(String),
-}
 
 #[derive(Default, Resource)]
 pub struct CacheResource {
@@ -276,39 +244,39 @@ fn main() {
         ))
         // Plugin for GUI
         .add_plugins(EguiPlugin::default())
-        .add_plugins(bloom::BloomPlugin)
-        // // Plugin for smooth camera
-        .add_plugins(OrbitCameraPlugin)
-        // // Material
-        .add_plugins(ToonsMaterialPlugin)
+        // My cool plugins c:
+        .add_plugins((
+            bevy_blossom::BlossomPlugin,
+            bevy_orbit_camera::OrbitCameraPlugin,
+            bevy_toon::ToonPlugin,
+            bevy_axes_gizmo::AxesGizmoPlugin {
+                colors: [
+                    colors::to_bevy(colors::from_direction(
+                        PrincipalDirection::X,
+                        Some(Perspective::Primal),
+                        None,
+                    )),
+                    colors::to_bevy(colors::from_direction(
+                        PrincipalDirection::Y,
+                        Some(Perspective::Primal),
+                        None,
+                    )),
+                    colors::to_bevy(colors::from_direction(
+                        PrincipalDirection::Z,
+                        Some(Perspective::Primal),
+                        None,
+                    )),
+                ],
+                width: 5.,
+                ..default()
+            },
+            bevy_wicon::WindowIconPlugin::with_path("dualcube/gui/assets/logo-32.png"),
+        ))
         // Jobs system
         .add_plugins(jobs::JobPlugin)
-        // // Axes gizmo
-        .add_plugins(bevy_axes_gizmo::AxesGizmoPlugin {
-            colors: [
-                colors::to_bevy(colors::from_direction(
-                    PrincipalDirection::X,
-                    Some(Perspective::Primal),
-                    None,
-                )),
-                colors::to_bevy(colors::from_direction(
-                    PrincipalDirection::Y,
-                    Some(Perspective::Primal),
-                    None,
-                )),
-                colors::to_bevy(colors::from_direction(
-                    PrincipalDirection::Z,
-                    Some(Perspective::Primal),
-                    None,
-                )),
-            ],
-            width: 5.,
-            ..default()
-        })
         // Setups
         .add_systems(Startup, render::setup)
         .add_observer(ui::setup)
-        // .add_systems(Startup, set_window_icon)
         // Updates
         .add_systems(EguiPrimaryContextPass, ui::update)
         .add_systems(Update, render::update)
@@ -320,24 +288,7 @@ fn main() {
         .add_systems(Update, render::update_render_settings)
         .add_systems(Update, controls::system)
         .add_systems(Update, update_field)
-        .add_systems(
-            FixedUpdate,
-            render::automatic_rotation_camera.run_if(on_timer(Duration::from_millis(10))),
-        )
-        .add_message::<ActionEvent>()
         .run();
-}
-
-fn set_window_icon(windows: NonSend<WinitWindows>) {
-    let path = "dualcube/gui/assets/logo-32.png";
-    let window = windows.windows.iter().next().unwrap().1;
-    let image = image::open(path)
-        .expect("Failed to open icon path")
-        .into_rgba8();
-    winit::window::Window::set_window_icon(
-        window,
-        Some(Icon::from_rgba(image.clone().into_raw(), image.width(), image.height()).unwrap()),
-    );
 }
 
 #[inline]

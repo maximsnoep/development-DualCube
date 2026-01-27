@@ -538,12 +538,41 @@ dependencies = [
 ]
 
 [[package]]
-name = "bevy-orbit-camera"
-version = "0.2.1"
+name = "bevy-blossom"
+version = "0.2.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "248c47a533cf8dd91901c4090f1fbc60fe5102bbe216fc3b6e479e6d9a73b476"
+checksum = "fec5767e1d9256a5f97fe1fdf21411847d27d643965dd9ef442082b8c802e99f"
 dependencies = [
  "bevy",
+]
+
+[[package]]
+name = "bevy-orbit-camera"
+version = "0.2.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "a9ad6398dfc6c0e3b9e81508dfa54fc31851bb837e2cd6d599558599e2cf334e"
+dependencies = [
+ "bevy",
+]
+
+[[package]]
+name = "bevy-toon"
+version = "0.2.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "a7b2787daa21a4739c307af8b9a926e79b689a2962e250a4f584e26917abf47d"
+dependencies = [
+ "bevy",
+]
+
+[[package]]
+name = "bevy-wicon"
+version = "0.18.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "96fd0bcdda2369829d32e3ff00336bc50e77c8daac1a81399548b4d27b9b72f5"
+dependencies = [
+ "bevy",
+ "image",
+ "winit",
 ]
 
 [[package]]
@@ -3611,13 +3640,15 @@ version = "0.1.0"
 dependencies = [
  "bevy",
  "bevy-axes-gizmo",
+ "bevy-blossom",
  "bevy-orbit-camera",
+ "bevy-toon",
+ "bevy-wicon",
  "bevy_egui",
  "dualcube",
  "egui_dock",
  "enum-iterator",
  "grapff",
- "image",
  "io",
  "itertools 0.14.0",
  "log",
@@ -3629,7 +3660,6 @@ dependencies = [
  "rfd",
  "slotmap",
  "wgpu-types",
- "winit",
 ]
 
 [[package]]
