@@ -13,9 +13,11 @@ use crate::ui::UiResource;
 use bevy::diagnostic::{FrameTimeDiagnosticsPlugin, SystemInformationDiagnosticsPlugin};
 use bevy::prelude::*;
 use bevy::time::common_conditions::on_timer;
-use bevy::window::WindowMode;
+use bevy::ui::UiScale;
+use bevy::window::{WindowMode, WindowResolution};
 use bevy::winit::WinitWindows;
-use bevy_egui::EguiPlugin;
+use bevy_egui::{EguiPlugin, EguiPrimaryContextPass};
+use bevy_orbit_camera::OrbitCameraPlugin;
 use dualcube::polycube::POLYCUBE;
 use dualcube::prelude::*;
 use dualcube::solutions::Solution;
@@ -24,8 +26,6 @@ use mehsh::prelude::*;
 use ordered_float::OrderedFloat;
 use rayon::iter::{IntoParallelIterator, ParallelIterator};
 use render::{CameraFor, MeshProperties, Objects, RenderObjectStore};
-use smooth_bevy_cameras::controllers::orbit::OrbitCameraPlugin;
-use smooth_bevy_cameras::LookTransformPlugin;
 use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -120,7 +120,7 @@ pub struct Rendered;
 #[derive(Component)]
 pub struct MainMesh;
 
-#[derive(Event, Debug, Eq, Hash, PartialEq)]
+#[derive(Message, Debug, Eq, Hash, PartialEq)]
 pub enum ActionEvent {
     LoadFile(PathBuf),
     ExportAll,
@@ -252,17 +252,19 @@ fn main() {
         .init_resource::<RenderObjectSettingStore>()
         .init_resource::<RenderObjectStore>()
         .init_resource::<CameraHandles>()
+        .insert_resource(UiScale(1.0)) // no UI scaling
         .init_gizmo_group::<PerpetualGizmos>()
-        .insert_resource(AmbientLight {
+        .insert_resource(GlobalAmbientLight {
             color: bevy::color::Color::WHITE,
             brightness: 1.0,
-            affects_lightmapped_meshes: true,
+            ..Default::default()
         })
         // Load default plugins
         .add_plugins(DefaultPlugins.set(WindowPlugin {
             primary_window: Some(Window {
                 title: "DualCube".to_string(),
                 mode: WindowMode::Windowed,
+                resolution: WindowResolution::default().with_scale_factor_override(1.),
                 ..Default::default()
             }),
             ..Default::default()
@@ -273,17 +275,15 @@ fn main() {
             SystemInformationDiagnosticsPlugin,
         ))
         // Plugin for GUI
-        .add_plugins(EguiPlugin {
-            enable_multipass_for_primary_context: false,
-        })
-        .add_plugins((bloom::BloomPlugin))
-        // Plugin for smooth camera
-        .add_plugins((LookTransformPlugin, OrbitCameraPlugin::default()))
-        // Material
+        .add_plugins(EguiPlugin::default())
+        .add_plugins(bloom::BloomPlugin)
+        // // Plugin for smooth camera
+        .add_plugins(OrbitCameraPlugin)
+        // // Material
         .add_plugins(ToonsMaterialPlugin)
         // Jobs system
         .add_plugins(jobs::JobPlugin)
-        // Axes gizmo
+        // // Axes gizmo
         .add_plugins(bevy_axes_gizmo::AxesGizmoPlugin {
             colors: [
                 colors::to_bevy(colors::from_direction(
@@ -306,11 +306,11 @@ fn main() {
             ..default()
         })
         // Setups
-        .add_systems(Startup, ui::setup)
         .add_systems(Startup, render::setup)
-        .add_systems(Startup, set_window_icon)
+        .add_observer(ui::setup)
+        // .add_systems(Startup, set_window_icon)
         // Updates
-        .add_systems(Update, ui::update)
+        .add_systems(EguiPrimaryContextPass, ui::update)
         .add_systems(Update, render::update)
         .add_systems(
             FixedUpdate,
@@ -324,8 +324,7 @@ fn main() {
             FixedUpdate,
             render::automatic_rotation_camera.run_if(on_timer(Duration::from_millis(10))),
         )
-        // .add_systems(Update, handle_tasks)
-        .add_event::<ActionEvent>()
+        .add_message::<ActionEvent>()
         .run();
 }
 

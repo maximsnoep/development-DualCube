@@ -1,6 +1,6 @@
 #import bevy_pbr::forward_io::VertexOutput
 
-@group(2) @binding(0)
+@group(#{MATERIAL_BIND_GROUP}) @binding(0)
 var<uniform> view_dir: vec3<f32>; // Passed from Rust
 
 @fragment

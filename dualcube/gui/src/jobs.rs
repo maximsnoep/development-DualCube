@@ -387,7 +387,7 @@ async fn run_job(job: Job) -> Option<JobResult> {
 /// Polls the current job for completion.
 fn poll_jobs(
     mut job_state: ResMut<JobState>,
-    mut jobs: EventWriter<JobRequest>,
+    mut jobs: MessageWriter<JobRequest>,
     mut input_resource: ResMut<InputResource>,
     mut solution_resource: ResMut<SolutionResource>,
     mut render_object_store: ResMut<RenderObjectStore>,
@@ -522,7 +522,7 @@ pub struct JobPlugin;
 impl Plugin for JobPlugin {
     fn build(&self, app: &mut App) {
         app.init_resource::<JobState>()
-            .add_event::<JobRequest>()
+            .add_message::<JobRequest>()
             .add_systems(
                 Update,
                 (
@@ -536,7 +536,7 @@ impl Plugin for JobPlugin {
 }
 
 /// Submits jobs to the worker thread (only if idle).
-fn submit_jobs(mut ev_reader: EventReader<JobRequest>, mut job_state: ResMut<JobState>) {
+fn submit_jobs(mut ev_reader: MessageReader<JobRequest>, mut job_state: ResMut<JobState>) {
     for ev in ev_reader.read() {
         match (ev, job_state.request.clone()) {
             (JobRequest::Run(job), None) => {
@@ -747,7 +747,7 @@ pub struct JobState {
     current: Option<Task<Option<JobResult>>>,
 }
 
-#[derive(Event)]
+#[derive(Message)]
 pub enum JobRequest {
     Run(Box<Job>),
     Cancel,

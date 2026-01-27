@@ -1,4 +1,4 @@
-use bevy::asset::{load_internal_asset, weak_handle};
+use bevy::asset::{load_internal_asset, uuid_handle};
 use bevy::prelude::*;
 
 #[derive(
@@ -9,10 +9,10 @@ pub struct ToonsMaterial {
     pub view_dir: Vec3,
 }
 
-const SHADER_HANDLE: Handle<Shader> = weak_handle!("ddeed264-efde-495e-9159-4ac3db07f9f8");
+const SHADER_HANDLE: Handle<Shader> = uuid_handle!("ddeed264-efde-495e-9159-4ac3db07f9f8");
 
 impl Material for ToonsMaterial {
-    fn fragment_shader() -> bevy::render::render_resource::ShaderRef {
+    fn fragment_shader() -> bevy::shader::ShaderRef {
         SHADER_HANDLE.into()
     }
     fn alpha_mode(&self) -> AlphaMode {

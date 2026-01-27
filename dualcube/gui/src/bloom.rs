@@ -1,6 +1,7 @@
-use bevy::core_pipeline::bloom::{Bloom, BloomCompositeMode, BloomPrefilter};
 use bevy::core_pipeline::tonemapping::Tonemapping;
+use bevy::post_process::bloom::{Bloom, BloomCompositeMode, BloomPrefilter};
 use bevy::prelude::*;
+use bevy::render::view::Hdr;
 use bevy::time::common_conditions::on_timer;
 use std::time::Duration;
 
@@ -21,15 +22,14 @@ fn funky_bloom() -> Bloom {
 /// Ensures HDR is on and bloom settings match `funky_bloom()`.
 fn ensure_bloom_on_cameras(
     mut commands: Commands,
-    mut q: Query<(Entity, &mut Camera, Option<&mut Bloom>), With<Camera3d>>,
+    mut q: Query<(Entity, Option<&mut Bloom>), With<Camera3d>>,
 ) {
     let bloom = funky_bloom();
 
-    for (e, mut camera, maybe_bloom) in &mut q {
-        camera.hdr = true;
-
+    for (e, maybe_bloom) in &mut q {
         // Optional but recommended with bloom
-        commands.entity(e).insert(Tonemapping::TonyMcMapface);
+        commands.entity(e).insert_if_new(Hdr);
+        commands.entity(e).insert_if_new(Tonemapping::TonyMcMapface);
 
         match maybe_bloom {
             Some(mut existing) => {

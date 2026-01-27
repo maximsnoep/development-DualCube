@@ -5,25 +5,30 @@ use crate::{
     to_principal_direction, vector3d_to_vec3, CameraHandles, Configuration, Perspective,
     PrincipalDirection, Rendered,
 };
+use bevy::camera::RenderTarget;
+use bevy::camera::ScalingMode;
+use bevy::camera::Viewport;
+use bevy::camera::{visibility::RenderLayers, CameraOutputMode};
 use bevy::core_pipeline::tonemapping::Tonemapping;
 use bevy::prelude::*;
-use bevy::render::camera::ScalingMode;
-use bevy::render::camera::Viewport;
 use bevy::render::render_resource::{
     Extent3d, TextureDescriptor, TextureDimension, TextureFormat, TextureUsages,
 };
 use bevy_axes_gizmo::AxesGizmoSyncCamera;
+use bevy_egui::EguiGlobalSettings;
+use bevy_egui::PrimaryEguiContext;
+use bevy_orbit_camera::*;
 use core::f32;
 use dualcube::prelude::*;
+use egui_dock::LeafNode;
 use enum_iterator::{all, Sequence};
 use itertools::Itertools;
 use mehsh::prelude::*;
-use smooth_bevy_cameras::controllers::orbit::{OrbitCameraBundle, OrbitCameraController};
-use smooth_bevy_cameras::{LookAngles, LookTransform, Smoother};
 use std::collections::{HashMap, HashSet};
 use std::ops::Index;
+use wgpu_types::BlendState;
 
-const DEFAULT_CAMERA_EYE: Vec3 = Vec3::new(25.0, 25.0, 35.0);
+const DEFAULT_CAMERA_EYE: Vec3 = Vec3::new(25.0, 25.0, 25.0);
 const DEFAULT_CAMERA_TARGET: Vec3 = Vec3::new(0., 0., 0.);
 const DEFAULT_CAMERA_TEXTURE_SIZE: u32 = 640 * 2;
 
@@ -52,10 +57,8 @@ pub enum Objects {
     QuadMesh,
 }
 
-use std::fmt;
-
-impl fmt::Display for Objects {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+impl std::fmt::Display for Objects {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         let s = match self {
             Objects::InputMesh => "input mesh",
             Objects::Polycube => "polycube",
@@ -68,14 +71,14 @@ impl fmt::Display for Objects {
 
 #[derive(Clone)]
 pub enum RenderAsset {
-    Mesh(bevy::render::mesh::Mesh),
+    Mesh(bevy::mesh::Mesh),
     Gizmo((GizmoAsset, f32, f32)),
 }
 
 #[derive(Clone, PartialEq)]
 pub struct MeshBundle(Mesh3d);
 impl MeshBundle {
-    pub const fn new(handle: Handle<bevy::render::mesh::Mesh>) -> Self {
+    pub const fn new(handle: Handle<bevy::mesh::Mesh>) -> Self {
         Self(Mesh3d(handle))
     }
 }
@@ -192,30 +195,21 @@ impl From<Objects> for Vec3 {
     }
 }
 
-// pub fn update_camera_settings(mut cameras: Query<(&mut Transform, &mut Projection, &mut Camera, &CameraFor)>, configuration: &ResMut<Configuration>) {
-//     if let Ok(mut main_camera) = cameras.single_mut() {
-//         // main_camera.0.mouse_rotate_sensitivity = configuration.camera_rotate_sensitivity;
-//         // main_camera.0.mouse_translate_sensitivity = configuration.camera_translate_sensitivity;
-//         // main_camera.0.mouse_wheel_zoom_sensitivity = configuration.camera_zoom_sensitivity;
-//         // main_camera.0.smoothing_weight = configuration.camera_smoothing_weight;
-//     }
-// }
-
 pub fn update_camera_settings(
-    mut cameras: Query<(&mut OrbitCameraController, &mut Smoother)>,
+    mut camera_controller: Query<&mut Controller>,
     configuration: ResMut<Configuration>,
 ) {
-    if let Ok((mut main_camera, mut smoother)) = cameras.single_mut() {
-        *main_camera = OrbitCameraController {
-            mouse_rotate_sensitivity: Vec2::splat(configuration.camera_rotate_sensitivity),
-            mouse_translate_sensitivity: Vec2::splat(configuration.camera_translate_sensitivity),
-            mouse_wheel_zoom_sensitivity: configuration.camera_zoom_sensitivity,
-            smoothing_weight: 0.8,
-            ..Default::default()
-        };
+    let Ok(mut main_camera) = camera_controller.single_mut() else {
+        warn!("No main camera controller.");
+        return;
+    };
 
-        *smoother = Smoother::new(0.8);
-    }
+    *main_camera = Controller {
+        mouse_rotate_sensitivity: Vec2::splat(configuration.camera_rotate_sensitivity),
+        mouse_translate_sensitivity: Vec2::splat(configuration.camera_translate_sensitivity),
+        mouse_wheel_zoom_sensitivity: configuration.camera_zoom_sensitivity,
+        ..Default::default()
+    };
 }
 
 #[derive(Component, PartialEq, Eq, Hash, Debug, Copy, Clone, Default)]
@@ -223,6 +217,7 @@ pub struct CameraFor(pub Objects);
 
 pub fn reset(
     commands: &mut Commands,
+
     cameras: &Query<Entity, With<Camera>>,
     images: &mut ResMut<Assets<Image>>,
     handles: &mut ResMut<CameraHandles>,
@@ -231,6 +226,24 @@ pub fn reset(
     for camera in cameras.iter() {
         commands.entity(camera).despawn();
     }
+
+    // Egui camera.
+    commands.spawn((
+        // The `PrimaryEguiContext` component requires everything needed to render a primary context.
+        PrimaryEguiContext,
+        Camera2d,
+        // Setting RenderLayers to none makes sure we won't render anything apart from the UI.
+        RenderLayers::none(),
+        Camera {
+            order: 1,
+            output_mode: CameraOutputMode::Write {
+                blend_state: Some(BlendState::ALPHA_BLENDING),
+                clear_color: ClearColorConfig::None,
+            },
+            clear_color: ClearColorConfig::Custom(bevy::color::Color::NONE),
+            ..default()
+        },
+    ));
 
     // Main camera. This is the camera that the user can control.
     commands
@@ -244,15 +257,15 @@ pub fn reset(
                 )),
                 ..Default::default()
             },
+            // RenderTarget::Window()
             AxesGizmoSyncCamera,
             Tonemapping::None,
         ))
         .insert((OrbitCameraBundle::new(
-            OrbitCameraController {
+            Controller {
                 mouse_rotate_sensitivity: Vec2::splat(0.2),
                 mouse_translate_sensitivity: Vec2::splat(2.),
                 mouse_wheel_zoom_sensitivity: 0.2,
-                smoothing_weight: 0.8,
                 ..Default::default()
             },
             DEFAULT_CAMERA_EYE + Vec3::from(Objects::InputMesh),
@@ -298,8 +311,8 @@ pub fn reset(
 
         commands.spawn((
             Camera3d::default(),
+            RenderTarget::Image(handle.into()),
             Camera {
-                target: handle.into(),
                 clear_color: ClearColorConfig::Custom(bevy::prelude::Color::srgb_u8(
                     configuration.clear_color[0],
                     configuration.clear_color[1],
@@ -316,12 +329,16 @@ pub fn reset(
 
 pub fn setup(
     mut commands: Commands,
+    mut egui_global_settings: ResMut<EguiGlobalSettings>,
     mut images: ResMut<Assets<Image>>,
     mut handles: ResMut<CameraHandles>,
     cameras: Query<Entity, With<Camera>>,
     configuration: ResMut<Configuration>,
     mut config_store: ResMut<GizmoConfigStore>,
 ) {
+    // Disable the automatic creation of a primary context to set it up manually for the camera we need.
+    egui_global_settings.auto_create_primary_context = false;
+
     let (perp_gizmos, _) = config_store.config_mut::<PerpetualGizmos>();
     perp_gizmos.depth_bias = -1.0;
 
@@ -384,7 +401,7 @@ pub struct MeshProperties {
 
 pub fn respawn_renders(
     mut commands: Commands,
-    mut meshes: ResMut<Assets<bevy::render::mesh::Mesh>>,
+    mut meshes: ResMut<Assets<bevy::mesh::Mesh>>,
     mut gizmos: ResMut<Assets<GizmoAsset>>,
     mut materials: ResMut<Assets<StandardMaterial>>,
     mut custom_materials: ResMut<Assets<ToonsMaterial>>,
@@ -506,19 +523,19 @@ pub fn update(
     ui_resource: Res<UiResource>,
     mut custom_materials: ResMut<Assets<ToonsMaterial>>,
     window: Single<&Window>,
-    mut cameras: Query<(&mut Transform, &mut Projection, &mut Camera, &CameraFor)>,
+    mut main_camera: Query<(&LookTransform, &Transform, &mut Camera), With<Controller>>,
+    mut other_cameras: Query<
+        (&mut Transform, &mut Projection, &mut Camera, &CameraFor),
+        Without<Controller>,
+    >,
 ) {
-    let mut main_camera = cameras
-        .iter_mut()
-        .find(|(_, _, _, camera_for)| camera_for.0 == Objects::InputMesh)
-        .unwrap()
-        .2;
+    let (_, main_transform, mut main_camera) = main_camera.single_mut().unwrap();
 
     let (_, node_index, _) = ui_resource.tree.find_tab(&Objects::InputMesh).unwrap();
     let main_surface = ui_resource.tree.main_surface().clone();
     let main_node = main_surface.index(node_index);
     let main_surface_viewport = match main_node {
-        egui_dock::Node::Leaf { viewport, .. } => *viewport,
+        egui_dock::Node::Leaf(LeafNode { viewport, .. }) => *viewport,
         _ => unreachable!(),
     };
 
@@ -529,6 +546,8 @@ pub fn update(
         || window.physical_size().y == 0
         || viewport_width == 0.
         || viewport_height == 0.
+        || viewport_width.is_infinite()
+        || viewport_height.is_infinite()
     {
         main_camera.is_active = false;
     } else {
@@ -546,19 +565,13 @@ pub fn update(
         });
     }
 
-    let main_transform = cameras
-        .iter()
-        .find(|(_, _, _, camera_for)| camera_for.0 == Objects::InputMesh)
-        .unwrap()
-        .0;
     let normalized_translation = main_transform.translation - Vec3::from(Objects::InputMesh);
     let normalized_rotation = main_transform.rotation;
 
     let distance = normalized_translation.length();
 
-    for (mut sub_transform, mut sub_projection, _sub_camera, sub_object) in &mut cameras {
+    for (mut sub_transform, mut sub_projection, _sub_camera, sub_object) in &mut other_cameras {
         sub_transform.translation = normalized_translation + Vec3::from(sub_object.0);
-        // println!("translate: {:?}", sub_transform.translation);
         sub_transform.rotation = normalized_rotation;
         if let Projection::Orthographic(orthographic) = sub_projection.as_mut() {
             orthographic.scaling_mode = ScalingMode::FixedVertical {
