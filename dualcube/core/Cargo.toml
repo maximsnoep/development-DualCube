@@ -19,5 +19,9 @@ bitcode = "0.6.6"
 thiserror = "2.0.17"
 orx-parallel = "3.4.0"
 
+# For skeleton-based initialization  TODO: move to seperate crate?
+petgraph = "0.8.3"
+nalgebra = "0.33.2"
+
 [lints]
 workspace = true
