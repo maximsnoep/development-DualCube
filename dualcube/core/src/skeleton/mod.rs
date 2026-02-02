@@ -1,15 +1,18 @@
 use std::sync::Arc;
 
-use mehsh::prelude::{Mesh, Vector3D};
+use mehsh::prelude::Mesh;
 use serde::{Deserialize, Serialize};
 
 use crate::{
-    prelude::INPUT,
     skeleton::{
         curve_skeleton::CurveSkeleton, 
         orthogonalize::LabeledCurveSkeleton
     },
 };
+
+/// Tag type for contraction-view of skeleton.
+#[derive(Debug, Clone, Default, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub struct CONTRACTION;
 
 pub mod contraction;
 pub mod curve_skeleton;
@@ -20,11 +23,8 @@ pub mod orthogonalize;
 /// Fields will be gradually filled as computation proceeds.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SkeletonData {
-    /// A reference to the original mesh.
-    original_mesh: Arc<Mesh<INPUT>>,
-
-    /// Positions of the contracted mesh vertices.
-    contracted_positions: Option<Vec<Vector3D>>,
+    /// A contracted version of the input mesh.
+    contraction_mesh: Arc<Mesh<CONTRACTION>>,
 
     /// The extracted curve skeleton for the input mesh, with induced surface patches.
     curve_skeleton: Option<CurveSkeleton>,
