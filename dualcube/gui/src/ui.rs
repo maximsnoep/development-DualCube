@@ -13,9 +13,23 @@ use bevy_egui::egui::FontFamily::Proportional;
 use bevy_egui::egui::*;
 use bevy_egui::PrimaryEguiContext;
 use bevy_orbit_camera::automatic::AutomaticRotation;
+use dualcube::prelude::Solution;
 use egui_dock::tab_viewer::OnCloseResponse;
 use egui_dock::{DockArea, DockState, NodeIndex, Style};
 use std::collections::HashMap;
+use std::path::PathBuf;
+use std::sync::Mutex;
+
+// Static channels for async file dialog results
+static PENDING_FILE_LOAD: Mutex<Option<(PathBuf, Configuration)>> = Mutex::new(None);
+static PENDING_FILE_EXPORT: Mutex<Option<(Solution, PathBuf, ExportType)>> = Mutex::new(None);
+
+#[derive(Clone, Copy)]
+enum ExportType {
+    Default,
+    NLR,
+    Dotgraph,
+}
 
 #[derive(Resource)]
 pub struct UiResource {
@@ -337,45 +351,46 @@ fn header(
                     space(ui);
 
                     if sleek_button(ui, "Load") {
-                        if let Some(path) = rfd::FileDialog::new()
-                            .add_filter(
-                                "triangulated geometry",
-                                &["obj", "stl", "dcube", "dsol", "txt"],
-                            )
-                            .pick_file()
-                        {
-                            jobs.write(JobRequest::Run(Box::new(Job::Import {
-                                path,
-                                configuration: configuration.clone(),
-                            })));
-                        }
+                        // Use thread spawn to avoid blocking the main thread (necessary on MacOS)
+                        let config = configuration.clone();
+                        std::thread::spawn(move || {
+                            if let Some(path) = rfd::FileDialog::new()
+                                .add_filter(
+                                    "triangulated geometry",
+                                    &["obj", "stl", "dcube", "dsol", "txt"],
+                                )
+                                .pick_file()
+                            {
+                                PENDING_FILE_LOAD.lock().unwrap().replace((path, config));
+                            }
+                        });
                     }
                     sep(ui);
                     if sleek_button(ui, "Export") {
-                        if let Some(path) = rfd::FileDialog::new().save_file() {
-                            jobs.write(JobRequest::Run(Box::new(Job::Export {
-                                solution: solution.current_solution.clone(),
-                                path,
-                            })));
-                        }
+                        let solution_clone = solution.current_solution.clone();
+                        std::thread::spawn(move || {
+                            if let Some(path) = rfd::FileDialog::new().save_file() {
+                                PENDING_FILE_EXPORT.lock().unwrap().replace((solution_clone, path, ExportType::Default));
+                            }
+                        });
                     }
                     space(ui);
                     if sleek_button(ui, "Export (NLR)") {
-                        if let Some(path) = rfd::FileDialog::new().save_file() {
-                            jobs.write(JobRequest::Run(Box::new(Job::ExportNLR {
-                                solution: solution.current_solution.clone(),
-                                path,
-                            })));
-                        }
+                        let solution_clone = solution.current_solution.clone();
+                        std::thread::spawn(move || {
+                            if let Some(path) = rfd::FileDialog::new().save_file() {
+                                PENDING_FILE_EXPORT.lock().unwrap().replace((solution_clone, path, ExportType::NLR));
+                            }
+                        });
                     }
                     space(ui);
                     if sleek_button(ui, "Export (Honors)") {
-                        if let Some(path) = rfd::FileDialog::new().save_file() {
-                            jobs.write(JobRequest::Run(Box::new(Job::ExportDotgraph {
-                                solution: solution.current_solution.clone(),
-                                path,
-                            })));
-                        }
+                        let solution_clone = solution.current_solution.clone();
+                        std::thread::spawn(move || {
+                            if let Some(path) = rfd::FileDialog::new().save_file() {
+                                PENDING_FILE_EXPORT.lock().unwrap().replace((solution_clone, path, ExportType::Dotgraph));
+                            }
+                        });
                     }
                     sep(ui);
                     if sleek_button(ui, "Quit") {
@@ -844,6 +859,18 @@ pub fn update(
     mut commands: Commands,
     mut automatic_rotation: ResMut<AutomaticRotation>,
 ) -> Result<(), BevyError> {
+    // Poll for async file dialog results
+    if let Some((path, configuration)) = PENDING_FILE_LOAD.lock().unwrap().take() {
+        jobs.write(JobRequest::Run(Box::new(Job::Import { path, configuration })));
+    }
+    if let Some((sol, path, export_type)) = PENDING_FILE_EXPORT.lock().unwrap().take() {
+        match export_type {
+            ExportType::Default => { jobs.write(JobRequest::Run(Box::new(Job::Export { solution: sol, path }))); },
+            ExportType::NLR => { jobs.write(JobRequest::Run(Box::new(Job::ExportNLR { solution: sol, path }))); },
+            ExportType::Dotgraph => { jobs.write(JobRequest::Run(Box::new(Job::ExportDotgraph { solution: sol, path }))); },
+        }
+    }
+
     let axes_texture =
         egui_ctx.add_image(bevy_egui::EguiTextureHandle::Strong(axes_texture.0.clone()));
 
