@@ -6,6 +6,8 @@ pub mod polycube;
 pub mod quad;
 pub mod solutions;
 
+mod skeleton;
+
 pub mod prelude {
     use mehsh::prelude::*;
     use serde::{Deserialize, Serialize};

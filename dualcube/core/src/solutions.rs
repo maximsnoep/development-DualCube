@@ -1,6 +1,7 @@
 use crate::layout::LayoutError;
 use crate::polycube::POLYCUBE;
 use crate::prelude::*;
+use crate::skeleton::SkeletonData;
 use crate::{
     dual::{Dual, PropertyViolationError},
     layout::Layout,
@@ -114,6 +115,8 @@ pub struct Solution {
     occupied: ids::SecMap<EDGE, INPUT, Vec<LoopID>>,
     pub last_loop: Option<LoopID>,
 
+    pub skeleton: Option<SkeletonData>,
+
     pub dual: Result<Dual, PropertyViolationError>,
     pub polycube: Option<Polycube>,
     pub layout: Option<Layout>,
@@ -129,6 +132,7 @@ impl Solution {
         self.dual = Err(PropertyViolationError::default());
         self.polycube = None;
         self.layout = None;
+        self.skeleton = None;
     }
 
     // ***
@@ -141,6 +145,7 @@ impl Solution {
             mesh_ref,
             loops: SlotMap::with_key(),
             occupied: ids::SecMap::new(),
+            skeleton: None,
             dual: Err(PropertyViolationError::default()),
             polycube: None,
             layout: None,
