@@ -105,11 +105,11 @@ impl Polycube {
         let scale = 1. / min_distance;
         for direction in [PrincipalDirection::X, PrincipalDirection::Y, PrincipalDirection::Z] {
             for (level, verts_in_level) in levels[direction as usize].iter() {
-                println!("Level {:?}", level);
+                // println!("Level {:?}", level);
                 let value = level * scale;
                 // round to nearest integer
                 let value = value.round();
-                println!("New level {:?}", value);
+                // println!("New level {:?}", value);
                 for vert in verts_in_level {
                     vert_to_coord.get_mut(vert).unwrap()[direction as usize] = value;
                 }
@@ -117,7 +117,7 @@ impl Polycube {
         }
 
         // Assign the positions to the vertices
-        for vert_id in self.structure.vert_ids() {
+        for vert_id in self.structure.vert_ids() { 
             let [x, y, z] = vert_to_coord[&vert_id];
             self.structure.set_position(vert_id, Vector3D::new(x, y, z));
         }
