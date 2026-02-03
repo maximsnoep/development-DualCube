@@ -33,6 +33,13 @@ pub struct SkeletonData {
     labeled_skeleton: Option<LabeledCurveSkeleton>,
 }
 
+impl SkeletonData {
+    /// Returns a reference to the contracted mesh.
+    pub fn contraction_mesh(&self) -> &Mesh<CONTRACTION> {
+        &self.contraction_mesh
+    }
+}
+
 /// Generates a polycube and a homeomorphism between the input mesh and the polycube,
 /// using skeletonization.
 pub fn get_skeleton_based_mapping(mesh: Arc<Mesh<INPUT>>) -> SkeletonData {
