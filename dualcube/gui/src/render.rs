@@ -56,6 +56,7 @@ pub enum Objects {
     PolycubeMap,
     QuadMesh,
     ContractedMesh,
+    Skeleton,
 }
 
 impl std::fmt::Display for Objects {
@@ -66,6 +67,7 @@ impl std::fmt::Display for Objects {
             Objects::PolycubeMap => "polycube-map",
             Objects::QuadMesh => "quad mesh",
             Objects::ContractedMesh => "contracted mesh",
+            Objects::Skeleton => "skeleton",
         };
         write!(f, "{}", s)
     }
@@ -194,6 +196,7 @@ impl From<Objects> for Vec3 {
             Objects::PolycubeMap => Self::new(0., 1_000., 1_000.),
             Objects::QuadMesh => Self::new(1_000., 0., 1_000.),
             Objects::ContractedMesh => Self::new(2_000., 0., 1_000.),
+            Objects::Skeleton => Self::new(3_000., 0., 1_000.),
         }
     }
 }
@@ -375,6 +378,8 @@ pub fn update_render_settings(
                 | (Objects::QuadMesh, "wireframe")
                 | (Objects::ContractedMesh, "gray")
                 | (Objects::ContractedMesh, "wireframe")
+                | (Objects::Skeleton, "gray")
+                | (Objects::Skeleton, "wireframe")
         )
     };
 
@@ -475,7 +480,7 @@ pub fn respawn_renders(
                                         MainMesh,
                                     ));
                                 }
-                                Objects::QuadMesh | Objects::ContractedMesh => {
+                                Objects::QuadMesh | Objects::ContractedMesh | Objects::Skeleton => {
                                     commands.spawn((
                                         mesh_handle,
                                         MeshMaterial3d(toon_material.clone()),
@@ -1277,6 +1282,24 @@ pub fn refresh(solution: &Solution) -> RenderObjectStore {
                             .to_owned(),
                     );
                 }
+            }
+            // Adds the SKELETON view to our RenderObjectStore, it has:
+            // - gray input mesh
+            // - wireframe
+            Objects::Skeleton => {
+                let mesh = &*solution.mesh_ref;
+                let mut default_color_map = HashMap::new();
+                for face_id in mesh.face_ids() {
+                    default_color_map.insert(face_id, colors::LIGHT_GRAY);
+                }
+
+                render_object_store.add_object(
+                    object,
+                    RenderObject::default()
+                        .mesh(mesh, &default_color_map, "gray")
+                        .gizmo(mesh.gizmos(colors::GRAY), 0.5, -0.00001, "wireframe")
+                        .to_owned(),
+                );
             }
         }
     }
