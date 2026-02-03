@@ -6,12 +6,14 @@ use serde::{Deserialize, Serialize};
 use crate::{
     prelude::INPUT,
     skeleton::{
+        connectivity_surgery::extract_skeleton,
         contraction::{contract_mesh, CONTRACTION},
         curve_skeleton::CurveSkeleton,
         orthogonalize::LabeledCurveSkeleton,
     },
 };
 
+pub mod connectivity_surgery;
 pub mod contraction;
 pub mod curve_skeleton;
 pub mod orthogonalize;
@@ -47,7 +49,7 @@ pub fn get_skeleton_based_mapping(mesh: Arc<Mesh<INPUT>>) -> SkeletonData {
     let contracted_mesh = contract_mesh(&mesh, 50);
 
     // Turn the contracted mesh into a 1D curve skeleton
-    // TODO: connectivity surgery
+    let curve_skeleton = extract_skeleton(&contracted_mesh, &mesh);
 
     // Orthogonalize and label the curve skeleton
     // TODO: orthogonalization
@@ -60,7 +62,7 @@ pub fn get_skeleton_based_mapping(mesh: Arc<Mesh<INPUT>>) -> SkeletonData {
 
     SkeletonData {
         contraction_mesh: Arc::new(contracted_mesh),
-        curve_skeleton: None,
+        curve_skeleton: Some(curve_skeleton),
         labeled_skeleton: None,
     }
 }
