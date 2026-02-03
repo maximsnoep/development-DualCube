@@ -51,6 +51,15 @@ pub fn get_skeleton_based_mapping(mesh: Arc<Mesh<INPUT>>) -> SkeletonData {
     // Turn the contracted mesh into a 1D curve skeleton
     let curve_skeleton = extract_skeleton(&contracted_mesh, &mesh);
 
+    // Smooth region boundaries
+    // TODO: Discrete Dirichlet energy minimization for region boundaries
+
+    // Simplify skeleton to get more coherent features
+    // TODO: simplification
+
+    // Fix necessary conditions for orthogonal embeddability
+    // TODO: find cycles of length 3, subdivide the biggest patch and split all vertices with degree > 6
+
     // Orthogonalize and label the curve skeleton
     // TODO: orthogonalization
 
