@@ -4,15 +4,13 @@ use mehsh::prelude::Mesh;
 use serde::{Deserialize, Serialize};
 
 use crate::{
+    prelude::INPUT,
     skeleton::{
-        curve_skeleton::CurveSkeleton, 
-        orthogonalize::LabeledCurveSkeleton
+        contraction::{contract_mesh, CONTRACTION},
+        curve_skeleton::CurveSkeleton,
+        orthogonalize::LabeledCurveSkeleton,
     },
 };
-
-/// Tag type for contraction-view of skeleton.
-#[derive(Debug, Clone, Default, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
-pub struct CONTRACTION;
 
 pub mod contraction;
 pub mod curve_skeleton;
@@ -33,4 +31,34 @@ pub struct SkeletonData {
     ///  - Each node has an unique integer location,
     ///  - Each edge has a direction and length.
     labeled_skeleton: Option<LabeledCurveSkeleton>,
+}
+
+/// Generates a polycube and a homeomorphism between the input mesh and the polycube,
+/// using skeletonization.
+pub fn get_skeleton_based_mapping(mesh: Arc<Mesh<INPUT>>) -> SkeletonData {
+    // Start by doing contraction
+    let contracted_mesh = contract_mesh(&mesh, 50);
+
+    // Turn the contracted mesh into a 1D curve skeleton
+    // TODO: connectivity surgery
+
+    // Orthogonalize and label the curve skeleton
+    // TODO: orthogonalization
+
+    // Generate polycube based on labeled skeleton
+    // TODO: polycube generation
+
+    // Create the mapping between input mesh and polycube
+    // TODO: mapping
+
+    SkeletonData {
+        contraction_mesh: Arc::new(contracted_mesh),
+        curve_skeleton: None,
+        labeled_skeleton: None,
+    }
+}
+
+/// Generates surface-embedded loops from a polycube and polycube map.
+pub fn generate_loops() {
+    // todo!()
 }

@@ -1,7 +1,7 @@
 use crate::layout::LayoutError;
 use crate::polycube::POLYCUBE;
 use crate::prelude::*;
-use crate::skeleton::SkeletonData;
+use crate::skeleton::{SkeletonData, generate_loops, get_skeleton_based_mapping};
 use crate::{
     dual::{Dual, PropertyViolationError},
     layout::Layout,
@@ -158,6 +158,13 @@ impl Solution {
 
     // Initialize loop structure
     pub fn initialize(&mut self, flow_graphs: &[grapff::fixed::FixedGraph<EdgeID, f64>; 3]) {
+        // Initialize loop structure using skeleton
+        self.skeleton = Some(get_skeleton_based_mapping(self.mesh_ref.clone()));
+        generate_loops();
+
+        return ; // for development purpose comment out the old initialization to see console logs
+        // TODO: use as fallback only
+        // Basic initialization: sample some loops in each direction
         let m = |b: f64| OrderedFloat(b.powi(10));
         let s = |(p, _): (&[EdgeID], f64)| -(p.len() as f64);
 
