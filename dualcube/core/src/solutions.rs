@@ -132,7 +132,7 @@ impl Solution {
         self.dual = Err(PropertyViolationError::default());
         self.polycube = None;
         self.layout = None;
-        self.skeleton = None;
+        // Note: skeleton is NOT cleared here as it's independent of the loop-based solution
     }
 
     // ***
