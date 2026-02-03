@@ -37,8 +37,14 @@ pub enum MeshError<M> {
 }
 
 // Define a new trait that combines all required supertraits.
-pub trait Tag: Default + Debug + Clone + Copy + PartialEq + Eq + std::hash::Hash + Send + Sync {}
-impl<T> Tag for T where T: Default + Debug + Clone + Copy + PartialEq + Eq + std::hash::Hash + Send + Sync {}
+pub trait Tag:
+    Default + Debug + Clone + Copy + PartialEq + Eq + std::hash::Hash + Send + Sync
+{
+}
+impl<T> Tag for T where
+    T: Default + Debug + Clone + Copy + PartialEq + Eq + std::hash::Hash + Send + Sync
+{
+}
 
 #[macro_export]
 macro_rules! define_tag {
@@ -165,7 +171,9 @@ impl<M: Tag> Mesh<M> {
     }
 
     // TODO: make this more ergonamic
-    pub fn neighbor_function_edgepairgraph(&self) -> impl Fn([EdgeKey<M>; 2]) -> Vec<[EdgeKey<M>; 2]> + '_ {
+    pub fn neighbor_function_edgepairgraph(
+        &self,
+    ) -> impl Fn([EdgeKey<M>; 2]) -> Vec<[EdgeKey<M>; 2]> + '_ {
         |[_, to]| {
             let next = self.twin(to);
             vec![[self.next(next), self.next(self.next(next))]]
@@ -193,12 +201,13 @@ impl<M: Tag> Mesh<M> {
         // a center,
         // the distances from the center to each faces along the axis, the faces are orthogonal to the axis.
 
-        let (min, max) = self
-            .verts
-            .vals()
-            .fold((Vector3D::repeat(f64::INFINITY), Vector3D::repeat(f64::NEG_INFINITY)), |(min, max), v| {
-                (min.zip_map(v, f64::min), max.zip_map(v, f64::max))
-            });
+        let (min, max) = self.verts.vals().fold(
+            (
+                Vector3D::repeat(f64::INFINITY),
+                Vector3D::repeat(f64::NEG_INFINITY),
+            ),
+            |(min, max), v| (min.zip_map(v, f64::min), max.zip_map(v, f64::max)),
+        );
 
         let center = (min + max) / 2.0;
         let half_extents = (max - min) / 2.0;
@@ -215,6 +224,37 @@ impl<M: Tag> Mesh<M> {
     pub fn max_dim(&self) -> f64 {
         let (_, half_extents) = self.get_aabb();
         half_extents.max()
+    }
+
+    /// Computes the total volume of the mesh.
+    ///
+    /// Computed as sum of signed tetrahedron volumes from the origin.
+    #[must_use]
+    pub fn volume(&self) -> f64 {
+        let mut volume = 0.0;
+
+        // Iterate over all faces in the mesh
+        for face_id in self.face_ids() {
+            // Get vertices of this face
+            let vertices: Vec<VertKey<M>> = self.vertices(face_id).collect();
+            
+            // For faces with 3+ vertices, triangulate using fan triangulation from first vertex
+            if vertices.len() >= 3 {
+                let p0 = self.position(vertices[0]);
+                
+                // Create triangles by connecting first vertex to consecutive pairs
+                for i in 1..vertices.len() - 1 {
+                    let p1 = self.position(vertices[i]);
+                    let p2 = self.position(vertices[i + 1]);
+                    
+                    // Signed volume of tetrahedron with origin = (p0 . (p1 x p2)) / 6.0
+                    volume += p0.dot(&p1.cross(&p2));
+                }
+            }
+        }
+        
+        // Return absolute value divided by 6.0 to get the actual volume
+        (volume / 6.0).abs()
     }
 }
 
