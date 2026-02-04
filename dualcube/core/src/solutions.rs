@@ -157,7 +157,7 @@ impl Solution {
     }
 
     // Initialize loop structure
-    pub fn initialize(&mut self, flow_graphs: &[grapff::fixed::FixedGraph<EdgeID, f64>; 3]) {
+    pub fn initialize(&mut self, _flow_graphs: &[grapff::fixed::FixedGraph<EdgeID, f64>; 3]) {
         // Initialize loop structure using skeleton
         self.skeleton = Some(get_skeleton_based_mapping(self.mesh_ref.clone()));
         generate_loops();
@@ -165,53 +165,53 @@ impl Solution {
         return ; // for development purpose comment out the old initialization to see console logs
         // TODO: use as fallback only
         // Basic initialization: sample some loops in each direction
-        let m = |b: f64| OrderedFloat(b.powi(10));
-        let s = |(p, _): (&[EdgeID], f64)| -(p.len() as f64);
+        // let m = |b: f64| OrderedFloat(b.powi(10));
+        // let s = |(p, _): (&[EdgeID], f64)| -(p.len() as f64);
 
-        let samples = 3;
-        let x_loops = self.sample_loops(samples, PrincipalDirection::X, flow_graphs, m, s);
-        let y_loops = self.sample_loops(samples, PrincipalDirection::Y, flow_graphs, m, s);
-        let z_loops = self.sample_loops(samples, PrincipalDirection::Z, flow_graphs, m, s);
+        // let samples = 3;
+        // let x_loops = self.sample_loops(samples, PrincipalDirection::X, flow_graphs, m, s);
+        // let y_loops = self.sample_loops(samples, PrincipalDirection::Y, flow_graphs, m, s);
+        // let z_loops = self.sample_loops(samples, PrincipalDirection::Z, flow_graphs, m, s);
 
-        // Compute all n^3 combinations
-        let combinations = x_loops
-            .into_iter()
-            .cartesian_product(y_loops)
-            .cartesian_product(z_loops)
-            .map(|((x, y), z)| (x, y, z))
-            .collect_vec();
+        // // Compute all n^3 combinations
+        // let combinations = x_loops
+        //     .into_iter()
+        //     .cartesian_product(y_loops)
+        //     .cartesian_product(z_loops)
+        //     .map(|((x, y), z)| (x, y, z))
+        //     .collect_vec();
 
-        let candidate_solutions = combinations
-            .into_par()
-            .filter_map(|(x_loop, y_loop, z_loop)| {
-                let mut solution = self.clone();
-                solution.add_loop(Loop {
-                    edges: x_loop,
-                    direction: PrincipalDirection::X,
-                });
-                solution.add_loop(Loop {
-                    edges: y_loop,
-                    direction: PrincipalDirection::Y,
-                });
-                solution.add_loop(Loop {
-                    edges: z_loop,
-                    direction: PrincipalDirection::Z,
-                });
-                if solution.reconstruct_solution(false, 1).is_err() {
-                    None
-                } else {
-                    Some(solution)
-                }
-            })
-            .collect::<Vec<_>>();
+        // let candidate_solutions = combinations
+        //     .into_par()
+        //     .filter_map(|(x_loop, y_loop, z_loop)| {
+        //         let mut solution = self.clone();
+        //         solution.add_loop(Loop {
+        //             edges: x_loop,
+        //             direction: PrincipalDirection::X,
+        //         });
+        //         solution.add_loop(Loop {
+        //             edges: y_loop,
+        //             direction: PrincipalDirection::Y,
+        //         });
+        //         solution.add_loop(Loop {
+        //             edges: z_loop,
+        //             direction: PrincipalDirection::Z,
+        //         });
+        //         if solution.reconstruct_solution(false, 1).is_err() {
+        //             None
+        //         } else {
+        //             Some(solution)
+        //         }
+        //     })
+        //     .collect::<Vec<_>>();
 
-        // Get the best solution based on quality
-        if let Some(best_solution) = candidate_solutions
-            .into_iter()
-            .max_by_key(|solution| OrderedFloat(solution.get_quality().unwrap()))
-        {
-            *self = best_solution;
-        }
+        // // Get the best solution based on quality
+        // if let Some(best_solution) = candidate_solutions
+        //     .into_iter()
+        //     .max_by_key(|solution| OrderedFloat(solution.get_quality().unwrap()))
+        // {
+        //     *self = best_solution;
+        // }
     }
 
     // Evolve loop structure
