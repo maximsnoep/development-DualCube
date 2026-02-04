@@ -24,9 +24,11 @@ use egui_dock::LeafNode;
 use enum_iterator::{all, Sequence};
 use itertools::Itertools;
 use mehsh::prelude::*;
+use mehsh::integrations::bevy::MeshBuilder;
 use std::collections::{HashMap, HashSet};
 use std::ops::Index;
 use wgpu_types::BlendState;
+
 
 const DEFAULT_CAMERA_EYE: Vec3 = Vec3::new(25.0, 25.0, 25.0);
 const DEFAULT_CAMERA_TARGET: Vec3 = Vec3::new(0., 0., 0.);
@@ -161,6 +163,10 @@ impl RenderObject {
             label,
             RenderFeature::new(RenderAsset::Gizmo((gizmo, width, depth))),
         )
+    }
+
+    pub fn bevy_mesh(&mut self, bevy_mesh: bevy::mesh::Mesh, label: &str) -> &mut Self {
+        self.add(label, RenderFeature::new(RenderAsset::Mesh(bevy_mesh)))
     }
 }
 
@@ -871,6 +877,7 @@ pub fn refresh(solution: &Solution) -> RenderObjectStore {
                 let mut gizmos_flat_paths = GizmoAsset::new();
                 let mut gizmos_raw_skeleton = GizmoAsset::new();
                 let mut gizmos_cleaned_skeleton = GizmoAsset::new();
+                let mut patch_mesh: Option<bevy::mesh::Mesh> = None;
                 let mut granulated_mesh = &mehsh::prelude::Mesh::<INPUT>::default();
                 let mut default_color_map = HashMap::new();
                 let mut black_color_map = HashMap::new();
@@ -1007,6 +1014,8 @@ pub fn refresh(solution: &Solution) -> RenderObjectStore {
                     if let Some(cleaned_skeleton) = skeleton_data.cleaned_skeleton() {
                         gizmos_cleaned_skeleton =
                             create_skeleton_gizmos(cleaned_skeleton, translation, scale);
+                        // Create patch visualization using the cleaned skeleton
+                        patch_mesh = Some(create_patch_mesh(cleaned_skeleton, input, translation, scale));
                     }
                 }
 
@@ -1235,42 +1244,47 @@ pub fn refresh(solution: &Solution) -> RenderObjectStore {
                     );
                 }
 
-                render_object_store.add_object(
-                    object,
-                    RenderObject::default()
-                        .mesh(input, &default_color_map, "gray")
-                        .mesh(input, &black_color_map, "black")
-                        .mesh(granulated_mesh, &color_map_segmentation, "segmentation")
-                        .mesh(granulated_mesh, &color_map_alignment, "alignment")
-                        .gizmo(input.gizmos(colors::GRAY), 0.5, -0.00001, "wireframe")
-                        .gizmo(gizmos_xloops, 3., -0.0001, "x-loops")
-                        .gizmo(gizmos_yloops, 3., -0.00011, "y-loops")
-                        .gizmo(gizmos_zloops, 3., -0.000111, "z-loops")
-                        .gizmo(gizmos_paths, 4., -0.0001, "paths")
-                        .gizmo(gizmos_flat_paths, 2., -0.00011, "flat paths")
-                        // .mesh(input, &color_map_flag, "flag")
-                        // .gizmo(gizmos_flag_paths, 2., -1e-4, "flag paths")
-                        .gizmo(gizmos_features, 5., -0.00012, "features")
-                        .gizmo(granulated_mesh_gizmos, 0.5, -0.00001, "refined wireframe")
-                        .gizmo(gizmos_raw_skeleton, 25., -0.00014, "raw skeleton")
-                        .gizmo(gizmos_cleaned_skeleton, 25., -0.00015, "cleaned skeleton")
-                        .gizmo(gizmos_xfield, 1., -0.0001, "x-vector field")
-                        .gizmo(gizmos_yfield, 1., -0.00011, "y-vector field")
-                        .gizmo(gizmos_zfield, 1., -0.000111, "z-vector field")
-                        .gizmo(
-                            gizmos_curvature_max,
-                            2.,
-                            -0.00012,
-                            "maximum principal curvature",
-                        )
-                        .gizmo(
-                            gizmos_curvature_min,
-                            2.,
-                            -0.00013,
-                            "minimum principal curvature",
-                        )
-                        .to_owned(),
-                );
+                let mut render_obj = RenderObject::default();
+                render_obj
+                    .mesh(input, &default_color_map, "gray")
+                    .mesh(input, &black_color_map, "black")
+                    .mesh(granulated_mesh, &color_map_segmentation, "segmentation")
+                    .mesh(granulated_mesh, &color_map_alignment, "alignment")
+                    .gizmo(input.gizmos(colors::GRAY), 0.5, -0.00001, "wireframe")
+                    .gizmo(gizmos_xloops, 3., -0.0001, "x-loops")
+                    .gizmo(gizmos_yloops, 3., -0.00011, "y-loops")
+                    .gizmo(gizmos_zloops, 3., -0.000111, "z-loops")
+                    .gizmo(gizmos_paths, 4., -0.0001, "paths")
+                    .gizmo(gizmos_flat_paths, 2., -0.00011, "flat paths")
+                    // .mesh(input, &color_map_flag, "flag")
+                    // .gizmo(gizmos_flag_paths, 2., -1e-4, "flag paths")
+                    .gizmo(gizmos_features, 5., -0.00012, "features")
+                    .gizmo(granulated_mesh_gizmos, 0.5, -0.00001, "refined wireframe")
+                    .gizmo(gizmos_raw_skeleton, 25., -0.00014, "raw skeleton")
+                    .gizmo(gizmos_cleaned_skeleton, 25., -0.00015, "cleaned skeleton");
+                
+                if let Some(pm) = patch_mesh {
+                    render_obj.bevy_mesh(pm, "patches");
+                }
+                
+                render_obj
+                    .gizmo(gizmos_xfield, 1., -0.0001, "x-vector field")
+                    .gizmo(gizmos_yfield, 1., -0.00011, "y-vector field")
+                    .gizmo(gizmos_zfield, 1., -0.000111, "z-vector field")
+                    .gizmo(
+                        gizmos_curvature_max,
+                        2.,
+                        -0.00012,
+                        "maximum principal curvature",
+                    )
+                    .gizmo(
+                        gizmos_curvature_min,
+                        2.,
+                        -0.00013,
+                        "minimum principal curvature",
+                    );
+
+                render_object_store.add_object(object, render_obj);
             }
             // Adds the CONTRACTED MESH to our RenderObjectStore, it has:
             // - gray mesh
@@ -1353,4 +1367,146 @@ pub fn create_skeleton_gizmos(
     }
 
     gizmos
+}
+
+/// Creates a Bevy mesh for visualizing surface patches as filled triangles.
+pub fn create_patch_mesh(
+    curve_skeleton: &CurveSkeleton,
+    mesh: &mehsh::prelude::Mesh<INPUT>,
+    translation: Vector3D,
+    scale: f64,
+) -> bevy::mesh::Mesh {
+    // Build a mapping from vertex to region index
+    let mut vertex_to_region: HashMap<VertKey<INPUT>, usize> = HashMap::new();
+    for (region_idx, node_idx) in curve_skeleton.node_indices().enumerate() {
+        let (_, vertices) = &curve_skeleton[node_idx];
+        for &vert_key in vertices {
+            vertex_to_region.insert(vert_key, region_idx);
+        }
+    }
+
+    let mut builder = MeshBuilder::default();
+
+    // Helper to get color for a region
+    let region_color = |region: usize| -> [f32; 3] {
+        let hue = (region as f32 * 137.508) % 360.0;
+        let srgb = bevy::color::Srgba::from(bevy::color::Hsla::new(hue, 0.85, 0.50, 1.0));
+        [srgb.red, srgb.green, srgb.blue]
+    };
+
+    // Helper to transform and add a vertex to the builder
+    let mut add_vertex = |pos: Vector3D, normal: Vector3D, color: &[f32; 3]| {
+        let transformed_pos = pos * scale + translation;
+        builder.add_vertex(&transformed_pos, &normal, color);
+    };
+
+    // For each face, handle based on region assignment
+    for face_id in mesh.face_ids() {
+        let face_verts: Vec<_> = mesh.vertices(face_id).collect();
+        if face_verts.len() != 3 {
+            continue; // Skip non-triangular faces
+        }
+
+        let v0 = face_verts[0];
+        let v1 = face_verts[1];
+        let v2 = face_verts[2];
+
+        let p0 = mesh.position(v0);
+        let p1 = mesh.position(v1);
+        let p2 = mesh.position(v2);
+
+        let n0 = mesh.normal(v0);
+        let n1 = mesh.normal(v1);
+        let n2 = mesh.normal(v2);
+
+        // Get the region for each vertex
+        let r0 = vertex_to_region.get(&v0).copied();
+        let r1 = vertex_to_region.get(&v1).copied();
+        let r2 = vertex_to_region.get(&v2).copied();
+
+        match (r0, r1, r2) {
+            // All vertices have regions
+            (Some(r0), Some(r1), Some(r2)) => {
+                if r0 == r1 && r1 == r2 {
+                    // All same region, simply draw the triangle
+                    let color = region_color(r0);
+                    add_vertex(p0, n0, &color);
+                    add_vertex(p1, n1, &color);
+                    add_vertex(p2, n2, &color);
+                } else if r0 == r1 {
+                    // v0, v1 share region X; v2 is region Y
+                    // a=v0, b=v1, c=v2
+                    split_triangle(
+                        &mut add_vertex,
+                        p0, p1, p2, n0, n1, n2, r0, r2, &region_color,
+                    );
+                } else if r1 == r2 {
+                    // v1, v2 share region X; v0 is region Y
+                    // a=v1, b=v2, c=v0
+                    split_triangle(
+                        &mut add_vertex,
+                        p1, p2, p0, n1, n2, n0, r1, r0, &region_color,
+                    );
+                } else if r0 == r2 {
+                    // v0, v2 share region X; v1 is region Y
+                    // Use cyclic rotation (v2, v0, v1) to maintain winding order
+                    // a=v2, b=v0, c=v1
+                    split_triangle(
+                        &mut add_vertex,
+                        p2, p0, p1, n2, n0, n1, r0, r1, &region_color,
+                    );
+                } else {
+                    unreachable!("Triangle with all three vertices in different regions encountered.");
+                    // This case is impossible for a valid skeleton.
+                }
+            }
+            _ => {}
+        }
+    }
+
+    builder.build()
+}
+
+/// Splits a triangle where vertices a,b belong to region_x and vertex c belongs to region_y.
+/// Creates:
+/// - (a, b, ac) and (b, bc, ac) for region X
+/// - (ac, bc, c) for region Y
+/// where ac = midpoint(a,c) and bc = midpoint(b,c)
+/// Maintains the same winding order as the original triangle (a, b, c).
+fn split_triangle<F, C>(
+    add_vertex: &mut F,
+    pa: Vector3D, pb: Vector3D, pc: Vector3D,
+    na: Vector3D, nb: Vector3D, nc: Vector3D,
+    region_x: usize, region_y: usize,
+    region_color: &C,
+)
+where
+    F: FnMut(Vector3D, Vector3D, &[f32; 3]),
+    C: Fn(usize) -> [f32; 3],
+{
+    // Compute midpoints
+    let p_ac = (pa + pc) * 0.5;
+    let p_bc = (pb + pc) * 0.5;
+    
+    // Interpolate normals at midpoints for mesh
+    let n_ac = ((na + nc) * 0.5).normalize();
+    let n_bc = ((nb + nc) * 0.5).normalize();
+
+    let color_x = region_color(region_x);
+    let color_y = region_color(region_y);
+
+    // Triangle 1 for region X: (a, b, ac)
+    add_vertex(pa, na, &color_x);
+    add_vertex(pb, nb, &color_x);
+    add_vertex(p_ac, n_ac, &color_x);
+
+    // Triangle 2 for region X: (b, bc, ac)
+    add_vertex(pb, nb, &color_x);
+    add_vertex(p_bc, n_bc, &color_x);
+    add_vertex(p_ac, n_ac, &color_x);
+
+    // Triangle for region Y: (ac, bc, c)
+    add_vertex(p_ac, n_ac, &color_y);
+    add_vertex(p_bc, n_bc, &color_y);
+    add_vertex(pc, nc, &color_y);
 }
