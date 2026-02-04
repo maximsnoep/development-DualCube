@@ -40,6 +40,11 @@ impl SkeletonData {
     pub fn contraction_mesh(&self) -> &Mesh<CONTRACTION> {
         &self.contraction_mesh
     }
+
+    /// Returns a reference to the curve skeleton if it has been computed.
+    pub fn curve_skeleton(&self) -> Option<&CurveSkeleton> {
+        self.curve_skeleton.as_ref()
+    }
 }
 
 /// Generates a polycube and a homeomorphism between the input mesh and the polycube,

@@ -6,7 +6,7 @@ pub mod polycube;
 pub mod quad;
 pub mod solutions;
 
-mod skeleton;
+pub mod skeleton;
 
 pub mod prelude {
     use mehsh::prelude::*;
@@ -14,6 +14,7 @@ pub mod prelude {
     use std::fmt::Display;
 
     pub use crate::polycube::Polycube;
+    pub use crate::skeleton::curve_skeleton::CurveSkeleton;
     pub use crate::solutions::Solution;
 
     #[derive(Default, Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
