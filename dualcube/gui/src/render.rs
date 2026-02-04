@@ -366,6 +366,7 @@ pub fn update_render_settings(
             (object, label),
             (Objects::InputMesh, "gray")
                 | (Objects::InputMesh, "wireframe")
+                | (Objects::InputMesh, "skeleton")
                 | (Objects::Polycube, "gray")
                 | (Objects::Polycube, "paths")
                 | (Objects::Polycube, "flat paths")
@@ -375,6 +376,7 @@ pub fn update_render_settings(
                 | (Objects::QuadMesh, "wireframe")
                 | (Objects::ContractedMesh, "gray")
                 | (Objects::ContractedMesh, "wireframe")
+                | (Objects::ContractedMesh, "skeleton")
         )
     };
 
@@ -869,6 +871,7 @@ pub fn refresh(solution: &Solution) -> RenderObjectStore {
                 let mut gizmos_zloops = GizmoAsset::new();
                 let mut gizmos_paths = GizmoAsset::new();
                 let mut gizmos_flat_paths = GizmoAsset::new();
+                let mut gizmos_skeleton = GizmoAsset::new();
                 let mut granulated_mesh = &mehsh::prelude::Mesh::<INPUT>::default();
                 let mut default_color_map = HashMap::new();
                 let mut black_color_map = HashMap::new();
@@ -994,6 +997,13 @@ pub fn refresh(solution: &Solution) -> RenderObjectStore {
                         let u_transformed = world_to_view(u, translation, scale);
                         let v_transformed = world_to_view(v, translation, scale);
                         gizmos_features.line(u_transformed, v_transformed, color);
+                    }
+                }
+
+                // Visualize skeleton if available
+                if let Some(skeleton_data) = &solution.skeleton {
+                    if let Some(curve_skeleton) = skeleton_data.curve_skeleton() {
+                        gizmos_skeleton = create_skeleton_gizmos(curve_skeleton, translation, scale);
                     }
                 }
 
@@ -1239,6 +1249,7 @@ pub fn refresh(solution: &Solution) -> RenderObjectStore {
                         // .gizmo(gizmos_flag_paths, 2., -1e-4, "flag paths")
                         .gizmo(gizmos_features, 5., -0.00012, "features")
                         .gizmo(granulated_mesh_gizmos, 0.5, -0.00001, "refined wireframe")
+                        .gizmo(gizmos_skeleton, 25., -0.00014, "skeleton")
                         .gizmo(gizmos_xfield, 1., -0.0001, "x-vector field")
                         .gizmo(gizmos_yfield, 1., -0.00011, "y-vector field")
                         .gizmo(gizmos_zfield, 1., -0.000111, "z-vector field")
@@ -1260,20 +1271,28 @@ pub fn refresh(solution: &Solution) -> RenderObjectStore {
             // Adds the CONTRACTED MESH to our RenderObjectStore, it has:
             // - gray mesh
             // - wireframe
+            // - skeleton
             Objects::ContractedMesh => {
-                if let Some(skeleton) = &solution.skeleton {
-                    let contracted = skeleton.contraction_mesh();
+                if let Some(skeleton_data) = &solution.skeleton {
+                    let contracted = skeleton_data.contraction_mesh();
+                    let (scale, translation) = contracted.scale_translation();
                     let mut default_color_map = HashMap::new();
                     for face_id in contracted.face_ids() {
                         default_color_map.insert(face_id, colors::LIGHT_GRAY);
                     }
 
+                    // Build skeleton gizmos
+                    let gizmos_skeleton = skeleton_data
+                        .curve_skeleton()
+                        .map(|skel| create_skeleton_gizmos(skel, translation, scale))
+                        .unwrap_or_else(GizmoAsset::new);
 
                     render_object_store.add_object(
                         object,
                         RenderObject::default()
                             .mesh(contracted, &default_color_map, "gray")
                             .gizmo(contracted.gizmos(colors::WHITE), 0.75, -0.00001, "wireframe")
+                            .gizmo(gizmos_skeleton, 25., -0.00014, "skeleton")
                             .to_owned(),
                     );
                 }
@@ -1292,4 +1311,34 @@ pub fn world_to_view(v: Vector3D, translation: Vector3D, scale: f64) -> Vec3 {
 pub fn view_to_world(v: Vec3, translation: Vector3D, scale: f64) -> Vector3D {
     let v_world = Vector3D::new(v.x as f64, v.y as f64, v.z as f64);
     invert_transform_coordinates(v_world, translation, scale)
+}
+
+/// Creates gizmos for visualizing a curve skeleton with spheres for nodes and lines for edges.
+pub fn create_skeleton_gizmos(
+    curve_skeleton: &CurveSkeleton,
+    translation: Vector3D,
+    scale: f64,
+) -> GizmoAsset {
+    let mut gizmos = GizmoAsset::new();
+    let skel_color = colors::to_bevy(colors::LIGHT_GRAY);
+    let node_radius = 0.2;
+
+    // Draw edges
+    for edge in curve_skeleton.edge_indices() {
+        let (a, b) = curve_skeleton.edge_endpoints(edge).unwrap();
+        let pos_a = curve_skeleton[a].0;
+        let pos_b = curve_skeleton[b].0;
+        let a_view = world_to_view(pos_a, translation, scale);
+        let b_view = world_to_view(pos_b, translation, scale);
+        gizmos.line(a_view, b_view, skel_color);
+    }
+
+    // Draw nodes
+    for node_idx in curve_skeleton.node_indices() {
+        let pos = curve_skeleton[node_idx].0;
+        let center = world_to_view(pos, translation, scale);
+        gizmos.sphere(Isometry3d::from_translation(center), node_radius, skel_color);
+    }
+
+    gizmos
 }
