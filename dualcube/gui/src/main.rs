@@ -56,7 +56,7 @@ pub struct Configuration {
 
     pub interactive_mode: InteractiveMode,
 
-    pub window_shows_object: [Objects; 5],
+    pub window_shows_object: [Objects; 4],
 
     pub camera_rotate_sensitivity: f32,
     pub camera_translate_sensitivity: f32,
@@ -93,7 +93,6 @@ impl Default for Configuration {
                 Objects::QuadMesh, 
                 Objects::Polycube, 
                 Objects::ContractedMesh,
-                Objects::Skeleton,
                 ],
             clear_color: [27, 27, 27],
             // clear_color: [255, 255, 255],
