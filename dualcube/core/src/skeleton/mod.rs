@@ -10,13 +10,16 @@ use crate::{
         contraction::{contract_mesh, CONTRACTION},
         curve_skeleton::CurveSkeleton,
         orthogonalize::LabeledCurveSkeleton,
+        simplify::simplify_skeleton,
     },
 };
 
-pub mod connectivity_surgery;
-pub mod contraction;
 pub mod curve_skeleton;
-pub mod orthogonalize;
+
+mod connectivity_surgery;
+mod contraction;
+mod orthogonalize;
+mod simplify;
 
 /// Holds all relevant information for skeleton-based polycube initialization.
 ///
@@ -26,8 +29,12 @@ pub struct SkeletonData {
     /// A contracted version of the input mesh.
     contraction_mesh: Arc<Mesh<CONTRACTION>>,
 
-    /// The extracted curve skeleton for the input mesh, with induced surface patches.
-    curve_skeleton: Option<CurveSkeleton>,
+    /// The extracted curve skeleton for the input mesh, with induced surface patches,
+    /// directly from connectivity surgery.
+    raw_curve_skeleton: Option<CurveSkeleton>,
+
+    /// Simplified version of the raw curve skeleton.
+    cleaned_skeleton: Option<CurveSkeleton>,
 
     /// The orthogonalized and labeled curve skeleton:
     ///  - Each node has an unique integer location,
@@ -43,7 +50,12 @@ impl SkeletonData {
 
     /// Returns a reference to the curve skeleton if it has been computed.
     pub fn curve_skeleton(&self) -> Option<&CurveSkeleton> {
-        self.curve_skeleton.as_ref()
+        self.raw_curve_skeleton.as_ref()
+    }
+
+    /// Returns a reference to the cleaned skeleton if it has been computed.
+    pub fn cleaned_skeleton(&self) -> Option<&CurveSkeleton> {
+        self.cleaned_skeleton.as_ref()
     }
 }
 
@@ -57,7 +69,8 @@ pub fn get_skeleton_based_mapping(mesh: Arc<Mesh<INPUT>>) -> SkeletonData {
     let curve_skeleton = extract_skeleton(&contracted_mesh, &mesh);
 
     // Simplify skeleton to get more coherent features
-    // TODO: simplification
+    let mut cleaned_skeleton = curve_skeleton.clone();
+    simplify_skeleton(&mut cleaned_skeleton, &mesh);
 
     // Smooth region boundaries
     // TODO: Discrete Dirichlet energy minimization for region boundaries
@@ -76,7 +89,8 @@ pub fn get_skeleton_based_mapping(mesh: Arc<Mesh<INPUT>>) -> SkeletonData {
 
     SkeletonData {
         contraction_mesh: Arc::new(contracted_mesh),
-        curve_skeleton: Some(curve_skeleton),
+        raw_curve_skeleton: Some(curve_skeleton),
+        cleaned_skeleton: Some(cleaned_skeleton),
         labeled_skeleton: None,
     }
 }

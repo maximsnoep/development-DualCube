@@ -366,7 +366,6 @@ pub fn update_render_settings(
             (object, label),
             (Objects::InputMesh, "gray")
                 | (Objects::InputMesh, "wireframe")
-                | (Objects::InputMesh, "skeleton")
                 | (Objects::Polycube, "gray")
                 | (Objects::Polycube, "paths")
                 | (Objects::Polycube, "flat paths")
@@ -376,7 +375,6 @@ pub fn update_render_settings(
                 | (Objects::QuadMesh, "wireframe")
                 | (Objects::ContractedMesh, "gray")
                 | (Objects::ContractedMesh, "wireframe")
-                | (Objects::ContractedMesh, "skeleton")
         )
     };
 
@@ -871,7 +869,8 @@ pub fn refresh(solution: &Solution) -> RenderObjectStore {
                 let mut gizmos_zloops = GizmoAsset::new();
                 let mut gizmos_paths = GizmoAsset::new();
                 let mut gizmos_flat_paths = GizmoAsset::new();
-                let mut gizmos_skeleton = GizmoAsset::new();
+                let mut gizmos_raw_skeleton = GizmoAsset::new();
+                let mut gizmos_cleaned_skeleton = GizmoAsset::new();
                 let mut granulated_mesh = &mehsh::prelude::Mesh::<INPUT>::default();
                 let mut default_color_map = HashMap::new();
                 let mut black_color_map = HashMap::new();
@@ -1000,10 +999,14 @@ pub fn refresh(solution: &Solution) -> RenderObjectStore {
                     }
                 }
 
-                // Visualize skeleton if available
+                // Visualize skeleton(s) if available
                 if let Some(skeleton_data) = &solution.skeleton {
                     if let Some(curve_skeleton) = skeleton_data.curve_skeleton() {
-                        gizmos_skeleton = create_skeleton_gizmos(curve_skeleton, translation, scale);
+                        gizmos_raw_skeleton = create_skeleton_gizmos(curve_skeleton, translation, scale);
+                    }
+                    if let Some(cleaned_skeleton) = skeleton_data.cleaned_skeleton() {
+                        gizmos_cleaned_skeleton =
+                            create_skeleton_gizmos(cleaned_skeleton, translation, scale);
                     }
                 }
 
@@ -1249,7 +1252,8 @@ pub fn refresh(solution: &Solution) -> RenderObjectStore {
                         // .gizmo(gizmos_flag_paths, 2., -1e-4, "flag paths")
                         .gizmo(gizmos_features, 5., -0.00012, "features")
                         .gizmo(granulated_mesh_gizmos, 0.5, -0.00001, "refined wireframe")
-                        .gizmo(gizmos_skeleton, 25., -0.00014, "skeleton")
+                        .gizmo(gizmos_raw_skeleton, 25., -0.00014, "raw skeleton")
+                        .gizmo(gizmos_cleaned_skeleton, 25., -0.00015, "cleaned skeleton")
                         .gizmo(gizmos_xfield, 1., -0.0001, "x-vector field")
                         .gizmo(gizmos_yfield, 1., -0.00011, "y-vector field")
                         .gizmo(gizmos_zfield, 1., -0.000111, "z-vector field")
@@ -1271,7 +1275,8 @@ pub fn refresh(solution: &Solution) -> RenderObjectStore {
             // Adds the CONTRACTED MESH to our RenderObjectStore, it has:
             // - gray mesh
             // - wireframe
-            // - skeleton
+            // - raw skeleton
+            // - cleaned skeleton
             Objects::ContractedMesh => {
                 if let Some(skeleton_data) = &solution.skeleton {
                     let contracted = skeleton_data.contraction_mesh();
@@ -1282,8 +1287,14 @@ pub fn refresh(solution: &Solution) -> RenderObjectStore {
                     }
 
                     // Build skeleton gizmos
-                    let gizmos_skeleton = skeleton_data
+                    // Raw skeleton
+                    let raw_gizmos_skeleton = skeleton_data
                         .curve_skeleton()
+                        .map(|skel| create_skeleton_gizmos(skel, translation, scale))
+                        .unwrap_or_else(GizmoAsset::new);
+                                        // Cleaned skeleton
+                    let cleaned_gizmos_skeleton = skeleton_data
+                        .cleaned_skeleton()
                         .map(|skel| create_skeleton_gizmos(skel, translation, scale))
                         .unwrap_or_else(GizmoAsset::new);
 
@@ -1292,7 +1303,8 @@ pub fn refresh(solution: &Solution) -> RenderObjectStore {
                         RenderObject::default()
                             .mesh(contracted, &default_color_map, "gray")
                             .gizmo(contracted.gizmos(colors::WHITE), 0.75, -0.00001, "wireframe")
-                            .gizmo(gizmos_skeleton, 25., -0.00014, "skeleton")
+                            .gizmo(raw_gizmos_skeleton, 25., -0.00014, "raw skeleton")
+                            .gizmo(cleaned_gizmos_skeleton, 25., -0.00015, "cleaned skeleton")
                             .to_owned(),
                     );
                 }
