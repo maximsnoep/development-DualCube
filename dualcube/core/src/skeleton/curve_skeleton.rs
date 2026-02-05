@@ -1,6 +1,7 @@
-use std::collections::{HashMap, HashSet};
+use std::collections::{HashMap, HashSet, VecDeque};
 
 use faer::{Mat, Side, prelude::Solve, sparse::{SparseColMat, Triplet, linalg::solvers::{Llt, SymbolicLlt}}};
+use log::{error, warn};
 use mehsh::prelude::{HasNeighbors, Mesh, Vector3D, VertKey};
 use petgraph::graph::{EdgeIndex, NodeIndex, UnGraph};
 
@@ -26,7 +27,10 @@ pub trait CurveSkeletonManipulation {
 
     /// Smooths the boundaries between surface patches induced by the skeleton, by
     /// shifting which surface vertices are assigned which skeleton node along the boundary.
-    fn smooth_boundaries(&mut self);
+    ///
+    /// Uses harmonic fields to re-partition vertices between adjacent regions while
+    /// preserving original region sizes and connectivity.
+    fn smooth_boundaries(&mut self, mesh: &Mesh<INPUT>);
 
     /// Subdivides the given edge by inserting a new node at its midpoint.
     /// Geometrically, this means inserting a region where the old boundary was.
@@ -89,8 +93,141 @@ impl CurveSkeletonManipulation for CurveSkeleton {
         self.remove_node(node_index);
     }
 
-    fn smooth_boundaries(&mut self) {
-        todo!()
+    fn smooth_boundaries(&mut self, mesh: &Mesh<INPUT>) {
+        // Collect edge indices upfront since we don't change graph topology (only node weights).
+        let edges: Vec<_> = self.edge_indices().collect();
+
+        // We might update a region multiple times (if it has multiple neighbors).
+        for edge_idx in edges {
+            let (node_a, node_b) = match self.edge_endpoints(edge_idx) {
+                Some(ep) => ep,
+                None => continue,
+            };
+
+            // Snapshot current sizes to preserve vertex amounts // TODO: area/volume might be better?
+            let size_a = self.node_weight(node_a).unwrap().1.len();
+            let size_b = self.node_weight(node_b).unwrap().1.len();
+            let target_total = size_a + size_b;
+
+            // If regions are tiny, skip
+            if target_total < 4 {
+                continue;
+            }
+
+            // Identify Boundaries (Anchors)
+            let vertex_map = get_vertex_map(self);
+
+            let mut fixed_a: HashSet<VKey> = HashSet::new();
+            let mut fixed_b: HashSet<VKey> = HashSet::new();
+
+            // Check external connections for Node A
+            let vertices_a = self.node_weight(node_a).unwrap().1.clone();
+            for &v in &vertices_a {
+                for nbr in mesh.neighbors(v) {
+                    if let Some(&nbr_region) = vertex_map.get(&nbr) {
+                        if nbr_region != node_a && nbr_region != node_b {
+                            fixed_a.insert(v);
+                            break;
+                        }
+                    }
+                }
+            }
+
+            // Check external connections for Node B
+            let vertices_b = self.node_weight(node_b).unwrap().1.clone();
+            for &v in &vertices_b {
+                for nbr in mesh.neighbors(v) {
+                    if let Some(&nbr_region) = vertex_map.get(&nbr) {
+                        if nbr_region != node_a && nbr_region != node_b {
+                            fixed_b.insert(v);
+                            break;
+                        }
+                    }
+                }
+            }
+
+            // If a region is a leaf, it has no external boundary. We must pin its "tip".
+            if fixed_a.is_empty() {
+                let seeds = get_interface_seeds(&vertices_a, node_b, &vertex_map, mesh);
+                if let Some(v) = find_furthest_vertex(&vertices_a, &seeds, mesh) {
+                    fixed_a.insert(v);
+                }
+            }
+            if fixed_b.is_empty() {
+                let seeds = get_interface_seeds(&vertices_b, node_a, &vertex_map, mesh);
+                if let Some(v) = find_furthest_vertex(&vertices_b, &seeds, mesh) {
+                    fixed_b.insert(v);
+                }
+            }
+
+            // Safety checks
+            if fixed_a.is_empty() || fixed_b.is_empty() {
+                continue;
+            }
+            if !fixed_a.is_disjoint(&fixed_b) {
+                continue;
+            }
+
+            // Solve Harmonic Field
+            let mut all_vertices = Vec::with_capacity(target_total);
+            all_vertices.extend_from_slice(&vertices_a);
+            all_vertices.extend_from_slice(&vertices_b);
+
+            let computed_values = match solve_harmonic_scalar_field(
+                &all_vertices,
+                &fixed_a,
+                &fixed_b,
+                mesh,
+            ) {
+                Ok(vals) => vals,
+                Err(e) => {
+                    error!("Harmonic field solve failed for edge {:?}: {:?}", edge_idx, e);
+                    continue;
+                }
+            };
+
+            // Re-assign Vertices based on Volume Fraction
+            let mut valued_vertices: Vec<(f64, VKey)> = Vec::with_capacity(target_total);
+
+            // Add computed free vertices
+            for (v, val) in computed_values {
+                valued_vertices.push((val, v));
+            }
+            // Add fixed vertices (0.0 for A, 1.0 for B)
+            for &v in &fixed_a {
+                valued_vertices.push((0.0, v));
+            }
+            for &v in &fixed_b {
+                valued_vertices.push((1.0, v));
+            }
+
+            // Sort by scalar field
+            valued_vertices
+                .sort_by(|a, b| a.0.partial_cmp(&b.0).unwrap_or(std::cmp::Ordering::Equal));
+
+            // Split at the index that restores the original size of Region A.
+            // Clamp split index to ensure neither region becomes empty.
+            let min_size = 1;
+            let max_idx = valued_vertices.len().saturating_sub(min_size);
+            let split_idx = size_a.clamp(min_size, max_idx);
+
+            let (new_a_slice, new_b_slice) = valued_vertices.split_at(split_idx);
+
+            let new_verts_a: Vec<VKey> = new_a_slice.iter().map(|&(_, v)| v).collect();
+            let new_verts_b: Vec<VKey> = new_b_slice.iter().map(|&(_, v)| v).collect();
+
+            // If the new assignment creates islands, revert this refinement.
+            if is_connected(&new_verts_a, mesh) && is_connected(&new_verts_b, mesh) {
+                // Commit changes
+                self.node_weight_mut(node_a).unwrap().1 = new_verts_a;
+                self.node_weight_mut(node_b).unwrap().1 = new_verts_b;
+            } else {
+                warn!(
+                    "Boundary refinement failed connectivity check for edge {:?}, skipping.",
+                    edge_idx
+                );
+            }
+        }
     }
 
     fn subdivide_edge(&mut self, edge_index: EdgeIndex) {
@@ -102,6 +239,7 @@ impl CurveSkeletonManipulation for CurveSkeleton {
     }
 }
 
+#[derive(Debug)]
 enum HarmonicFieldError {
     /// No free vertices to solve for (e.g. extremely coarse mesh).
     NoFreeVertices,
@@ -214,4 +352,112 @@ fn solve_harmonic_scalar_field(
     }
 
     Ok(result)
+}
+
+/// Inverts the mapping from skeleton nodes to mesh vertices.
+///
+/// Returns a map from mesh vertex key to the skeleton node that owns it.
+fn get_vertex_map(skeleton: &CurveSkeleton) -> HashMap<VKey, NodeIndex> {
+    let mut vertex_map = HashMap::new();
+
+    for node_idx in skeleton.node_indices() {
+        if let Some((_, vertices)) = skeleton.node_weight(node_idx) {
+            for &vertex in vertices {
+                vertex_map.insert(vertex, node_idx);
+            }
+        }
+    }
+
+    vertex_map
+}
+
+/// Finds vertices in `source_verts` that have a neighbor belonging to `target_node`.
+///
+/// These "interface seeds" are vertices at the boundary between two regions.
+fn get_interface_seeds(
+    source_verts: &[VKey],
+    target_node: NodeIndex,
+    vertex_map: &HashMap<VKey, NodeIndex>,
+    mesh: &Mesh<INPUT>,
+) -> Vec<VKey> {
+    let mut seeds = Vec::new();
+    for &v in source_verts {
+        for nbr in mesh.neighbors(v) {
+            if vertex_map.get(&nbr) == Some(&target_node) {
+                seeds.push(v);
+                break;
+            }
+        }
+    }
+    seeds
+}
+
+/// BFS connectivity check for a subset of mesh vertices.
+///
+/// Returns true if all vertices in the slice are connected via mesh edges
+/// that stay within the vertex set.
+fn is_connected(vertices: &[VKey], mesh: &Mesh<INPUT>) -> bool {
+    if vertices.is_empty() {
+        return true;
+    }
+
+    let vert_set: HashSet<VKey> = vertices.iter().copied().collect();
+    let start = vertices[0];
+
+    let mut queue = VecDeque::new();
+    queue.push_back(start);
+
+    let mut visited = HashSet::new();
+    visited.insert(start);
+
+    while let Some(curr) = queue.pop_front() {
+        for nbr in mesh.neighbors(curr) {
+            if vert_set.contains(&nbr) && !visited.contains(&nbr) {
+                visited.insert(nbr);
+                queue.push_back(nbr);
+            }
+        }
+    }
+
+    visited.len() == vertices.len()
+}
+
+/// BFS to find the vertex in `region_verts` that is furthest (graph distance) from `boundary_verts`.
+///
+/// Returns `None` if either slice is empty or no vertices can be reached.
+fn find_furthest_vertex(
+    region_verts: &[VKey],
+    boundary_verts: &[VKey],
+    mesh: &Mesh<INPUT>,
+) -> Option<VKey> {
+    if boundary_verts.is_empty() || region_verts.is_empty() {
+        return None;
+    }
+
+    let region_set: HashSet<VKey> = region_verts.iter().copied().collect();
+    let mut queue = VecDeque::new();
+    let mut visited = HashSet::new();
+
+    // Initialize with boundary vertices that are in the region
+    for &v in boundary_verts {
+        if region_set.contains(&v) {
+            queue.push_back(v);
+            visited.insert(v);
+        }
+    }
+
+    let mut last_v = None;
+
+    while let Some(curr) = queue.pop_front() {
+        last_v = Some(curr);
+
+        for nbr in mesh.neighbors(curr) {
+            if region_set.contains(&nbr) && !visited.contains(&nbr) {
+                visited.insert(nbr);
+                queue.push_back(nbr);
+            }
+        }
+    }
+
+    last_v
 }
