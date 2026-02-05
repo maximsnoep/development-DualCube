@@ -7,8 +7,8 @@ use crate::{
     prelude::INPUT,
     skeleton::{
         connectivity_surgery::extract_skeleton,
-        contraction::{contract_mesh, CONTRACTION},
-        curve_skeleton::CurveSkeleton,
+        contraction::{CONTRACTION, contract_mesh},
+        curve_skeleton::{CurveSkeleton, CurveSkeletonManipulation},
         orthogonalize::LabeledCurveSkeleton,
         simplify::simplify_skeleton,
     },
@@ -73,7 +73,7 @@ pub fn get_skeleton_based_mapping(mesh: Arc<Mesh<INPUT>>) -> SkeletonData {
     simplify_skeleton(&mut cleaned_skeleton, &mesh);
 
     // Smooth region boundaries
-    // TODO: Discrete Dirichlet energy minimization for region boundaries
+    cleaned_skeleton.smooth_boundaries(&mesh);
 
     // Fix necessary conditions for orthogonal embeddability
     // TODO: find cycles of length 3, subdivide the biggest patch and split all vertices with degree > 6
