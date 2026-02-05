@@ -30,6 +30,7 @@ pub trait CurveSkeletonManipulation {
     ///
     /// Uses harmonic fields to re-partition vertices between adjacent regions while
     /// preserving original region sizes and connectivity.
+    /// // TODO: rebalance region sizes to make loops close to circles (or regions close to cuboid shaped)
     fn smooth_boundaries(&mut self, mesh: &Mesh<INPUT>);
 
     /// Subdivides the given edge by inserting a new node at its midpoint.

@@ -1369,6 +1369,98 @@ pub fn create_skeleton_gizmos(
     gizmos
 }
 
+/// Computes a color assignment for patches using graph coloring for band separation
+/// and greedy distribution within bands for global variety.
+/// Probably not the best way to solve this problem but works okay.
+fn compute_patch_colors(curve_skeleton: &CurveSkeleton) -> HashMap<usize, [f32; 3]> {
+    let node_indices: Vec<_> = curve_skeleton.node_indices().collect();
+    let num_nodes = node_indices.len();
+
+    if num_nodes == 0 {
+        return HashMap::new();
+    }
+
+    // Create a mapping from NodeIndex to region index
+    let node_to_region: HashMap<_, usize> = node_indices
+        .iter()
+        .enumerate()
+        .map(|(i, &n)| (n, i))
+        .collect();
+
+    // Sort nodes by degree (descending) for better coloring
+    let mut nodes_by_degree: Vec<_> = node_indices
+        .iter()
+        .map(|&n| (n, curve_skeleton.neighbors(n).count()))
+        .collect();
+    nodes_by_degree.sort_by(|a, b| b.1.cmp(&a.1));
+
+    let mut node_band: HashMap<_, usize> = HashMap::new();
+    let mut max_band = 0;
+
+    for (node, _) in &nodes_by_degree {
+        // Find bands used by neighbors
+        let neighbor_bands: HashSet<usize> = curve_skeleton
+            .neighbors(*node)
+            .filter_map(|n| node_band.get(&n).copied())
+            .collect();
+
+        // Assign the smallest band not used by neighbors
+        let mut band = 0;
+        while neighbor_bands.contains(&band) {
+            band += 1;
+        }
+        node_band.insert(*node, band);
+        max_band = max_band.max(band);
+    }
+
+    let num_bands = max_band + 1;
+
+    // Group regions by band
+    let mut band_members: Vec<Vec<usize>> = vec![Vec::new(); num_bands];
+    for (&node, &band) in &node_band {
+        let region = node_to_region[&node];
+        band_members[band].push(region);
+    }
+
+    // Each band gets a range of hues, and we spread regions within that range
+    let mut region_colors: HashMap<usize, [f32; 3]> = HashMap::new();
+
+    // Dead space between bands (as a fraction of band width)
+    // This prevents neighbors at band edges from having similar hues
+    let dead_space_fraction = 0.05;
+
+    for (band_idx, members) in band_members.iter().enumerate() {
+        if members.is_empty() {
+            continue;
+        }
+
+        // Calculate the hue range for this band
+        let band_width = 360.0 / num_bands as f32;
+        let dead_space = band_width * dead_space_fraction;
+        let usable_width = band_width - dead_space;
+
+        // Band starts after half the dead space, ends before the other half
+        let band_start = (band_idx as f32 * band_width) + (dead_space / 2.0);
+
+        for (i, &region) in members.iter().enumerate() {
+            // Use golden angle within the band's usable range
+            let within_band_offset = (i as f32 * 137.508) % usable_width;
+            let hue = (band_start + within_band_offset) % 360.0;
+
+            // Vary saturation and lightness slightly for more distinction
+            let saturation = 0.75 + 0.15 * ((region as f32 * 0.618) % 1.0);
+            let lightness = 0.45 + 0.15 * ((region as f32 * 0.382) % 1.0);
+
+            let srgb = bevy::color::Srgba::from(bevy::color::Hsla::new(
+                hue, saturation, lightness, 1.0,
+            ));
+            region_colors.insert(region, [srgb.red, srgb.green, srgb.blue]);
+        }
+    }
+
+    region_colors
+}
+
 /// Creates a Bevy mesh for visualizing surface patches as filled triangles.
 pub fn create_patch_mesh(
     curve_skeleton: &CurveSkeleton,
@@ -1387,11 +1479,14 @@ pub fn create_patch_mesh(
 
     let mut builder = MeshBuilder::default();
 
+    // Compute colors using graph-coloring-based band assignment
+    let region_colors = compute_patch_colors(curve_skeleton);
+
     // Helper to get color for a region
     let region_color = |region: usize| -> [f32; 3] {
-        let hue = (region as f32 * 137.508) % 360.0;
-        let srgb = bevy::color::Srgba::from(bevy::color::Hsla::new(hue, 0.85, 0.50, 1.0));
-        [srgb.red, srgb.green, srgb.blue]
+        region_colors.get(&region).copied().unwrap_or_else(|| {
+            [0.0, 0.0, 0.0]
+        })
     };
 
     // Helper to transform and add a vertex to the builder
