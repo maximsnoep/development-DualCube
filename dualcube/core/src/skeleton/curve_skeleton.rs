@@ -2,7 +2,7 @@ use std::collections::{HashMap, HashSet, VecDeque};
 
 use faer::{Mat, Side, prelude::Solve, sparse::{SparseColMat, Triplet, linalg::solvers::{Llt, SymbolicLlt}}};
 use log::{error, warn};
-use mehsh::prelude::{HasNeighbors, Mesh, Vector3D, VertKey};
+use mehsh::prelude::{HasNeighbors, HasPosition, Mesh, Vector3D, VertKey};
 use petgraph::graph::{EdgeIndex, NodeIndex, UnGraph};
 
 use crate::prelude::INPUT;
@@ -147,15 +147,17 @@ impl CurveSkeletonManipulation for CurveSkeleton {
             }
 
             // If a region is a leaf, it has no external boundary. We must pin its "tip".
+            // Find the vertex furthest from the neighbor's skeleton position, which will
+            // be at the extremity pointing away from the rest of the skeleton.
             if fixed_a.is_empty() {
-                let seeds = get_interface_seeds(&vertices_a, node_b, &vertex_map, mesh);
-                if let Some(v) = find_furthest_vertex(&vertices_a, &seeds, mesh) {
+                let neighbor_pos = self.node_weight(node_b).unwrap().0;
+                if let Some(v) = find_furthest_from_point(&vertices_a, neighbor_pos, mesh) {
                     fixed_a.insert(v);
                 }
             }
             if fixed_b.is_empty() {
-                let seeds = get_interface_seeds(&vertices_b, node_a, &vertex_map, mesh);
-                if let Some(v) = find_furthest_vertex(&vertices_b, &seeds, mesh) {
+                let neighbor_pos = self.node_weight(node_a).unwrap().0;
+                if let Some(v) = find_furthest_from_point(&vertices_b, neighbor_pos, mesh) {
                     fixed_b.insert(v);
                 }
             }
@@ -371,27 +373,6 @@ fn get_vertex_map(skeleton: &CurveSkeleton) -> HashMap<VKey, NodeIndex> {
     vertex_map
 }
 
-/// Finds vertices in `source_verts` that have a neighbor belonging to `target_node`.
-///
-/// These "interface seeds" are vertices at the boundary between two regions.
-fn get_interface_seeds(
-    source_verts: &[VKey],
-    target_node: NodeIndex,
-    vertex_map: &HashMap<VKey, NodeIndex>,
-    mesh: &Mesh<INPUT>,
-) -> Vec<VKey> {
-    let mut seeds = Vec::new();
-    for &v in source_verts {
-        for nbr in mesh.neighbors(v) {
-            if vertex_map.get(&nbr) == Some(&target_node) {
-                seeds.push(v);
-                break;
-            }
-        }
-    }
-    seeds
-}
-
 /// BFS connectivity check for a subset of mesh vertices.
 ///
 /// Returns true if all vertices in the slice are connected via mesh edges
@@ -422,42 +403,21 @@ fn is_connected(vertices: &[VKey], mesh: &Mesh<INPUT>) -> bool {
     visited.len() == vertices.len()
 }
 
-/// BFS to find the vertex in `region_verts` that is furthest (graph distance) from `boundary_verts`.
+/// Finds the vertex in `region_verts` that is furthest (Euclidean distance) from `point`.
 ///
-/// Returns `None` if either slice is empty or no vertices can be reached.
-fn find_furthest_vertex(
+/// Used to find the "tip" of a leaf region by finding the vertex furthest from
+/// the neighbor's skeleton position.
+fn find_furthest_from_point(
     region_verts: &[VKey],
-    boundary_verts: &[VKey],
+    point: Vector3D,
     mesh: &Mesh<INPUT>,
 ) -> Option<VKey> {
-    if boundary_verts.is_empty() || region_verts.is_empty() {
-        return None;
-    }
-
-    let region_set: HashSet<VKey> = region_verts.iter().copied().collect();
-    let mut queue = VecDeque::new();
-    let mut visited = HashSet::new();
-
-    // Initialize with boundary vertices that are in the region
-    for &v in boundary_verts {
-        if region_set.contains(&v) {
-            queue.push_back(v);
-            visited.insert(v);
-        }
-    }
-
-    let mut last_v = None;
-
-    while let Some(curr) = queue.pop_front() {
-        last_v = Some(curr);
-
-        for nbr in mesh.neighbors(curr) {
-            if region_set.contains(&nbr) && !visited.contains(&nbr) {
-                visited.insert(nbr);
-                queue.push_back(nbr);
-            }
-        }
-    }
-
-    last_v
+    region_verts
+        .iter()
+        .max_by(|&&a, &&b| {
+            let dist_a = mesh.position(a).metric_distance(&point);
+            let dist_b = mesh.position(b).metric_distance(&point);
+            dist_a.partial_cmp(&dist_b).unwrap_or(std::cmp::Ordering::Equal)
+        })
+        .copied()
 }
