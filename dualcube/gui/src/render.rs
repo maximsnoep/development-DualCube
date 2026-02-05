@@ -1369,96 +1369,51 @@ pub fn create_skeleton_gizmos(
     gizmos
 }
 
-/// Computes a color assignment for patches using graph coloring for band separation
-/// and greedy distribution within bands for global variety.
-/// Probably not the best way to solve this problem but works okay.
-fn compute_patch_colors(curve_skeleton: &CurveSkeleton) -> HashMap<usize, [f32; 3]> {
-    let node_indices: Vec<_> = curve_skeleton.node_indices().collect();
-    let num_nodes = node_indices.len();
+use bevy::color::palettes::tailwind;
 
-    if num_nodes == 0 {
-        return HashMap::new();
+/// Tailwind 500-level colors for patch visualization.
+const TAILWIND_500: [bevy::color::Srgba; 22] = [
+    tailwind::RED_500,
+    tailwind::CYAN_500,
+    tailwind::YELLOW_500,
+    tailwind::PURPLE_500,
+    tailwind::GREEN_500,
+    tailwind::PINK_500,
+    tailwind::BLUE_500,
+    tailwind::ORANGE_500,
+    tailwind::TEAL_500,
+    tailwind::FUCHSIA_500,
+    tailwind::LIME_500,
+    tailwind::INDIGO_500,
+    tailwind::AMBER_500,
+    tailwind::EMERALD_500,
+    tailwind::VIOLET_500,
+    tailwind::SKY_500,
+    tailwind::ROSE_500,
+    tailwind::SLATE_500,
+    tailwind::ZINC_500,
+    tailwind::GRAY_500,
+    tailwind::NEUTRAL_500,
+    tailwind::STONE_500,
+];
+
+/// Gets a color for a region index using Tailwind colors with chroma reduction for cycling.
+fn get_region_color(region: usize) -> [f32; 3] {
+    let base_idx = region % TAILWIND_500.len();
+    let cycle = region / TAILWIND_500.len();
+
+    let base = TAILWIND_500[base_idx];
+
+    if cycle == 0 {
+        [base.red, base.green, base.blue]
+    } else {
+        // Reduce chroma and lighten for subsequent cycles
+        let mut lch: bevy::color::Lcha = base.into();
+        lch.chroma *= 0.5_f32.powi(cycle as i32);
+        lch.lightness = (lch.lightness + 0.1 * cycle as f32).min(0.95);
+        let srgb: bevy::color::Srgba = lch.into();
+        [srgb.red, srgb.green, srgb.blue]
     }
-
-    // Create a mapping from NodeIndex to region index
-    let node_to_region: HashMap<_, usize> = node_indices
-        .iter()
-        .enumerate()
-        .map(|(i, &n)| (n, i))
-        .collect();
-
-    // Sort nodes by degree (descending) for better coloring
-    let mut nodes_by_degree: Vec<_> = node_indices
-        .iter()
-        .map(|&n| (n, curve_skeleton.neighbors(n).count()))
-        .collect();
-    nodes_by_degree.sort_by(|a, b| b.1.cmp(&a.1));
-
-    let mut node_band: HashMap<_, usize> = HashMap::new();
-    let mut max_band = 0;
-
-    for (node, _) in &nodes_by_degree {
-        // Find bands used by neighbors
-        let neighbor_bands: HashSet<usize> = curve_skeleton
-            .neighbors(*node)
-            .filter_map(|n| node_band.get(&n).copied())
-            .collect();
-
-        // Assign the smallest band not used by neighbors
-        let mut band = 0;
-        while neighbor_bands.contains(&band) {
-            band += 1;
-        }
-        node_band.insert(*node, band);
-        max_band = max_band.max(band);
-    }
-
-    let num_bands = max_band + 1;
-
-    // Group regions by band
-    let mut band_members: Vec<Vec<usize>> = vec![Vec::new(); num_bands];
-    for (&node, &band) in &node_band {
-        let region = node_to_region[&node];
-        band_members[band].push(region);
-    }
-
-    // Each band gets a range of hues, and we spread regions within that range
-    let mut region_colors: HashMap<usize, [f32; 3]> = HashMap::new();
-
-    // Dead space between bands (as a fraction of band width)
-    // This prevents neighbors at band edges from having similar hues
-    let dead_space_fraction = 0.05;
-
-    for (band_idx, members) in band_members.iter().enumerate() {
-        if members.is_empty() {
-            continue;
-        }
-
-        // Calculate the hue range for this band
-        let band_width = 360.0 / num_bands as f32;
-        let dead_space = band_width * dead_space_fraction;
-        let usable_width = band_width - dead_space;
-
-        // Band starts after half the dead space, ends before the other half
-        let band_start = (band_idx as f32 * band_width) + (dead_space / 2.0);
-
-        for (i, &region) in members.iter().enumerate() {
-            // Use golden angle within the band's usable range
-            let within_band_offset = (i as f32 * 137.508) % usable_width;
-            let hue = (band_start + within_band_offset) % 360.0;
-
-            // Vary saturation and lightness slightly for more distinction
-            let saturation = 0.75 + 0.15 * ((region as f32 * 0.618) % 1.0);
-            let lightness = 0.45 + 0.15 * ((region as f32 * 0.382) % 1.0);
-
-            let srgb = bevy::color::Srgba::from(bevy::color::Hsla::new(
-                hue, saturation, lightness, 1.0,
-            ));
-            region_colors.insert(region, [srgb.red, srgb.green, srgb.blue]);
-        }
-    }
-
-    region_colors
 }
 
 /// Creates a Bevy mesh for visualizing surface patches as filled triangles.
@@ -1479,14 +1434,9 @@ pub fn create_patch_mesh(
 
     let mut builder = MeshBuilder::default();
 
-    // Compute colors using graph-coloring-based band assignment
-    let region_colors = compute_patch_colors(curve_skeleton);
-
     // Helper to get color for a region
     let region_color = |region: usize| -> [f32; 3] {
-        region_colors.get(&region).copied().unwrap_or_else(|| {
-            [0.0, 0.0, 0.0]
-        })
+        get_region_color(region)
     };
 
     // Helper to transform and add a vertex to the builder
