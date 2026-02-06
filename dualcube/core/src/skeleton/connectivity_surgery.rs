@@ -263,11 +263,11 @@ impl SurgeryContext {
         self.is_dead.insert(u);
 
         // Merge original vertex mappings
-        let originals_u = self.vertex_to_original.remove(&u).unwrap_or_default();
+        let mut originals_u = self.vertex_to_original.remove(&u).unwrap_or_default();
         self.vertex_to_original
             .get_mut(&v)
             .unwrap()
-            .extend(originals_u);
+            .append(&mut originals_u);
 
         // Get u's neighbors before modifying
         let neighbors_u: Vec<_> = self.neighbors[&u].iter().copied().collect();
