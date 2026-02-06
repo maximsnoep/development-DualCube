@@ -26,12 +26,19 @@ async fn run_job(job: Job) -> Option<JobResult> {
             configuration,
         ))),
 
+        Job::CalculateSkeleton {
+            mut solution,
+            configuration,
+        } => {
+            solution.calculate_skeleton();
+            Some(JobResult::SkeletonCalculated((solution, configuration)))
+        }
+
         Job::InitializeLoops {
-            solution,
+            mut solution,
             flowgraphs,
             configuration,
         } => {
-            let mut solution = Solution::new(solution.mesh_ref.clone());
             solution.initialize(&flowgraphs);
             Some(JobResult::LoopsChanged((solution, configuration)))
         }
@@ -395,6 +402,13 @@ fn poll_jobs(
     if let (Some(request), Some(mut task)) = (job_state.request.take(), job_state.current.take()) {
         if let Some(result) = future::block_on(future::poll_once(&mut task)) {
             match result {
+                Some(JobResult::SkeletonCalculated((solution, _configuration))) => {
+                    solution_resource.current_solution = solution;
+                    jobs.write(JobRequest::Run(Box::new(Job::Refresh {
+                        solution: solution_resource.current_solution.clone(),
+                    })));
+                }
+
                 Some(JobResult::LoopsChanged((solution, configuration))) => {
                     solution_resource.current_solution = solution;
                     if configuration.stop == Phase::Loops {
@@ -563,6 +577,10 @@ pub enum Job {
         path: PathBuf,
         configuration: Configuration,
     },
+    CalculateSkeleton {
+        solution: Solution,
+        configuration: Configuration,
+    },
     InitializeLoops {
         solution: Solution,
         configuration: Configuration,
@@ -653,6 +671,7 @@ pub enum JobType {
     Hex,
     Evolve,
     ComputePolycube,
+    CalculateSkeleton,
     InitializeLoops,
     AddLoop,
     RemoveLoop,
@@ -680,6 +699,7 @@ impl std::fmt::Display for JobType {
             JobType::AddLoop => write!(f, "adding loop"),
             JobType::RemoveLoop => write!(f, "removing loop"),
             JobType::SmoothenLayout => write!(f, "smoothening layout"),
+            JobType::CalculateSkeleton => write!(f, "calculating skeleton"),
             JobType::InitializeLoops => write!(f, "initializing loops"),
             JobType::ComputeDual => write!(f, "computing dual"),
             JobType::PlaceCorners => write!(f, "placing corners"),
@@ -705,6 +725,7 @@ impl Job {
             Job::AddLoop { .. } => JobType::AddLoop,
             Job::RemoveLoop { .. } => JobType::RemoveLoop,
             Job::SmoothenLayout { .. } => JobType::SmoothenLayout,
+            Job::CalculateSkeleton { .. } => JobType::CalculateSkeleton,
             Job::InitializeLoops { .. } => JobType::InitializeLoops,
             Job::ComputeDual { .. } => JobType::ComputeDual,
             Job::PlaceCorners { .. } => JobType::PlaceCorners,
@@ -721,6 +742,8 @@ impl Job {
 /// Results of jobs
 enum JobResult {
     Imported((Solution, Configuration)),
+    // After calculating skeleton
+    SkeletonCalculated((Solution, Configuration)),
     // For example after initializing or optimizing loop structure
     LoopsChanged((Solution, Configuration)),
     // For example after computing dual / polycube representation
