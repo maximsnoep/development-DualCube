@@ -3,6 +3,7 @@ use std::collections::{HashMap, HashSet, VecDeque};
 use faer::{Mat, Side, prelude::Solve, sparse::{SparseColMat, Triplet, linalg::solvers::{Llt, SymbolicLlt}}};
 use log::{error, warn};
 use mehsh::prelude::{HasNeighbors, HasPosition, Mesh, Vector3D, VertKey};
+use nalgebra::Matrix3;
 use petgraph::graph::{EdgeIndex, NodeIndex, UnGraph};
 
 use crate::prelude::INPUT;
@@ -39,12 +40,15 @@ pub trait CurveSkeletonManipulation {
     /// For an edge X-Y, we insert Z such that Z only connects to X and Y,
     /// X and Y no longer connect directly, and that X maintains its original connections
     /// (except Y) and Y maintains its original connections (except X).
-    fn subdivide_edge(&mut self, edge_index: EdgeIndex);
+    fn subdivide_edge(&mut self, edge_index: EdgeIndex, mesh: &Mesh<INPUT>) -> bool;
 
     /// Given a node with degree higher than 3, splits it into two nodes,
     /// where each node has at least 2 of the original connections.
     /// Geometrically, this means splitting a region into two regions.
-    fn split_high_degree_node(&mut self, node_index: NodeIndex);
+    ///
+    /// Uses PCA to cluster neighbors spatially, then a harmonic field to partition
+    /// the mesh region. Returns `false` if the node has degree < 4 or partitioning fails.
+    fn split_high_degree_node(&mut self, node_index: NodeIndex, mesh: &Mesh<INPUT>) -> bool;
 }
 
 impl CurveSkeletonManipulation for CurveSkeleton {
@@ -233,12 +237,285 @@ impl CurveSkeletonManipulation for CurveSkeleton {
         }
     }
 
-    fn subdivide_edge(&mut self, edge_index: EdgeIndex) {
-        todo!()
+    fn subdivide_edge(&mut self, edge_index: EdgeIndex, mesh: &Mesh<INPUT>) -> bool {
+        let (left_index, right_index) = match self.edge_endpoints(edge_index) {
+            Some(ep) => ep,
+            None => return false,
+        };
+
+        let vertex_map = get_vertex_map(self);
+
+        let mut left_boundary: HashSet<VKey> = HashSet::new();
+        let mut right_boundary: HashSet<VKey> = HashSet::new();
+
+        // Find boundary vertices: vertices adjacent to an external region.
+        let vertices_left = self.node_weight(left_index).unwrap().1.clone();
+        for &v in &vertices_left {
+            for nbr in mesh.neighbors(v) {
+                if let Some(&nbr_region) = vertex_map.get(&nbr) {
+                    if nbr_region != left_index && nbr_region != right_index {
+                        left_boundary.insert(v);
+                        break;
+                    }
+                }
+            }
+        }
+
+        let vertices_right = self.node_weight(right_index).unwrap().1.clone();
+        for &v in &vertices_right {
+            for nbr in mesh.neighbors(v) {
+                if let Some(&nbr_region) = vertex_map.get(&nbr) {
+                    if nbr_region != left_index && nbr_region != right_index {
+                        right_boundary.insert(v);
+                        break;
+                    }
+                }
+            }
+        }
+
+        // If left and right boundaries overlap, they touch externally — abort.
+        if !left_boundary.is_disjoint(&right_boundary) {
+            return false;
+        }
+
+        // For leaf regions with no external boundary, pin the vertex furthest from the interface.
+        if left_boundary.is_empty() {
+            let neighbor_pos = self.node_weight(right_index).unwrap().0;
+            if let Some(v) = find_furthest_from_point(&vertices_left, neighbor_pos, mesh) {
+                left_boundary.insert(v);
+            }
+        }
+        if right_boundary.is_empty() {
+            let neighbor_pos = self.node_weight(left_index).unwrap().0;
+            if let Some(v) = find_furthest_from_point(&vertices_right, neighbor_pos, mesh) {
+                right_boundary.insert(v);
+            }
+        }
+
+        if left_boundary.is_empty() || right_boundary.is_empty() {
+            return false;
+        }
+
+        // Solve harmonic field over the combined region.
+        let mut all_vertices = Vec::with_capacity(vertices_left.len() + vertices_right.len());
+        all_vertices.extend_from_slice(&vertices_left);
+        all_vertices.extend_from_slice(&vertices_right);
+
+        let computed_values = match solve_harmonic_scalar_field(
+            &all_vertices,
+            &left_boundary,
+            &right_boundary,
+            mesh,
+        ) {
+            Ok(vals) => vals,
+            Err(e) => {
+                warn!("Harmonic field solve failed for edge {:?}: {:?}", edge_index, e);
+                return false;
+            }
+        };
+
+        // Sort vertices by scalar field value.
+        let mut valued_vertices: Vec<(f64, VKey)> = Vec::with_capacity(all_vertices.len());
+        for (v, val) in computed_values {
+            valued_vertices.push((val, v));
+        }
+        for &v in &left_boundary {
+            valued_vertices.push((0.0, v));
+        }
+        for &v in &right_boundary {
+            valued_vertices.push((1.0, v));
+        }
+        valued_vertices
+            .sort_by(|a, b| a.0.partial_cmp(&b.0).unwrap_or(std::cmp::Ordering::Equal));
+
+        // Split into 3 roughly equal chunks.
+        let total = valued_vertices.len();
+        let split_1 = total / 3;
+        let split_2 = (total * 2) / 3;
+
+        let new_left: Vec<VKey> = valued_vertices[..split_1].iter().map(|&(_, v)| v).collect();
+        let new_mid: Vec<VKey> = valued_vertices[split_1..split_2]
+            .iter()
+            .map(|&(_, v)| v)
+            .collect();
+        let new_right: Vec<VKey> = valued_vertices[split_2..].iter().map(|&(_, v)| v).collect();
+
+        if new_left.is_empty() || new_mid.is_empty() || new_right.is_empty() {
+            return false;
+        }
+
+        // Verify new left and right don't share a direct mesh edge.
+        let right_set: HashSet<VKey> = new_right.iter().copied().collect();
+        for &v in &new_left {
+            for nbr in mesh.neighbors(v) {
+                if right_set.contains(&nbr) {
+                    return false;
+                }
+            }
+        }
+
+        // Place the new node at the centroid of its assigned patch.
+        let p_mid = patch_centroid(&new_mid, mesh);
+
+        self.node_weight_mut(left_index).unwrap().1 = new_left;
+        self.node_weight_mut(right_index).unwrap().1 = new_right;
+
+        let mid_index = self.add_node((p_mid, new_mid));
+
+        // Replace L <-> R with L <-> M <-> R.
+        self.remove_edge(edge_index);
+        self.add_edge(left_index, mid_index, ());
+        self.add_edge(mid_index, right_index, ());
+
+        true
     }
 
-    fn split_high_degree_node(&mut self, node_index: NodeIndex) {
-        todo!()
+    fn split_high_degree_node(&mut self, node_index: NodeIndex, mesh: &Mesh<INPUT>) -> bool {
+        let neighbors: Vec<NodeIndex> = self.neighbors(node_index).collect();
+        let degree = neighbors.len();
+
+        // Need at least 4 neighbors to split into two groups of >= 2.
+        if degree < 4 {
+            return false;
+        }
+
+        let node_pos = self.node_weight(node_index).unwrap().0;
+
+        // Find the axis of maximum variance among neighbor directions (PCA).
+        let mut cov = Matrix3::<f64>::zeros();
+        for &nbr in &neighbors {
+            let nbr_pos = self.node_weight(nbr).unwrap().0;
+            let dir = nbr_pos - node_pos;
+            let len = dir.norm();
+            let dir = if len > 1e-12 { dir / len } else { Vector3D::zeros() };
+            for i in 0..3 {
+                for j in 0..3 {
+                    cov[(i, j)] += dir[i] * dir[j];
+                }
+            }
+        }
+
+        let eigen = cov.symmetric_eigen();
+        let max_idx = eigen.eigenvalues.imax();
+        let split_axis = eigen.eigenvectors.column(max_idx).into_owned();
+
+        // Project neighbors onto the split axis and sort.
+        let mut nbr_proj: Vec<(f64, NodeIndex)> = neighbors
+            .iter()
+            .map(|&nbr| {
+                let nbr_pos = self.node_weight(nbr).unwrap().0;
+                let dir = nbr_pos - node_pos;
+                let len = dir.norm();
+                let dir = if len > 1e-12 { dir / len } else { Vector3D::zeros() };
+                (dir.dot(&split_axis), nbr)
+            })
+            .collect();
+
+        nbr_proj.sort_by(|a, b| a.0.partial_cmp(&b.0).unwrap_or(std::cmp::Ordering::Equal));
+
+        // Find the largest gap in projections, ensuring at least 2 neighbors per group.
+        let min_group_size = 2;
+        let max_split_idx = degree - min_group_size;
+        let mut best_split_idx = degree / 2;
+        let mut max_gap = -1.0;
+
+        for i in min_group_size..=max_split_idx {
+            let gap = nbr_proj[i].0 - nbr_proj[i - 1].0;
+            if gap > max_gap {
+                max_gap = gap;
+                best_split_idx = i;
+            }
+        }
+
+        let (group_a_proj, group_b_proj) = nbr_proj.split_at(best_split_idx);
+        let group_a_nodes: HashSet<NodeIndex> = group_a_proj.iter().map(|(_, n)| *n).collect();
+        let group_b_nodes: HashSet<NodeIndex> = group_b_proj.iter().map(|(_, n)| *n).collect();
+
+        // Identify mesh boundary vertices between this node's patch and its neighbor groups.
+        let vertex_map = get_vertex_map(self);
+        let node_vertices = self.node_weight(node_index).unwrap().1.clone();
+
+        let mut fixed_0: HashSet<VKey> = HashSet::new();
+        let mut fixed_1: HashSet<VKey> = HashSet::new();
+
+        for &v in &node_vertices {
+            for nbr in mesh.neighbors(v) {
+                if let Some(&nbr_region) = vertex_map.get(&nbr) {
+                    if nbr_region != node_index {
+                        if group_a_nodes.contains(&nbr_region) {
+                            fixed_0.insert(v);
+                        } else if group_b_nodes.contains(&nbr_region) {
+                            fixed_1.insert(v);
+                        }
+                        break;
+                    }
+                }
+            }
+        }
+
+        if fixed_0.is_empty() || fixed_1.is_empty() {
+            return false;
+        }
+        if !fixed_0.is_disjoint(&fixed_1) {
+            return false;
+        }
+
+        // Solve harmonic field to partition the patch.
+        let computed_values = match solve_harmonic_scalar_field(
+            &node_vertices,
+            &fixed_0,
+            &fixed_1,
+            mesh,
+        ) {
+            Ok(vals) => vals,
+            Err(e) => {
+                warn!("Harmonic field solve failed for node {:?}: {:?}", node_index, e);
+                return false;
+            }
+        };
+
+        // Threshold at 0.5 to split free vertices.
+        let mut verts_a = Vec::new();
+        let mut verts_b = Vec::new();
+
+        for (v, val) in computed_values {
+            if val < 0.5 {
+                verts_a.push(v);
+            } else {
+                verts_b.push(v);
+            }
+        }
+
+        verts_a.extend(fixed_0.iter());
+        verts_b.extend(fixed_1.iter());
+
+        if !is_connected(&verts_a, mesh) || !is_connected(&verts_b, mesh) {
+            error!("Split created disconnected regions, aborting.");
+            return false;
+        }
+
+        // Place new nodes at the centroids of their assigned patches.
+        let pos_a = patch_centroid(&verts_a, mesh);
+        let pos_b = patch_centroid(&verts_b, mesh);
+
+        let idx_a = self.add_node((pos_a, verts_a));
+        let idx_b = self.add_node((pos_b, verts_b));
+
+        self.add_edge(idx_a, idx_b, ());
+
+        // Reconnect neighbors to the appropriate new node.
+        for &nbr in &neighbors {
+            if group_a_nodes.contains(&nbr) {
+                self.add_edge(nbr, idx_a, ());
+            } else {
+                self.add_edge(nbr, idx_b, ());
+            }
+        }
+
+        // Remove original node (also removes its old edges).
+        self.remove_node(node_index);
+
+        true
     }
 }
 
@@ -402,6 +679,19 @@ fn is_connected(vertices: &[VKey], mesh: &Mesh<INPUT>) -> bool {
     }
 
     visited.len() == vertices.len()
+}
+
+/// Computes the centroid position of a set of mesh vertices.
+pub fn patch_centroid(vertices: &[VKey], mesh: &Mesh<INPUT>) -> Vector3D {
+    if vertices.is_empty() {
+        return Vector3D::zeros();
+    }
+
+    let mut sum = Vector3D::zeros();
+    for &v in vertices {
+        sum += mesh.position(v);
+    }
+    sum / vertices.len() as f64
 }
 
 /// Finds the vertex in `region_verts` that is furthest (Euclidean distance) from `point`.

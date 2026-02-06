@@ -15,6 +15,7 @@ use nalgebra::{Matrix4, Vector4};
 use super::contraction::CONTRACTION;
 use super::curve_skeleton::CurveSkeleton;
 use crate::prelude::INPUT;
+use crate::skeleton::curve_skeleton::patch_centroid;
 
 /// Internal vertex index type.
 type VIdx = VertKey<CONTRACTION>;
@@ -333,23 +334,12 @@ impl SurgeryContext {
                 continue;
             }
 
-            // Compute centroid of original vertices. Note that this is different from the paper, which uses boundary vertices only.
-            let mut sum = Vector3D::new(0.0, 0.0, 0.0);
-            let mut count = 0;
+            // Compute centroid
+            let centroid = patch_centroid(&originals, original_mesh);
 
-            for &orig_key in originals {
-                if let Some(&pos) = original_mesh.verts.get(orig_key) {
-                    sum = sum + pos;
-                    count += 1;
-                }
-            }
-
-            if count > 0 {
-                let centroid = sum / (count as f64);
-                // Convert to normalized space
-                self.positions
-                    .insert(skel_vert, (centroid - self.center) * self.scale);
-            }
+            // Convert to normalized space
+            self.positions
+                .insert(skel_vert, (centroid - self.center) * self.scale);
         }
     }
 
