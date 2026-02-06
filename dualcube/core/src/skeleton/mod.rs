@@ -6,11 +6,7 @@ use serde::{Deserialize, Serialize};
 use crate::{
     prelude::INPUT,
     skeleton::{
-        connectivity_surgery::extract_skeleton,
-        contraction::{CONTRACTION, contract_mesh},
-        curve_skeleton::{CurveSkeleton, CurveSkeletonManipulation},
-        orthogonalize::LabeledCurveSkeleton,
-        simplify::simplify_skeleton,
+        connectivity_surgery::extract_skeleton, contraction::{CONTRACTION, contract_mesh}, curve_skeleton::{CurveSkeleton, CurveSkeletonManipulation}, embeddability::make_embedding_possible, orthogonalize::LabeledCurveSkeleton, simplify::simplify_skeleton
     },
 };
 
@@ -20,6 +16,7 @@ mod connectivity_surgery;
 mod contraction;
 mod orthogonalize;
 mod simplify;
+mod embeddability;
 
 /// Holds all relevant information for skeleton-based polycube initialization.
 ///
@@ -76,7 +73,7 @@ pub fn get_skeleton_based_mapping(mesh: Arc<Mesh<INPUT>>) -> SkeletonData {
     cleaned_skeleton.smooth_boundaries(&mesh);
 
     // Fix necessary conditions for orthogonal embeddability
-    // TODO: find cycles of length 3, subdivide the biggest patch and split all vertices with degree > 6
+    make_embedding_possible(&mut cleaned_skeleton, &mesh);
 
     // Orthogonalize and label the curve skeleton
     // TODO: orthogonalization
