@@ -39,7 +39,7 @@ struct ContractionState {
     /// Starts as 1.0. Updates based on ratio of current area to original area.
     pub wh: HashMap<VertKey<CONTRACTION>, f64>,
 
-    /// Original One-Ring Area of each vertex (A^0).
+    /// Original one-ring area of each vertex (A^0).
     /// Used to calculate the update for W_H.
     pub original_areas: HashMap<VertKey<CONTRACTION>, f64>,
 
@@ -252,7 +252,8 @@ fn contract_once(mesh: &mut Mesh<CONTRACTION>, state: &mut ContractionState) {
 
     // Update vertex positions from solution
     for (i, &v) in state.vert_ids.iter().enumerate() {
-        let new_pos = mehsh::prelude::Vector3D::new(solution[(i, 0)], solution[(i, 1)], solution[(i, 2)]);
+        let new_pos =
+            mehsh::prelude::Vector3D::new(solution[(i, 0)], solution[(i, 1)], solution[(i, 2)]);
         mesh.set_position(v, new_pos);
     }
 
@@ -351,7 +352,10 @@ fn get_laplacian_triplets(
                 triplets.push((i, j, weight));
                 sum_weights += weight;
             } else {
-                error!("Non-finite cotangent weight for edge ({:?}, {:?})", v_i, v_j);
+                error!(
+                    "Non-finite cotangent weight for edge ({:?}, {:?})",
+                    v_i, v_j
+                );
             }
         }
 

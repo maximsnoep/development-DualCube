@@ -67,6 +67,9 @@ pub fn simplify_skeleton(skeleton: &mut CurveSkeleton, original_mesh: &Mesh<INPU
             break;
         }
     }
+
+    // Do embedding refinement again to align better with new patches
+    
 }
 
 /// Checks if a line segment from `p0` to `p1` intersects any triangle in the mesh.
