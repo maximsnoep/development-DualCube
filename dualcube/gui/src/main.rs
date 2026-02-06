@@ -29,6 +29,7 @@ use std::time::Duration;
 pub enum Phase {
     None,
     Input,
+    Skeleton,
     Loops,
     Dual,
     Layout,

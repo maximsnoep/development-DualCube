@@ -965,6 +965,15 @@ pub fn update(
                                 label(ui, &status, text_size, Color32::GRAY);
                             }
 
+                            if conf.stop == Phase::Skeleton {
+                                stopped = true;
+                                if sleek_button_warn(ui, stop_label) {
+                                    conf.stop = Phase::None;
+                                }
+                            } else if sleek_button_unfocused(ui, continue_label) {
+                                conf.stop = Phase::Skeleton;
+                            }
+
                             // ****************
                             // LOOPS
                             // ****************
