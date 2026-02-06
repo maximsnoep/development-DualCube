@@ -5,7 +5,7 @@ use petgraph::graph::NodeIndex;
 
 use crate::{
     prelude::{CurveSkeleton, INPUT},
-    skeleton::curve_skeleton::CurveSkeletonManipulation,
+    skeleton::{connectivity_surgery::refine_embedding, curve_skeleton::CurveSkeletonManipulation},
 };
 
 // TODO: Maybe instead of simplifying everything possible, it might be better to simplify only to make regions closer to cubes
@@ -68,8 +68,11 @@ pub fn simplify_skeleton(skeleton: &mut CurveSkeleton, original_mesh: &Mesh<INPU
         }
     }
 
-    // Do embedding refinement again to align better with new patches
-    
+
+    // TODO: something like embedding refinement but that makes sure edges stay within the mesh.
+    // Maybe something like moving along locked axes?
+    // Maybe something that iteratively tries moving towards centroid until intersections happen?
+    // Though ideally, intersections would result in close to 90 degree angles, this likely needs to be accounted for...
 }
 
 /// Checks if a line segment from `p0` to `p1` intersects any triangle in the mesh.
