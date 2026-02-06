@@ -939,6 +939,33 @@ pub fn update(
                             }
 
                             // ****************
+                            // SKELETON
+                            // ****************
+                            if solution.current_solution.mesh_ref.nr_verts() == 0 || stopped {
+                                label(ui, "Skeleton", text_size, Color32::GRAY);
+                            } else {
+                                menu_button(ui, "Skeleton", |ui| {
+                                    if sleek_button(ui, "calculate") {
+                                        jobs.write(JobRequest::Run(Box::new(
+                                            Job::CalculateSkeleton {
+                                                solution: solution.current_solution.clone(),
+                                                configuration: conf.clone(),
+                                            },
+                                        )));
+                                        ui.close();
+                                    }
+                                });
+                                let status = match &solution.current_solution.skeleton {
+                                    Some(s) => {
+                                        let count = s.cleaned_skeleton().map(|sk| sk.node_count()).unwrap_or(0);
+                                        format!("({})", count)
+                                    }
+                                    None => "(-)".to_string(),
+                                };
+                                label(ui, &status, text_size, Color32::GRAY);
+                            }
+
+                            // ****************
                             // LOOPS
                             // ****************
                             if solution.current_solution.mesh_ref.nr_verts() == 0 || stopped {
