@@ -370,8 +370,9 @@ pub fn update_render_settings(
     let default = |object: &Objects, label: &str| {
         matches!(
             (object, label),
-            (Objects::InputMesh, "gray")
+            // (Objects::InputMesh, "gray")
                 | (Objects::InputMesh, "wireframe")
+                | (Objects::InputMesh, "patches")
                 | (Objects::Polycube, "gray")
                 | (Objects::Polycube, "paths")
                 | (Objects::Polycube, "flat paths")
