@@ -63,7 +63,7 @@ impl ContractionState {
     ///
     /// Initializes:
     /// - `vert_ids` and `vert_to_idx` for matrix index mapping
-    /// - `wl` as 10^-3 * sqrt(average one-ring area)
+    /// - `wl` as 10^-3 * sqrt(average face area)
     /// - `wh` as 1.0 for all vertices
     /// - `original_areas` as the one-ring area for each vertex
     /// - `original_volume` from the mesh volume
@@ -81,16 +81,17 @@ impl ContractionState {
         // Compute one-ring areas and initialize weights for all vertices
         let mut original_areas = HashMap::with_capacity(n);
         let mut wh = HashMap::with_capacity(n);
-        let mut total_area = 0.0;
-
         for &v in &vert_ids {
             let area = Self::one_ring_area(mesh, v);
             original_areas.insert(v, area);
             wh.insert(v, 1.0);
-            total_area += area;
         }
 
         // Initial wl = 10^-3 * sqrt(avg_area)
+        let mut total_area = 0.0;
+        for f in mesh.face_ids() {
+            total_area += mesh.size(f);
+        }
         let avg_area = total_area / n as f64;
         let wl = 1e-3 * avg_area.sqrt();
 
@@ -106,6 +107,8 @@ impl ContractionState {
         }
     }
 }
+
+// TODO: better stability
 
 /// Implements geometry contraction from 'Skeleton Extraction by Mesh Contraction' by Au et al. (2008).
 /// This pulls vertices approximately towards the medial axis locally of the shape, using a
@@ -343,8 +346,6 @@ fn get_laplacian_triplets(
 
             // Compute cotangent weight for edge (i, j)
             let weight = cotangent_weight(mesh, v_i, v_j);
-
-            // Only add if the weight is valid (filters severe degeneracy)
             if weight.is_finite() {
                 // Off-diagonal L_ij = weight
                 triplets.push((i, j, weight));

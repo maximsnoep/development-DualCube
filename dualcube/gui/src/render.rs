@@ -1033,7 +1033,7 @@ pub fn refresh(solution: &Solution) -> RenderObjectStore {
                     let field_scale = 0.01;
 
                     for (&vert_id, &vector_id) in &fields.field_x.map {
-                        println!("Drawing vector at vert_id: {:?}", vert_id);
+                        // println!("Drawing vector at vert_id: {:?}", vert_id);
                         let vector = fields.field_x.vectors.get(vector_id).unwrap();
                         let vert_pos = input.position(vert_id);
                         let start = world_to_view(vert_pos, translation, scale);

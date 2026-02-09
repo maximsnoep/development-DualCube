@@ -8,6 +8,10 @@ use crate::{
     skeleton::curve_skeleton::CurveSkeletonManipulation,
 };
 
+// TODO: Maybe instead of simplifying everything possible, it might be better to simplify only to make regions closer to cubes
+
+// TODO: Instead of just degree 2 nodes, merge nodes when possible and improves some cost
+
 /// Simplifies a skeleton by removing nodes which are not crucial for structure:
 /// when a node can be removed and the resulting edge is still within the mesh, it can be removed
 /// We do this iteratively until no more nodes can be removed.
