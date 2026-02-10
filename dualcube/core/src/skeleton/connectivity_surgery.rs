@@ -16,7 +16,8 @@ use super::contraction::CONTRACTION;
 use super::curve_skeleton::CurveSkeleton;
 use crate::prelude::INPUT;
 use crate::skeleton::boundary_loop::BoundaryLoop;
-use crate::skeleton::curve_skeleton::{patch_centroid, SkeletonNode};
+use crate::skeleton::curve_skeleton::SkeletonNode;
+use crate::skeleton::patch::patch_centroid;
 
 /// Internal vertex index type for contraction mesh.
 type VIdx = VertKey<CONTRACTION>;
