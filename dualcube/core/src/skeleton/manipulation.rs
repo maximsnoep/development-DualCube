@@ -16,8 +16,8 @@ use nalgebra::Matrix3;
 use petgraph::graph::{EdgeIndex, NodeIndex};
 
 use crate::{
-    prelude::{CurveSkeleton, INPUT},
-    skeleton::curve_skeleton::{patch_centroid, CurveSkeletonManipulation, SkeletonNode, VKey},
+    prelude::{CurveSkeleton, INPUT, VertID},
+    skeleton::curve_skeleton::{CurveSkeletonManipulation, SkeletonNode, patch_centroid},
 };
 
 impl CurveSkeletonManipulation for CurveSkeleton {
@@ -92,8 +92,8 @@ impl CurveSkeletonManipulation for CurveSkeleton {
             // Identify Boundaries (Anchors)
             let vertex_map = get_vertex_map(self);
 
-            let mut fixed_a: HashSet<VKey> = HashSet::new();
-            let mut fixed_b: HashSet<VKey> = HashSet::new();
+            let mut fixed_a: HashSet<VertID> = HashSet::new();
+            let mut fixed_b: HashSet<VertID> = HashSet::new();
 
             // Check external connections for Node A
             let vertices_a = self.node_weight(node_a).unwrap().patch_vertices.clone();
@@ -163,7 +163,7 @@ impl CurveSkeletonManipulation for CurveSkeleton {
                 };
 
             // Re-assign Vertices based on Scalar Field
-            let mut valued_vertices: Vec<(f64, VKey)> = Vec::with_capacity(target_total);
+            let mut valued_vertices: Vec<(f64, VertID)> = Vec::with_capacity(target_total);
 
             // Add computed free vertices
             for (v, val) in computed_values {
@@ -189,8 +189,8 @@ impl CurveSkeletonManipulation for CurveSkeleton {
 
             let (new_a_slice, new_b_slice) = valued_vertices.split_at(split_idx);
 
-            let new_verts_a: Vec<VKey> = new_a_slice.iter().map(|&(_, v)| v).collect();
-            let new_verts_b: Vec<VKey> = new_b_slice.iter().map(|&(_, v)| v).collect();
+            let new_verts_a: Vec<VertID> = new_a_slice.iter().map(|&(_, v)| v).collect();
+            let new_verts_b: Vec<VertID> = new_b_slice.iter().map(|&(_, v)| v).collect();
 
             // If the new assignment creates islands, revert this refinement.
             if is_connected(&new_verts_a, mesh) && is_connected(&new_verts_b, mesh) {
@@ -214,8 +214,8 @@ impl CurveSkeletonManipulation for CurveSkeleton {
 
         let vertex_map = get_vertex_map(self);
 
-        let mut left_boundary: HashSet<VKey> = HashSet::new();
-        let mut right_boundary: HashSet<VKey> = HashSet::new();
+        let mut left_boundary: HashSet<VertID> = HashSet::new();
+        let mut right_boundary: HashSet<VertID> = HashSet::new();
 
         // Find boundary vertices: vertices adjacent to an external region.
         let vertices_left = self.node_weight(left_index).unwrap().patch_vertices.clone();
@@ -288,7 +288,7 @@ impl CurveSkeletonManipulation for CurveSkeleton {
             };
 
         // Sort vertices by scalar field value.
-        let mut valued_vertices: Vec<(f64, VKey)> = Vec::with_capacity(all_vertices.len());
+        let mut valued_vertices: Vec<(f64, VertID)> = Vec::with_capacity(all_vertices.len());
         for (v, val) in computed_values {
             valued_vertices.push((val, v));
         }
@@ -305,19 +305,19 @@ impl CurveSkeletonManipulation for CurveSkeleton {
         let split_1 = total / 3;
         let split_2 = (total * 2) / 3;
 
-        let new_left: Vec<VKey> = valued_vertices[..split_1].iter().map(|&(_, v)| v).collect();
-        let new_mid: Vec<VKey> = valued_vertices[split_1..split_2]
+        let new_left: Vec<VertID> = valued_vertices[..split_1].iter().map(|&(_, v)| v).collect();
+        let new_mid: Vec<VertID> = valued_vertices[split_1..split_2]
             .iter()
             .map(|&(_, v)| v)
             .collect();
-        let new_right: Vec<VKey> = valued_vertices[split_2..].iter().map(|&(_, v)| v).collect();
+        let new_right: Vec<VertID> = valued_vertices[split_2..].iter().map(|&(_, v)| v).collect();
 
         if new_left.is_empty() || new_mid.is_empty() || new_right.is_empty() {
             return false;
         }
 
         // Verify new left and right don't share a direct mesh edge.
-        let right_set: HashSet<VKey> = new_right.iter().copied().collect();
+        let right_set: HashSet<VertID> = new_right.iter().copied().collect();
         for &v in &new_left {
             for nbr in mesh.neighbors(v) {
                 if right_set.contains(&nbr) {
@@ -418,8 +418,8 @@ impl CurveSkeletonManipulation for CurveSkeleton {
         let vertex_map = get_vertex_map(self);
         let node_vertices = self.node_weight(node_index).unwrap().patch_vertices.clone();
 
-        let mut fixed_0: HashSet<VKey> = HashSet::new();
-        let mut fixed_1: HashSet<VKey> = HashSet::new();
+        let mut fixed_0: HashSet<VertID> = HashSet::new();
+        let mut fixed_1: HashSet<VertID> = HashSet::new();
 
         for &v in &node_vertices {
             for nbr in mesh.neighbors(v) {
@@ -534,18 +534,18 @@ enum HarmonicFieldError {
 /// - `mesh` - The mesh providing vertex adjacency information.
 ///
 /// # Returns
-/// - `Ok(HashMap<VKey, f64>)` mapping free vertex keys to values in the range (0.0, 1.0).
+/// - `Ok(HashMap<VertID, f64>)` mapping free vertex keys to values in the range (0.0, 1.0).
 ///     Note that this range is exclusive, as only the boundaries are fixed to 0.0 and 1.0.
 /// - `Err(HarmonicFieldError)` if the solve could not be performed.
 fn solve_harmonic_scalar_field(
-    all_candidate_vertices: &[VKey],
-    fixed_0: &HashSet<VKey>,
-    fixed_1: &HashSet<VKey>,
+    all_candidate_vertices: &[VertID],
+    fixed_0: &HashSet<VertID>,
+    fixed_1: &HashSet<VertID>,
     mesh: &Mesh<INPUT>,
-) -> Result<HashMap<VKey, f64>, HarmonicFieldError> {
+) -> Result<HashMap<VertID, f64>, HarmonicFieldError> {
     // Map vertices to dense keys for solver.
-    let mut free_mapping: HashMap<VKey, usize> = HashMap::new();
-    let mut free_vertices: Vec<VKey> = Vec::new();
+    let mut free_mapping: HashMap<VertID, usize> = HashMap::new();
+    let mut free_vertices: Vec<VertID> = Vec::new();
 
     // Get all the free vertices.
     for &v_idx in all_candidate_vertices {
@@ -567,7 +567,7 @@ fn solve_harmonic_scalar_field(
     let mut rhs = Mat::<f64>::zeros(n_free, 1);
 
     for (row_idx, &mesh_key) in free_vertices.iter().enumerate() {
-        let neighbors: Vec<VKey> = mesh.neighbors(mesh_key).collect();
+        let neighbors: Vec<VertID> = mesh.neighbors(mesh_key).collect();
         let degree = neighbors.len() as f64;
 
         // Graph Laplacian Diagonal: L_ii = degree
@@ -625,7 +625,7 @@ fn solve_harmonic_scalar_field(
 /// Inverts the mapping from skeleton nodes to mesh vertices.
 ///
 /// Returns a map from mesh vertex key to the skeleton node that owns it.
-fn get_vertex_map(skeleton: &CurveSkeleton) -> HashMap<VKey, NodeIndex> {
+fn get_vertex_map(skeleton: &CurveSkeleton) -> HashMap<VertID, NodeIndex> {
     let mut vertex_map = HashMap::new();
 
     for node_idx in skeleton.node_indices() {
@@ -643,12 +643,12 @@ fn get_vertex_map(skeleton: &CurveSkeleton) -> HashMap<VKey, NodeIndex> {
 ///
 /// Returns true if all vertices in the slice are connected via mesh edges
 /// that stay within the vertex set.
-fn is_connected(vertices: &[VKey], mesh: &Mesh<INPUT>) -> bool {
+fn is_connected(vertices: &[VertID], mesh: &Mesh<INPUT>) -> bool {
     if vertices.is_empty() {
         return true;
     }
 
-    let vert_set: HashSet<VKey> = vertices.iter().copied().collect();
+    let vert_set: HashSet<VertID> = vertices.iter().copied().collect();
     let start = vertices[0];
 
     let mut queue = VecDeque::new();
@@ -674,10 +674,10 @@ fn is_connected(vertices: &[VKey], mesh: &Mesh<INPUT>) -> bool {
 /// Used to find the "tip" of a leaf region by finding the vertex furthest from
 /// the neighbor's skeleton position.
 fn find_furthest_from_point(
-    region_verts: &[VKey],
+    region_verts: &[VertID],
     point: Vector3D,
     mesh: &Mesh<INPUT>,
-) -> Option<VKey> {
+) -> Option<VertID> {
     region_verts
         .iter()
         .max_by(|&&a, &&b| {
