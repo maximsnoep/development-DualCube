@@ -528,18 +528,3 @@ fn sort_face(a: VIdx, b: VIdx, c: VIdx) -> [VIdx; 3] {
     f.sort();
     f
 }
-
-/// A version of `SurgeryContext::refine_embedding` without the context wrapping.
-#[allow(dead_code)]
-pub fn refine_embedding(skeleton: &mut CurveSkeleton, original_mesh: &Mesh<INPUT>) {
-    for node_idx in skeleton.node_indices() {
-        let originals = &skeleton[node_idx].1;
-        if originals.is_empty() {
-            continue;
-        }
-
-        let centroid = patch_centroid(originals, original_mesh);
-
-        skeleton[node_idx].0 = centroid;
-    }
-}
