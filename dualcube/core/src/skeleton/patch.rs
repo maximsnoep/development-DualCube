@@ -94,12 +94,13 @@ impl CurveSkeletonSpatial for CurveSkeleton {
     fn patch_convexity_score(&self, node_index: NodeIndex, mesh: &Mesh<INPUT>) -> f64 {
         let patch_volume = self.patch_volume(node_index, mesh);
         let hull_volume = self.patch_hull_volume(node_index, mesh);
+        print!("Patch volume: {}, Hull volume: {}", patch_volume, hull_volume);
         if hull_volume == 0.0 {
             // Something likely went wrong
             error!("Convex hull volume is zero for node {:?}.", node_index);
             return 0.0;
         }
-        return patch_volume / hull_volume;
+        return (patch_volume / hull_volume).min(1.0);
     }
 }
 

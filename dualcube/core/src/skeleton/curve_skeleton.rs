@@ -1,7 +1,6 @@
-use mehsh::prelude::{HasFaces, HasPosition, HasSize, HasVertices, Mesh, Vector3D};
+use mehsh::prelude::{Mesh, Vector3D};
 use petgraph::graph::{EdgeIndex, NodeIndex, UnGraph};
 use serde::{Deserialize, Serialize};
-use std::collections::HashSet;
 
 use crate::{
     prelude::{VertID, INPUT},

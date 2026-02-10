@@ -18,6 +18,7 @@ use bevy_egui::EguiGlobalSettings;
 use bevy_egui::PrimaryEguiContext;
 use bevy_orbit_camera::*;
 use bevy_toon::ToonMaterial;
+use dualcube::skeleton::curve_skeleton::CurveSkeletonSpatial;
 use core::f32;
 use dualcube::prelude::*;
 use egui_dock::LeafNode;
@@ -373,6 +374,7 @@ pub fn update_render_settings(
             // (Objects::InputMesh, "gray")
                 | (Objects::InputMesh, "wireframe")
                 | (Objects::InputMesh, "patches")
+                | (Objects::InputMesh, "patch convexity")
                 | (Objects::Polycube, "gray")
                 | (Objects::Polycube, "paths")
                 | (Objects::Polycube, "flat paths")
@@ -1259,13 +1261,21 @@ pub fn refresh(solution: &Solution) -> RenderObjectStore {
                     .gizmo(gizmos_flat_paths, 2., -0.00011, "flat paths")
                     // .mesh(input, &color_map_flag, "flag")
                     // .gizmo(gizmos_flag_paths, 2., -1e-4, "flag paths")
-                    .gizmo(gizmos_features, 5., -0.00012, "features")
+                        .gizmo(gizmos_features, 5., -0.00012, "features")
                     .gizmo(granulated_mesh_gizmos, 0.5, -0.00001, "refined wireframe")
                     .gizmo(gizmos_raw_skeleton, 25., -0.00014, "raw skeleton")
                     .gizmo(gizmos_cleaned_skeleton, 25., -0.00015, "cleaned skeleton");
                 
+                let mut patch_convexity_mesh: Option<bevy::mesh::Mesh> = None;
                 if let Some(pm) = patch_mesh {
                     render_obj.bevy_mesh(pm, "patches");
+                }
+                if let Some(cleaned) = &solution.skeleton.as_ref().and_then(|s| s.cleaned_skeleton()) {
+                    // Build convexity overlay mesh
+                    patch_convexity_mesh = Some(create_patch_convexity_mesh(cleaned, input, translation, scale));
+                }
+                if let Some(pc) = patch_convexity_mesh {
+                    render_obj.bevy_mesh(pc, "patch convexity");
                 }
                 
                 render_obj
@@ -1417,13 +1427,17 @@ fn get_region_color(region: usize) -> [f32; 3] {
     }
 }
 
-/// Creates a Bevy mesh for visualizing surface patches as filled triangles.
-pub fn create_patch_mesh(
+/// Shared helper: builds a Bevy mesh coloring patches by a per-region color function.
+fn build_region_mesh<F>(
     curve_skeleton: &CurveSkeleton,
     mesh: &mehsh::prelude::Mesh<INPUT>,
     translation: Vector3D,
     scale: f64,
-) -> bevy::mesh::Mesh {
+    region_color_fn: F,
+) -> bevy::mesh::Mesh
+where
+    F: Fn(usize) -> [f32; 3],
+{
     // Build a mapping from vertex to region index
     let mut vertex_to_region: HashMap<VertKey<INPUT>, usize> = HashMap::new();
     for (region_idx, node_idx) in curve_skeleton.node_indices().enumerate() {
@@ -1434,11 +1448,6 @@ pub fn create_patch_mesh(
     }
 
     let mut builder = MeshBuilder::default();
-
-    // Helper to get color for a region
-    let region_color = |region: usize| -> [f32; 3] {
-        get_region_color(region)
-    };
 
     // Helper to transform and add a vertex to the builder
     let mut add_vertex = |pos: Vector3D, normal: Vector3D, color: &[f32; 3]| {
@@ -1475,35 +1484,30 @@ pub fn create_patch_mesh(
             (Some(r0), Some(r1), Some(r2)) => {
                 if r0 == r1 && r1 == r2 {
                     // All same region, simply draw the triangle
-                    let color = region_color(r0);
+                    let color = region_color_fn(r0);
                     add_vertex(p0, n0, &color);
                     add_vertex(p1, n1, &color);
                     add_vertex(p2, n2, &color);
                 } else if r0 == r1 {
                     // v0, v1 share region X; v2 is region Y
-                    // a=v0, b=v1, c=v2
                     split_triangle(
                         &mut add_vertex,
-                        p0, p1, p2, n0, n1, n2, r0, r2, &region_color,
+                        p0, p1, p2, n0, n1, n2, r0, r2, &region_color_fn,
                     );
                 } else if r1 == r2 {
                     // v1, v2 share region X; v0 is region Y
-                    // a=v1, b=v2, c=v0
                     split_triangle(
                         &mut add_vertex,
-                        p1, p2, p0, n1, n2, n0, r1, r0, &region_color,
+                        p1, p2, p0, n1, n2, n0, r1, r0, &region_color_fn,
                     );
                 } else if r0 == r2 {
                     // v0, v2 share region X; v1 is region Y
-                    // Use cyclic rotation (v2, v0, v1) to maintain winding order
-                    // a=v2, b=v0, c=v1
                     split_triangle(
                         &mut add_vertex,
-                        p2, p0, p1, n2, n0, n1, r0, r1, &region_color,
+                        p2, p0, p1, n2, n0, n1, r0, r1, &region_color_fn,
                     );
                 } else {
                     unreachable!("Triangle with all three vertices in different regions encountered.");
-                    // This case is impossible for a valid skeleton.
                 }
             }
             _ => {}
@@ -1511,6 +1515,17 @@ pub fn create_patch_mesh(
     }
 
     builder.build()
+}
+
+/// Creates a Bevy mesh for visualizing surface patches as filled triangles.
+pub fn create_patch_mesh(
+    curve_skeleton: &CurveSkeleton,
+    mesh: &mehsh::prelude::Mesh<INPUT>,
+    translation: Vector3D,
+    scale: f64,
+) -> bevy::mesh::Mesh {
+    // Delegate to shared helper using Tailwind region colors
+    build_region_mesh(curve_skeleton, mesh, translation, scale, |region| get_region_color(region))
 }
 
 /// Splits a triangle where vertices a,b belong to region_x and vertex c belongs to region_y.
@@ -1555,4 +1570,29 @@ where
     add_vertex(p_ac, n_ac, &color_y);
     add_vertex(p_bc, n_bc, &color_y);
     add_vertex(pc, nc, &color_y);
+}
+
+/// Creates a colored Bevy mesh visualizing patch convexity (red=non-convex, green=convex).
+pub fn create_patch_convexity_mesh(
+    curve_skeleton: &CurveSkeleton,
+    mesh: &mehsh::prelude::Mesh<INPUT>,
+    translation: Vector3D,
+    scale: f64,
+) -> bevy::mesh::Mesh {
+    // Compute convexity score per region (clamped between 0 and 1)
+    let mut region_scores: Vec<f64> = Vec::new();
+    for node_idx in curve_skeleton.node_indices() {
+        let mut score = curve_skeleton.patch_convexity_score(node_idx, mesh);
+        println!("Convexity score for node {:?}: {}", node_idx, score);
+        if !score.is_finite() {
+            score = 0.0;
+        }
+        region_scores.push(score.clamp(0.0, 1.0));
+    }
+
+    // Delegate to the shared builder using a score->color mapping
+    build_region_mesh(curve_skeleton, mesh, translation, scale, |region| {
+        let score = region_scores.get(region).copied().unwrap_or(0.0) as f32;
+        colors::map(score, &colors::SCALE_MAGMA)
+    })
 }
