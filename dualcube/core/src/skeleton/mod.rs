@@ -18,6 +18,7 @@ mod orthogonalize;
 mod simplify;
 mod embeddability;
 mod manipulation;
+mod boundary_loop;
 
 /// Holds all relevant information for skeleton-based polycube initialization.
 ///

@@ -1,10 +1,12 @@
-use mehsh::prelude::{EdgeKey, HasFaces, HasPosition, HasSize, HasVertices, Mesh, Vector3D};
+use mehsh::prelude::{HasFaces, HasPosition, HasSize, HasVertices, Mesh, Vector3D};
 use petgraph::graph::{EdgeIndex, NodeIndex, UnGraph};
 use serde::{Deserialize, Serialize};
 use std::collections::HashSet;
 
-use crate::prelude::{INPUT, VertID};
-
+use crate::{
+    prelude::{VertID, INPUT},
+    skeleton::boundary_loop::BoundaryLoop,
+};
 
 /// Nodes store their 3D position and a list of original mesh vertex keys
 /// that represent the induced surface patch.
@@ -17,14 +19,6 @@ pub struct SkeletonNode {
     pub patch_vertices: Vec<VertID>,
 }
 
-/// Edges of the graph geometrically represent boundary loops between patches.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct BoundaryLoop {
-    /// The list of surface edges that form this boundary loop, in traversal order. 
-    /// This is always a simple cycle.
-    pub vertices: Vec<EdgeKey<INPUT>>,
-}
-
 /// The extracted 1D skeleton, embedded in 3D space.
 pub type CurveSkeleton = UnGraph<SkeletonNode, BoundaryLoop>;
 
@@ -34,7 +28,7 @@ pub trait CurveSkeletonManipulation {
     /// to its neighboring nodes, and removing the node and its edges.
     ///
     /// Only works for nodes with degree 2, neighbors also cannot be connected directly yet.
-    fn dissolve_subdivision(&mut self, node_index: NodeIndex);
+    fn dissolve_subdivision(&mut self, node_index: NodeIndex, mesh: &Mesh<INPUT>);
 
     /// Smooths the boundaries between surface patches induced by the skeleton, by
     /// shifting which surface vertices are assigned which skeleton node along the boundary.

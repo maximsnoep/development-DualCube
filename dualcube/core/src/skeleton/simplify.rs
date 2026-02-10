@@ -60,7 +60,7 @@ pub fn simplify_skeleton(skeleton: &mut CurveSkeleton, original_mesh: &Mesh<INPU
             }
 
             // If we reach here, the node can be dissolved
-            skeleton.dissolve_subdivision(node_index);
+            skeleton.dissolve_subdivision(node_index, original_mesh);
 
             // Change one node at a time.
             changed = true;
