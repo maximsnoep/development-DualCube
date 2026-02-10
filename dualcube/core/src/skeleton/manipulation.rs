@@ -14,10 +14,10 @@ use nalgebra::Matrix3;
 use petgraph::graph::{EdgeIndex, NodeIndex};
 
 use crate::{
-    prelude::{CurveSkeleton, VertID, INPUT},
+    prelude::{CurveSkeleton, INPUT, VertID},
     skeleton::{
         boundary_loop::BoundaryLoop,
-        curve_skeleton::{patch_centroid, CurveSkeletonManipulation, SkeletonNode},
+        curve_skeleton::{CurveSkeletonManipulation, SkeletonNode}, patch::patch_centroid,
     },
 };
 
