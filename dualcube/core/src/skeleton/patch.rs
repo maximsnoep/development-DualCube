@@ -10,7 +10,58 @@ impl CurveSkeletonSpatial for CurveSkeleton {
     /// Places a virtual vertex in the centroid of the boundaries, to close up the holes. 
     /// Then uses tetrahedron volumes to compute the volume of the patch.
     fn patch_volume(&self, node_index: NodeIndex, mesh: &Mesh<INPUT>) -> f64 {
-        todo!()
+        let patch_verts = &self[node_index].patch_vertices;
+        if patch_verts.len() < 3 {
+            return 0.0;
+        }
+
+        let vert_set: HashSet<VertID> = patch_verts.iter().copied().collect();
+
+        // Collect all faces that are fully inside the patch
+        let mut faces: Vec<[Vector3D; 3]> = Vec::new();
+        for face_id in mesh.face_ids() {
+            let fv: Vec<VertID> = mesh.vertices(face_id).collect();
+            if fv.iter().all(|v| vert_set.contains(v)) {
+                let p0 = mesh.position(fv[0]);
+                let p1 = mesh.position(fv[1]);
+                let p2 = mesh.position(fv[2]);
+                faces.push([p0, p1, p2]);
+            }
+        }
+
+        // For each boundary loop adjacent to this node, create a centroid and cap the hole
+        for edge_ref in self.edges(node_index) {
+            let boundary_loop = edge_ref.weight();
+            if boundary_loop.vertices.is_empty() {
+                continue;
+            }
+            let loop_verts: Vec<VertID> = boundary_loop.vertices.iter().map(|&e| mesh.root(e)).collect();
+
+            // Centroid of boundary vertices
+            let mut centroid = Vector3D::zeros();
+            for &v in &loop_verts {
+                centroid += mesh.position(v);
+            }
+            centroid /= loop_verts.len() as f64;
+
+            // Cap the loop by creating triangles (u, v, centroid) following the loop order
+            for i in 0..loop_verts.len() {
+                let u = mesh.position(loop_verts[i]);
+                let v = mesh.position(loop_verts[(i + 1) % loop_verts.len()]);
+                faces.push([u, v, centroid]);
+            }
+        }
+
+        // Sum signed tetrahedron volumes from the origin for all triangles
+        let mut vol= 0.0;
+        for tri in faces {
+            let p0 = tri[0];
+            let p1 = tri[1];
+            let p2 = tri[2];
+            vol += p0.dot(&p1.cross(&p2));
+        }
+
+        (vol / 6.0).abs()
     }
 
     // Calculates a convex hull, then uses signed tetrahedron volumes to compute the volume of the hull.
