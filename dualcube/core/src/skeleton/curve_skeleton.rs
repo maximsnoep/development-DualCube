@@ -208,7 +208,7 @@ impl CurveSkeletonManipulation for CurveSkeleton {
                     }
                 };
 
-            // Re-assign Vertices based on Volume Fraction
+            // Re-assign Vertices based on Scalar Field
             let mut valued_vertices: Vec<(f64, VKey)> = Vec::with_capacity(target_total);
 
             // Add computed free vertices

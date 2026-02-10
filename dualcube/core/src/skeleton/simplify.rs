@@ -5,7 +5,7 @@ use petgraph::graph::NodeIndex;
 
 use crate::{
     prelude::{CurveSkeleton, INPUT},
-    skeleton::{connectivity_surgery::refine_embedding, curve_skeleton::CurveSkeletonManipulation},
+    skeleton::{curve_skeleton::CurveSkeletonManipulation},
 };
 
 // TODO: Maybe instead of simplifying everything possible, it might be better to simplify only to make regions closer to cubes
