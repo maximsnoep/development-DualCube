@@ -17,7 +17,7 @@ mod contraction;
 mod orthogonalize;
 mod simplify;
 mod embeddability;
-mod patch;
+mod manipulation;
 
 /// Holds all relevant information for skeleton-based polycube initialization.
 ///
