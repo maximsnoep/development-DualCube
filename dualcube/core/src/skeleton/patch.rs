@@ -1,7 +1,56 @@
 use std::collections::HashSet;
 
-use crate::prelude::{INPUT, VertID};
+use crate::{prelude::{CurveSkeleton, INPUT, VertID}, skeleton::curve_skeleton::CurveSkeletonSpatial};
+use log::error;
 use mehsh::prelude::{HasFaces, HasPosition, HasSize, HasVertices, Mesh, Vector3D};
+use petgraph::graph::NodeIndex;
+
+
+impl CurveSkeletonSpatial for CurveSkeleton {
+    /// Places a virtual vertex in the centroid of the boundaries, to close up the holes. 
+    /// Then uses tetrahedron volumes to compute the volume of the patch.
+    fn patch_volume(&self, node_index: NodeIndex, mesh: &Mesh<INPUT>) -> f64 {
+        todo!()
+    }
+
+    // Calculates a convex hull, then uses signed tetrahedron volumes to compute the volume of the hull.
+    fn patch_hull_volume(&self, node_index: NodeIndex, mesh: &Mesh<INPUT>) -> f64 {
+        // Collect the positions of the patch vertices
+        let vertices = &self[node_index].patch_vertices;
+        if vertices.len() < 4 {
+            // All points are coplanar, so volume is always zero.
+            return 0.0;
+        }
+
+        // Convert to Vec<Vec<f64>> convex hull calculation
+        let points_f: Vec<Vec<f64>> = vertices
+            .iter()
+            .map(|&v| {
+                let p = mesh.position(v);
+                vec![p.x, p.y, p.z]
+            })
+            .collect();
+        let convex_hull = match chull::ConvexHullWrapper::try_new(&points_f, None) {
+            Ok(c) => c,
+            Err(_) => return 0.0,
+        };
+
+        // Compute the volume of the convex hull // TODO: check whether this calculation lines up with other one we use (it should though).
+        convex_hull.volume()
+    }
+    
+    /// Calculates a convexity score by comparing the patch volume to the convex hull volume. 
+    fn patch_convexity_score(&self, node_index: NodeIndex, mesh: &Mesh<INPUT>) -> f64 {
+        let patch_volume = self.patch_volume(node_index, mesh);
+        let hull_volume = self.patch_hull_volume(node_index, mesh);
+        if hull_volume == 0.0 {
+            // Something likely went wrong
+            error!("Convex hull volume is zero for node {:?}.", node_index);
+            return 0.0;
+        }
+        return patch_volume / hull_volume;
+    }
+}
 
 /// Computes the centroid position of a set of mesh vertices.
 /// Weighs each vertex by the one-ring area inside the patch to approximate true surface centroid.

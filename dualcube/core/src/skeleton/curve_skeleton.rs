@@ -54,3 +54,18 @@ pub trait CurveSkeletonManipulation {
     /// the mesh region. Returns `false` if the node has degree < 4 or partitioning fails.
     fn split_high_degree_node(&mut self, node_index: NodeIndex, mesh: &Mesh<INPUT>) -> bool;
 }
+
+/// Methods for calculating geometric properties of curve skeletons and their induced surface patches.
+pub trait CurveSkeletonSpatial {
+    /// Calculates the volume of the surface patch induced by this node. Note that this is an approximation,
+    /// as the patch is likely not watertight, so volume is ill-defined.
+    fn patch_volume(&self, node_index: NodeIndex, mesh: &Mesh<INPUT>) -> f64;
+
+    /// Computes the volume of the convex hull of the surface patch induced by this node.
+    fn patch_hull_volume(&self, node_index: NodeIndex, mesh: &Mesh<INPUT>) -> f64;
+
+    /// Returns a value in [0,1] representing how convex the patch is, where 1 means perfectly convex and 0 means very non-convex.
+    fn patch_convexity_score(&self, node_index: NodeIndex, mesh: &Mesh<INPUT>) -> f64;
+
+    // TODO: move patch centroid into here maybe
+}
