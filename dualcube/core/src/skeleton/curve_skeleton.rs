@@ -1,10 +1,18 @@
 use std::collections::{HashMap, HashSet, VecDeque};
 
-use faer::{Mat, Side, prelude::Solve, sparse::{SparseColMat, Triplet, linalg::solvers::{Llt, SymbolicLlt}}};
+use faer::{
+    prelude::Solve,
+    sparse::{
+        linalg::solvers::{Llt, SymbolicLlt},
+        SparseColMat, Triplet,
+    },
+    Mat, Side,
+};
 use log::{error, warn};
 use mehsh::prelude::{HasFaces, HasNeighbors, HasPosition, HasSize, HasVertices, Mesh, Vector3D, VertKey};
 use nalgebra::Matrix3;
 use petgraph::graph::{EdgeIndex, NodeIndex, UnGraph};
+use serde::{Deserialize, Serialize};
 
 use crate::prelude::INPUT;
 
@@ -13,7 +21,14 @@ pub type VKey = VertKey<INPUT>;
 
 /// Nodes store their 3D position and a list of original mesh vertex keys
 /// that represent the induced surface patch.
-pub type SkeletonNode = (Vector3D, Vec<VKey>);
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SkeletonNode {
+    /// The embedded 3D position of this node in space, ideally inside the volume of the mesh.
+    pub position: Vector3D,
+
+    /// The list of original mesh vertex keys that represent the induced surface patch for this node.
+    pub patch_vertices: Vec<VKey>,
+}
 
 /// The extracted 1D skeleton, embedded in 3D space.
 pub type CurveSkeleton = UnGraph<SkeletonNode, ()>;
@@ -75,8 +90,8 @@ impl CurveSkeletonManipulation for CurveSkeleton {
             neighbors[1]
         } else {
             // Equal degree, pick smaller patch
-            let patch_size_a = self.node_weight(neighbors[0]).unwrap().1.len();
-            let patch_size_b = self.node_weight(neighbors[1]).unwrap().1.len();
+            let patch_size_a = self.node_weight(neighbors[0]).unwrap().patch_vertices.len();
+            let patch_size_b = self.node_weight(neighbors[1]).unwrap().patch_vertices.len();
             if patch_size_a <= patch_size_b {
                 neighbors[0]
             } else {
@@ -85,10 +100,11 @@ impl CurveSkeletonManipulation for CurveSkeleton {
         };
 
         // Move patch data to target neighbor
-        let mut data_to_move = std::mem::take(&mut self.node_weight_mut(node_index).unwrap().1);
+        let mut data_to_move =
+            std::mem::take(&mut self.node_weight_mut(node_index).unwrap().patch_vertices);
         self.node_weight_mut(target_neighbor)
             .unwrap()
-            .1
+            .patch_vertices
             .append(&mut data_to_move);
 
         // Rewire edges
@@ -110,8 +126,8 @@ impl CurveSkeletonManipulation for CurveSkeleton {
             };
 
             // Snapshot current sizes to preserve vertex amounts // TODO: area/volume might be better?
-            let size_a = self.node_weight(node_a).unwrap().1.len();
-            let size_b = self.node_weight(node_b).unwrap().1.len();
+            let size_a = self.node_weight(node_a).unwrap().patch_vertices.len();
+            let size_b = self.node_weight(node_b).unwrap().patch_vertices.len();
             let target_total = size_a + size_b;
 
             // If regions are tiny, skip
@@ -126,7 +142,7 @@ impl CurveSkeletonManipulation for CurveSkeleton {
             let mut fixed_b: HashSet<VKey> = HashSet::new();
 
             // Check external connections for Node A
-            let vertices_a = self.node_weight(node_a).unwrap().1.clone();
+            let vertices_a = self.node_weight(node_a).unwrap().patch_vertices.clone();
             for &v in &vertices_a {
                 for nbr in mesh.neighbors(v) {
                     if let Some(&nbr_region) = vertex_map.get(&nbr) {
@@ -139,7 +155,7 @@ impl CurveSkeletonManipulation for CurveSkeleton {
             }
 
             // Check external connections for Node B
-            let vertices_b = self.node_weight(node_b).unwrap().1.clone();
+            let vertices_b = self.node_weight(node_b).unwrap().patch_vertices.clone();
             for &v in &vertices_b {
                 for nbr in mesh.neighbors(v) {
                     if let Some(&nbr_region) = vertex_map.get(&nbr) {
@@ -155,13 +171,13 @@ impl CurveSkeletonManipulation for CurveSkeleton {
             // Find the vertex furthest from the neighbor's skeleton position, which will
             // be at the extremity pointing away from the rest of the skeleton.
             if fixed_a.is_empty() {
-                let neighbor_pos = self.node_weight(node_b).unwrap().0;
+                let neighbor_pos = self.node_weight(node_b).unwrap().position;
                 if let Some(v) = find_furthest_from_point(&vertices_a, neighbor_pos, mesh) {
                     fixed_a.insert(v);
                 }
             }
             if fixed_b.is_empty() {
-                let neighbor_pos = self.node_weight(node_a).unwrap().0;
+                let neighbor_pos = self.node_weight(node_a).unwrap().position;
                 if let Some(v) = find_furthest_from_point(&vertices_b, neighbor_pos, mesh) {
                     fixed_b.insert(v);
                 }
@@ -180,18 +196,17 @@ impl CurveSkeletonManipulation for CurveSkeleton {
             all_vertices.extend_from_slice(&vertices_a);
             all_vertices.extend_from_slice(&vertices_b);
 
-            let computed_values = match solve_harmonic_scalar_field(
-                &all_vertices,
-                &fixed_a,
-                &fixed_b,
-                mesh,
-            ) {
-                Ok(vals) => vals,
-                Err(e) => {
-                    error!("Harmonic field solve failed for edge {:?}: {:?}", edge_idx, e);
-                    continue;
-                }
-            };
+            let computed_values =
+                match solve_harmonic_scalar_field(&all_vertices, &fixed_a, &fixed_b, mesh) {
+                    Ok(vals) => vals,
+                    Err(e) => {
+                        error!(
+                            "Harmonic field solve failed for edge {:?}: {:?}",
+                            edge_idx, e
+                        );
+                        continue;
+                    }
+                };
 
             // Re-assign Vertices based on Volume Fraction
             let mut valued_vertices: Vec<(f64, VKey)> = Vec::with_capacity(target_total);
@@ -226,8 +241,8 @@ impl CurveSkeletonManipulation for CurveSkeleton {
             // If the new assignment creates islands, revert this refinement.
             if is_connected(&new_verts_a, mesh) && is_connected(&new_verts_b, mesh) {
                 // Commit changes
-                self.node_weight_mut(node_a).unwrap().1 = new_verts_a;
-                self.node_weight_mut(node_b).unwrap().1 = new_verts_b;
+                self.node_weight_mut(node_a).unwrap().patch_vertices = new_verts_a;
+                self.node_weight_mut(node_b).unwrap().patch_vertices = new_verts_b;
             } else {
                 warn!(
                     "Boundary refinement failed connectivity check for edge {:?}, skipping.",
@@ -249,7 +264,7 @@ impl CurveSkeletonManipulation for CurveSkeleton {
         let mut right_boundary: HashSet<VKey> = HashSet::new();
 
         // Find boundary vertices: vertices adjacent to an external region.
-        let vertices_left = self.node_weight(left_index).unwrap().1.clone();
+        let vertices_left = self.node_weight(left_index).unwrap().patch_vertices.clone();
         for &v in &vertices_left {
             for nbr in mesh.neighbors(v) {
                 if let Some(&nbr_region) = vertex_map.get(&nbr) {
@@ -261,7 +276,11 @@ impl CurveSkeletonManipulation for CurveSkeleton {
             }
         }
 
-        let vertices_right = self.node_weight(right_index).unwrap().1.clone();
+        let vertices_right = self
+            .node_weight(right_index)
+            .unwrap()
+            .patch_vertices
+            .clone();
         for &v in &vertices_right {
             for nbr in mesh.neighbors(v) {
                 if let Some(&nbr_region) = vertex_map.get(&nbr) {
@@ -280,13 +299,13 @@ impl CurveSkeletonManipulation for CurveSkeleton {
 
         // For leaf regions with no external boundary, pin the vertex furthest from the interface.
         if left_boundary.is_empty() {
-            let neighbor_pos = self.node_weight(right_index).unwrap().0;
+            let neighbor_pos = self.node_weight(right_index).unwrap().position;
             if let Some(v) = find_furthest_from_point(&vertices_left, neighbor_pos, mesh) {
                 left_boundary.insert(v);
             }
         }
         if right_boundary.is_empty() {
-            let neighbor_pos = self.node_weight(left_index).unwrap().0;
+            let neighbor_pos = self.node_weight(left_index).unwrap().position;
             if let Some(v) = find_furthest_from_point(&vertices_right, neighbor_pos, mesh) {
                 right_boundary.insert(v);
             }
@@ -301,18 +320,18 @@ impl CurveSkeletonManipulation for CurveSkeleton {
         all_vertices.extend_from_slice(&vertices_left);
         all_vertices.extend_from_slice(&vertices_right);
 
-        let computed_values = match solve_harmonic_scalar_field(
-            &all_vertices,
-            &left_boundary,
-            &right_boundary,
-            mesh,
-        ) {
-            Ok(vals) => vals,
-            Err(e) => {
-                warn!("Harmonic field solve failed for edge {:?}: {:?}", edge_index, e);
-                return false;
-            }
-        };
+        let computed_values =
+            match solve_harmonic_scalar_field(&all_vertices, &left_boundary, &right_boundary, mesh)
+            {
+                Ok(vals) => vals,
+                Err(e) => {
+                    warn!(
+                        "Harmonic field solve failed for edge {:?}: {:?}",
+                        edge_index, e
+                    );
+                    return false;
+                }
+            };
 
         // Sort vertices by scalar field value.
         let mut valued_vertices: Vec<(f64, VKey)> = Vec::with_capacity(all_vertices.len());
@@ -325,8 +344,7 @@ impl CurveSkeletonManipulation for CurveSkeleton {
         for &v in &right_boundary {
             valued_vertices.push((1.0, v));
         }
-        valued_vertices
-            .sort_by(|a, b| a.0.partial_cmp(&b.0).unwrap_or(std::cmp::Ordering::Equal));
+        valued_vertices.sort_by(|a, b| a.0.partial_cmp(&b.0).unwrap_or(std::cmp::Ordering::Equal));
 
         // Split into 3 roughly equal chunks.
         let total = valued_vertices.len();
@@ -357,12 +375,15 @@ impl CurveSkeletonManipulation for CurveSkeleton {
         // Place the new node at the centroid of its assigned patch.
         let p_mid = patch_centroid(&new_mid, mesh);
 
-        self.node_weight_mut(left_index).unwrap().1 = new_left;
-        self.node_weight_mut(right_index).unwrap().1 = new_right;
+        self.node_weight_mut(left_index).unwrap().patch_vertices = new_left;
+        self.node_weight_mut(right_index).unwrap().patch_vertices = new_right;
 
-        let mid_index = self.add_node((p_mid, new_mid));
+        let mid_index = self.add_node(SkeletonNode {
+            position: p_mid,
+            patch_vertices: new_mid,
+        });
 
-        // Replace L <-> R with L <-> M <-> R.
+        // Replace L <-> R with L <-> M <-> R.ß
         self.remove_edge(edge_index);
         self.add_edge(left_index, mid_index, ());
         self.add_edge(mid_index, right_index, ());
@@ -379,15 +400,19 @@ impl CurveSkeletonManipulation for CurveSkeleton {
             return false;
         }
 
-        let node_pos = self.node_weight(node_index).unwrap().0;
+        let node_pos = self.node_weight(node_index).unwrap().position;
 
         // Find the axis of maximum variance among neighbor directions (PCA).
         let mut cov = Matrix3::<f64>::zeros();
         for &nbr in &neighbors {
-            let nbr_pos = self.node_weight(nbr).unwrap().0;
+            let nbr_pos = self.node_weight(nbr).unwrap().position;
             let dir = nbr_pos - node_pos;
             let len = dir.norm();
-            let dir = if len > 1e-12 { dir / len } else { Vector3D::zeros() };
+            let dir = if len > 1e-12 {
+                dir / len
+            } else {
+                Vector3D::zeros()
+            };
             for i in 0..3 {
                 for j in 0..3 {
                     cov[(i, j)] += dir[i] * dir[j];
@@ -403,10 +428,14 @@ impl CurveSkeletonManipulation for CurveSkeleton {
         let mut nbr_proj: Vec<(f64, NodeIndex)> = neighbors
             .iter()
             .map(|&nbr| {
-                let nbr_pos = self.node_weight(nbr).unwrap().0;
+                let nbr_pos = self.node_weight(nbr).unwrap().position;
                 let dir = nbr_pos - node_pos;
                 let len = dir.norm();
-                let dir = if len > 1e-12 { dir / len } else { Vector3D::zeros() };
+                let dir = if len > 1e-12 {
+                    dir / len
+                } else {
+                    Vector3D::zeros()
+                };
                 (dir.dot(&split_axis), nbr)
             })
             .collect();
@@ -433,7 +462,7 @@ impl CurveSkeletonManipulation for CurveSkeleton {
 
         // Identify mesh boundary vertices between this node's patch and its neighbor groups.
         let vertex_map = get_vertex_map(self);
-        let node_vertices = self.node_weight(node_index).unwrap().1.clone();
+        let node_vertices = self.node_weight(node_index).unwrap().patch_vertices.clone();
 
         let mut fixed_0: HashSet<VKey> = HashSet::new();
         let mut fixed_1: HashSet<VKey> = HashSet::new();
@@ -461,18 +490,17 @@ impl CurveSkeletonManipulation for CurveSkeleton {
         }
 
         // Solve harmonic field to partition the patch.
-        let computed_values = match solve_harmonic_scalar_field(
-            &node_vertices,
-            &fixed_0,
-            &fixed_1,
-            mesh,
-        ) {
-            Ok(vals) => vals,
-            Err(e) => {
-                warn!("Harmonic field solve failed for node {:?}: {:?}", node_index, e);
-                return false;
-            }
-        };
+        let computed_values =
+            match solve_harmonic_scalar_field(&node_vertices, &fixed_0, &fixed_1, mesh) {
+                Ok(vals) => vals,
+                Err(e) => {
+                    warn!(
+                        "Harmonic field solve failed for node {:?}: {:?}",
+                        node_index, e
+                    );
+                    return false;
+                }
+            };
 
         // Threshold at 0.5 to split free vertices.
         let mut verts_a = Vec::new();
@@ -498,8 +526,14 @@ impl CurveSkeletonManipulation for CurveSkeleton {
         let pos_a = patch_centroid(&verts_a, mesh);
         let pos_b = patch_centroid(&verts_b, mesh);
 
-        let idx_a = self.add_node((pos_a, verts_a));
-        let idx_b = self.add_node((pos_b, verts_b));
+        let idx_a = self.add_node(SkeletonNode {
+            position: pos_a,
+            patch_vertices: verts_a,
+        });
+        let idx_b = self.add_node(SkeletonNode {
+            position: pos_b,
+            patch_vertices: verts_b,
+        });
 
         self.add_edge(idx_a, idx_b, ());
 
@@ -613,7 +647,7 @@ fn solve_harmonic_scalar_field(
     // Symbolic Analysis (Permutation ordering to minimize fill-in)
     let symbolic = match SymbolicLlt::try_new(lhs.symbolic(), Side::Lower) {
         Ok(sym) => sym,
-        Err(_) => return  Err(HarmonicFieldError::SymbolicFactorizationFailed),
+        Err(_) => return Err(HarmonicFieldError::SymbolicFactorizationFailed),
     };
 
     // Numeric Factorization
@@ -641,9 +675,9 @@ fn get_vertex_map(skeleton: &CurveSkeleton) -> HashMap<VKey, NodeIndex> {
     let mut vertex_map = HashMap::new();
 
     for node_idx in skeleton.node_indices() {
-        if let Some((_, vertices)) = skeleton.node_weight(node_idx) {
-            for &vertex in vertices {
-                vertex_map.insert(vertex, node_idx);
+        if let Some(node) = skeleton.node_weight(node_idx) {
+            for &vertex in &node.patch_vertices {
+            vertex_map.insert(vertex, node_idx);
             }
         }
     }
@@ -723,7 +757,9 @@ fn find_furthest_from_point(
         .max_by(|&&a, &&b| {
             let dist_a = mesh.position(a).metric_distance(&point);
             let dist_b = mesh.position(b).metric_distance(&point);
-            dist_a.partial_cmp(&dist_b).unwrap_or(std::cmp::Ordering::Equal)
+            dist_a
+                .partial_cmp(&dist_b)
+                .unwrap_or(std::cmp::Ordering::Equal)
         })
         .copied()
 }

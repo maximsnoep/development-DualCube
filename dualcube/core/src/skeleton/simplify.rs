@@ -40,8 +40,8 @@ pub fn simplify_skeleton(skeleton: &mut CurveSkeleton, original_mesh: &Mesh<INPU
                 neighbors.swap(0, 1);
             }
 
-            let pos_a = skeleton.node_weight(neighbors[0]).unwrap().0;
-            let pos_b = skeleton.node_weight(neighbors[1]).unwrap().0;
+            let pos_a = skeleton.node_weight(neighbors[0]).unwrap().position;
+            let pos_b = skeleton.node_weight(neighbors[1]).unwrap().position;
 
             // Make sure a and b are not directly connected
             if skeleton.find_edge(neighbors[0], neighbors[1]).is_some() {

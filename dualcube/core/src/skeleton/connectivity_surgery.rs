@@ -15,7 +15,7 @@ use nalgebra::{Matrix4, Vector4};
 use super::contraction::CONTRACTION;
 use super::curve_skeleton::CurveSkeleton;
 use crate::prelude::INPUT;
-use crate::skeleton::curve_skeleton::patch_centroid;
+use crate::skeleton::curve_skeleton::{SkeletonNode, patch_centroid};
 
 /// Internal vertex index type.
 type VIdx = VertKey<CONTRACTION>;
@@ -360,7 +360,10 @@ impl SurgeryContext {
             // Get the list of original vertex keys this node represents
             let originals = self.vertex_to_original.get(&v).cloned().unwrap_or_default();
 
-            let idx = graph.add_node((original_pos, originals));
+            let idx = graph.add_node(SkeletonNode {
+                position: original_pos,
+                patch_vertices: originals,
+            });
             node_indices.insert(v, idx);
         }
 

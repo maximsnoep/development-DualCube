@@ -1353,8 +1353,8 @@ pub fn create_skeleton_gizmos(
     // Draw edges
     for edge in curve_skeleton.edge_indices() {
         let (a, b) = curve_skeleton.edge_endpoints(edge).unwrap();
-        let pos_a = curve_skeleton[a].0;
-        let pos_b = curve_skeleton[b].0;
+        let pos_a = curve_skeleton[a].position;
+        let pos_b = curve_skeleton[b].position;
         let a_view = world_to_view(pos_a, translation, scale);
         let b_view = world_to_view(pos_b, translation, scale);
         gizmos.line(a_view, b_view, skel_color);
@@ -1362,7 +1362,7 @@ pub fn create_skeleton_gizmos(
 
     // Draw nodes
     for node_idx in curve_skeleton.node_indices() {
-        let pos = curve_skeleton[node_idx].0;
+        let pos = curve_skeleton[node_idx].position;
         let center = world_to_view(pos, translation, scale);
         gizmos.sphere(Isometry3d::from_translation(center), node_radius, skel_color);
     }
@@ -1427,8 +1427,8 @@ pub fn create_patch_mesh(
     // Build a mapping from vertex to region index
     let mut vertex_to_region: HashMap<VertKey<INPUT>, usize> = HashMap::new();
     for (region_idx, node_idx) in curve_skeleton.node_indices().enumerate() {
-        let (_, vertices) = &curve_skeleton[node_idx];
-        for &vert_key in vertices {
+        let node = &curve_skeleton[node_idx];
+        for &vert_key in &node.patch_vertices {
             vertex_to_region.insert(vert_key, region_idx);
         }
     }

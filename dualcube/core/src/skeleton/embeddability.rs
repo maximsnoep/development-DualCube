@@ -40,9 +40,9 @@ pub fn make_embedding_possible(skeleton: &mut CurveSkeleton, mesh: &Mesh<INPUT>)
                 found_triangle = true;
 
                 // Compute patch sizes for each node in the cycle.
-                let size_a = skeleton.node_weight(a).map(|w| w.1.len()).unwrap_or(0);
-                let size_b = skeleton.node_weight(b).map(|w| w.1.len()).unwrap_or(0);
-                let size_c = skeleton.node_weight(common).map(|w| w.1.len()).unwrap_or(0);
+                let size_a = skeleton.node_weight(a).map(|w| w.patch_vertices.len()).unwrap_or(0);
+                let size_b = skeleton.node_weight(b).map(|w| w.patch_vertices.len()).unwrap_or(0);
+                let size_c = skeleton.node_weight(common).map(|w| w.patch_vertices.len()).unwrap_or(0);
 
                 // For each edge in the cycle, consider the combined patch size over edge endpoints.
                 let sum_ab = size_a + size_b;
