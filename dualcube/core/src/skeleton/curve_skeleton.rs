@@ -1,25 +1,10 @@
-use std::collections::{HashMap, HashSet, VecDeque};
-
-use faer::{
-    prelude::Solve,
-    sparse::{
-        linalg::solvers::{Llt, SymbolicLlt},
-        SparseColMat, Triplet,
-    },
-    Mat, Side,
-};
-use log::{error, warn};
-use mehsh::prelude::{
-    HasFaces, HasNeighbors, HasPosition, HasSize, HasVertices, Mesh, Vector3D, VertKey,
-};
-use nalgebra::Matrix3;
+use mehsh::prelude::{EdgeKey, HasFaces, HasPosition, HasSize, HasVertices, Mesh, Vector3D};
 use petgraph::graph::{EdgeIndex, NodeIndex, UnGraph};
 use serde::{Deserialize, Serialize};
+use std::collections::HashSet;
 
-use crate::prelude::INPUT;
+use crate::prelude::{INPUT, VertID};
 
-/// Alias for vertex keys from the input mesh, used in skeleton node patches.
-pub type VKey = VertKey<INPUT>;
 
 /// Nodes store their 3D position and a list of original mesh vertex keys
 /// that represent the induced surface patch.
@@ -29,11 +14,19 @@ pub struct SkeletonNode {
     pub position: Vector3D,
 
     /// The list of original mesh vertex keys that represent the induced surface patch for this node.
-    pub patch_vertices: Vec<VKey>,
+    pub patch_vertices: Vec<VertID>,
+}
+
+/// Edges of the graph geometrically represent boundary loops between patches.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct BoundaryLoop {
+    /// The list of surface edges that form this boundary loop, in traversal order. 
+    /// This is always a simple cycle.
+    pub vertices: Vec<EdgeKey<INPUT>>,
 }
 
 /// The extracted 1D skeleton, embedded in 3D space.
-pub type CurveSkeleton = UnGraph<SkeletonNode, ()>;
+pub type CurveSkeleton = UnGraph<SkeletonNode, BoundaryLoop>;
 
 /// Methods for manipulating curve skeletons, along with their induced surface patches.
 pub trait CurveSkeletonManipulation {
@@ -71,12 +64,12 @@ pub trait CurveSkeletonManipulation {
 /// Computes the centroid position of a set of mesh vertices.
 /// Weighs each vertex by the one-ring area inside the patch to approximate true surface centroid.
 /// Note that this throws away area from shared faces... (TODO: figure out simple construction to do weigh these properly)
-pub fn patch_centroid(vertices: &[VKey], mesh: &Mesh<INPUT>) -> Vector3D {
+pub fn patch_centroid(vertices: &[VertID], mesh: &Mesh<INPUT>) -> Vector3D {
     if vertices.is_empty() {
         return Vector3D::zeros();
     }
 
-    let vert_set: HashSet<VKey> = vertices.iter().copied().collect();
+    let vert_set: HashSet<VertID> = vertices.iter().copied().collect();
     let mut weighted_sum = Vector3D::zeros();
     let mut total_area = 0.0;
 
