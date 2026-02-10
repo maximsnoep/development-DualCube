@@ -9,19 +9,20 @@ use faer::{
     Mat, Side,
 };
 use log::{error, warn};
-use mehsh::prelude::{
-    HasNeighbors, HasPosition,  Mesh, Vector3D,
-};
+use mehsh::prelude::{HasNeighbors, HasPosition, Mesh, Vector3D};
 use nalgebra::Matrix3;
 use petgraph::graph::{EdgeIndex, NodeIndex};
 
 use crate::{
-    prelude::{CurveSkeleton, INPUT, VertID},
-    skeleton::curve_skeleton::{CurveSkeletonManipulation, SkeletonNode, patch_centroid},
+    prelude::{CurveSkeleton, VertID, INPUT},
+    skeleton::{
+        boundary_loop::BoundaryLoop,
+        curve_skeleton::{patch_centroid, CurveSkeletonManipulation, SkeletonNode},
+    },
 };
 
 impl CurveSkeletonManipulation for CurveSkeleton {
-    fn dissolve_subdivision(&mut self, node_index: NodeIndex) {
+    fn dissolve_subdivision(&mut self, node_index: NodeIndex, mesh: &Mesh<INPUT>) {
         let neighbors: Vec<NodeIndex> = self.neighbors(node_index).collect();
         assert!(
             neighbors.len() == 2,
@@ -61,8 +62,16 @@ impl CurveSkeletonManipulation for CurveSkeleton {
             .patch_vertices
             .append(&mut data_to_move);
 
-        // Rewire edges
-        self.add_edge(neighbors[0], neighbors[1], ());
+        // Rewire the old edges to shortcut
+        self.add_edge(
+            neighbors[0],
+            neighbors[1],
+            BoundaryLoop::new(
+                &self.node_weight(neighbors[0]).unwrap().patch_vertices,
+                &self.node_weight(neighbors[1]).unwrap().patch_vertices,
+                mesh,
+            ),
+        );
 
         // Remove the node itself (including its edges)
         self.remove_node(node_index);
@@ -337,10 +346,20 @@ impl CurveSkeletonManipulation for CurveSkeleton {
             patch_vertices: new_mid,
         });
 
-        // Replace L <-> R with L <-> M <-> R.ß
+        // Replace L <-> R with L <-> M <-> R.
+        let bl_left_mid = {
+            let a = &self.node_weight(left_index).unwrap().patch_vertices;
+            let b = &self.node_weight(mid_index).unwrap().patch_vertices;
+            BoundaryLoop::new(a, b, mesh)
+        };
+        let bl_mid_right = {
+            let a = &self.node_weight(mid_index).unwrap().patch_vertices;
+            let b = &self.node_weight(right_index).unwrap().patch_vertices;
+            BoundaryLoop::new(a, b, mesh)
+        };
         self.remove_edge(edge_index);
-        self.add_edge(left_index, mid_index, ());
-        self.add_edge(mid_index, right_index, ());
+        self.add_edge(left_index, mid_index, bl_left_mid);
+        self.add_edge(mid_index, right_index, bl_mid_right);
 
         true
     }
@@ -480,6 +499,14 @@ impl CurveSkeletonManipulation for CurveSkeleton {
         let pos_a = patch_centroid(&verts_a, mesh);
         let pos_b = patch_centroid(&verts_b, mesh);
 
+        // Cache neighbor boundary loops between the original node and each neighbor.
+        let mut neighbor_boundaries: HashMap<NodeIndex, BoundaryLoop> = HashMap::new();
+        for &nbr in &neighbors {
+            let nbr_patch = &self.node_weight(nbr).unwrap().patch_vertices;
+            let bl = BoundaryLoop::new(nbr_patch, &node_vertices, mesh);
+            neighbor_boundaries.insert(nbr, bl);
+        }
+
         let idx_a = self.add_node(SkeletonNode {
             position: pos_a,
             patch_vertices: verts_a,
@@ -489,15 +516,27 @@ impl CurveSkeletonManipulation for CurveSkeleton {
             patch_vertices: verts_b,
         });
 
-        self.add_edge(idx_a, idx_b, ());
+        // Boundary between the two new regions must be calculated.
+        let bl_ab = BoundaryLoop::new(
+            &self.node_weight(idx_a).unwrap().patch_vertices,
+            &self.node_weight(idx_b).unwrap().patch_vertices,
+            mesh,
+        );
+        self.add_edge(idx_a, idx_b, bl_ab);
 
-        // Reconnect neighbors to the appropriate new node.
+        // Reconnect neighbors to the appropriate new node using cached boundary loops.
         for &nbr in &neighbors {
-            if group_a_nodes.contains(&nbr) {
-                self.add_edge(nbr, idx_a, ());
+            let target_idx = if group_a_nodes.contains(&nbr) {
+                idx_a
             } else {
-                self.add_edge(nbr, idx_b, ());
-            }
+                idx_b
+            };
+
+            let bl = neighbor_boundaries
+                .remove(&nbr)
+                .expect("Original neighbor should have a boundary.");
+
+            self.add_edge(nbr, target_idx, bl);
         }
 
         // Remove original node (also removes its old edges).
