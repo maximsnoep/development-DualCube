@@ -6,20 +6,29 @@ use serde::{Deserialize, Serialize};
 use crate::{
     prelude::INPUT,
     skeleton::{
-        connectivity_surgery::extract_skeleton, contraction::{CONTRACTION, contract_mesh}, curve_skeleton::{CurveSkeleton, CurveSkeletonManipulation}, embeddability::make_embedding_possible, orthogonalize::LabeledCurveSkeleton, simplify::simplify_skeleton
+        connectivity_surgery::extract_skeleton,
+        contraction::{contract_mesh, CONTRACTION},
+        curve_skeleton::{CurveSkeleton, CurveSkeletonManipulation},
+        embeddability::make_embedding_possible,
+        orthogonalize::LabeledCurveSkeleton,
+        simplify::{convexify, simplify_skeleton},
+        volume_collapse::{
+            construct_skeleton_from_history, volume_based_collapse, VolumeCollapseHistory,
+        },
     },
 };
 
 pub mod curve_skeleton;
 
+mod boundary_loop;
 mod connectivity_surgery;
 mod contraction;
-mod orthogonalize;
-mod simplify;
 mod embeddability;
 mod manipulation;
-mod boundary_loop;
+mod orthogonalize;
 mod patch;
+mod simplify;
+mod volume_collapse;
 
 /// Holds all relevant information for skeleton-based polycube initialization.
 ///
@@ -35,6 +44,9 @@ pub struct SkeletonData {
 
     /// Simplified version of the raw curve skeleton.
     cleaned_skeleton: Option<CurveSkeleton>,
+
+    /// The history of doing volume-based collapses.
+    collapse_history: Option<VolumeCollapseHistory>,
 
     /// The orthogonalized and labeled curve skeleton:
     ///  - Each node has an unique integer location,
@@ -57,6 +69,28 @@ impl SkeletonData {
     pub fn cleaned_skeleton(&self) -> Option<&CurveSkeleton> {
         self.cleaned_skeleton.as_ref()
     }
+
+    /// Reconstructs what a skeleton looked like at a certain point in the volume collapse history, if the history is available.
+    pub fn reconstruct_skeleton_from_collapse_history(
+        &self,
+        position: usize,
+    ) -> Option<CurveSkeleton> {
+        if let (Some(history), Some(raw_skeleton)) =
+            (&self.collapse_history, &self.raw_curve_skeleton)
+        {
+            Some(construct_skeleton_from_history(
+                raw_skeleton,
+                history,
+                position,
+            ))
+        } else {
+            None
+        }
+    }
+
+    pub fn history_size(&self) -> Option<usize> {
+        self.collapse_history.as_ref().map(|h| h.history.len())
+    }
 }
 
 /// Generates a polycube and a homeomorphism between the input mesh and the polycube,
@@ -75,11 +109,18 @@ pub fn get_skeleton_based_mapping(mesh: Arc<Mesh<INPUT>>) -> SkeletonData {
     // Smooth region boundaries
     cleaned_skeleton.smooth_boundaries(&mesh);
 
-    // Fix necessary conditions for orthogonal embeddability
+    // Convexify skeleton to make patch volume close to convex shapes, which map nicely to cubes.
+    const CONVEXITY_THRESHOLD: f64 = 0.8; // TODO: make configurable in UI
+    convexify(&mut cleaned_skeleton, &mesh, CONVEXITY_THRESHOLD);
+
+    // Fix necessary conditions for orthogonal embeddability, most of the times this changes nothing.
     make_embedding_possible(&mut cleaned_skeleton, &mesh);
 
     // Orthogonalize and label the curve skeleton
     // TODO: orthogonalization
+
+    // (MAYBE TEMP) Do volume based collapse, and save the history.
+    let history = volume_based_collapse(&cleaned_skeleton, &mesh);
 
     // Generate polycube based on labeled skeleton
     // TODO: polycube generation
@@ -91,6 +132,7 @@ pub fn get_skeleton_based_mapping(mesh: Arc<Mesh<INPUT>>) -> SkeletonData {
         contraction_mesh: Arc::new(contracted_mesh),
         raw_curve_skeleton: Some(curve_skeleton),
         cleaned_skeleton: Some(cleaned_skeleton),
+        collapse_history: Some(history),
         labeled_skeleton: None,
     }
 }
