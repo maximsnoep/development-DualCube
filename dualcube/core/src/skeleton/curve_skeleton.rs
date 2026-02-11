@@ -52,6 +52,11 @@ pub trait CurveSkeletonManipulation {
     /// Uses PCA to cluster neighbors spatially, then a harmonic field to partition
     /// the mesh region. Returns `false` if the node has degree < 4 or partitioning fails.
     fn split_high_degree_node(&mut self, node_index: NodeIndex, mesh: &Mesh<INPUT>) -> bool;
+
+    /// Merges a leaf node into its parent, by reassigning its induced surface patch to the parent.
+    /// Leads to inconsistent state when used on non-leaf nodes.
+    /// TODO: can make this more general, merge two nodes, reassign boundaries, etc.
+    fn merge_leaf_into_parent(&mut self, leaf_index: NodeIndex);
 }
 
 /// Methods for calculating geometric properties of curve skeletons and their induced surface patches.

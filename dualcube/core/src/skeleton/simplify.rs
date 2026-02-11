@@ -75,6 +75,11 @@ pub fn simplify_skeleton(skeleton: &mut CurveSkeleton, original_mesh: &Mesh<INPU
     // Though ideally, intersections would result in close to 90 degree angles, this likely needs to be accounted for...
 }
 
+/// Tries to make all patches have a convexity score above the target by merging adjacent patches, and by splitting patches.
+pub fn convexify(skeleton: &mut CurveSkeleton, original_mesh: &Mesh<INPUT>, target_convexity: f64) {
+    // TODO: implement this for real, after convexity score actually works
+}
+
 /// Checks if a line segment from `p0` to `p1` intersects any triangle in the mesh.
 ///
 /// Note that is a naive O(n) implementation that checks each triangle one at a time.

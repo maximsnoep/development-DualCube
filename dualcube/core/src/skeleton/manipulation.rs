@@ -544,6 +544,21 @@ impl CurveSkeletonManipulation for CurveSkeleton {
 
         true
     }
+    
+    fn merge_leaf_into_parent(&mut self, leaf_index: NodeIndex) {
+        // Get parent
+        let parent = self.neighbors(leaf_index).next().unwrap();
+
+        // Move patch vertices from leaf to parent
+        let source_patch_vertices =
+            std::mem::take(&mut self[leaf_index].patch_vertices);
+        self[parent]
+            .patch_vertices
+            .extend(source_patch_vertices);
+
+        // Remove the source node
+        self.remove_node(leaf_index);
+    }
 }
 
 #[derive(Debug)]
