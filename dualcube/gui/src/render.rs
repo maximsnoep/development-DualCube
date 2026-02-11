@@ -112,7 +112,7 @@ impl GizmoBundle {
 
 #[derive(Clone)]
 pub struct RenderFeature {
-    pub asset: RenderAsset,
+    pub assets: Vec<RenderAsset>,
 }
 
 #[derive(Clone)]
@@ -129,7 +129,7 @@ impl PartialEq for RenderFeatureSetting {
 
 impl RenderFeature {
     pub fn new(asset: RenderAsset) -> Self {
-        Self { asset }
+        Self { assets: vec![asset] }
     }
 }
 
@@ -141,8 +141,12 @@ pub struct RenderObject {
 
 impl RenderObject {
     pub fn add(&mut self, label: &str, feature: RenderFeature) -> &mut Self {
-        self.labels.push(label.to_owned());
-        self.features.insert(label.to_owned(), feature);
+        if let Some(existing) = self.features.get_mut(label) {
+            existing.assets.extend(feature.assets);
+        } else {
+            self.labels.push(label.to_owned());
+            self.features.insert(label.to_owned(), feature);
+        }
         self
     }
 
@@ -400,6 +404,7 @@ pub fn update_render_settings(
                         visible: default(object, feature_label),
                     });
             }
+
             render_settings_store
                 .objects
                 .insert(object.to_owned(), RenderObjectSetting { labels, settings });
@@ -464,9 +469,10 @@ pub fn respawn_renders(
             let settings = &render_settings_store.objects.get(&object).unwrap().settings;
             for feature in features.keys() {
                 let visible = settings.get(feature).unwrap().visible;
-                let asset = &features.get(feature).unwrap().asset;
+                let assets = &features.get(feature).unwrap().assets;
                 if visible {
-                    match &asset {
+                    for asset in assets {
+                    match asset {
                         RenderAsset::Mesh(mesh) => {
                             let mesh_handle = MeshBundle::new(meshes.add(mesh.clone())).0;
                             match object {
@@ -520,6 +526,7 @@ pub fn respawn_renders(
                                 Rendered,
                             ));
                         }
+                    }
                     }
                 }
             }
@@ -1275,6 +1282,11 @@ pub fn refresh(solution: &Solution, collapse_history_step: usize) -> RenderObjec
                 if let Some(pm) = patch_mesh {
                     render_obj.bevy_mesh(pm, "patches");
                 }
+                // Patch boundary edges for cleaned skeleton
+                if let Some(cleaned) = solution.skeleton.as_ref().and_then(|s| s.cleaned_skeleton()) {
+                    let boundary_gizmos = create_patch_boundary_gizmos(cleaned, input, translation, scale);
+                    render_obj.gizmo(boundary_gizmos, 1.0, -0.00016, "patches");
+                }
                 // Build collapse history patch overlay if history is available
                 if let Some(skeleton_data) = &solution.skeleton {
                     if let Some(history_skeleton) = skeleton_data
@@ -1286,6 +1298,8 @@ pub fn refresh(solution: &Solution, collapse_history_step: usize) -> RenderObjec
                             translation,
                             scale,
                         ));
+                        let history_boundary_gizmos = create_patch_boundary_gizmos(&history_skeleton, input, translation, scale);
+                        render_obj.gizmo(history_boundary_gizmos, 1.2, -0.00017, "collapse history");
                     }
                 }
                 if let Some(chm) = collapse_history_mesh {
@@ -1383,6 +1397,50 @@ pub fn world_to_view(v: Vector3D, translation: Vector3D, scale: f64) -> Vec3 {
 pub fn view_to_world(v: Vec3, translation: Vector3D, scale: f64) -> Vector3D {
     let v_world = Vector3D::new(v.x as f64, v.y as f64, v.z as f64);
     invert_transform_coordinates(v_world, translation, scale)
+}
+
+/// Creates gizmos for patch boundaries by connecting midpoints of edges that the boundary crosses.
+pub fn create_patch_boundary_gizmos(
+    curve_skeleton: &CurveSkeleton,
+    mesh: &mehsh::prelude::Mesh<INPUT>,
+    translation: Vector3D,
+    scale: f64,
+) -> GizmoAsset {
+    let mut gizmos = GizmoAsset::new();
+    let boundary_color = colors::to_bevy(colors::GRAY);
+
+    // Build vertex-to-node mapping
+    let mut vertex_to_node: HashMap<VertKey<INPUT>, usize> = HashMap::new();
+    for node_idx in curve_skeleton.node_indices() {
+        for &vert_key in &curve_skeleton[node_idx].patch_vertices {
+            vertex_to_node.insert(vert_key, node_idx.index());
+        }
+    }
+
+    // For each face, find edges that cross a patch boundary and connect their midpoints
+    for face_id in mesh.face_ids() {
+        let mut boundary_midpoints: Vec<Vec3> = Vec::new();
+
+        for edge_id in mesh.edges(face_id) {
+            let Some([v1, v2]) = mesh.vertices(edge_id).collect_array::<2>() else {
+                continue;
+            };
+            let r1 = vertex_to_node.get(&v1);
+            let r2 = vertex_to_node.get(&v2);
+            if let (Some(r1), Some(r2)) = (r1, r2) {
+                if r1 != r2 {
+                    let midpoint = (mesh.position(v1) + mesh.position(v2)) * 0.5;
+                    boundary_midpoints.push(world_to_view(midpoint, translation, scale));
+                }
+            }
+        }
+
+        if boundary_midpoints.len() == 2 {
+            gizmos.line(boundary_midpoints[0], boundary_midpoints[1], boundary_color);
+        }
+    }
+
+    gizmos
 }
 
 /// Creates gizmos for visualizing a curve skeleton with spheres for nodes and lines for edges.
