@@ -75,11 +75,11 @@ impl SkeletonData {
         &self,
         position: usize,
     ) -> Option<CurveSkeleton> {
-        if let (Some(history), Some(raw_skeleton)) =
-            (&self.collapse_history, &self.raw_curve_skeleton)
+        if let (Some(history), Some(cleaned_skeleton)) =
+            (&self.collapse_history, &self.cleaned_skeleton)
         {
             Some(construct_skeleton_from_history(
-                raw_skeleton,
+                cleaned_skeleton,
                 history,
                 position,
             ))

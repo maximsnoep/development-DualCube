@@ -66,6 +66,8 @@ pub struct Configuration {
 
     pub stop: Phase,
 
+    pub collapse_history_step: usize,
+
     pub clear_color: [u8; 3],
 }
 
@@ -84,6 +86,8 @@ impl Default for Configuration {
             loop_anchors: vec![],
 
             stop: Phase::None,
+
+            collapse_history_step: 0,
 
             raycasted: None,
             selected: None,
