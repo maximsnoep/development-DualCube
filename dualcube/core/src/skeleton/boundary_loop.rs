@@ -10,7 +10,7 @@ use crate::prelude::{EdgeID, VertID, INPUT};
 pub struct BoundaryLoop {
     /// The list of surface edges that form this boundary loop, in traversal order.
     /// This is always a simple cycle.
-    pub vertices: Vec<EdgeID>,
+    pub edge_midpoints: Vec<EdgeID>,
 }
 
 impl BoundaryLoop {
@@ -192,7 +192,7 @@ impl BoundaryLoop {
         }
 
         BoundaryLoop {
-            vertices: loop_edges,
+            edge_midpoints: loop_edges,
         }
     }
 }
