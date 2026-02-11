@@ -19,54 +19,85 @@ impl CurveSkeletonSpatial for CurveSkeleton {
 
         let vertices_in_patch: HashSet<VertID> = patch_verts.iter().copied().collect();
 
-        // Collect all faces that are fully inside the patch
+        // For each mesh face, add the portion that lies inside this patch.
         let mut faces: Vec<[Vector3D; 3]> = Vec::new();
         for face_id in mesh.face_ids() {
             let fv: Vec<VertID> = mesh.vertices(face_id).collect();
-            if fv.iter().all(|v| vertices_in_patch.contains(v)) {
-                let p0 = mesh.position(fv[0]);
-                let p1 = mesh.position(fv[1]);
-                let p2 = mesh.position(fv[2]);
-                faces.push([p0, p1, p2]);
+            if fv.len() != 3 {
+                continue;
+            }
+
+            let in0 = vertices_in_patch.contains(&fv[0]);
+            let in1 = vertices_in_patch.contains(&fv[1]);
+            let in2 = vertices_in_patch.contains(&fv[2]);
+            let count = in0 as usize + in1 as usize + in2 as usize;
+
+            let p0 = mesh.position(fv[0]);
+            let p1 = mesh.position(fv[1]);
+            let p2 = mesh.position(fv[2]);
+
+            match count {
+                3 => {
+                    // Fully inside the patch
+                    faces.push([p0, p1, p2]);
+                }
+                2 => {
+                    // Two vertices inside, one outside.
+                    // Rotate into (a, b, c) with a,b = inside (majority), c = outside (minority),
+                    // using a cyclic rotation to preserve the original face winding order.
+                    let (pa, pb, pc) = if !in0 {
+                        (p1, p2, p0)
+                    } else if !in1 {
+                        (p2, p0, p1)
+                    } else {
+                        (p0, p1, p2)
+                    };
+                    // Majority (inside) portion from split_triangle: (a, b, ac) and (b, bc, ac)
+                    let p_ac = (pa + pc) * 0.5;
+                    let p_bc = (pb + pc) * 0.5;
+                    faces.push([pa, pb, p_ac]);
+                    faces.push([pb, p_bc, p_ac]);
+                }
+                1 => {
+                    // One vertex inside, two outside.
+                    // Rotate into (a, b, c) with a,b = outside (majority), c = inside (minority),
+                    // using a cyclic rotation to preserve the original face winding order.
+                    let (pa, pb, pc) = if in0 {
+                        (p1, p2, p0)
+                    } else if in1 {
+                        (p2, p0, p1)
+                    } else {
+                        (p0, p1, p2)
+                    };
+                    // Minority (inside) portion from split_triangle: (ac, bc, c)
+                    let p_ac = (pa + pc) * 0.5;
+                    let p_bc = (pb + pc) * 0.5;
+                    faces.push([p_ac, p_bc, pc]);
+                }
+                _ => {} // No vertices inside this patch
             }
         }
 
-        // For each boundary loop adjacent to this node, create a centroid and cap the hole
+        // Cap each boundary loop with a fan of triangles through the centroid of its midpoints.
+        // The cap winding may be opposite to the mesh faces; abs() at the end handles this.
         for edge_ref in self.edges(node_index) {
             let boundary_loop = edge_ref.weight();
             if boundary_loop.edge_midpoints.is_empty() {
                 continue;
             }
 
-            // Ordered vertices on the loop, choosing the vertex in the patch
-            let loop_verts: Vec<VertID> = boundary_loop
-                .edge_midpoints
-                .iter()
-                .map(|&e| {
-                    if vertices_in_patch.contains(&mesh.root(e)) {
-                        mesh.root(e)
-                    } else {
-                        mesh.toor(e)
-                    }
-                })
-                .collect();
+            let loop_mids = loop_midpoints(mesh, boundary_loop);
+            let n = loop_mids.len();
 
-            // Midpoints of each boundary edge
-            let loop_midpoints = loop_midpoints(mesh, boundary_loop);
-
-            // Centroid of boundary midpoints
             let mut centroid = Vector3D::zeros();
-            if !loop_midpoints.is_empty() {
-                for m in &loop_midpoints {
-                    centroid += m;
-                }
-                centroid /= loop_midpoints.len() as f64;
+            for m in &loop_mids {
+                centroid += m;
             }
+            centroid /= n as f64;
 
-            // Cap the loop by creating triangles (u, v, centroid) following the loop order
-            for i in 0..loop_verts.len() {
-                let u = mesh.position(loop_verts[i]);
-                let v = mesh.position(loop_verts[(i + 1) % loop_verts.len()]);
+            for i in 0..n {
+                let u = loop_mids[i];
+                let v = loop_mids[(i + 1) % n];
                 faces.push([u, v, centroid]);
             }
         }
