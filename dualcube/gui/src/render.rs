@@ -1422,7 +1422,8 @@ pub fn create_skeleton_gizmos(
 use bevy::color::palettes::tailwind;
 
 /// Tailwind 500-level colors for patch visualization.
-const TAILWIND_500: [bevy::color::Srgba; 22] = [
+/// Chosen as they should be visually distinct. Grey-like ones removed.
+const TAILWIND_500: [bevy::color::Srgba; 17] = [
     tailwind::RED_500,
     tailwind::CYAN_500,
     tailwind::YELLOW_500,
@@ -1440,11 +1441,6 @@ const TAILWIND_500: [bevy::color::Srgba; 22] = [
     tailwind::VIOLET_500,
     tailwind::SKY_500,
     tailwind::ROSE_500,
-    tailwind::SLATE_500,
-    tailwind::ZINC_500,
-    tailwind::GRAY_500,
-    tailwind::NEUTRAL_500,
-    tailwind::STONE_500,
 ];
 
 /// Gets a color for a region index using Tailwind colors with chroma reduction for cycling.
@@ -1462,6 +1458,10 @@ fn get_region_color(region: usize) -> [f32; 3] {
         lch.chroma *= 0.5_f32.powi(cycle as i32);
         lch.lightness = (lch.lightness + 0.1 * cycle as f32).min(0.95);
         let srgb: bevy::color::Srgba = lch.into();
+        println!(
+            "Region {region}: base color idx {base_idx}, cycle {cycle}, color {:?}",
+            [srgb.red, srgb.green, srgb.blue]
+        );
         [srgb.red, srgb.green, srgb.blue]
     }
 }
