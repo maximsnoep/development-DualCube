@@ -18,18 +18,17 @@ use bevy_egui::EguiGlobalSettings;
 use bevy_egui::PrimaryEguiContext;
 use bevy_orbit_camera::*;
 use bevy_toon::ToonMaterial;
-use dualcube::skeleton::curve_skeleton::CurveSkeletonSpatial;
 use core::f32;
 use dualcube::prelude::*;
+use dualcube::skeleton::curve_skeleton::CurveSkeletonSpatial;
 use egui_dock::LeafNode;
 use enum_iterator::{all, Sequence};
 use itertools::Itertools;
-use mehsh::prelude::*;
 use mehsh::integrations::bevy::MeshBuilder;
+use mehsh::prelude::*;
 use std::collections::{HashMap, HashSet};
 use std::ops::Index;
 use wgpu_types::BlendState;
-
 
 const DEFAULT_CAMERA_EYE: Vec3 = Vec3::new(25.0, 25.0, 25.0);
 const DEFAULT_CAMERA_TARGET: Vec3 = Vec3::new(0., 0., 0.);
@@ -372,9 +371,8 @@ pub fn update_render_settings(
         matches!(
             (object, label),
             // (Objects::InputMesh, "gray")
-                | (Objects::InputMesh, "wireframe")
+                |(Objects::InputMesh, "wireframe")
                 | (Objects::InputMesh, "patches")
-                | (Objects::InputMesh, "patch convexity")
                 | (Objects::Polycube, "gray")
                 | (Objects::Polycube, "paths")
                 | (Objects::Polycube, "flat paths")
@@ -608,7 +606,7 @@ pub fn update(
     }
 }
 
-pub fn refresh(solution: &Solution) -> RenderObjectStore {
+pub fn refresh(solution: &Solution, collapse_history_step: usize) -> RenderObjectStore {
     let mut render_object_store = RenderObjectStore::default();
     for object in all::<Objects>() {
         match object {
@@ -1012,13 +1010,19 @@ pub fn refresh(solution: &Solution) -> RenderObjectStore {
                 // Visualize skeleton(s) if available
                 if let Some(skeleton_data) = &solution.skeleton {
                     if let Some(curve_skeleton) = skeleton_data.curve_skeleton() {
-                        gizmos_raw_skeleton = create_skeleton_gizmos(curve_skeleton, translation, scale);
+                        gizmos_raw_skeleton =
+                            create_skeleton_gizmos(curve_skeleton, translation, scale);
                     }
                     if let Some(cleaned_skeleton) = skeleton_data.cleaned_skeleton() {
                         gizmos_cleaned_skeleton =
                             create_skeleton_gizmos(cleaned_skeleton, translation, scale);
                         // Create patch visualization using the cleaned skeleton
-                        patch_mesh = Some(create_patch_mesh(cleaned_skeleton, input, translation, scale));
+                        patch_mesh = Some(create_patch_mesh(
+                            cleaned_skeleton,
+                            input,
+                            translation,
+                            scale,
+                        ));
                     }
                 }
 
@@ -1261,23 +1265,49 @@ pub fn refresh(solution: &Solution) -> RenderObjectStore {
                     .gizmo(gizmos_flat_paths, 2., -0.00011, "flat paths")
                     // .mesh(input, &color_map_flag, "flag")
                     // .gizmo(gizmos_flag_paths, 2., -1e-4, "flag paths")
-                        .gizmo(gizmos_features, 5., -0.00012, "features")
+                    .gizmo(gizmos_features, 5., -0.00012, "features")
                     .gizmo(granulated_mesh_gizmos, 0.5, -0.00001, "refined wireframe")
                     .gizmo(gizmos_raw_skeleton, 25., -0.00014, "raw skeleton")
                     .gizmo(gizmos_cleaned_skeleton, 25., -0.00015, "cleaned skeleton");
-                
+
                 let mut patch_convexity_mesh: Option<bevy::mesh::Mesh> = None;
+                let mut collapse_history_mesh: Option<bevy::mesh::Mesh> = None;
                 if let Some(pm) = patch_mesh {
                     render_obj.bevy_mesh(pm, "patches");
                 }
-                if let Some(cleaned) = &solution.skeleton.as_ref().and_then(|s| s.cleaned_skeleton()) {
+                // Build collapse history patch overlay if history is available
+                if let Some(skeleton_data) = &solution.skeleton {
+                    if let Some(history_skeleton) = skeleton_data
+                        .reconstruct_skeleton_from_collapse_history(collapse_history_step)
+                    {
+                        collapse_history_mesh = Some(create_patch_mesh(
+                            &history_skeleton,
+                            input,
+                            translation,
+                            scale,
+                        ));
+                    }
+                }
+                if let Some(chm) = collapse_history_mesh {
+                    render_obj.bevy_mesh(chm, "collapse history");
+                }
+                if let Some(cleaned) = &solution
+                    .skeleton
+                    .as_ref()
+                    .and_then(|s| s.cleaned_skeleton())
+                {
                     // Build convexity overlay mesh
-                    patch_convexity_mesh = Some(create_patch_convexity_mesh(cleaned, input, translation, scale));
+                    patch_convexity_mesh = Some(create_patch_convexity_mesh(
+                        cleaned,
+                        input,
+                        translation,
+                        scale,
+                    ));
                 }
                 if let Some(pc) = patch_convexity_mesh {
                     render_obj.bevy_mesh(pc, "patch convexity");
                 }
-                
+
                 render_obj
                     .gizmo(gizmos_xfield, 1., -0.0001, "x-vector field")
                     .gizmo(gizmos_yfield, 1., -0.00011, "y-vector field")
@@ -1317,7 +1347,7 @@ pub fn refresh(solution: &Solution) -> RenderObjectStore {
                         .curve_skeleton()
                         .map(|skel| create_skeleton_gizmos(skel, translation, scale))
                         .unwrap_or_else(GizmoAsset::new);
-                                        // Cleaned skeleton
+                    // Cleaned skeleton
                     let cleaned_gizmos_skeleton = skeleton_data
                         .cleaned_skeleton()
                         .map(|skel| create_skeleton_gizmos(skel, translation, scale))
@@ -1327,7 +1357,12 @@ pub fn refresh(solution: &Solution) -> RenderObjectStore {
                         object,
                         RenderObject::default()
                             .mesh(contracted, &default_color_map, "gray")
-                            .gizmo(contracted.gizmos(colors::WHITE), 0.75, -0.00001, "wireframe")
+                            .gizmo(
+                                contracted.gizmos(colors::WHITE),
+                                0.75,
+                                -0.00001,
+                                "wireframe",
+                            )
                             .gizmo(raw_gizmos_skeleton, 25., -0.00014, "raw skeleton")
                             .gizmo(cleaned_gizmos_skeleton, 25., -0.00015, "cleaned skeleton")
                             .to_owned(),
@@ -1374,7 +1409,11 @@ pub fn create_skeleton_gizmos(
     for node_idx in curve_skeleton.node_indices() {
         let pos = curve_skeleton[node_idx].position;
         let center = world_to_view(pos, translation, scale);
-        gizmos.sphere(Isometry3d::from_translation(center), node_radius, skel_color);
+        gizmos.sphere(
+            Isometry3d::from_translation(center),
+            node_radius,
+            skel_color,
+        );
     }
 
     gizmos
@@ -1440,10 +1479,10 @@ where
 {
     // Build a mapping from vertex to region index
     let mut vertex_to_region: HashMap<VertKey<INPUT>, usize> = HashMap::new();
-    for (region_idx, node_idx) in curve_skeleton.node_indices().enumerate() {
+    for node_idx in curve_skeleton.node_indices() {
         let node = &curve_skeleton[node_idx];
         for &vert_key in &node.patch_vertices {
-            vertex_to_region.insert(vert_key, region_idx);
+            vertex_to_region.insert(vert_key, node_idx.index());
         }
     }
 
@@ -1492,22 +1531,48 @@ where
                     // v0, v1 share region X; v2 is region Y
                     split_triangle(
                         &mut add_vertex,
-                        p0, p1, p2, n0, n1, n2, r0, r2, &region_color_fn,
+                        p0,
+                        p1,
+                        p2,
+                        n0,
+                        n1,
+                        n2,
+                        r0,
+                        r2,
+                        &region_color_fn,
                     );
                 } else if r1 == r2 {
                     // v1, v2 share region X; v0 is region Y
                     split_triangle(
                         &mut add_vertex,
-                        p1, p2, p0, n1, n2, n0, r1, r0, &region_color_fn,
+                        p1,
+                        p2,
+                        p0,
+                        n1,
+                        n2,
+                        n0,
+                        r1,
+                        r0,
+                        &region_color_fn,
                     );
                 } else if r0 == r2 {
                     // v0, v2 share region X; v1 is region Y
                     split_triangle(
                         &mut add_vertex,
-                        p2, p0, p1, n2, n0, n1, r0, r1, &region_color_fn,
+                        p2,
+                        p0,
+                        p1,
+                        n2,
+                        n0,
+                        n1,
+                        r0,
+                        r1,
+                        &region_color_fn,
                     );
                 } else {
-                    unreachable!("Triangle with all three vertices in different regions encountered.");
+                    unreachable!(
+                        "Triangle with all three vertices in different regions encountered."
+                    );
                 }
             }
             _ => {}
@@ -1525,7 +1590,9 @@ pub fn create_patch_mesh(
     scale: f64,
 ) -> bevy::mesh::Mesh {
     // Delegate to shared helper using Tailwind region colors
-    build_region_mesh(curve_skeleton, mesh, translation, scale, |region| get_region_color(region))
+    build_region_mesh(curve_skeleton, mesh, translation, scale, |region| {
+        get_region_color(region)
+    })
 }
 
 /// Splits a triangle where vertices a,b belong to region_x and vertex c belongs to region_y.
@@ -1536,19 +1603,23 @@ pub fn create_patch_mesh(
 /// Maintains the same winding order as the original triangle (a, b, c).
 fn split_triangle<F, C>(
     add_vertex: &mut F,
-    pa: Vector3D, pb: Vector3D, pc: Vector3D,
-    na: Vector3D, nb: Vector3D, nc: Vector3D,
-    region_x: usize, region_y: usize,
+    pa: Vector3D,
+    pb: Vector3D,
+    pc: Vector3D,
+    na: Vector3D,
+    nb: Vector3D,
+    nc: Vector3D,
+    region_x: usize,
+    region_y: usize,
     region_color: &C,
-)
-where
+) where
     F: FnMut(Vector3D, Vector3D, &[f32; 3]),
     C: Fn(usize) -> [f32; 3],
 {
     // Compute midpoints
     let p_ac = (pa + pc) * 0.5;
     let p_bc = (pb + pc) * 0.5;
-    
+
     // Interpolate normals at midpoints for mesh
     let n_ac = ((na + nc) * 0.5).normalize();
     let n_bc = ((nb + nc) * 0.5).normalize();
@@ -1579,20 +1650,21 @@ pub fn create_patch_convexity_mesh(
     translation: Vector3D,
     scale: f64,
 ) -> bevy::mesh::Mesh {
-    // Compute convexity score per region (clamped between 0 and 1)
-    let mut region_scores: Vec<f64> = Vec::new();
+    // Compute convexity score per region (clamped between 0 and 1),
+    // keyed by node_idx.index() to match build_region_mesh's region keys.
+    let mut region_scores: HashMap<usize, f64> = HashMap::new();
     for node_idx in curve_skeleton.node_indices() {
         let mut score = curve_skeleton.patch_convexity_score(node_idx, mesh);
         println!("Convexity score for node {:?}: {}", node_idx, score);
         if !score.is_finite() {
             score = 0.0;
         }
-        region_scores.push(score.clamp(0.0, 1.0));
+        region_scores.insert(node_idx.index(), score.clamp(0.0, 1.0));
     }
 
     // Delegate to the shared builder using a score->color mapping
     build_region_mesh(curve_skeleton, mesh, translation, scale, |region| {
-        let score = region_scores.get(region).copied().unwrap_or(0.0) as f32;
+        let score = region_scores.get(&region).copied().unwrap_or(0.0) as f32;
         colors::map(score, &colors::SCALE_MAGMA)
     })
 }
