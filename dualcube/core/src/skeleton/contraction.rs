@@ -28,7 +28,7 @@ struct ContractionState {
     pub vert_ids: Vec<VertKey<CONTRACTION>>,
 
     /// Reverse lookup: VertKey -> matrix index.
-    /// Used for efficient O(1) index lookups during matrix assembly.
+    /// Used for O(1) index lookups during matrix assembly.
     pub vert_to_idx: HashMap<VertKey<CONTRACTION>, usize>,
 
     /// Global contraction weight scalar (s_L * W_L).
@@ -158,6 +158,8 @@ pub fn contract_mesh<M: Tag>(mesh: &Mesh<M>, max_iterations: usize) -> Mesh<CONT
     contraction_mesh
 }
 
+// TODO: fix vertices shooting out into the distance... Maybe something with angles or area calculations?
+
 /// Performs a single iteration of geometry contraction.
 ///
 /// # Steps
@@ -225,8 +227,7 @@ fn contract_once(mesh: &mut Mesh<CONTRACTION>, state: &mut ContractionState) {
     });
 
     // Solve AX = B
-    // A is Symmetric Positive Definite (SPD) -> Use Cholesky (LLT)
-    // Split into symbolic and numeric passes for efficiency
+    // A is Symmetric Positive Definite (SPD)
     if state.symbolic.is_none() {
         match SymbolicLlt::try_new(mat_a.symbolic(), Side::Lower) {
             Ok(sym) => state.symbolic = Some(sym),
@@ -258,9 +259,9 @@ fn contract_once(mesh: &mut Mesh<CONTRACTION>, state: &mut ContractionState) {
     }
 
     // Update Weights for next iteration
-    const SL: f64 = 2.0;
+    const SL: f64 = 4.0; // 2.0 in the paper // TODO: find out why 10 iterations is enough in the paper but we need 30ish sometimes
     state.wl *= SL;
-    const MIN_VERTEX_AREA: f64 = 1e-12;
+    const MIN_VERTEX_AREA: f64 = 1e-100;
 
     for &v in &state.vert_ids {
         let current_area = ContractionState::one_ring_area(mesh, v);
@@ -274,8 +275,8 @@ fn contract_once(mesh: &mut Mesh<CONTRACTION>, state: &mut ContractionState) {
 
 /// Computes the cotangent weight for a specific edge between v_i and v_j.
 /// This corresponds to (cot alpha + cot beta) in Eq 1.
-///
-/// Returns 0.0 if edge doesn't exist or for degenerate triangles to avoid NaNs.
+/// 
+/// Returns 0.0 when the edge does not exist.
 fn cotangent_weight(
     mesh: &Mesh<CONTRACTION>,
     v_i: VertKey<CONTRACTION>,
@@ -289,16 +290,13 @@ fn cotangent_weight(
     let p_i = mesh.position(v_i);
     let p_j = mesh.position(v_j);
 
-    // Cap the cotangent value to prevent numerical instability.
-    const MAX_COTAN: f64 = 1e12;
-    // Cap crossproduct length to avoid division by near-zero
-    const MIN_CROSSPROD_LEN: f64 = 1e-12;
+    // Cap crossproduct length to avoid division by zero
+    const MIN_CROSSPROD_LEN: f64 = 1e-300;
 
     let mut sum_cot = 0.0;
-
-    // Each edge has exactly 2 adjacent faces in a manifold mesh
+    // Each edge has exactly 2 adjacent faces in a watertight 2-manifold mesh
     for face in mesh.faces(edge_ij) {
-        // Find the 3rd vertex (v_k) that is OPPOSITE to the edge (i, j)
+        // Find the third vertex making up the face
         let v_k = mesh.vertices(face).find(|&v| v != v_i && v != v_j);
 
         if let Some(v_k) = v_k {
@@ -317,9 +315,13 @@ fn cotangent_weight(
             // Handle degenerate triangles (area ~ 0) safely
             if cross_len > MIN_CROSSPROD_LEN {
                 let cot = u.dot(&v) / cross_len;
-                // Clamp to range [-MAX, MAX]
-                sum_cot += cot.clamp(-MAX_COTAN, MAX_COTAN);
+                sum_cot += cot
             }
+        } else {
+            unreachable!(
+                "Expected to find a third vertex for face {:?} adjacent to edge ({:?}, {:?})",
+                face, v_i, v_j
+            );
         }
     }
 
