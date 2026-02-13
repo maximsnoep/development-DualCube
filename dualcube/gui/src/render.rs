@@ -1516,10 +1516,6 @@ fn get_region_color(region: usize) -> [f32; 3] {
         lch.chroma *= 0.5_f32.powi(cycle as i32);
         lch.lightness = (lch.lightness + 0.1 * cycle as f32).min(0.95);
         let srgb: bevy::color::Srgba = lch.into();
-        println!(
-            "Region {region}: base color idx {base_idx}, cycle {cycle}, color {:?}",
-            [srgb.red, srgb.green, srgb.blue]
-        );
         [srgb.red, srgb.green, srgb.blue]
     }
 }
