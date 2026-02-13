@@ -14,6 +14,10 @@ use mehsh::prelude::{
 };
 use serde::{Deserialize, Serialize};
 
+// TODO:    better solver, currently squaring the weights makes precision problematic
+// TODO:    scale the input mesh to unit size (and back after contraction),
+//           currently, a very large input mesh will make forces not be balanced (initially, so convergence takes longer)
+
 /// Tag type for contraction-view of skeleton.
 #[derive(Debug, Clone, Default, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub struct CONTRACTION;
@@ -157,8 +161,6 @@ pub fn contract_mesh<M: Tag>(mesh: &Mesh<M>, max_iterations: usize) -> Mesh<CONT
 
     contraction_mesh
 }
-
-// TODO: fix vertices shooting out into the distance... Maybe something with angles or area calculations?
 
 /// Performs a single iteration of geometry contraction.
 ///
