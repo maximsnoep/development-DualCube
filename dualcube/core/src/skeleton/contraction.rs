@@ -32,7 +32,7 @@ struct ContractionState {
     pub vert_to_idx: HashMap<VertKey<CONTRACTION>, usize>,
 
     /// Global contraction weight scalar (s_L * W_L).
-    /// Starts as 10^-3 * sqrt(AvgArea). Increases by s_L (2.0) each step.
+    /// Starts as 10^-3 * sqrt(AvgArea). Increases by s_L each step.
     pub wl: f64,
 
     /// Per-vertex attraction weights (W_H).
@@ -222,7 +222,8 @@ fn contract_once(mesh: &mut Mesh<CONTRACTION>, state: &mut ContractionState) {
         match c {
             0 => wh_sq * pos.x,
             1 => wh_sq * pos.y,
-            _ => wh_sq * pos.z,
+            2 => wh_sq * pos.z,
+            _ => unreachable!(),
         }
     });
 
@@ -261,7 +262,7 @@ fn contract_once(mesh: &mut Mesh<CONTRACTION>, state: &mut ContractionState) {
     // Update Weights for next iteration
     const SL: f64 = 4.0; // 2.0 in the paper // TODO: find out why 10 iterations is enough in the paper but we need 30ish sometimes
     state.wl *= SL;
-    const MIN_VERTEX_AREA: f64 = 1e-100;
+    const MIN_VERTEX_AREA: f64 = 1e-16;
 
     for &v in &state.vert_ids {
         let current_area = ContractionState::one_ring_area(mesh, v);
@@ -275,7 +276,7 @@ fn contract_once(mesh: &mut Mesh<CONTRACTION>, state: &mut ContractionState) {
 
 /// Computes the cotangent weight for a specific edge between v_i and v_j.
 /// This corresponds to (cot alpha + cot beta) in Eq 1.
-/// 
+///
 /// Returns 0.0 when the edge does not exist.
 fn cotangent_weight(
     mesh: &Mesh<CONTRACTION>,
@@ -291,7 +292,7 @@ fn cotangent_weight(
     let p_j = mesh.position(v_j);
 
     // Cap crossproduct length to avoid division by zero
-    const MIN_CROSSPROD_LEN: f64 = 1e-300;
+    const MIN_CROSSPROD_LEN: f64 = 1e-8;
 
     let mut sum_cot = 0.0;
     // Each edge has exactly 2 adjacent faces in a watertight 2-manifold mesh
