@@ -208,9 +208,6 @@ fn patch_volume_triangles(
     }
 
     // Cap each boundary loop with a fan of triangles through the centroid of its midpoints.
-    // Orient caps so their normals point outward (away from the skeleton node position,
-    // which sits inside the volume of the patch).
-    let node_pos = skeleton[node_index].position;
     for edge_ref in skeleton.edges(node_index) {
         let boundary_loop = edge_ref.weight();
         if boundary_loop.edge_midpoints.is_empty() {
@@ -226,17 +223,20 @@ fn patch_volume_triangles(
         }
         centroid /= n as f64;
 
-        // Direction from the skeleton node (inside volume) toward the cap centroid (on surface).
-        let outward = centroid - node_pos;
+        // Check the first boundary half-edge's face to determine winding.
+        let first_edge = boundary_loop.edge_midpoints[0];
+        let face_verts: Vec<VertID> = mesh.vertices(mesh.face(first_edge)).collect();
+        let in_count = face_verts
+            .iter()
+            .filter(|&&v| vertices_in_patch.contains(&v))
+            .count();
+        let flip = in_count >= 2;
 
         for i in 0..n {
             let u = loop_mids[i];
             let v = loop_mids[(i + 1) % n];
-            // Compute normal of the candidate triangle and flip if it points inward.
-            let cap_normal = (v - u).cross(&(centroid - u));
-            if cap_normal.dot(&outward) < 0.0 {
-                faces.push([v, u, centroid]); // flip winding
-                println!("Flipped cap triangle for node {:?} to ensure outward normal.", node_index);
+            if flip {
+                faces.push([v, u, centroid]);
             } else {
                 faces.push([u, v, centroid]);
             }
