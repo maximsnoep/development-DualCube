@@ -213,6 +213,18 @@ impl CurveSkeletonManipulation for CurveSkeleton {
                 );
             }
         }
+
+        // Recompute boundary loops
+        let edge_indices: Vec<EdgeIndex> = self.edge_indices().collect();
+        for edge_idx in edge_indices {
+            let (na, nb) = match self.edge_endpoints(edge_idx) {
+                Some(ep) => ep,
+                None => unreachable!("Edge that previously existed is now missing."),
+            };
+            let verts_a = &self.node_weight(na).unwrap().patch_vertices;
+            let verts_b = &self.node_weight(nb).unwrap().patch_vertices;
+            *self.edge_weight_mut(edge_idx).unwrap() = BoundaryLoop::new(verts_a, verts_b, mesh);
+        }
     }
 
     fn subdivide_edge(&mut self, edge_index: EdgeIndex, mesh: &Mesh<INPUT>) -> bool {

@@ -12,94 +12,9 @@ impl CurveSkeletonSpatial for CurveSkeleton {
     /// Places a virtual vertex in the centroid of the boundaries, to close up the holes.
     /// Then uses tetrahedron volumes to compute the volume of the patch.
     fn patch_volume(&self, node_index: NodeIndex, mesh: &Mesh<INPUT>) -> f64 {
-        let patch_verts = &self[node_index].patch_vertices;
-        if patch_verts.len() < 3 {
+        let faces = patch_volume_triangles(&self, node_index, mesh);
+        if faces.is_empty() {
             return 0.0;
-        }
-
-        let vertices_in_patch: HashSet<VertID> = patch_verts.iter().copied().collect();
-
-        // For each mesh face, add the portion that lies inside this patch.
-        let mut faces: Vec<[Vector3D; 3]> = Vec::new();
-        for face_id in mesh.face_ids() {
-            let fv: Vec<VertID> = mesh.vertices(face_id).collect();
-            if fv.len() != 3 {
-                continue;
-            }
-
-            let in0 = vertices_in_patch.contains(&fv[0]);
-            let in1 = vertices_in_patch.contains(&fv[1]);
-            let in2 = vertices_in_patch.contains(&fv[2]);
-            let count = in0 as usize + in1 as usize + in2 as usize;
-
-            let p0 = mesh.position(fv[0]);
-            let p1 = mesh.position(fv[1]);
-            let p2 = mesh.position(fv[2]);
-
-            match count {
-                3 => {
-                    // Fully inside the patch
-                    faces.push([p0, p1, p2]);
-                }
-                2 => {
-                    // Two vertices inside, one outside.
-                    // Rotate into (a, b, c) with a,b = inside (majority), c = outside (minority),
-                    // using a cyclic rotation to preserve the original face winding order.
-                    let (pa, pb, pc) = if !in0 {
-                        (p1, p2, p0)
-                    } else if !in1 {
-                        (p2, p0, p1)
-                    } else {
-                        (p0, p1, p2)
-                    };
-                    // Majority (inside) portion from split_triangle: (a, b, ac) and (b, bc, ac)
-                    let p_ac = (pa + pc) * 0.5;
-                    let p_bc = (pb + pc) * 0.5;
-                    faces.push([pa, pb, p_ac]);
-                    faces.push([pb, p_bc, p_ac]);
-                }
-                1 => {
-                    // One vertex inside, two outside.
-                    // Rotate into (a, b, c) with a,b = outside (majority), c = inside (minority),
-                    // using a cyclic rotation to preserve the original face winding order.
-                    let (pa, pb, pc) = if in0 {
-                        (p1, p2, p0)
-                    } else if in1 {
-                        (p2, p0, p1)
-                    } else {
-                        (p0, p1, p2)
-                    };
-                    // Minority (inside) portion from split_triangle: (ac, bc, c)
-                    let p_ac = (pa + pc) * 0.5;
-                    let p_bc = (pb + pc) * 0.5;
-                    faces.push([p_ac, p_bc, pc]);
-                }
-                _ => {} // No vertices inside this patch
-            }
-        }
-
-        // Cap each boundary loop with a fan of triangles through the centroid of its midpoints.
-        // The cap winding may be opposite to the mesh faces; abs() at the end handles this.
-        for edge_ref in self.edges(node_index) {
-            let boundary_loop = edge_ref.weight();
-            if boundary_loop.edge_midpoints.is_empty() {
-                continue;
-            }
-
-            let loop_mids = loop_midpoints(mesh, boundary_loop);
-            let n = loop_mids.len();
-
-            let mut centroid = Vector3D::zeros();
-            for m in &loop_mids {
-                centroid += m;
-            }
-            centroid /= n as f64;
-
-            for i in 0..n {
-                let u = loop_mids[i];
-                let v = loop_mids[(i + 1) % n];
-                faces.push([u, v, centroid]);
-            }
         }
 
         // Sum signed tetrahedron volumes from the origin for all triangles
@@ -218,4 +133,115 @@ pub fn patch_centroid(vertices: &[VertID], mesh: &Mesh<INPUT>) -> Vector3D {
     }
 
     weighted_sum / total_area
+}
+
+/// Returns the triangles used to compute the patch volume (surface triangles + boundary cap fans).
+fn patch_volume_triangles(
+    skeleton: &CurveSkeleton,
+    node_index: NodeIndex,
+    mesh: &Mesh<INPUT>,
+) -> Vec<[Vector3D; 3]> {
+    let patch_verts = &skeleton[node_index].patch_vertices;
+    if patch_verts.len() < 3 {
+        return Vec::new();
+    }
+
+    let vertices_in_patch: HashSet<VertID> = patch_verts.iter().copied().collect();
+
+    // For each mesh face, add the portion that lies inside this patch.
+    let mut faces: Vec<[Vector3D; 3]> = Vec::new();
+    for face_id in mesh.face_ids() {
+        let fv: Vec<VertID> = mesh.vertices(face_id).collect();
+        if fv.len() != 3 {
+            continue;
+        }
+
+        let in0 = vertices_in_patch.contains(&fv[0]);
+        let in1 = vertices_in_patch.contains(&fv[1]);
+        let in2 = vertices_in_patch.contains(&fv[2]);
+        let count = in0 as usize + in1 as usize + in2 as usize;
+
+        let p0 = mesh.position(fv[0]);
+        let p1 = mesh.position(fv[1]);
+        let p2 = mesh.position(fv[2]);
+
+        match count {
+            3 => {
+                // Fully inside the patch
+                faces.push([p0, p1, p2]);
+            }
+            2 => {
+                // Two vertices inside, one outside.
+                // Rotate into (a, b, c) with a,b = inside (majority), c = outside (minority),
+                // using a cyclic rotation to preserve the original face winding order.
+                let (pa, pb, pc) = if !in0 {
+                    (p1, p2, p0)
+                } else if !in1 {
+                    (p2, p0, p1)
+                } else {
+                    (p0, p1, p2)
+                };
+                // Majority (inside) portion from split_triangle: (a, b, ac) and (b, bc, ac)
+                let p_ac = (pa + pc) * 0.5;
+                let p_bc = (pb + pc) * 0.5;
+                faces.push([pa, pb, p_ac]);
+                faces.push([pb, p_bc, p_ac]);
+            }
+            1 => {
+                // One vertex inside, two outside.
+                // Rotate into (a, b, c) with a,b = outside (majority), c = inside (minority),
+                // using a cyclic rotation to preserve the original face winding order.
+                let (pa, pb, pc) = if in0 {
+                    (p1, p2, p0)
+                } else if in1 {
+                    (p2, p0, p1)
+                } else {
+                    (p0, p1, p2)
+                };
+                // Minority (inside) portion from split_triangle: (ac, bc, c)
+                let p_ac = (pa + pc) * 0.5;
+                let p_bc = (pb + pc) * 0.5;
+                faces.push([p_ac, p_bc, pc]);
+            }
+            _ => {} // No vertices inside this patch
+        }
+    }
+
+    // Cap each boundary loop with a fan of triangles through the centroid of its midpoints.
+    // Orient caps so their normals point outward (away from the skeleton node position,
+    // which sits inside the volume of the patch).
+    let node_pos = skeleton[node_index].position;
+    for edge_ref in skeleton.edges(node_index) {
+        let boundary_loop = edge_ref.weight();
+        if boundary_loop.edge_midpoints.is_empty() {
+            continue;
+        }
+
+        let loop_mids = loop_midpoints(mesh, boundary_loop);
+        let n = loop_mids.len();
+
+        let mut centroid = Vector3D::zeros();
+        for m in &loop_mids {
+            centroid += m;
+        }
+        centroid /= n as f64;
+
+        // Direction from the skeleton node (inside volume) toward the cap centroid (on surface).
+        let outward = centroid - node_pos;
+
+        for i in 0..n {
+            let u = loop_mids[i];
+            let v = loop_mids[(i + 1) % n];
+            // Compute normal of the candidate triangle and flip if it points inward.
+            let cap_normal = (v - u).cross(&(centroid - u));
+            if cap_normal.dot(&outward) < 0.0 {
+                faces.push([v, u, centroid]); // flip winding
+                println!("Flipped cap triangle for node {:?} to ensure outward normal.", node_index);
+            } else {
+                faces.push([u, v, centroid]);
+            }
+        }
+    }
+
+    faces
 }
