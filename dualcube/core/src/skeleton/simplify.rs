@@ -1,11 +1,12 @@
 use std::collections::HashSet;
 
+use log::info;
 use mehsh::prelude::{HasPosition, HasVertices, Mesh, Vector3D, EPS};
 use petgraph::graph::NodeIndex;
 
 use crate::{
     prelude::{CurveSkeleton, INPUT},
-    skeleton::{curve_skeleton::CurveSkeletonManipulation},
+    skeleton::curve_skeleton::{CurveSkeletonManipulation, CurveSkeletonSpatial},
 };
 
 // TODO: Maybe instead of simplifying everything possible, it might be better to simplify only to make regions closer to cubes
@@ -68,7 +69,6 @@ pub fn simplify_skeleton(skeleton: &mut CurveSkeleton, original_mesh: &Mesh<INPU
         }
     }
 
-
     // TODO: something like embedding refinement but that makes sure edges stay within the mesh.
     // Maybe something like moving along locked axes?
     // Maybe something that iteratively tries moving towards centroid until intersections happen?
@@ -76,8 +76,64 @@ pub fn simplify_skeleton(skeleton: &mut CurveSkeleton, original_mesh: &Mesh<INPU
 }
 
 /// Tries to make all patches have a convexity score above the target by merging adjacent patches, and by splitting patches.
-pub fn convexify(skeleton: &mut CurveSkeleton, original_mesh: &Mesh<INPUT>, target_convexity: f64) {
-    // TODO: implement this for real, after convexity score actually works
+pub fn convexify(
+    skeleton: &mut CurveSkeleton,
+    original_mesh: &Mesh<INPUT>,
+    _target_convexity: f64, // TODO: use
+    merge_threshold: f64,
+) {
+    // First we simply look to make regions more convex by merging.
+    // At the ends of tubes/cubes we often get corner patches, these can safely be merged into their parent to achieve same/better convexity with less patches.
+    // TODO: do this subtree at a time, instead of leaf at a time. One leaf might decrease convexity, but the subtree as a whole might be convex.
+    // TODO: this can be made more sophisticated in general, not just leaves..
+
+    let mut changed = true;
+    while changed {
+        changed = false;
+
+        // Get all possible leaves to merge
+        let leaves: Vec<NodeIndex> = skeleton
+            .node_indices()
+            .filter(|&i| skeleton.neighbors(i).count() == 1)
+            .collect();
+
+        // Get volumes for all leaves
+        let mut leaf_data: Vec<(NodeIndex, f64)> = leaves
+            .iter()
+            .map(|&leaf| {
+                let volume = skeleton.patch_volume(leaf, original_mesh);
+                (leaf, volume)
+            })
+            .collect();
+
+        // Sort by volume
+        leaf_data.sort_by(|a, b| a.1.partial_cmp(&b.1).unwrap());
+
+        // Try merging all leaves with their parent, starting with the smallest.
+        for (leaf,  _) in leaf_data {
+            let score = skeleton.patch_convexity_score(leaf, original_mesh);
+            let parent = skeleton.neighbors(leaf).next().unwrap();
+
+            // Check if merging would improve convexity enough
+            let merged_score = skeleton.patches_convexity_score(&[leaf, parent], original_mesh);
+            if merged_score < score * merge_threshold {
+                continue;
+            }
+
+            skeleton.merge_leaf_into_parent(leaf);
+            info!("Merge leaf {:?} into parent {:?} to improve convexity from {:.3} to {:.3}", leaf, parent, score, merged_score);
+
+            // Change one node at a time.
+            changed = true;
+            break;
+        }
+
+        if !changed {
+            break;
+        }
+    }
+
+    // TODO: Redraw boundaries to achieve better convexity... This likely needs some engineering as high-degree nodes can have many changes at once?
 }
 
 /// Checks if a line segment from `p0` to `p1` intersects any triangle in the mesh.
