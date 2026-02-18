@@ -223,22 +223,16 @@ fn patch_volume_triangles(
         }
         centroid /= n as f64;
 
-        // Check the first boundary half-edge's face to determine winding.
-        let first_edge = boundary_loop.edge_midpoints[0];
-        let face_verts: Vec<VertID> = mesh.vertices(mesh.face(first_edge)).collect();
-        let in_count = face_verts
-            .iter()
-            .filter(|&&v| vertices_in_patch.contains(&v))
-            .count();
-        let flip = in_count >= 2;
-
         for i in 0..n {
             let u = loop_mids[i];
             let v = loop_mids[(i + 1) % n];
-            if flip {
-                faces.push([v, u, centroid]);
+            let e = boundary_loop.edge_midpoints[i];
+            let root_in_patch = vertices_in_patch.contains(&mesh.root(e));
+            // Make sure winding order is consistent with the original topology
+            if root_in_patch {
+                faces.push([v, u, centroid]); // flip
             } else {
-                faces.push([u, v, centroid]);
+                faces.push([u, v, centroid]); // no flip
             }
         }
     }
