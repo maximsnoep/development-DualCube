@@ -71,5 +71,14 @@ pub trait CurveSkeletonSpatial {
     /// Returns a value in [0,1] representing how convex the patch is, where 1 means perfectly convex and 0 means very non-convex.
     fn patch_convexity_score(&self, node_index: NodeIndex, mesh: &Mesh<INPUT>) -> f64;
 
+    /// Calculates the volume of the union of connected surface patches.
+    fn patches_volume(&self, node_indices: &[NodeIndex], mesh: &Mesh<INPUT>) -> f64;
+
+    /// Computes the convex-hull volume of the union of connected patches.
+    fn patches_hull_volume(&self, node_indices: &[NodeIndex], mesh: &Mesh<INPUT>) -> f64;
+
+    /// Convexity score for a group of connected patches, in [0,1].
+    fn patches_convexity_score(&self, node_indices: &[NodeIndex], mesh: &Mesh<INPUT>) -> f64;
+
     // TODO: move patch centroid into here maybe
 }

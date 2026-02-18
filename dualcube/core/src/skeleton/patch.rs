@@ -7,12 +7,29 @@ use crate::{
 use log::error;
 use mehsh::prelude::{HasFaces, HasPosition, HasSize, HasVertices, Mesh, Vector3D};
 use petgraph::graph::NodeIndex;
+use petgraph::visit::EdgeRef;
 
 impl CurveSkeletonSpatial for CurveSkeleton {
     /// Places a virtual vertex in the centroid of the boundaries, to close up the holes.
     /// Then uses tetrahedron volumes to compute the volume of the patch.
     fn patch_volume(&self, node_index: NodeIndex, mesh: &Mesh<INPUT>) -> f64 {
-        let faces = patch_volume_triangles(&self, node_index, mesh);
+        self.patches_volume(&[node_index], mesh)
+    }
+
+    // Calculates a convex hull, then uses signed tetrahedron volumes to compute the volume of the hull.
+    // Uses the same construction as patch volume to approximate the holes with disks (centroids automatically in CH).
+    fn patch_hull_volume(&self, node_index: NodeIndex, mesh: &Mesh<INPUT>) -> f64 {
+        self.patches_hull_volume(&[node_index], mesh)
+    }
+
+    /// Calculates a convexity score by comparing the patch volume to the convex hull volume.
+    fn patch_convexity_score(&self, node_index: NodeIndex, mesh: &Mesh<INPUT>) -> f64 {
+        self.patches_convexity_score(&[node_index], mesh)
+    }
+
+    /// Volume of a group of connected patches (union of their induced surface vertices).
+    fn patches_volume(&self, node_indices: &[NodeIndex], mesh: &Mesh<INPUT>) -> f64 {
+        let faces = patch_volume_triangles_for_nodes(self, node_indices, mesh);
         if faces.is_empty() {
             return 0.0;
         }
@@ -29,34 +46,47 @@ impl CurveSkeletonSpatial for CurveSkeleton {
         (vol / 6.0).abs()
     }
 
-    // Calculates a convex hull, then uses signed tetrahedron volumes to compute the volume of the hull.
-    // Uses the same construction as patch volume to approximate the holes with disks (centroids automatically in CH).
-    fn patch_hull_volume(&self, node_index: NodeIndex, mesh: &Mesh<INPUT>) -> f64 {
-        // Collect the positions of the patch vertices
-        let vertices = &self[node_index].patch_vertices;
-        if vertices.len() < 4 {
-            // All points are coplanar, so volume is always zero.
-            return 0.0;
+    /// Convex-hull volume of the union of the given nodes' patches.
+    fn patches_hull_volume(&self, node_indices: &[NodeIndex], mesh: &Mesh<INPUT>) -> f64 {
+        // Collect the positions of the union of patch vertices
+        let mut points_locations: Vec<Vec<f64>> = Vec::new();
+        let mut seen_verts: HashSet<VertID> = HashSet::new();
+        for &n in node_indices {
+            for &v in &self[n].patch_vertices {
+                if seen_verts.insert(v) {
+                    let p = mesh.position(v);
+                    points_locations.push(vec![p.x, p.y, p.z]);
+                }
+            }
         }
 
-        // Convert to Vec<Vec<f64>> convex hull calculation
-        let mut points_locations: Vec<Vec<f64>> = vertices
-            .iter()
-            .map(|&v| {
-                let p = mesh.position(v);
-                vec![p.x, p.y, p.z]
-            })
-            .collect();
-        // Add midpoints of boundary edges to better approximate the hull of the patch
-        for edge_ref in self.edges(node_index) {
-            let boundary_loop = edge_ref.weight();
-            if boundary_loop.edge_midpoints.is_empty() {
-                continue;
-            }
+        // Add midpoints of external boundary edges to better approximate the hull
+        let node_set: HashSet<NodeIndex> = node_indices.iter().copied().collect();
+        for &n in node_indices {
+            for edge_ref in self.edges(n) {
+                let neighbor = if edge_ref.source() == n {
+                    edge_ref.target()
+                } else {
+                    edge_ref.source()
+                };
+                // skip internal edges
+                if node_set.contains(&neighbor) {
+                    continue;
+                }
 
-            // Add midpoints of each boundary edge so CH never underestimates
-            let loop_midpoints = loop_midpoints(mesh, boundary_loop);
-            points_locations.extend(loop_midpoints.iter().map(|m| vec![m.x, m.y, m.z]));
+                let boundary_loop = edge_ref.weight();
+                if boundary_loop.edge_midpoints.is_empty() {
+                    continue;
+                }
+
+                let loop_midpoints = loop_midpoints(mesh, boundary_loop);
+                points_locations.extend(loop_midpoints.iter().map(|m| vec![m.x, m.y, m.z]));
+            }
+        }
+
+        if points_locations.len() < 4 {
+            // All points are coplanar or too few to form a hull with volume.
+            return 0.0;
         }
 
         // Calculate the convex hull of the points
@@ -65,21 +95,16 @@ impl CurveSkeletonSpatial for CurveSkeleton {
             Err(_) => return 0.0,
         };
 
-        // Compute the volume of the convex hull // TODO: check whether this calculation lines up with other one we use (it should though).
+        // Compute the volume of the convex hull
         convex_hull.volume()
     }
 
-    /// Calculates a convexity score by comparing the patch volume to the convex hull volume.
-    fn patch_convexity_score(&self, node_index: NodeIndex, mesh: &Mesh<INPUT>) -> f64 {
-        let patch_volume = self.patch_volume(node_index, mesh);
-        let hull_volume = self.patch_hull_volume(node_index, mesh);
-        print!(
-            "Patch volume: {}, Hull volume: {}",
-            patch_volume, hull_volume
-        );
+    /// Convexity score for a group of patches (union).
+    fn patches_convexity_score(&self, node_indices: &[NodeIndex], mesh: &Mesh<INPUT>) -> f64 {
+        let patch_volume = self.patches_volume(node_indices, mesh);
+        let hull_volume = self.patches_hull_volume(node_indices, mesh);
         if hull_volume == 0.0 {
-            // Something likely went wrong
-            error!("Convex hull volume is zero for node {:?}.", node_index);
+            error!("Convex hull volume is zero for nodes {:?}.", node_indices);
             return 0.0;
         }
         return patch_volume / hull_volume;
@@ -135,21 +160,13 @@ pub fn patch_centroid(vertices: &[VertID], mesh: &Mesh<INPUT>) -> Vector3D {
     weighted_sum / total_area
 }
 
-/// Returns the triangles used to compute the patch volume (surface triangles + boundary cap fans).
-fn patch_volume_triangles(
-    skeleton: &CurveSkeleton,
-    node_index: NodeIndex,
+/// Build triangle faces for all mesh faces that intersect `vertices_in_patch`.
+fn faces_from_vertex_set(
+    vertices_in_patch: &HashSet<VertID>,
     mesh: &Mesh<INPUT>,
 ) -> Vec<[Vector3D; 3]> {
-    let patch_verts = &skeleton[node_index].patch_vertices;
-    if patch_verts.len() < 3 {
-        return Vec::new();
-    }
-
-    let vertices_in_patch: HashSet<VertID> = patch_verts.iter().copied().collect();
-
-    // For each mesh face, add the portion that lies inside this patch.
     let mut faces: Vec<[Vector3D; 3]> = Vec::new();
+
     for face_id in mesh.face_ids() {
         let fv: Vec<VertID> = mesh.vertices(face_id).collect();
         if fv.len() != 3 {
@@ -166,14 +183,9 @@ fn patch_volume_triangles(
         let p2 = mesh.position(fv[2]);
 
         match count {
-            3 => {
-                // Fully inside the patch
-                faces.push([p0, p1, p2]);
-            }
+            3 => faces.push([p0, p1, p2]),
             2 => {
                 // Two vertices inside, one outside.
-                // Rotate into (a, b, c) with a,b = inside (majority), c = outside (minority),
-                // using a cyclic rotation to preserve the original face winding order.
                 let (pa, pb, pc) = if !in0 {
                     (p1, p2, p0)
                 } else if !in1 {
@@ -181,7 +193,6 @@ fn patch_volume_triangles(
                 } else {
                     (p0, p1, p2)
                 };
-                // Majority (inside) portion from split_triangle: (a, b, ac) and (b, bc, ac)
                 let p_ac = (pa + pc) * 0.5;
                 let p_bc = (pb + pc) * 0.5;
                 faces.push([pa, pb, p_ac]);
@@ -189,8 +200,6 @@ fn patch_volume_triangles(
             }
             1 => {
                 // One vertex inside, two outside.
-                // Rotate into (a, b, c) with a,b = outside (majority), c = inside (minority),
-                // using a cyclic rotation to preserve the original face winding order.
                 let (pa, pb, pc) = if in0 {
                     (p1, p2, p0)
                 } else if in1 {
@@ -198,41 +207,74 @@ fn patch_volume_triangles(
                 } else {
                     (p0, p1, p2)
                 };
-                // Minority (inside) portion from split_triangle: (ac, bc, c)
                 let p_ac = (pa + pc) * 0.5;
                 let p_bc = (pb + pc) * 0.5;
                 faces.push([p_ac, p_bc, pc]);
             }
-            _ => {} // No vertices inside this patch
+            _ => {}
         }
     }
 
-    // Cap each boundary loop with a fan of triangles through the centroid of its midpoints.
-    for edge_ref in skeleton.edges(node_index) {
-        let boundary_loop = edge_ref.weight();
-        if boundary_loop.edge_midpoints.is_empty() {
-            continue;
-        }
+    faces
+}
 
-        let loop_mids = loop_midpoints(mesh, boundary_loop);
-        let n = loop_mids.len();
+/// Returns the triangles used to compute the patch volume for a group (union) of nodes.
+fn patch_volume_triangles_for_nodes(
+    skeleton: &CurveSkeleton,
+    node_indices: &[NodeIndex],
+    mesh: &Mesh<INPUT>,
+) -> Vec<[Vector3D; 3]> {
+    // Build union of patch vertices
+    let mut vertices_in_group: HashSet<VertID> = HashSet::new();
+    for &n in node_indices {
+        vertices_in_group.extend(skeleton[n].patch_vertices.iter().copied());
+    }
+    if vertices_in_group.len() < 3 {
+        return Vec::new();
+    }
 
-        let mut centroid = Vector3D::zeros();
-        for m in &loop_mids {
-            centroid += m;
-        }
-        centroid /= n as f64;
+    // Surface portions
+    let mut faces = faces_from_vertex_set(&vertices_in_group, mesh);
 
-        for i in 0..n {
-            let u = loop_mids[i];
-            let v = loop_mids[(i + 1) % n];
-            let e = boundary_loop.edge_midpoints[i];
-            let root_in_patch = vertices_in_patch.contains(&mesh.root(e));
-            // Make sure winding order is consistent with the original topology
-            if root_in_patch {
-                faces.push([v, u, centroid]); // flip
+    // Cap only the external boundary loops
+    let node_set: HashSet<NodeIndex> = node_indices.iter().copied().collect();
+    for &node in node_indices {
+        for edge_ref in skeleton.edges(node) {
+            let neighbor = if edge_ref.source() == node {
+                edge_ref.target()
             } else {
-                faces.push([u, v, centroid]); // no flip
+                edge_ref.source()
+            };
+            if node_set.contains(&neighbor) {
+                // internal edge, skip capping
+                continue;
+            }
+
+            let boundary_loop = edge_ref.weight();
+            if boundary_loop.edge_midpoints.is_empty() {
+                continue;
+            }
+
+            let loop_mids = loop_midpoints(mesh, boundary_loop);
+            let mcount = loop_mids.len();
+
+            let mut centroid = Vector3D::zeros();
+            for m in &loop_mids {
+                centroid += m;
+            }
+            centroid /= mcount as f64;
+
+            for i in 0..mcount {
+                let u = loop_mids[i];
+                let v = loop_mids[(i + 1) % mcount];
+                let e = boundary_loop.edge_midpoints[i];
+                let root_in_patch = vertices_in_group.contains(&mesh.root(e));
+                // Make sure winding order is consistent with the original topology
+                if root_in_patch {
+                    faces.push([v, u, centroid]); // flip
+                } else {
+                    faces.push([u, v, centroid]); // no flip
+                }
             }
         }
     }
