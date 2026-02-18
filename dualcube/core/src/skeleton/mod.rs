@@ -111,7 +111,8 @@ pub fn get_skeleton_based_mapping(mesh: Arc<Mesh<INPUT>>) -> SkeletonData {
 
     // Convexify skeleton to make patch volume close to convex shapes, which map nicely to cubes.
     const CONVEXITY_THRESHOLD: f64 = 0.8; // TODO: make configurable in UI
-    convexify(&mut cleaned_skeleton, &mesh, CONVEXITY_THRESHOLD);
+    const CONVEXITY_MERGE_THRESHOLD: f64 = 0.95; // When merging two patches, the new convexity should be at least threshold*best_before 
+    convexify(&mut cleaned_skeleton, &mesh, CONVEXITY_THRESHOLD, CONVEXITY_MERGE_THRESHOLD);
 
     // Fix necessary conditions for orthogonal embeddability, most of the times this changes nothing.
     make_embedding_possible(&mut cleaned_skeleton, &mesh);
