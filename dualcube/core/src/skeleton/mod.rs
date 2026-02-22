@@ -1,5 +1,6 @@
 use std::sync::Arc;
 
+use log::{info, warn};
 use mehsh::prelude::Mesh;
 use serde::{Deserialize, Serialize};
 
@@ -7,13 +8,13 @@ use crate::{
     prelude::INPUT,
     skeleton::{
         connectivity_surgery::extract_skeleton,
-        contraction::{contract_mesh, CONTRACTION},
+        contraction::{CONTRACTION, contract_mesh},
         curve_skeleton::{CurveSkeleton, CurveSkeletonManipulation},
         embeddability::make_embedding_possible,
-        orthogonalize::LabeledCurveSkeleton,
+        orthogonalize::{LabeledCurveSkeleton, greedy_orthogonalization},
         simplify::{convexify, simplify_skeleton},
         volume_collapse::{
-            construct_skeleton_from_history, volume_based_collapse, VolumeCollapseHistory,
+            VolumeCollapseHistory, construct_skeleton_from_history, volume_based_collapse
         },
     },
 };
@@ -117,8 +118,16 @@ pub fn get_skeleton_based_mapping(mesh: Arc<Mesh<INPUT>>) -> SkeletonData {
     // Fix necessary conditions for orthogonal embeddability, most of the times this changes nothing.
     make_embedding_possible(&mut cleaned_skeleton, &mesh);
 
-    // Orthogonalize and label the curve skeleton
-    // TODO: orthogonalization
+    // Orthogonalize the curve skeleton
+    let labeled = greedy_orthogonalization(&cleaned_skeleton);
+    match &labeled {
+        Some(_) => {
+            info!("Orthogonalization successful.");
+        }
+        None => {
+            warn!("Orthogonalization failed.");
+        }
+    }
 
     // (MAYBE TEMP) Do volume based collapse, and save the history.
     let history = volume_based_collapse(&cleaned_skeleton, &mesh);
@@ -134,7 +143,7 @@ pub fn get_skeleton_based_mapping(mesh: Arc<Mesh<INPUT>>) -> SkeletonData {
         raw_curve_skeleton: Some(curve_skeleton),
         cleaned_skeleton: Some(cleaned_skeleton),
         collapse_history: Some(history),
-        labeled_skeleton: None,
+        labeled_skeleton: labeled,
     }
 }
 
