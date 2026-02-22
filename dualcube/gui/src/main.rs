@@ -3,6 +3,7 @@ mod controls;
 mod jobs;
 mod render;
 mod ui;
+mod render_skeleton;
 
 use crate::controls::InteractiveMode;
 use crate::render::RenderObjectSettingStore;
