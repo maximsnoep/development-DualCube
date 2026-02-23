@@ -1,8 +1,9 @@
 use crate::colors;
 use crate::render::world_to_view;
-use bevy::prelude::*;
+use bevy::prelude::{Color, *};
 use dualcube::prelude::*;
 use dualcube::skeleton::curve_skeleton::CurveSkeletonSpatial;
+use dualcube::skeleton::orthogonalize::LabeledCurveSkeleton;
 use itertools::Itertools;
 use mehsh::integrations::bevy::MeshBuilder;
 use mehsh::prelude::*;
@@ -58,11 +59,83 @@ pub fn create_skeleton_gizmos(
     translation: Vector3D,
     scale: f64,
 ) -> GizmoAsset {
-    let mut gizmos = GizmoAsset::new();
+    let (mut gizmos, skel_color, node_radius) = setup_skeleton_gizmos();
+
+    // Create edges
+    create_skeleton_edge_gizmos(curve_skeleton, translation, scale, &mut gizmos, skel_color);
+
+    // Create nodes
+    create_skeleton_node_gizmos(
+        curve_skeleton,
+        translation,
+        scale,
+        &mut gizmos,
+        skel_color,
+        node_radius,
+    );
+
+    gizmos
+}
+
+/// Creates gizmos for visualizing a curve skeleton with spheres for nodes and lines for edges, using labels.
+pub fn create_labeled_skeleton_gizmos(
+    labeled_skeleton: &LabeledCurveSkeleton,
+    translation: Vector3D,
+    scale: f64,
+) -> GizmoAsset {
+    let (mut gizmos, skel_color, node_radius) = setup_skeleton_gizmos();
+
+    // Create edges, use labels for coloring
+    create_labeled_skeleton_edge_gizmos(labeled_skeleton, translation, scale, &mut gizmos);
+
+    // Create nodes
+    create_skeleton_node_gizmos_from_labeled(
+        labeled_skeleton,
+        translation,
+        scale,
+        &mut gizmos,
+        skel_color,
+        node_radius,
+    );
+
+    gizmos
+}
+
+fn setup_skeleton_gizmos() -> (GizmoAsset, Color, f32) {
+    let gizmos = GizmoAsset::new();
     let skel_color = colors::to_bevy(colors::LIGHT_GRAY);
     let node_radius = 0.2;
+    (gizmos, skel_color, node_radius)
+}
 
-    // Draw edges
+fn create_labeled_skeleton_edge_gizmos(
+    labeled_skeleton: &LabeledCurveSkeleton,
+    translation: Vector3D,
+    scale: f64,
+    gizmos: &mut GizmoAsset,
+) {
+    for edge in labeled_skeleton.edge_indices() {
+        let (a, b) = labeled_skeleton.edge_endpoints(edge).unwrap();
+        let pos_a = labeled_skeleton[a].skeleton_node.position;
+        let pos_b = labeled_skeleton[b].skeleton_node.position;
+        let a_view = world_to_view(pos_a, translation, scale);
+        let b_view = world_to_view(pos_b, translation, scale);
+        let color = colors::to_bevy(colors::from_direction(
+            labeled_skeleton[edge].direction,
+            None,
+            None,
+        ));
+        gizmos.line(a_view, b_view, color);
+    }
+}
+
+fn create_skeleton_edge_gizmos(
+    curve_skeleton: &CurveSkeleton,
+    translation: Vector3D,
+    scale: f64,
+    gizmos: &mut GizmoAsset,
+    skel_color: Color,
+) {
     for edge in curve_skeleton.edge_indices() {
         let (a, b) = curve_skeleton.edge_endpoints(edge).unwrap();
         let pos_a = curve_skeleton[a].position;
@@ -71,8 +144,16 @@ pub fn create_skeleton_gizmos(
         let b_view = world_to_view(pos_b, translation, scale);
         gizmos.line(a_view, b_view, skel_color);
     }
+}
 
-    // Draw nodes
+fn create_skeleton_node_gizmos(
+    curve_skeleton: &CurveSkeleton,
+    translation: Vector3D,
+    scale: f64,
+    gizmos: &mut GizmoAsset,
+    skel_color: Color,
+    node_radius: f32,
+) {
     for node_idx in curve_skeleton.node_indices() {
         let pos = curve_skeleton[node_idx].position;
         let center = world_to_view(pos, translation, scale);
@@ -82,8 +163,26 @@ pub fn create_skeleton_gizmos(
             skel_color,
         );
     }
+}
 
-    gizmos
+// TODO: could likely just use a trait to unify.
+fn create_skeleton_node_gizmos_from_labeled(
+    labeled_skeleton: &LabeledCurveSkeleton,
+    translation: Vector3D,
+    scale: f64,
+    gizmos: &mut GizmoAsset,
+    skel_color: Color,
+    node_radius: f32,
+) {
+    for node_idx in labeled_skeleton.node_indices() {
+        let pos = labeled_skeleton[node_idx].skeleton_node.position;
+        let center = world_to_view(pos, translation, scale);
+        gizmos.sphere(
+            Isometry3d::from_translation(center),
+            node_radius,
+            skel_color,
+        );
+    }
 }
 
 use bevy::color::palettes::tailwind;

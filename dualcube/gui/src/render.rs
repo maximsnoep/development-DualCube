@@ -1,4 +1,4 @@
-use crate::render_skeleton::{create_patch_boundary_gizmos, create_patch_convexity_mesh, create_patch_mesh, create_skeleton_gizmos};
+use crate::render_skeleton::{create_labeled_skeleton_gizmos, create_patch_boundary_gizmos, create_patch_convexity_mesh, create_patch_mesh, create_skeleton_gizmos};
 use crate::ui::UiResource;
 use crate::{colors, MainMesh, PerpetualGizmos};
 use crate::{
@@ -1013,22 +1013,30 @@ pub fn refresh(solution: &Solution, collapse_history_step: usize) -> RenderObjec
                     }
                 }
 
-                // Visualize skeleton(s) if available
+                // Visualize skeleton(s) if available. Similarly, show labelling if available.
                 if let Some(skeleton_data) = &solution.skeleton {
                     if let Some(curve_skeleton) = skeleton_data.curve_skeleton() {
                         gizmos_raw_skeleton =
                             create_skeleton_gizmos(curve_skeleton, translation, scale);
                     }
                     if let Some(cleaned_skeleton) = skeleton_data.cleaned_skeleton() {
-                        gizmos_cleaned_skeleton =
-                            create_skeleton_gizmos(cleaned_skeleton, translation, scale);
-                        // Create patch visualization using the cleaned skeleton
-                        patch_mesh = Some(create_patch_mesh(
-                            cleaned_skeleton,
-                            input,
-                            translation,
-                            scale,
-                        ));
+                        // Check for labeled skeleton
+                        if let Some(labeled_skeleton) = skeleton_data.labeled_skeleton() {
+                            // Add coloring based on labels
+                            gizmos_cleaned_skeleton =
+                                create_labeled_skeleton_gizmos(labeled_skeleton, translation, scale);
+                        } else {
+                            // Labelling failed, just show cleaned skeleton
+                            gizmos_cleaned_skeleton =
+                                create_skeleton_gizmos(cleaned_skeleton, translation, scale);
+                            // Create patch visualization using the cleaned skeleton
+                            patch_mesh = Some(create_patch_mesh(
+                                cleaned_skeleton,
+                                input,
+                                translation,
+                                scale,
+                            ));
+                        }
                     }
                 }
 

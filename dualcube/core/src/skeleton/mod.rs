@@ -20,13 +20,13 @@ use crate::{
 };
 
 pub mod curve_skeleton;
+pub mod orthogonalize;
 
 mod boundary_loop;
 mod connectivity_surgery;
 mod contraction;
 mod embeddability;
 mod manipulation;
-mod orthogonalize;
 mod patch;
 mod simplify;
 mod volume_collapse;
@@ -69,6 +69,11 @@ impl SkeletonData {
     /// Returns a reference to the cleaned skeleton if it has been computed.
     pub fn cleaned_skeleton(&self) -> Option<&CurveSkeleton> {
         self.cleaned_skeleton.as_ref()
+    }
+
+    /// Returns a reference to the labeled skeleton if it has been computed.
+    pub fn labeled_skeleton(&self) -> Option<&LabeledCurveSkeleton> {
+        self.labeled_skeleton.as_ref()
     }
 
     /// Reconstructs what a skeleton looked like at a certain point in the volume collapse history, if the history is available.

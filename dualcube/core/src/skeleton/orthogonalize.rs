@@ -1,6 +1,7 @@
 use log::error;
 use petgraph::graph::{NodeIndex, UnGraph};
 use petgraph::visit::EdgeRef;
+use serde::{Deserialize, Serialize};
 
 use std::collections::{HashMap, HashSet, VecDeque};
 
@@ -13,9 +14,18 @@ use crate::{
 /// A 3-dimensional integer vector.
 pub type IVector3D = nalgebra::SVector<i32, 3>;
 
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct OrthogonalSkeletonNode {
+    pub skeleton_node: SkeletonNode,
+    pub grid_position: IVector3D,
+}
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct OrthogonalSkeletonEdge {
+    pub direction: PrincipalDirection,
+    pub length: u32,
+}
 /// Curve skeleton with axis-aligned edges and integer grid coordinates assigned to each node.
-pub type OrthogonalSkeletonNode = (SkeletonNode, IVector3D);
-pub type OrthogonalSkeletonEdge = (PrincipalDirection, u32);
 pub type LabeledCurveSkeleton = UnGraph<OrthogonalSkeletonNode, OrthogonalSkeletonEdge>;
 
 /// Curve skeleton where every edge has an axis label, but node coordinates are not yet assigned.
@@ -65,7 +75,11 @@ fn components_excluding_partial(
                 match *edge.weight() {
                     Some(dir) if dir != forbidden => {
                         // Pick the endpoint that is not u.
-                        let v = if edge.source() == u { edge.target() } else { edge.source() };
+                        let v = if edge.source() == u {
+                            edge.target()
+                        } else {
+                            edge.source()
+                        };
                         let vi = idx_map[&v];
                         if comp[vi] == usize::MAX {
                             comp[vi] = cur;
@@ -98,7 +112,7 @@ fn partial_from_edge_labeled(s: &EdgeLabeledCurveSkeleton) -> PartialEdgeLabeled
     for e in s.edge_references() {
         let a = e.source();
         let b = e.target();
-        let (dir, _len) = *e.weight();
+        let dir = e.weight().direction;
         out.add_edge(map[&a], map[&b], Some(dir));
     }
 
@@ -186,15 +200,26 @@ pub fn realize(s: &EdgeLabeledCurveSkeleton) -> Option<LabeledCurveSkeleton> {
     let mut out_index_map: HashMap<NodeIndex, NodeIndex> = HashMap::new();
 
     for &orig in &nodes {
-        let sn = s.node_weight(orig).unwrap().clone();
-        let out_n = out.add_node((sn, IVector3D::new(0, 0, 0)));
+        let node = s.node_weight(orig).unwrap().clone();
+        let weight = OrthogonalSkeletonNode {
+            skeleton_node: node,
+            grid_position: IVector3D::new(0,0,0) // overwritten later
+        };
+        let out_n = out.add_node(weight);
         out_index_map.insert(orig, out_n);
     }
 
     for e in s.edge_indices() {
         if let Some(w) = s.edge_weight(e) {
             let (a, b) = s.edge_endpoints(e).unwrap();
-            out.add_edge(out_index_map[&a], out_index_map[&b], *w);
+            out.add_edge(
+                out_index_map[&a],
+                out_index_map[&b],
+                OrthogonalSkeletonEdge {
+                    direction: w.direction,
+                    length: w.length,
+                },
+            );
         }
     }
 
@@ -203,7 +228,7 @@ pub fn realize(s: &EdgeLabeledCurveSkeleton) -> Option<LabeledCurveSkeleton> {
         let i = idx_map[&orig];
         let out_n = out_index_map[&orig];
         if let Some(node_w) = out.node_weight_mut(out_n) {
-            node_w.1 = coords[i];
+            node_w.grid_position = coords[i];
         }
     }
 
@@ -221,7 +246,7 @@ pub fn realize(s: &EdgeLabeledCurveSkeleton) -> Option<LabeledCurveSkeleton> {
         let ib = idx_map[&orig_b];
 
         if let Some(edge_w) = out.edge_weight_mut(e) {
-            let dir = edge_w.0;
+            let dir = edge_w.direction;
             let diff = match dir {
                 PrincipalDirection::X => (coords[ia].x - coords[ib].x).abs() as u32,
                 PrincipalDirection::Y => (coords[ia].y - coords[ib].y).abs() as u32,
@@ -232,7 +257,7 @@ pub fn realize(s: &EdgeLabeledCurveSkeleton) -> Option<LabeledCurveSkeleton> {
                 "edge of direction {:?} has zero length after realization",
                 dir
             );
-            edge_w.1 = diff;
+            edge_w.length = diff;
         }
     }
 
@@ -248,7 +273,7 @@ pub fn realize(s: &EdgeLabeledCurveSkeleton) -> Option<LabeledCurveSkeleton> {
 /// labeling consistent is accepted.
 ///
 /// Can fail when cycles impose conflicting global constraints that the greedy has no
-/// lookahead to resolve. 
+/// lookahead to resolve.
 ///
 /// TODO: fallback ILP or backtracking search for cases greedy cannot solve.
 pub fn greedy_orthogonalization(curve_skeleton: &CurveSkeleton) -> Option<LabeledCurveSkeleton> {
@@ -393,7 +418,11 @@ pub fn greedy_orthogonalization(curve_skeleton: &CurveSkeleton) -> Option<Labele
             Some(d) => d,
             None => unreachable!(),
         };
-        full.add_edge(out_map[&a], out_map[&b], (dir, 1u32));
+        let weight = OrthogonalSkeletonEdge {
+            direction: dir,
+            length: 1, // placeholder, will be recomputed in realize
+        };
+        full.add_edge(out_map[&a], out_map[&b], weight);
     }
 
     // Compute integer coordinates and correct edge lengths.
