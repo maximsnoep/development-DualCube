@@ -4,7 +4,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::{
     prelude::{CurveSkeleton, INPUT},
-    skeleton::curve_skeleton::{CurveSkeletonManipulation, CurveSkeletonSpatial},
+    skeleton::curve_skeleton::{CurveSkeletonManipulation, CurveSkeletonSpatial, MergeBehavior},
 };
 
 /// Collapses the skeleton one
@@ -45,7 +45,7 @@ pub fn volume_based_collapse(
                 source_node: *smallest_leaf,
                 target_node: parent,
             });
-            skeleton.merge_leaf_into_parent(*smallest_leaf);
+            skeleton.merge_nodes(*smallest_leaf, parent, MergeBehavior::SourceIntoTarget);
             changed = true;
         }
 
@@ -69,7 +69,7 @@ pub fn construct_skeleton_from_history(
 
     for collapse in &history.history[0..end] {
         // Merge the patch vertices of source into target
-        skeleton.merge_leaf_into_parent(collapse.source_node);
+        skeleton.merge_nodes(collapse.source_node, collapse.target_node, MergeBehavior::SourceIntoTarget);
     }
 
     skeleton

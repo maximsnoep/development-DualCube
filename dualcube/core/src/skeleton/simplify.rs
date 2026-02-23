@@ -6,7 +6,7 @@ use petgraph::graph::NodeIndex;
 
 use crate::{
     prelude::{CurveSkeleton, INPUT},
-    skeleton::curve_skeleton::{CurveSkeletonManipulation, CurveSkeletonSpatial},
+    skeleton::curve_skeleton::{CurveSkeletonManipulation, CurveSkeletonSpatial, MergeBehavior},
 };
 
 // TODO: Maybe instead of simplifying everything possible, it might be better to simplify only to make regions closer to cubes
@@ -120,7 +120,7 @@ pub fn convexify(
                 continue;
             }
 
-            skeleton.merge_leaf_into_parent(leaf);
+            skeleton.merge_nodes(leaf, parent, MergeBehavior::SourceIntoTarget);
             info!("Merge leaf {:?} into parent {:?} to improve convexity from {:.3} to {:.3}", leaf, parent, score, merged_score);
 
             // Change one node at a time.

@@ -53,10 +53,24 @@ pub trait CurveSkeletonManipulation {
     /// the mesh region. Returns `false` if the node has degree < 4 or partitioning fails.
     fn split_high_degree_node(&mut self, node_index: NodeIndex, mesh: &Mesh<INPUT>) -> bool;
 
-    /// Merges a leaf node into its parent, by reassigning its induced surface patch to the parent.
-    /// Leads to inconsistent state when used on non-leaf nodes.
-    /// TODO: can make this more general, merge two nodes, reassign boundaries, etc.
-    fn merge_leaf_into_parent(&mut self, leaf_index: NodeIndex);
+    /// Merges two nodes connected by an edge. Use `merge_behavior` to determine how to assign patch vertices and node position after merging.
+    /// This is differen from `dissolve_subdivision` as it can be applied more generally, but does not redraw boundaries.
+    /// 
+    /// Note that this can move edges 'outside' the mesh!!!
+    /// 
+    /// This can fail if the source and target share a neighbor.
+    fn merge_nodes(&mut self, source: NodeIndex, target: NodeIndex, merge_behavior: MergeBehavior) -> bool;
+}
+
+pub enum MergeBehavior {
+    /// When merging, assign all patch vertices to the target node. Keep the target node position as is.
+    SourceIntoTarget,
+    
+    /// When merging, assign all patch vertices to the source node. Keep the source node position as is.
+    TargetIntoSource,
+
+    /// When merging assign patch vertices to one of the two nodes, set the position of the merged node to the midpoint between the original two nodes.
+    Midpoint,
 }
 
 /// Methods for calculating geometric properties of curve skeletons and their induced surface patches.
