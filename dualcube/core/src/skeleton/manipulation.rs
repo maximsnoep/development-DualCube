@@ -8,16 +8,18 @@ use faer::{
     },
     Mat, Side,
 };
+use itertools::Merge;
 use log::{error, warn};
 use mehsh::prelude::{HasNeighbors, HasPosition, Mesh, Vector3D};
 use nalgebra::Matrix3;
 use petgraph::graph::{EdgeIndex, NodeIndex};
 
 use crate::{
-    prelude::{CurveSkeleton, INPUT, VertID},
+    prelude::{CurveSkeleton, VertID, INPUT},
     skeleton::{
         boundary_loop::BoundaryLoop,
-        curve_skeleton::{CurveSkeletonManipulation, SkeletonNode}, patch::patch_centroid,
+        curve_skeleton::{CurveSkeletonManipulation, MergeBehavior, SkeletonNode},
+        patch::patch_centroid,
     },
 };
 
@@ -556,20 +558,96 @@ impl CurveSkeletonManipulation for CurveSkeleton {
 
         true
     }
-    
-    fn merge_leaf_into_parent(&mut self, leaf_index: NodeIndex) {
-        // Get parent
-        let parent = self.neighbors(leaf_index).next().unwrap();
 
-        // Move patch vertices from leaf to parent
+    fn merge_nodes(
+        &mut self,
+        mut source: NodeIndex,
+        mut target: NodeIndex,
+        merge_behavior: MergeBehavior,
+    ) -> bool {
+        // First ensure there is no shared neighbor.
+        let source_neighbors: Vec<NodeIndex> = self.neighbors(source).collect();
+        let target_neighbors: Vec<NodeIndex> = self.neighbors(target).collect();
+        let source_set: HashSet<NodeIndex> = source_neighbors
+            .iter()
+            .cloned()
+            .filter(|&n| n != target)
+            .collect();
+        let target_set: HashSet<NodeIndex> = target_neighbors
+            .iter()
+            .cloned()
+            .filter(|&n| n != source)
+            .collect();
+        if !source_set.is_disjoint(&target_set) {
+            return false;
+        }
+
+        // Union of remaining neighbors needed for rewirint later.
+        let mut union: Vec<NodeIndex> = Vec::with_capacity(source_set.len() + target_set.len());
+        union.extend(source_set.iter().copied());
+        for &n in &target_set {
+            if !source_set.contains(&n) {
+                union.push(n);
+            }
+        }
+
+        // Precompute final node position
+        let position = match merge_behavior {
+            MergeBehavior::SourceIntoTarget => self.node_weight(target).unwrap().position,
+            MergeBehavior::TargetIntoSource => self.node_weight(source).unwrap().position,
+            MergeBehavior::Midpoint => {
+                let pos_a = self.node_weight(source).unwrap().position;
+                let pos_b = self.node_weight(target).unwrap().position;
+                (pos_a + pos_b) / 2.0
+            }
+        };
+
+        // Normalize to SourceIntoTarget for simpler handling. Assume midpoint is SourceIntoTarget, but does not really matter.
+        if let MergeBehavior::TargetIntoSource = merge_behavior {
+            // Swap source and target
+            let temp = source;
+            source = target;
+            target = temp;
+        }
+
+        // Move patch vertices from source to target
         let source_patch_vertices =
-            std::mem::take(&mut self[leaf_index].patch_vertices);
-        self[parent]
+            std::mem::take(&mut self.node_weight_mut(source).unwrap().patch_vertices);
+        self.node_weight_mut(target)
+            .unwrap()
             .patch_vertices
             .extend(source_patch_vertices);
 
-        // Remove the source node
-        self.remove_node(leaf_index);
+        // Add new edges to target.
+        for &nbr in &union {
+            // If the target already has an edge to this neighbor, nothing to do
+            if self.find_edge(target, nbr).is_some() {
+                continue;
+            }
+
+            // Otherwise, the edge must have been coming from the source side, move to target.
+            if let Some(edge_idx) = self.find_edge(source, nbr) {
+                let bl = std::mem::replace(
+                    self.edge_weight_mut(edge_idx).unwrap(),
+                    BoundaryLoop {
+                        edge_midpoints: Vec::new(),
+                    }, // Temporary so the compiler is happy, is dropped immediately anyways.
+                );
+                self.add_edge(target, nbr, bl);
+            } else {
+                unreachable!(
+                    "Neighbor in union should have been connected to either source or target."
+                );
+            }
+        }
+
+        // Set position
+        self.node_weight_mut(target).unwrap().position = position;
+
+        // Remove old source node
+        self.remove_node(source);
+
+        true
     }
 }
 
