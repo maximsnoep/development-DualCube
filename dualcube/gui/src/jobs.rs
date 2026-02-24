@@ -32,7 +32,7 @@ async fn run_job(job: Job) -> Option<JobResult> {
         } => {
             solution.calculate_skeleton(
                 configuration.convexity_threshold,
-                configuration.convexity_merge_threshold,
+                configuration.convexity_merge_slack,
             );
             Some(JobResult::SkeletonCalculated((solution, configuration)))
         }

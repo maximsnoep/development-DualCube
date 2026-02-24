@@ -73,7 +73,7 @@ pub struct Configuration {
     /// At what step in the volume-based collapse history we are.
     pub collapse_history_step: usize,
     pub convexity_threshold: f64,
-    pub convexity_merge_threshold: f64,
+    pub convexity_merge_slack: f64,
 }
 
 impl Default for Configuration {
@@ -111,7 +111,7 @@ impl Default for Configuration {
 
             collapse_history_step: 0,
             convexity_threshold: 0.9,
-            convexity_merge_threshold: 0.95,
+            convexity_merge_slack: 0.95,
         }
     }
 }
