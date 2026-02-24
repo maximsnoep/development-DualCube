@@ -119,12 +119,12 @@ pub fn convexify(
             let score_a = skeleton.patch_convexity_score(node_a, original_mesh);
             let score_b = skeleton.patch_convexity_score(node_b, original_mesh);
             
-            // Evaluate improvement against the least convex of the two original patches.
-            let worst_score = score_a.min(score_b);
+            // Evaluate improvement against the more convex of the two original patches. This cannot be made 'much' worse.
+            let best_score = score_a.max(score_b);
 
             // Check if merging would improve convexity enough, or if the new region by itself would already be convex enough.
             let merged_score = skeleton.patches_convexity_score(&[node_a, node_b], original_mesh);
-            if merged_score >= worst_score * merge_threshold || merged_score >= target_convexity {
+            if merged_score >= best_score * merge_threshold || merged_score >= target_convexity {
                 skeleton.merge_nodes(node_a, node_b, MergeBehavior::SourceIntoTarget);
                 
                 info!(
