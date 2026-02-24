@@ -166,11 +166,16 @@ impl Solution {
         convexity_threshold: f64,
         convexity_merge_threshold: f64,
     ) {
-        self.skeleton = Some(get_skeleton_based_mapping(
-            self.mesh_ref.clone(),
-            convexity_threshold,
-            convexity_merge_threshold,
-        ));
+        let mesh = self.mesh_ref.clone();
+        if let Some(data) = &mut self.skeleton {
+            data.update_convexity(mesh, convexity_threshold, convexity_merge_threshold);
+        } else {
+            self.skeleton = Some(get_skeleton_based_mapping(
+                mesh.clone(),
+                convexity_threshold,
+                convexity_merge_threshold,
+            ));
+        }
         generate_loops();
     }
 
