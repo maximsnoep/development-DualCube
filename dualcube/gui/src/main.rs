@@ -111,7 +111,7 @@ impl Default for Configuration {
 
             collapse_history_step: 0,
             convexity_threshold: 0.9,
-            convexity_merge_threshold: 0.99,
+            convexity_merge_threshold: 0.95,
         }
     }
 }
