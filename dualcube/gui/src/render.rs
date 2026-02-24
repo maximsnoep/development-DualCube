@@ -1029,14 +1029,14 @@ pub fn refresh(solution: &Solution, configuration: &Configuration) -> RenderObje
                             // Labelling failed, just show cleaned skeleton
                             gizmos_cleaned_skeleton =
                                 create_skeleton_gizmos(cleaned_skeleton, translation, scale);
-                            // Create patch visualization using the cleaned skeleton
-                            patch_mesh = Some(create_patch_mesh(
-                                cleaned_skeleton,
-                                input,
-                                translation,
-                                scale,
-                            ));
                         }
+                        
+                        patch_mesh = Some(create_patch_mesh(
+                            cleaned_skeleton,
+                            input,
+                            translation,
+                            scale,
+                        ));
                     }
                 }
 
