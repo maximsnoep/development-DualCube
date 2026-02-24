@@ -957,7 +957,7 @@ pub fn update(
 
                                     // allow tweaking convexity parameters before running skeleton
                                     slider(ui, "convexity", &mut conf.convexity_threshold, 0.0..=1.0);
-                                    slider(ui, "merge thresh", &mut conf.convexity_merge_threshold, 0.0..=1.0);
+                                    slider(ui, "merge slack", &mut conf.convexity_merge_slack, 0.0..=1.0);
 
                                     // Skeleton controls
                                     if let Some(skeleton_data) = &solution.current_solution.skeleton {
