@@ -86,6 +86,7 @@ pub fn convexify(
     // At the ends of tubes/cubes we often get corner patches, these can safely be merged into their parent to achieve same/better convexity with less patches.
     // TODO: do this subtree at a time, instead of an edge at a time. One merge might decrease convexity, but the subtree as a whole might be convex.
     // TODO: this can be made more sophisticated in general, not just greedy edge merges..
+    // TODO: can be sped up by moving the combined volume calculation outside the loop and updating locally.
 
     let mut fail_cache: HashSet<(NodeIndex, NodeIndex)> = HashSet::new();
     let mut changed = true;
@@ -118,7 +119,6 @@ pub fn convexify(
         // Try merging all pairs, starting with the smallest combined volume.
         for ((node_a, node_b), _) in edge_data {
             if fail_cache.contains(&(node_a, node_b)) {
-                info!("Skipping previously failed merge of {:?} and {:?}", node_a, node_b);
                 continue;
             }
 
