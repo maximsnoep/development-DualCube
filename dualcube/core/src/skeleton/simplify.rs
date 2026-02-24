@@ -87,6 +87,7 @@ pub fn convexify(
     // TODO: do this subtree at a time, instead of an edge at a time. One merge might decrease convexity, but the subtree as a whole might be convex.
     // TODO: this can be made more sophisticated in general, not just greedy edge merges..
 
+    let mut fail_cache: HashSet<(NodeIndex, NodeIndex)> = HashSet::new();
     let mut changed = true;
     while changed {
         changed = false;
@@ -116,6 +117,11 @@ pub fn convexify(
 
         // Try merging all pairs, starting with the smallest combined volume.
         for ((node_a, node_b), _) in edge_data {
+            if fail_cache.contains(&(node_a, node_b)) {
+                info!("Skipping previously failed merge of {:?} and {:?}", node_a, node_b);
+                continue;
+            }
+
             let score_a = skeleton.patch_convexity_score(node_a, original_mesh);
             let score_b = skeleton.patch_convexity_score(node_b, original_mesh);
             
@@ -134,7 +140,16 @@ pub fn convexify(
 
                 // Change one edge at a time.
                 changed = true;
+
+                // Clear cache of any edges that involve any of the two merged nodes.
+                fail_cache.retain(|&(x, y)| {
+                    x != node_a && x != node_b && y != node_a && y != node_b
+                });
+
                 break;
+            } else {
+                // Cache failed merge to avoid recomputing later.
+                fail_cache.insert((node_a, node_b));
             }
         }
 
