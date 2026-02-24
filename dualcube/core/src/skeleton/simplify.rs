@@ -79,7 +79,7 @@ pub fn simplify_skeleton(skeleton: &mut CurveSkeleton, original_mesh: &Mesh<INPU
 pub fn convexify(
     skeleton: &mut CurveSkeleton,
     original_mesh: &Mesh<INPUT>,
-    _target_convexity: f64, // TODO: use
+    target_convexity: f64,
     merge_threshold: f64,
 ) {
     // First we simply look to make regions more convex by merging.
@@ -110,22 +110,24 @@ pub fn convexify(
         leaf_data.sort_by(|a, b| a.1.partial_cmp(&b.1).unwrap());
 
         // Try merging all leaves with their parent, starting with the smallest.
-        for (leaf,  _) in leaf_data {
+        for (leaf, _) in leaf_data {
             let score = skeleton.patch_convexity_score(leaf, original_mesh);
             let parent = skeleton.neighbors(leaf).next().unwrap();
 
-            // Check if merging would improve convexity enough
+            // Check if merging would improve convexity enough, or if the new region by itself would already be convex enough.
             let merged_score = skeleton.patches_convexity_score(&[leaf, parent], original_mesh);
-            if merged_score < score * merge_threshold {
-                continue;
+            if merged_score >= score * merge_threshold || merged_score >= target_convexity {
+                skeleton.merge_nodes(leaf, parent, MergeBehavior::SourceIntoTarget);
+                if merged_score >= target_convexity{}
+                info!(
+                    "Merge leaf {:?} into parent {:?}, changed convexity from {:.3} to {:.3}",
+                    leaf, parent, score, merged_score
+                );
+
+                // Change one node at a time.
+                changed = true;
+                break;
             }
-
-            skeleton.merge_nodes(leaf, parent, MergeBehavior::SourceIntoTarget);
-            info!("Merge leaf {:?} into parent {:?} to improve convexity from {:.3} to {:.3}", leaf, parent, score, merged_score);
-
-            // Change one node at a time.
-            changed = true;
-            break;
         }
 
         if !changed {

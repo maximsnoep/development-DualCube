@@ -2,8 +2,8 @@ mod colors;
 mod controls;
 mod jobs;
 mod render;
-mod ui;
 mod render_skeleton;
+mod ui;
 
 use crate::controls::InteractiveMode;
 use crate::render::RenderObjectSettingStore;
@@ -67,9 +67,13 @@ pub struct Configuration {
 
     pub stop: Phase,
 
-    pub collapse_history_step: usize,
-
     pub clear_color: [u8; 3],
+
+    // Skeleton configuration stuff
+    /// At what step in the volume-based collapse history we are.
+    pub collapse_history_step: usize,
+    pub convexity_threshold: f64,
+    pub convexity_merge_threshold: f64,
 }
 
 impl Default for Configuration {
@@ -88,24 +92,26 @@ impl Default for Configuration {
 
             stop: Phase::None,
 
-            collapse_history_step: 0,
-
             raycasted: None,
             selected: None,
             automatic: false,
             interactive_mode: InteractiveMode::None,
             window_shows_object: [
-                Objects::PolycubeMap, 
-                Objects::QuadMesh, 
-                Objects::Polycube, 
+                Objects::PolycubeMap,
+                Objects::QuadMesh,
+                Objects::Polycube,
                 Objects::ContractedMesh,
-                ],
+            ],
             clear_color: [27, 27, 27],
             // clear_color: [255, 255, 255],
             camera_rotate_sensitivity: 0.2,
             camera_translate_sensitivity: 2.,
             camera_zoom_sensitivity: 0.2,
             automatic_rotation_camera: true,
+
+            collapse_history_step: 0,
+            convexity_threshold: 0.8,
+            convexity_merge_threshold: 0.95,
         }
     }
 }

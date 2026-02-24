@@ -955,8 +955,13 @@ pub fn update(
                                         ui.close();
                                     }
 
-                                    // Collapse history controls
+                                    // allow tweaking convexity parameters before running skeleton
+                                    slider(ui, "convexity", &mut conf.convexity_threshold, 0.0..=1.0);
+                                    slider(ui, "merge thresh", &mut conf.convexity_merge_threshold, 0.0..=1.0);
+
+                                    // Skeleton controls
                                     if let Some(skeleton_data) = &solution.current_solution.skeleton {
+                                        // Collapse history controls
                                         if let Some(history_size) = skeleton_data.history_size() {
                                             if history_size > 0 {
                                                 sep(ui);
@@ -968,7 +973,7 @@ pub fn update(
                                                     jobs.write(JobRequest::Run(Box::new(
                                                         Job::Refresh {
                                                             solution: solution.current_solution.clone(),
-                                                            collapse_history_step: conf.collapse_history_step,
+                                                            configuration: conf.clone(),
                                                         },
                                                     )));
                                                     ui.close();

@@ -612,7 +612,7 @@ pub fn update(
     }
 }
 
-pub fn refresh(solution: &Solution, collapse_history_step: usize) -> RenderObjectStore {
+pub fn refresh(solution: &Solution, configuration: &Configuration) -> RenderObjectStore {
     let mut render_object_store = RenderObjectStore::default();
     for object in all::<Objects>() {
         match object {
@@ -1300,7 +1300,7 @@ pub fn refresh(solution: &Solution, collapse_history_step: usize) -> RenderObjec
                 // Build collapse history patch overlay if history is available
                 if let Some(skeleton_data) = &solution.skeleton {
                     if let Some(history_skeleton) = skeleton_data
-                        .reconstruct_skeleton_from_collapse_history(collapse_history_step)
+                        .reconstruct_skeleton_from_collapse_history(configuration.collapse_history_step)
                     {
                         collapse_history_mesh = Some(create_patch_mesh(
                             &history_skeleton,
