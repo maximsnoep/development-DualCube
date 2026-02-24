@@ -8,13 +8,13 @@ use crate::{
     prelude::INPUT,
     skeleton::{
         connectivity_surgery::extract_skeleton,
-        contraction::{CONTRACTION, contract_mesh},
+        contraction::{contract_mesh, CONTRACTION},
         curve_skeleton::{CurveSkeleton, CurveSkeletonManipulation},
         embeddability::make_embedding_possible,
-        orthogonalize::{LabeledCurveSkeleton, greedy_orthogonalization},
+        orthogonalize::{greedy_orthogonalization, LabeledCurveSkeleton},
         simplify::{convexify, simplify_skeleton},
         volume_collapse::{
-            VolumeCollapseHistory, construct_skeleton_from_history, volume_based_collapse
+            construct_skeleton_from_history, volume_based_collapse, VolumeCollapseHistory,
         },
     },
 };
@@ -97,6 +97,30 @@ impl SkeletonData {
     pub fn history_size(&self) -> Option<usize> {
         self.collapse_history.as_ref().map(|h| h.history.len())
     }
+
+    pub fn update_convexity(
+        &mut self,
+        mesh: Arc<Mesh<INPUT>>,
+        convexity_threshold: f64,
+        convexity_merge_threshold: f64,
+    ) {
+        // Reuse contraction
+        let (curve_skeleton, mut cleaned_skeleton) =
+            surgery_and_simplification(&mesh, &self.contraction_mesh);
+
+        // Reuse pipeline post simplifcation
+        let (labeled, history) = post_simplification_stage(
+            mesh,
+            convexity_threshold,
+            convexity_merge_threshold,
+            &mut cleaned_skeleton,
+        );
+
+        self.raw_curve_skeleton = Some(curve_skeleton); // Not updated now, but we calculate it anyways so might as well save it
+        self.cleaned_skeleton = Some(cleaned_skeleton);
+        self.collapse_history = Some(history);
+        self.labeled_skeleton = labeled;
+    }
 }
 
 /// Generates a polycube and a homeomorphism between the input mesh and the polycube,
@@ -109,29 +133,61 @@ pub fn get_skeleton_based_mapping(
     // Start by doing contraction
     let contracted_mesh = contract_mesh(&mesh, 50);
 
+    let (raw_curve_skeleton, mut cleaned_skeleton) =
+        surgery_and_simplification(&mesh, &contracted_mesh);
+
+    let (labeled, history) = post_simplification_stage(
+        mesh,
+        convexity_threshold,
+        convexity_merge_threshold,
+        &mut cleaned_skeleton,
+    );
+
+    SkeletonData {
+        contraction_mesh: Arc::new(contracted_mesh),
+        raw_curve_skeleton: Some(raw_curve_skeleton),
+        cleaned_skeleton: Some(cleaned_skeleton),
+        collapse_history: Some(history),
+        labeled_skeleton: labeled,
+    }
+}
+
+fn surgery_and_simplification(
+    mesh: &Arc<Mesh<INPUT>>,
+    contracted_mesh: &Mesh<CONTRACTION>,
+) -> (CurveSkeleton, CurveSkeleton) {
     // Turn the contracted mesh into a 1D curve skeleton
-    let curve_skeleton = extract_skeleton(&contracted_mesh, &mesh);
+    let curve_skeleton = extract_skeleton(contracted_mesh, mesh);
 
     // Simplify skeleton to get more coherent features
     let mut cleaned_skeleton = curve_skeleton.clone();
-    simplify_skeleton(&mut cleaned_skeleton, &mesh);
+    simplify_skeleton(&mut cleaned_skeleton, mesh);
 
     // Smooth region boundaries
-    cleaned_skeleton.smooth_boundaries(&mesh);
+    cleaned_skeleton.smooth_boundaries(mesh);
+    (curve_skeleton, cleaned_skeleton)
+}
 
+/// The decomposed part of the skeletonization process that happens after simplification.
+fn post_simplification_stage(
+    mesh: Arc<Mesh<INPUT>>,
+    convexity_threshold: f64,
+    convexity_merge_threshold: f64,
+    cleaned_skeleton: &mut CurveSkeleton,
+) -> (Option<LabeledCurveSkeleton>, VolumeCollapseHistory) {
     // Convexify skeleton to make patch volume close to convex shapes, which map nicely to cubes.
     convexify(
-        &mut cleaned_skeleton,
+        cleaned_skeleton,
         &mesh,
         convexity_threshold,
         convexity_merge_threshold,
     );
 
     // Fix necessary conditions for orthogonal embeddability, most of the times this changes nothing.
-    make_embedding_possible(&mut cleaned_skeleton, &mesh);
+    make_embedding_possible(cleaned_skeleton, &mesh);
 
     // Orthogonalize the curve skeleton
-    let labeled = greedy_orthogonalization(&cleaned_skeleton);
+    let labeled = greedy_orthogonalization(&*cleaned_skeleton);
     match &labeled {
         Some(_) => {
             info!("Orthogonalization successful.");
@@ -142,21 +198,14 @@ pub fn get_skeleton_based_mapping(
     }
 
     // (MAYBE TEMP) Do volume based collapse, and save the history.
-    let history = volume_based_collapse(&cleaned_skeleton, &mesh);
+    let history = volume_based_collapse(&*cleaned_skeleton, &mesh);
 
     // Generate polycube based on labeled skeleton
     // TODO: polycube generation
 
     // Create the mapping between input mesh and polycube
     // TODO: mapping
-
-    SkeletonData {
-        contraction_mesh: Arc::new(contracted_mesh),
-        raw_curve_skeleton: Some(curve_skeleton),
-        cleaned_skeleton: Some(cleaned_skeleton),
-        collapse_history: Some(history),
-        labeled_skeleton: labeled,
-    }
+    (labeled, history)
 }
 
 /// Generates surface-embedded loops from a polycube and polycube map.
