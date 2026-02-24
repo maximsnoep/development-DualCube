@@ -8,7 +8,6 @@ use faer::{
     },
     Mat, Side,
 };
-use itertools::Merge;
 use log::{error, warn};
 use mehsh::prelude::{HasNeighbors, HasPosition, Mesh, Vector3D};
 use nalgebra::Matrix3;

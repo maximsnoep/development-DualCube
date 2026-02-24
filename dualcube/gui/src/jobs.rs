@@ -30,7 +30,10 @@ async fn run_job(job: Job) -> Option<JobResult> {
             mut solution,
             configuration,
         } => {
-            solution.calculate_skeleton();
+            solution.calculate_skeleton(
+                configuration.convexity_threshold,
+                configuration.convexity_merge_threshold,
+            );
             Some(JobResult::SkeletonCalculated((solution, configuration)))
         }
 
@@ -69,7 +72,7 @@ async fn run_job(job: Job) -> Option<JobResult> {
             let mut solution_clone = solution.clone();
             if let Err(err) = solution_clone.construct_dual_and_polycube() {
                 warn!("Failed to construct dual and polycube: {err:?}");
-                return Some(JobResult::Refreshed(render::refresh(&solution, configuration.collapse_history_step)));
+                return Some(JobResult::Refreshed(render::refresh(&solution, &configuration)));
             }
             Some(JobResult::DualChanged((solution_clone, configuration)))
         }
@@ -148,7 +151,9 @@ async fn run_job(job: Job) -> Option<JobResult> {
             Some(JobResult::QuadChanged((solution_clone, configuration)))
         }
 
-        Job::Refresh { solution, collapse_history_step } => Some(JobResult::Refreshed(render::refresh(&solution, collapse_history_step))),
+        Job::Refresh { solution, configuration } => {
+            Some(JobResult::Refreshed(render::refresh(&solution, &configuration)))
+        }
 
         Job::AddLoop {
             solution,
@@ -407,7 +412,7 @@ fn poll_jobs(
                     solution_resource.current_solution = solution;
                     jobs.write(JobRequest::Run(Box::new(Job::Refresh {
                         solution: solution_resource.current_solution.clone(),
-                        collapse_history_step: configuration.collapse_history_step,
+                        configuration: configuration.clone(),
                     })));
                 }
 
@@ -416,7 +421,7 @@ fn poll_jobs(
                     if configuration.stop == Phase::Loops {
                         jobs.write(JobRequest::Run(Box::new(Job::Refresh {
                             solution: solution_resource.current_solution.clone(),
-                            collapse_history_step: configuration.collapse_history_step,
+                            configuration: configuration.clone(),
                         })));
                     } else {
                         jobs.write(JobRequest::Run(Box::new(Job::ComputeDual {
@@ -431,7 +436,7 @@ fn poll_jobs(
                     if configuration.stop == Phase::Dual {
                         jobs.write(JobRequest::Run(Box::new(Job::Refresh {
                             solution: solution_resource.current_solution.clone(),
-                            collapse_history_step: configuration.collapse_history_step,
+                            configuration: configuration.clone(),
                         })));
                     } else {
                         jobs.write(JobRequest::Run(Box::new(Job::PlaceCorners {
@@ -454,7 +459,7 @@ fn poll_jobs(
                     if configuration.stop == Phase::Layout {
                         jobs.write(JobRequest::Run(Box::new(Job::Refresh {
                             solution: solution_resource.current_solution.clone(),
-                            collapse_history_step: configuration.collapse_history_step,
+                            configuration: configuration.clone(),
                         })));
                     } else {
                         jobs.write(JobRequest::Run(Box::new(Job::ComputePolycube {
@@ -469,7 +474,7 @@ fn poll_jobs(
                     if configuration.stop == Phase::Polycube {
                         jobs.write(JobRequest::Run(Box::new(Job::Refresh {
                             solution: solution_resource.current_solution.clone(),
-                            collapse_history_step: configuration.collapse_history_step,
+                            configuration: configuration.clone(),
                         })));
                     } else {
                         jobs.write(JobRequest::Run(Box::new(Job::ComputeQuad {
@@ -483,7 +488,7 @@ fn poll_jobs(
                     solution_resource.current_solution = solution;
                     jobs.write(JobRequest::Run(Box::new(Job::Refresh {
                         solution: solution_resource.current_solution.clone(),
-                        collapse_history_step: configuration.collapse_history_step,
+                        configuration: configuration.clone(),
                     })));
                 }
 
@@ -637,7 +642,7 @@ pub enum Job {
     },
     Refresh {
         solution: Solution,
-        collapse_history_step: usize,
+        configuration: Configuration,
     },
     // EXPORT
     Export {

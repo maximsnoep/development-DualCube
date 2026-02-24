@@ -101,7 +101,11 @@ impl SkeletonData {
 
 /// Generates a polycube and a homeomorphism between the input mesh and the polycube,
 /// using skeletonization.
-pub fn get_skeleton_based_mapping(mesh: Arc<Mesh<INPUT>>) -> SkeletonData {
+pub fn get_skeleton_based_mapping(
+    mesh: Arc<Mesh<INPUT>>,
+    convexity_threshold: f64,
+    convexity_merge_threshold: f64,
+) -> SkeletonData {
     // Start by doing contraction
     let contracted_mesh = contract_mesh(&mesh, 50);
 
@@ -116,9 +120,12 @@ pub fn get_skeleton_based_mapping(mesh: Arc<Mesh<INPUT>>) -> SkeletonData {
     cleaned_skeleton.smooth_boundaries(&mesh);
 
     // Convexify skeleton to make patch volume close to convex shapes, which map nicely to cubes.
-    const CONVEXITY_THRESHOLD: f64 = 0.8; // TODO: make configurable in UI
-    const CONVEXITY_MERGE_THRESHOLD: f64 = 0.95; // When merging two patches, the new convexity should be at least threshold*best_before 
-    convexify(&mut cleaned_skeleton, &mesh, CONVEXITY_THRESHOLD, CONVEXITY_MERGE_THRESHOLD);
+    convexify(
+        &mut cleaned_skeleton,
+        &mesh,
+        convexity_threshold,
+        convexity_merge_threshold,
+    );
 
     // Fix necessary conditions for orthogonal embeddability, most of the times this changes nothing.
     make_embedding_possible(&mut cleaned_skeleton, &mesh);

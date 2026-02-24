@@ -1,7 +1,11 @@
 use crate::layout::LayoutError;
 use crate::polycube::POLYCUBE;
 use crate::prelude::*;
-use crate::skeleton::{SkeletonData, generate_loops, get_skeleton_based_mapping};
+use crate::skeleton::{
+    SkeletonData,
+    generate_loops,
+    get_skeleton_based_mapping,
+};
 use crate::{
     dual::{Dual, PropertyViolationError},
     layout::Layout,
@@ -157,8 +161,16 @@ impl Solution {
     }
 
     // Calculate skeleton
-    pub fn calculate_skeleton(&mut self) {
-        self.skeleton = Some(get_skeleton_based_mapping(self.mesh_ref.clone()));
+    pub fn calculate_skeleton(
+        &mut self,
+        convexity_threshold: f64,
+        convexity_merge_threshold: f64,
+    ) {
+        self.skeleton = Some(get_skeleton_based_mapping(
+            self.mesh_ref.clone(),
+            convexity_threshold,
+            convexity_merge_threshold,
+        ));
         generate_loops();
     }
 
