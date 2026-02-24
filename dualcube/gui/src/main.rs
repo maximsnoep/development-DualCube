@@ -110,8 +110,8 @@ impl Default for Configuration {
             automatic_rotation_camera: true,
 
             collapse_history_step: 0,
-            convexity_threshold: 0.8,
-            convexity_merge_threshold: 0.95,
+            convexity_threshold: 0.9,
+            convexity_merge_threshold: 0.99,
         }
     }
 }

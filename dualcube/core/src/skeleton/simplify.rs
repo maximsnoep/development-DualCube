@@ -84,47 +84,55 @@ pub fn convexify(
 ) {
     // First we simply look to make regions more convex by merging.
     // At the ends of tubes/cubes we often get corner patches, these can safely be merged into their parent to achieve same/better convexity with less patches.
-    // TODO: do this subtree at a time, instead of leaf at a time. One leaf might decrease convexity, but the subtree as a whole might be convex.
-    // TODO: this can be made more sophisticated in general, not just leaves..
+    // TODO: do this subtree at a time, instead of an edge at a time. One merge might decrease convexity, but the subtree as a whole might be convex.
+    // TODO: this can be made more sophisticated in general, not just greedy edge merges..
 
     let mut changed = true;
     while changed {
         changed = false;
 
-        // Get all possible leaves to merge
-        let leaves: Vec<NodeIndex> = skeleton
-            .node_indices()
-            .filter(|&i| skeleton.neighbors(i).count() == 1)
-            .collect();
+        // Get all possible edges to merge.
+        let mut edges: Vec<(NodeIndex, NodeIndex)> = Vec::new();
+        for a in skeleton.node_indices() {
+            for b in skeleton.neighbors(a) {
+                // Order to prevent evaluating the same edge (A, B) and (B, A) twice.
+                if a < b {
+                    edges.push((a, b));
+                }
+            }
+        }
 
-        // Get volumes for all leaves
-        let mut leaf_data: Vec<(NodeIndex, f64)> = leaves
+        // Get combined volumes for all edges
+        let mut edge_data: Vec<((NodeIndex, NodeIndex), f64)> = edges
             .iter()
-            .map(|&leaf| {
-                let volume = skeleton.patch_volume(leaf, original_mesh);
-                (leaf, volume)
+            .map(|&(a, b)| {
+                let volume = skeleton.patch_volume(a, original_mesh) + skeleton.patch_volume(b, original_mesh);
+                ((a, b), volume)
             })
             .collect();
 
         // Sort by volume
-        leaf_data.sort_by(|a, b| a.1.partial_cmp(&b.1).unwrap());
+        edge_data.sort_by(|a, b| a.1.partial_cmp(&b.1).unwrap());
 
-        // Try merging all leaves with their parent, starting with the smallest.
-        for (leaf, _) in leaf_data {
-            let score = skeleton.patch_convexity_score(leaf, original_mesh);
-            let parent = skeleton.neighbors(leaf).next().unwrap();
+        // Try merging all pairs, starting with the smallest combined volume.
+        for ((node_a, node_b), _) in edge_data {
+            let score_a = skeleton.patch_convexity_score(node_a, original_mesh);
+            let score_b = skeleton.patch_convexity_score(node_b, original_mesh);
+            
+            // Evaluate improvement against the least convex of the two original patches.
+            let worst_score = score_a.min(score_b);
 
             // Check if merging would improve convexity enough, or if the new region by itself would already be convex enough.
-            let merged_score = skeleton.patches_convexity_score(&[leaf, parent], original_mesh);
-            if merged_score >= score * merge_threshold || merged_score >= target_convexity {
-                skeleton.merge_nodes(leaf, parent, MergeBehavior::SourceIntoTarget);
-                if merged_score >= target_convexity{}
+            let merged_score = skeleton.patches_convexity_score(&[node_a, node_b], original_mesh);
+            if merged_score >= worst_score * merge_threshold || merged_score >= target_convexity {
+                skeleton.merge_nodes(node_a, node_b, MergeBehavior::SourceIntoTarget);
+                
                 info!(
-                    "Merged {:?} into {:?}, changed convexity from {:.3} to {:.3}",
-                    leaf, parent, score, merged_score
+                    "Merged {:?} into {:?}, changed convexity from (A: {:.3}, B: {:.3}) to {:.3}",
+                    node_a, node_b, score_a, score_b, merged_score
                 );
 
-                // Change one node at a time.
+                // Change one edge at a time.
                 changed = true;
                 break;
             }
