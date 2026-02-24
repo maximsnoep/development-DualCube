@@ -120,7 +120,7 @@ pub fn convexify(
                 skeleton.merge_nodes(leaf, parent, MergeBehavior::SourceIntoTarget);
                 if merged_score >= target_convexity{}
                 info!(
-                    "Merge leaf {:?} into parent {:?}, changed convexity from {:.3} to {:.3}",
+                    "Merged {:?} into {:?}, changed convexity from {:.3} to {:.3}",
                     leaf, parent, score, merged_score
                 );
 

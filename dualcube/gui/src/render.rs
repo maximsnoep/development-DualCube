@@ -1030,7 +1030,7 @@ pub fn refresh(solution: &Solution, configuration: &Configuration) -> RenderObje
                             gizmos_cleaned_skeleton =
                                 create_skeleton_gizmos(cleaned_skeleton, translation, scale);
                         }
-                        
+
                         patch_mesh = Some(create_patch_mesh(
                             cleaned_skeleton,
                             input,
