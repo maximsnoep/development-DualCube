@@ -1,10 +1,12 @@
 use std::collections::HashMap;
 
 use bimap::BiHashMap;
-use mehsh::prelude::Mesh;
-use petgraph::graph::{EdgeIndex, NodeIndex};
+use log::error;
+use mehsh::prelude::{Mesh, Vector3D};
+use petgraph::graph::NodeIndex;
 use petgraph::visit::EdgeRef;
 
+use crate::polycube::POLYCUBE;
 use crate::prelude::{Polycube, PrincipalDirection};
 use crate::skeleton::orthogonalize::{IVector3D, LabeledCurveSkeleton};
 
@@ -45,7 +47,7 @@ pub fn generate_polycube(
     for edge in skeleton.edge_references() {
         let source = edge.source();
         let source_pos = skeleton[source].grid_position;
-        
+
         let target = edge.target();
         let target_pos = skeleton[target].grid_position;
 
@@ -64,11 +66,23 @@ pub fn generate_polycube(
 
         let diff = end_voxel - start_voxel;
         let dir_vec = IVector3D::new(
-            if diff.x == 0 { 0 } else { diff.x / diff.x.abs() },
-            if diff.y == 0 { 0 } else { diff.y / diff.y.abs() },
-            if diff.z == 0 { 0 } else { diff.z / diff.z.abs() },
+            if diff.x == 0 {
+                0
+            } else {
+                diff.x / diff.x.abs()
+            },
+            if diff.y == 0 {
+                0
+            } else {
+                diff.y / diff.y.abs()
+            },
+            if diff.z == 0 {
+                0
+            } else {
+                diff.z / diff.z.abs()
+            },
         );
-        
+
         let step = IVector3D::new(
             step_base.x * dir_vec.x,
             step_base.y * dir_vec.y,
@@ -97,106 +111,111 @@ pub fn generate_polycube(
         }
     }
 
-    // // Build Mesh Geometry
-    // let mut positions: Vec<[f32; 3]> = Vec::new();
-    // let mut normals: Vec<[f32; 3]> = Vec::new();
-    // let mut indices: Vec<u32> = Vec::new();
+    // Setup vertices and faces for polycube mesh.
+    let mut vertex_map: HashMap<IVector3D, usize> = HashMap::default();
+    let mut positions = Vec::<Vector3D>::new();
+    let mut faces = Vec::<Vec<usize>>::new();
 
-    // // Track vertex ownership during generation
-    // let mut vertex_to_node: Vec<NodeIndex> = Vec::new();
+    let mut intern_vertex = |grid_pos: IVector3D| -> usize {
+        *vertex_map.entry(grid_pos).or_insert_with(|| {
+            let idx = positions.len();
+            positions.push(Vector3D::new(
+                f64::from(grid_pos.x) / 2.,
+                f64::from(grid_pos.y) / 2.,
+                f64::from(grid_pos.z) / 2.,
+            ));
+            idx
+        })
+    };
 
-    // // Deduplication map
-    // let mut vertex_map: HashMap<IVector3D, u32> = HashMap::default();
+    for &voxel_pos in voxel_owners.keys() {
+        let center = voxel_pos * 2;
 
-    // let directions = [
-    //     (IVector3D::X, Vec3::X),
-    //     (IVector3D::NEG_X, -Vec3::X),
-    //     (IVector3D::Y, Vec3::Y),
-    //     (IVector3D::NEG_Y, -Vec3::Y),
-    //     (IVector3D::Z, Vec3::Z),
-    //     (IVector3D::NEG_Z, -Vec3::Z),
-    // ];
+        for (dir, face_offsets) in &DIRECTIONS {
+            let neighbor_pos = voxel_pos + *dir;
+            if voxel_owners.contains_key(&neighbor_pos) {
+                continue;
+            }
 
-    // // Helper to intern vertices.
-    // let mut insert_vertex = |pos: Vec3, normal: Vec3, owner: NodeIndex| {
-    //     let grid_pos = (pos / MESH_SCALE * 2.0).round().as_IVector3D();
+            let quad = face_offsets
+                .iter()
+                .map(|offset| intern_vertex(center + *offset))
+                .collect::<Vec<_>>();
+            faces.push(quad);
+        }
+    }
 
-    //     // Might already exist
-    //     *vertex_map.entry(grid_pos).or_insert_with(|| {
-    //         let idx = positions.len() as u32;
-    //         positions.push(pos.to_array());
-    //         normals.push(normal.to_array());
-    //         vertex_to_node.push(owner);
-    //         idx
-    //     })
-    // };
+    let mesh: Mesh<POLYCUBE> = if faces.is_empty() {
+        error!("Polycube mesh has no faces.");
+        Mesh::default()
+    } else {
+        Mesh::from(&faces, &positions)
+            .expect("Failed to build voxel polycube mesh")
+            .0
+    };
 
-    // // For each voxel, if it is fully owned, we generate its vertices
-    // // Since we do not generate for shared voxels, we never override ownership.
-    // for (&pos, voxel_owner) in &voxel_owners {
-    //     let owner = match voxel_owner {
-    //         VoxelOwner::Node(n) => n,
-    //         VoxelOwner::Edge(n) => n,
-    //         VoxelOwner::EdgeMidpoint() => {
-    //             continue;
-    //         }
-    //     };
-
-    //     let center = pos.as_vec3() * MESH_SCALE;
-
-    //     for (dir_ivec, dir_vec) in &directions {
-    //         let verts = get_face_vertices(center, *dir_ivec, MESH_SCALE);
-    //         insert_vertex(verts.0, *dir_vec, *owner);
-    //         insert_vertex(verts.1, *dir_vec, *owner);
-    //         insert_vertex(verts.2, *dir_vec, *owner);
-    //         insert_vertex(verts.3, *dir_vec, *owner);
-    //     }
-    // }
-
-    // // All relevant vertices now must exist.
-    // // Helper to get vertex (which must exist)
-    // let get_vertex = |pos: Vec3| -> u32 {
-    //     let grid_pos = (pos / MESH_SCALE * 2.0).round().as_IVector3D();
-    //     *vertex_map.get(&grid_pos).unwrap()
-    // };
-
-    // let mut push_quad = |verts: (Vec3, Vec3, Vec3, Vec3)| {
-    //     let i0 = get_vertex(verts.0);
-    //     let i1 = get_vertex(verts.1);
-    //     let i2 = get_vertex(verts.2);
-    //     let i3 = get_vertex(verts.3);
-
-    //     // Triangle 1 (0-1-2)
-    //     indices.extend_from_slice(&[i0, i1, i2]);
-
-    //     // Triangle 2 (0-2-3) -> Diagonal is (i0, i2)
-    //     indices.extend_from_slice(&[i0, i2, i3]);
-    // };
-
-    // for (&pos, _) in &voxel_owners {
-    //     let center = pos.as_vec3() * MESH_SCALE;
-
-    //     for (dir_ivec, _dir_vec) in &directions {
-    //         let neighbor_pos = pos + *dir_ivec;
-
-    //         if voxel_owners.contains_key(&neighbor_pos) {
-    //             // Do not generate internal faces
-    //             continue;
-    //         }
-
-    //         let verts = get_face_vertices(center, *dir_ivec, MESH_SCALE);
-    //         push_quad(verts);
-    //     }
-    // }
-
-
-    
-    // temp empty return
     (
         Polycube {
-            structure: Mesh::default(),
-            region_to_vertex: BiHashMap::new(),
+            structure: mesh,
+            region_to_vertex: BiHashMap::new(), // We do not have a dual (yet) so this has to be empty // TODO: create trivial dual
         },
         voxel_owners,
     )
 }
+
+const DIRECTIONS: [(IVector3D, [IVector3D; 4]); 6] = [
+    (
+        IVector3D::new(1, 0, 0),
+        [
+            IVector3D::new(1, -1, -1),
+            IVector3D::new(1, 1, -1),
+            IVector3D::new(1, 1, 1),
+            IVector3D::new(1, -1, 1),
+        ],
+    ),
+    (
+        IVector3D::new(-1, 0, 0),
+        [
+            IVector3D::new(-1, -1, -1),
+            IVector3D::new(-1, -1, 1),
+            IVector3D::new(-1, 1, 1),
+            IVector3D::new(-1, 1, -1),
+        ],
+    ),
+    (
+        IVector3D::new(0, 1, 0),
+        [
+            IVector3D::new(-1, 1, -1),
+            IVector3D::new(-1, 1, 1),
+            IVector3D::new(1, 1, 1),
+            IVector3D::new(1, 1, -1),
+        ],
+    ),
+    (
+        IVector3D::new(0, -1, 0),
+        [
+            IVector3D::new(-1, -1, -1),
+            IVector3D::new(1, -1, -1),
+            IVector3D::new(1, -1, 1),
+            IVector3D::new(-1, -1, 1),
+        ],
+    ),
+    (
+        IVector3D::new(0, 0, 1),
+        [
+            IVector3D::new(-1, -1, 1),
+            IVector3D::new(1, -1, 1),
+            IVector3D::new(1, 1, 1),
+            IVector3D::new(-1, 1, 1),
+        ],
+    ),
+    (
+        IVector3D::new(0, 0, -1),
+        [
+            IVector3D::new(-1, -1, -1),
+            IVector3D::new(-1, 1, -1),
+            IVector3D::new(1, 1, -1),
+            IVector3D::new(1, -1, -1),
+        ],
+    ),
+];
