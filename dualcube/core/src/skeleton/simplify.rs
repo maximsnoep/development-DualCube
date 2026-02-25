@@ -75,7 +75,7 @@ pub fn simplify_skeleton(skeleton: &mut CurveSkeleton, original_mesh: &Mesh<INPU
     // Though ideally, intersections would result in close to 90 degree angles, this likely needs to be accounted for...
 }
 
-/// Tries to make all patches have a convexity score above the target by merging adjacent patches, and by splitting patches.
+/// Tries to make all patches have a convexity score above the target by merging adjacent patches, and TODO: by splitting patches.
 pub fn convexify(
     skeleton: &mut CurveSkeleton,
     original_mesh: &Mesh<INPUT>,
@@ -108,7 +108,8 @@ pub fn convexify(
         let mut edge_data: Vec<((NodeIndex, NodeIndex), f64)> = edges
             .iter()
             .map(|&(a, b)| {
-                let volume = skeleton.patch_volume(a, original_mesh) + skeleton.patch_volume(b, original_mesh);
+                let volume = skeleton.patch_volume(a, original_mesh)
+                    + skeleton.patch_volume(b, original_mesh);
                 ((a, b), volume)
             })
             .collect();
@@ -124,15 +125,20 @@ pub fn convexify(
 
             let score_a = skeleton.patch_convexity_score(node_a, original_mesh);
             let score_b = skeleton.patch_convexity_score(node_b, original_mesh);
-            
+
             // Evaluate improvement against the more convex of the two original patches. This cannot be made 'much' worse.
             let best_score = score_a.max(score_b);
 
             // Check if merging would improve convexity enough, or if the new region by itself would already be convex enough.
             let merged_score = skeleton.patches_convexity_score(&[node_a, node_b], original_mesh);
             if merged_score >= best_score * merge_threshold || merged_score >= target_convexity {
-                skeleton.merge_nodes(node_a, node_b, MergeBehavior::SourceIntoTarget);
-                
+                let success = skeleton.merge_nodes(node_a, node_b, MergeBehavior::SourceIntoTarget);
+                if !success {
+                    // This can fail if the two nodes share a neighbor, as merging would break homotopy.
+                    fail_cache.insert((node_a, node_b));
+                    continue;
+                }
+
                 info!(
                     "Merged {:?} into {:?}, changed convexity from (A: {:.3}, B: {:.3}) to {:.3}",
                     node_a, node_b, score_a, score_b, merged_score
@@ -142,9 +148,8 @@ pub fn convexify(
                 changed = true;
 
                 // Clear cache of any edges that involve any of the two merged nodes.
-                fail_cache.retain(|&(x, y)| {
-                    x != node_a && x != node_b && y != node_a && y != node_b
-                });
+                fail_cache
+                    .retain(|&(x, y)| x != node_a && x != node_b && y != node_a && y != node_b);
 
                 break;
             } else {
