@@ -3,7 +3,7 @@ use petgraph::graph::{EdgeIndex, NodeIndex, UnGraph};
 use petgraph::visit::EdgeRef;
 use serde::{Deserialize, Serialize};
 
-use std::collections::{HashMap, HashSet, VecDeque};
+use std::collections::{BinaryHeap, HashMap, HashSet, VecDeque};
 use bimap::BiHashMap;
 
 use crate::{
@@ -22,6 +22,8 @@ pub struct OrthogonalSkeletonNode {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct OrthogonalSkeletonEdge {
     pub direction: PrincipalDirection,
+    #[serde(default)]
+    pub sign: AxisSign,
     pub length: u32,
 }
 /// Curve skeleton with axis-aligned edges and integer grid coordinates assigned to each node.
@@ -30,9 +32,58 @@ pub type LabeledCurveSkeleton = UnGraph<OrthogonalSkeletonNode, OrthogonalSkelet
 /// Curve skeleton where every edge has an axis label, but node coordinates are not yet assigned.
 type EdgeLabeledCurveSkeleton = UnGraph<SkeletonNode, OrthogonalSkeletonEdge>;
 
+
+/// Sign along a principal axis (+X vs -X).
+#[derive(Copy, Clone, Default, PartialEq, Eq, Debug, Hash, Serialize, Deserialize)]
+pub enum AxisSign {
+    #[default]
+    Positive,
+    Negative,
+}
+impl AxisSign {
+    #[must_use]
+    pub fn flipped(self) -> Self {
+        match self {
+            Self::Positive => Self::Negative,
+            Self::Negative => Self::Positive,
+        }
+    }
+}
+
 /// Curve skeleton where edges are either labeled with an axis (`Some`) or not yet assigned (`None`).
 /// Used while building up a labeling incrementally.
-type PartialEdgeLabeledCurveSkeleton = UnGraph<SkeletonNode, Option<PrincipalDirection>>;
+#[derive(Copy, Clone, Debug, PartialEq, Eq)]
+struct SignedAxis {
+    axis: PrincipalDirection,
+    /// Sign from this edge's stored `source()` endpoint to its stored `target()` endpoint.
+    sign: AxisSign,
+}
+
+type PartialEdgeLabeledCurveSkeleton = UnGraph<SkeletonNode, Option<SignedAxis>>;
+
+/// Convenience for querying edge sign from a given endpoint node.
+pub trait LabeledSkeletonSignExt {
+    /// Returns the sign of `edge` as seen from `node`.
+    ///
+    /// If `node` is the stored `source()` of the edge, this is the edge's stored sign.
+    /// If `node` is the stored `target()`, this is the flipped sign.
+    /// Returns `None` if `node` is not an endpoint of `edge`.
+    fn edge_sign_from(&self, edge: EdgeIndex, node: NodeIndex) -> Option<AxisSign>;
+}
+
+impl LabeledSkeletonSignExt for LabeledCurveSkeleton {
+    fn edge_sign_from(&self, edge: EdgeIndex, node: NodeIndex) -> Option<AxisSign> {
+        let (a, b) = self.edge_endpoints(edge)?;
+        let sign = self.edge_weight(edge)?.sign;
+        if node == a {
+            Some(sign)
+        } else if node == b {
+            Some(sign.flipped())
+        } else {
+            None
+        }
+    }
+}
 
 /// Gives an ordering to axes based on the displacement between the edge endpoints, from most aligned to least.
 fn preferred_axes_from_displacement(disp: nalgebra::Vector3<f64>) -> [PrincipalDirection; 3] {
@@ -59,17 +110,50 @@ fn axis_value(v: nalgebra::Vector3<f64>, axis: PrincipalDirection) -> f64 {
     }
 }
 
-// TODO: REMOVE IN FAVOR OF PROPER 1 DIR + SIDE PER NODE PER EDGE
-fn axis_count_around_node(
+fn axis_sign_from_value(v: f64) -> AxisSign {
+    if v >= 0.0 {
+        AxisSign::Positive
+    } else {
+        AxisSign::Negative
+    }
+}
+
+fn sign_from_node_along_edge(node: NodeIndex, edge_source: NodeIndex, sign: AxisSign) -> AxisSign {
+    if node == edge_source {
+        sign
+    } else {
+        sign.flipped()
+    }
+}
+
+/// Returns true if assigning (axis, sign) to the candidate edge would violate the
+/// per-node capacity of one edge per (axis, sign) around the node.
+fn axis_sign_conflict_around_node(
     partial: &PartialEdgeLabeledCurveSkeleton,
     node: NodeIndex,
-    axis: PrincipalDirection,
-) -> usize {
-    partial
-        .edges(node)
-        .filter_map(|edge| *edge.weight())
-        .filter(|&dir| dir == axis)
-        .count()
+    cand_edge_source: NodeIndex,
+    cand_axis: PrincipalDirection,
+    cand_sign: AxisSign,
+) -> bool {
+    let cand_sign_at_node = sign_from_node_along_edge(node, cand_edge_source, cand_sign);
+
+    // Check all already-labeled incident edges at `node` for same (axis, sign-at-node).
+    for edge in partial.edges(node) {
+        let &Some(existing) = edge.weight() else {
+            continue;
+        };
+        if existing.axis != cand_axis {
+            continue;
+        }
+
+        let existing_sign_at_node =
+            sign_from_node_along_edge(node, edge.source(), existing.sign);
+        if existing_sign_at_node == cand_sign_at_node {
+            return true;
+        }
+    }
+
+    false
 }
 
 /// Build a working copy of the skeleton with all edges unlabeled.
@@ -174,7 +258,7 @@ fn components_excluding_partial(
         g,
         nodes,
         idx_map,
-        |w| matches!(*w, Some(dir) if dir != forbidden),
+        |w| matches!(*w, Some(s) if s.axis != forbidden),
     )
 }
 
@@ -188,83 +272,67 @@ fn components_excluding_labeled(
     components_excluding_with(g, nodes, idx_map, |w| w.direction != forbidden)
 }
 
-/// Initially all D-components have their own coordinate. We use a DAG to compress these coordinates as much as possible.
-fn rank_and_compress_components(
+/// Compresses components by solving the oriented unit-length constraints induced by axis-edges:
+/// each edge requires its endpoints to differ by at least 1 along `axis`, in the edge's stored sign.
+fn compress_components_from_oriented_edges(
     skeleton: &EdgeLabeledCurveSkeleton,
     axis: PrincipalDirection,
     comps: &[usize],
-    nodes: &[NodeIndex],
     idx_map: &HashMap<NodeIndex, usize>,
-) -> Vec<i32> {
+) -> Option<Vec<i32>> {
     let nr_components = comps.iter().copied().max().map_or(0, |m| m + 1);
-
-    // Get mean coordinate per components
-    let mut sums: Vec<f64> = vec![0.0; nr_components];
-    let mut counts: Vec<usize> = vec![0; nr_components];
-    for (i, &node) in nodes.iter().enumerate() {
-        let c = comps[i];
-        sums[c] += axis_value(skeleton[node].position, axis);
-        counts[c] += 1;
-    }
-    let means: Vec<f64> = (0..nr_components)
-        .map(|c| {
-            if counts[c] == 0 {
-                0.0
-            } else {
-                sums[c] / counts[c] as f64
-            }
-        })
-        .collect();
-
-    // Sort components by mean
-    let mut component_ids: Vec<usize> = (0..nr_components).collect();
-    component_ids.sort_by(|&a, &b| {
-        means[a]
-            .partial_cmp(&means[b])
-            .unwrap_or(std::cmp::Ordering::Equal)
-            .then(a.cmp(&b))
-    });
-
-    let mut sorted_index = vec![0; nr_components];
-    for (i, &cid) in component_ids.iter().enumerate() {
-        sorted_index[cid] = i;
-    }
-
-    // Build adjacency in sorted space
     let mut adjacency: Vec<Vec<usize>> = vec![Vec::new(); nr_components];
-    for e in skeleton.edge_indices() {
-        if let Some(w) = skeleton.edge_weight(e) {
-            if w.direction == axis {
-                let (u, v) = skeleton.edge_endpoints(e).unwrap();
-                let cu = comps[idx_map[&u]];
-                let cv = comps[idx_map[&v]];
-                if cu != cv {
-                    let iu = sorted_index[cu];
-                    let iv = sorted_index[cv];
-                    if iu < iv {
-                        adjacency[iu].push(iv);
-                    } else if iv < iu {
-                        adjacency[iv].push(iu);
-                    }
-                }
-            }
+    let mut indegree: Vec<usize> = vec![0; nr_components];
+
+    for edge in skeleton.edge_references() {
+        let w = edge.weight();
+        if w.direction != axis {
+            continue;
+        }
+        let u = edge.source();
+        let v = edge.target();
+        let cu = comps[idx_map[&u]];
+        let cv = comps[idx_map[&v]];
+        if cu == cv {
+            return None;
+        }
+
+        let (from, to) = match w.sign {
+            AxisSign::Positive => (cu, cv),
+            AxisSign::Negative => (cv, cu),
+        };
+        if from != to {
+            adjacency[from].push(to);
+            indegree[to] += 1;
         }
     }
 
-    // Propagate coordinates
-    let mut coord_per_sorted = vec![0i32; nr_components];
-    for i in 0..nr_components {
-        for &j in &adjacency[i] {
-            if coord_per_sorted[j] < coord_per_sorted[i] + 1 {
-                coord_per_sorted[j] = coord_per_sorted[i] + 1;
-            }
+    // Topological order
+    let mut q: BinaryHeap<std::cmp::Reverse<usize>> = BinaryHeap::new();
+    for c in 0..nr_components {
+        if indegree[c] == 0 {
+            q.push(std::cmp::Reverse(c));
         }
     }
 
-    comps
-        .iter()
-        .map(|&cid| coord_per_sorted[sorted_index[cid]])
-        .collect()
+    let mut coord_per_comp = vec![0i32; nr_components];
+    let mut processed = 0usize;
+    while let Some(std::cmp::Reverse(c)) = q.pop() {
+        processed += 1;
+        let base = coord_per_comp[c];
+        for &n in &adjacency[c] {
+            coord_per_comp[n] = coord_per_comp[n].max(base + 1);
+            indegree[n] -= 1;
+            if indegree[n] == 0 {
+                q.push(std::cmp::Reverse(n));
+            }
+        }
+    }
+    if processed != nr_components {
+        return None;
+    }
+
+    Some(comps.iter().map(|&cid| coord_per_comp[cid]).collect())
 }
 
 /// Converts a fully labeled skeleton to partial form, so we method can be reused.
@@ -281,8 +349,15 @@ fn partial_from_edge_labeled(s: &EdgeLabeledCurveSkeleton) -> PartialEdgeLabeled
     for e in s.edge_references() {
         let a = e.source();
         let b = e.target();
-        let dir = e.weight().direction;
-        out.add_edge(map[&a], map[&b], Some(dir));
+        let w = e.weight();
+        out.add_edge(
+            map[&a],
+            map[&b],
+            Some(SignedAxis {
+                axis: w.direction,
+                sign: w.sign,
+            }),
+        );
     }
 
     out
@@ -313,7 +388,7 @@ fn finalize_partial_to_realized(
     for e in partial.edge_references() {
         let a = e.source();
         let b = e.target();
-        let dir = match *e.weight() {
+        let signed = match *e.weight() {
             Some(d) => d,
             None => unreachable!(),
         };
@@ -321,7 +396,8 @@ fn finalize_partial_to_realized(
             out_map[&a],
             out_map[&b],
             OrthogonalSkeletonEdge {
-                direction: dir,
+                direction: signed.axis,
+                sign: signed.sign,
                 length: 1,
             },
         );
@@ -390,7 +466,7 @@ fn backtracking_orthogonalization(curve_skeleton: &CurveSkeleton) -> Option<Labe
     }
 
     let mut best_score = i64::MIN;
-    let mut best_labels: Option<HashMap<EdgeIndex, PrincipalDirection>> = None;
+    let mut best_labels: Option<HashMap<EdgeIndex, SignedAxis>> = None;
 
     fn dfs(
         depth: usize,
@@ -400,7 +476,7 @@ fn backtracking_orthogonalization(curve_skeleton: &CurveSkeleton) -> Option<Labe
         node_map: &BiHashMap<NodeIndex, NodeIndex>,
         current_score: i64,
         best_score: &mut i64,
-        best_labels: &mut Option<HashMap<EdgeIndex, PrincipalDirection>>,
+        best_labels: &mut Option<HashMap<EdgeIndex, SignedAxis>>,
         suffix_max_possible: &[i64],
     ) {
         if current_score + suffix_max_possible[depth] < *best_score {
@@ -435,33 +511,44 @@ fn backtracking_orthogonalization(curve_skeleton: &CurveSkeleton) -> Option<Labe
         let candidate_axes = preferred_axes_from_displacement(disp);
 
         for cand in candidate_axes {
-            if axis_count_around_node(partial, u, cand) >= 2
-                || axis_count_around_node(partial, v, cand) >= 2
-            {
-                continue;
-            }
+            // Determine edge endpoint order in the partial graph; sign is stored from a->b.
+            let (a, b) = partial.edge_endpoints(plan.edge).unwrap();
+            let orig_a = *node_map.get_by_right(&a).expect("Partial node not found in map");
+            let orig_b = *node_map.get_by_right(&b).expect("Partial node not found in map");
+            let disp_ab = curve_skeleton[orig_b].position - curve_skeleton[orig_a].position;
+            let preferred_sign = axis_sign_from_value(axis_value(disp_ab, cand));
+            let sign_candidates = [preferred_sign, preferred_sign.flipped()];
 
-            *partial.edge_weight_mut(plan.edge).unwrap() = Some(cand);
-            if is_partially_realizable(partial) {
-                let next_score = current_score
-                    + if cand == plan.primary {
-                        plan.preference_weight
-                    } else {
-                        0
-                    };
-                dfs(
-                    depth + 1,
-                    plans,
-                    partial,
-                    curve_skeleton,
-                    node_map,
-                    next_score,
-                    best_score,
-                    best_labels,
-                    suffix_max_possible,
-                );
+            for sign in sign_candidates {
+                if axis_sign_conflict_around_node(partial, a, a, cand, sign)
+                    || axis_sign_conflict_around_node(partial, b, a, cand, sign)
+                {
+                    continue;
+                }
+
+                let signed = SignedAxis { axis: cand, sign };
+                *partial.edge_weight_mut(plan.edge).unwrap() = Some(signed);
+                if is_partially_realizable(partial) {
+                    let next_score = current_score
+                        + if cand == plan.primary {
+                            plan.preference_weight
+                        } else {
+                            0
+                        };
+                    dfs(
+                        depth + 1,
+                        plans,
+                        partial,
+                        curve_skeleton,
+                        node_map,
+                        next_score,
+                        best_score,
+                        best_labels,
+                        suffix_max_possible,
+                    );
+                }
+                *partial.edge_weight_mut(plan.edge).unwrap() = None;
             }
-            *partial.edge_weight_mut(plan.edge).unwrap() = None;
         }
     }
 
@@ -495,7 +582,7 @@ fn backtracking_orthogonalization(curve_skeleton: &CurveSkeleton) -> Option<Labe
 /// force the endpoints to share their D-coordinate while the edge demands they differ.
 /// Second, no two nodes may share the same (cx, cy, cz) component-ID triple, since that
 /// would place them on the same grid point.
-pub fn is_partially_realizable(p: &PartialEdgeLabeledCurveSkeleton) -> bool {
+fn is_partially_realizable(p: &PartialEdgeLabeledCurveSkeleton) -> bool {
     let (nodes, idx_map) = build_node_list_and_index_map(p);
 
     // Check condition 1: no D-edge connects two nodes already in the same D-component.
@@ -506,8 +593,8 @@ pub fn is_partially_realizable(p: &PartialEdgeLabeledCurveSkeleton) -> bool {
     ] {
         let comps = components_excluding_partial(p, d, &nodes, &idx_map);
         for edge in p.edge_references() {
-            if let Some(dir) = *edge.weight() {
-                if dir != d {
+            if let Some(signed) = *edge.weight() {
+                if signed.axis != d {
                     continue;
                 }
                 let a = edge.source();
@@ -518,6 +605,61 @@ pub fn is_partially_realizable(p: &PartialEdgeLabeledCurveSkeleton) -> bool {
                     return false;
                 }
             }
+        }
+    }
+
+    // Check sign consistency per axis: component constraints must be acyclic.
+    for &d in &[
+        PrincipalDirection::X,
+        PrincipalDirection::Y,
+        PrincipalDirection::Z,
+    ] {
+        let comps = components_excluding_partial(p, d, &nodes, &idx_map);
+        let nr_components = comps.iter().copied().max().map_or(0, |m| m + 1);
+        let mut adjacency: Vec<Vec<usize>> = vec![Vec::new(); nr_components];
+        let mut indegree: Vec<usize> = vec![0; nr_components];
+
+        for edge in p.edge_references() {
+            let Some(signed) = *edge.weight() else {
+                continue;
+            };
+            if signed.axis != d {
+                continue;
+            }
+            let a = edge.source();
+            let b = edge.target();
+            let ca = comps[idx_map[&a]];
+            let cb = comps[idx_map[&b]];
+            if ca == cb {
+                return false;
+            }
+            let (from, to) = match signed.sign {
+                AxisSign::Positive => (ca, cb),
+                AxisSign::Negative => (cb, ca),
+            };
+            adjacency[from].push(to);
+            indegree[to] += 1;
+        }
+
+        let mut q: VecDeque<usize> = VecDeque::new();
+        for c in 0..nr_components {
+            if indegree[c] == 0 {
+                q.push_back(c);
+            }
+        }
+
+        let mut processed = 0usize;
+        while let Some(c) = q.pop_front() {
+            processed += 1;
+            for &n in &adjacency[c] {
+                indegree[n] -= 1;
+                if indegree[n] == 0 {
+                    q.push_back(n);
+                }
+            }
+        }
+        if processed != nr_components {
+            return false;
         }
     }
 
@@ -555,9 +697,12 @@ pub fn realize(s: &EdgeLabeledCurveSkeleton) -> Option<LabeledCurveSkeleton> {
     let comp_y = components_excluding_labeled(s, PrincipalDirection::Y, &nodes, &idx_map);
     let comp_z = components_excluding_labeled(s, PrincipalDirection::Z, &nodes, &idx_map);
 
-    let cx = rank_and_compress_components(s, PrincipalDirection::X, &comp_x, &nodes, &idx_map);
-    let cy = rank_and_compress_components(s, PrincipalDirection::Y, &comp_y, &nodes, &idx_map);
-    let cz = rank_and_compress_components(s, PrincipalDirection::Z, &comp_z, &nodes, &idx_map);
+    let cx =
+        compress_components_from_oriented_edges(s, PrincipalDirection::X, &comp_x,  &idx_map)?;
+    let cy =
+        compress_components_from_oriented_edges(s, PrincipalDirection::Y, &comp_y,  &idx_map)?;
+    let cz =
+        compress_components_from_oriented_edges(s, PrincipalDirection::Z, &comp_z,  &idx_map)?;
 
     // Assemble coordinate vector for each node.
     let mut coords: Vec<IVector3D> = Vec::with_capacity(nodes.len());
@@ -587,6 +732,7 @@ pub fn realize(s: &EdgeLabeledCurveSkeleton) -> Option<LabeledCurveSkeleton> {
                 out_index_map[&b],
                 OrthogonalSkeletonEdge {
                     direction: w.direction,
+                    sign: w.sign,
                     length: w.length,
                 },
             );
@@ -740,19 +886,32 @@ pub fn greedy_orthogonalization(curve_skeleton: &CurveSkeleton) -> Option<Labele
                 // Accept the first candidate that keeps the partial labeling realizable.
                 let mut assigned = false;
                 for cand in candidates {
-                    if axis_count_around_node(&partial, pu, cand) >= 2
-                        || axis_count_around_node(&partial, pv, cand) >= 2
-                    {
-                        // At most 2 edges of the same direction per node
-                        continue;
-                    }
+                    // Determine edge endpoint order in the partial graph; sign is stored from a->b.
+                    let (a, b) = partial.edge_endpoints(eidx).unwrap();
+                    let orig_a = *node_map.get_by_right(&a).expect("Partial node not found in map");
+                    let orig_b = *node_map.get_by_right(&b).expect("Partial node not found in map");
+                    let disp_ab = curve_skeleton[orig_b].position - curve_skeleton[orig_a].position;
+                    let preferred_sign = axis_sign_from_value(axis_value(disp_ab, cand));
+                    let sign_candidates = [preferred_sign, preferred_sign.flipped()];
 
-                    *partial.edge_weight_mut(eidx).unwrap() = Some(cand);
-                    if is_partially_realizable(&partial) {
-                        assigned = true;
+                    for sign in sign_candidates {
+                        if axis_sign_conflict_around_node(&partial, a, a, cand, sign)
+                            || axis_sign_conflict_around_node(&partial, b, a, cand, sign)
+                        {
+                            // At most one edge per (axis, sign) around a node.
+                            continue;
+                        }
+
+                        *partial.edge_weight_mut(eidx).unwrap() = Some(SignedAxis { axis: cand, sign });
+                        if is_partially_realizable(&partial) {
+                            assigned = true;
+                            break;
+                        }
+                        *partial.edge_weight_mut(eidx).unwrap() = None;
+                    }
+                    if assigned {
                         break;
                     }
-                    *partial.edge_weight_mut(eidx).unwrap() = None;
                 }
 
                 if !assigned {
