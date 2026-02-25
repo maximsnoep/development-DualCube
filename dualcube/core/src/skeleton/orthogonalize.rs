@@ -55,7 +55,7 @@ impl AxisSign {
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
 struct SignedAxis {
     axis: PrincipalDirection,
-    /// Sign from this edge's stored `source()` endpoint to its stored `target()` endpoint.
+    /// Sign, relative to edge_endpoints order.
     sign: AxisSign,
 }
 
@@ -138,6 +138,9 @@ fn axis_sign_conflict_around_node(
     let cand_sign_at_node = sign_from_node_along_edge(node, cand_edge_source, cand_sign);
 
     // Check all already-labeled incident edges at `node` for same (axis, sign-at-node).
+    // IMPORTANT: We stored existing.sign relative to (a,b) = edge_endpoints(edge_id), not
+    // relative to edge.source()/edge.target(). For UnGraph, source/target order is arbitrary,
+    // so we must use edge_endpoints to interpret the sign consistently.
     for edge in partial.edges(node) {
         let &Some(existing) = edge.weight() else {
             continue;
@@ -146,8 +149,13 @@ fn axis_sign_conflict_around_node(
             continue;
         }
 
-        let existing_sign_at_node =
-            sign_from_node_along_edge(node, edge.source(), existing.sign);
+        let (ea, _) = partial.edge_endpoints(edge.id()).expect("edge must exist");
+        let existing_sign_at_node = if node == ea {
+            existing.sign
+        } else {
+            // Order according to edge_endpoints
+            existing.sign.flipped()
+        };
         if existing_sign_at_node == cand_sign_at_node {
             return true;
         }
@@ -577,15 +585,17 @@ fn backtracking_orthogonalization(curve_skeleton: &CurveSkeleton) -> Option<Labe
 /// Returns true if the partial edge-labeling is still consistent with some valid orthogonal
 /// integer-grid embedding. Unlabeled edges are ignored.
 ///
-/// Two conditions are checked. First, for each axis D, no D-labeled edge may connect two
+/// Three conditions are checked. First, for each axis D, no D-labeled edge may connect two
 /// nodes in the same D-component (connected component with D-edges removed) — that would
 /// force the endpoints to share their D-coordinate while the edge demands they differ.
-/// Second, no two nodes may share the same (cx, cy, cz) component-ID triple, since that
-/// would place them on the same grid point.
+/// Second, for each axis D, the directed graph on D-components induced by the edge signs
+/// (from lower to higher coordinate) must be acyclic, or no integer coordinate assignment
+/// exists. Third, no two nodes may share the same (cx, cy, cz) component-ID triple, since
+/// that would place them on the same grid point.
 fn is_partially_realizable(p: &PartialEdgeLabeledCurveSkeleton) -> bool {
     let (nodes, idx_map) = build_node_list_and_index_map(p);
 
-    // Check condition 1: no D-edge connects two nodes already in the same D-component.
+    // Condition 1: no D-edge connects two nodes already in the same D-component.
     for &d in &[
         PrincipalDirection::X,
         PrincipalDirection::Y,
@@ -608,7 +618,7 @@ fn is_partially_realizable(p: &PartialEdgeLabeledCurveSkeleton) -> bool {
         }
     }
 
-    // Check sign consistency per axis: component constraints must be acyclic.
+    // Condition 2: for each axis, the sign-induced directed component graph must be acyclic.
     for &d in &[
         PrincipalDirection::X,
         PrincipalDirection::Y,
@@ -626,8 +636,7 @@ fn is_partially_realizable(p: &PartialEdgeLabeledCurveSkeleton) -> bool {
             if signed.axis != d {
                 continue;
             }
-            let a = edge.source();
-            let b = edge.target();
+            let (a, b) = p.edge_endpoints(edge.id()).expect("edge must exist");
             let ca = comps[idx_map[&a]];
             let cb = comps[idx_map[&b]];
             if ca == cb {
@@ -663,7 +672,7 @@ fn is_partially_realizable(p: &PartialEdgeLabeledCurveSkeleton) -> bool {
         }
     }
 
-    // Check condition 2: all (cx, cy, cz) triples must be distinct.
+    // Condition 3: all (cx, cy, cz) triples must be distinct.
     let cx = components_excluding_partial(p, PrincipalDirection::X, &nodes, &idx_map);
     let cy = components_excluding_partial(p, PrincipalDirection::Y, &nodes, &idx_map);
     let cz = components_excluding_partial(p, PrincipalDirection::Z, &nodes, &idx_map);
