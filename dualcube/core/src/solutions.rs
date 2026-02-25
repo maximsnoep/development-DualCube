@@ -170,11 +170,13 @@ impl Solution {
         if let Some(data) = &mut self.skeleton {
             data.update_convexity(mesh, convexity_threshold, convexity_merge_threshold);
         } else {
-            self.skeleton = Some(get_skeleton_based_mapping(
-                mesh.clone(),
+            let (skeleton, polycube) = get_skeleton_based_mapping(
+                mesh,
                 convexity_threshold,
                 convexity_merge_threshold,
-            ));
+            );
+            self.skeleton = Some(skeleton);
+            self.polycube = polycube;
         }
         generate_loops();
     }

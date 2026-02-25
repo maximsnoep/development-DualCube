@@ -413,18 +413,16 @@ pub fn create_patch_convexity_mesh(
     scale: f64,
 ) -> bevy::mesh::Mesh {
     // Compute convexity score per region (clamped between 0 and 1),
-    // keyed by node_idx.index() to match build_region_mesh's region keys.
     let mut region_scores: HashMap<usize, f64> = HashMap::new();
     for node_idx in curve_skeleton.node_indices() {
         let mut score = curve_skeleton.patch_convexity_score(node_idx, mesh);
-        println!("Convexity score for node {:?}: {}", node_idx, score);
+        info!("Convexity score for node {:?}: {:.3}", node_idx, score);
         if !score.is_finite() {
             score = 0.0;
         }
         region_scores.insert(node_idx.index(), score.clamp(0.0, 1.0));
     }
 
-    // Delegate to the shared builder using a score->color mapping
     build_region_mesh(curve_skeleton, mesh, translation, scale, |region| {
         let score = region_scores.get(&region).copied().unwrap_or(0.0) as f32;
         colors::map(score, &colors::SCALE_MAGMA)

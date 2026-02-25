@@ -12,7 +12,7 @@ use crate::{
 };
 
 /// A 3-dimensional integer vector.
-pub type IVector3D = nalgebra::SVector<i32, 3>;
+pub type IVector3D = nalgebra::Vector3<i32>;
 
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
