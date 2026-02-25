@@ -5,13 +5,14 @@ use mehsh::prelude::Mesh;
 use serde::{Deserialize, Serialize};
 
 use crate::{
-    prelude::INPUT,
+    prelude::{Polycube, INPUT},
     skeleton::{
         connectivity_surgery::extract_skeleton,
         contraction::{contract_mesh, CONTRACTION},
         curve_skeleton::{CurveSkeleton, CurveSkeletonManipulation},
         embeddability::make_embedding_possible,
         orthogonalize::{greedy_orthogonalization, LabeledCurveSkeleton},
+        voxelize::generate_polycube,
         simplify::{convexify, simplify_skeleton},
         volume_collapse::{
             construct_skeleton_from_history, volume_based_collapse, VolumeCollapseHistory,
@@ -28,6 +29,7 @@ mod contraction;
 mod embeddability;
 mod manipulation;
 mod patch;
+mod voxelize;
 mod simplify;
 mod volume_collapse;
 
@@ -103,13 +105,13 @@ impl SkeletonData {
         mesh: Arc<Mesh<INPUT>>,
         convexity_threshold: f64,
         convexity_merge_threshold: f64,
-    ) {
+    ) -> Option<Polycube> {
         // Reuse contraction
         let (curve_skeleton, mut cleaned_skeleton) =
             surgery_and_simplification(&mesh, &self.contraction_mesh);
 
         // Reuse pipeline post simplifcation
-        let (labeled, history) = post_simplification_stage(
+        let (labeled, history, polycube) = post_simplification_stage(
             mesh,
             convexity_threshold,
             convexity_merge_threshold,
@@ -120,6 +122,8 @@ impl SkeletonData {
         self.cleaned_skeleton = Some(cleaned_skeleton);
         self.collapse_history = Some(history);
         self.labeled_skeleton = labeled;
+
+        polycube
     }
 }
 
@@ -129,27 +133,30 @@ pub fn get_skeleton_based_mapping(
     mesh: Arc<Mesh<INPUT>>,
     convexity_threshold: f64,
     convexity_merge_threshold: f64,
-) -> SkeletonData {
+) -> (SkeletonData, Option<Polycube>) {
     // Start by doing contraction
     let contracted_mesh = contract_mesh(&mesh, 50);
 
     let (raw_curve_skeleton, mut cleaned_skeleton) =
         surgery_and_simplification(&mesh, &contracted_mesh);
 
-    let (labeled, history) = post_simplification_stage(
+    let (labeled, history, polycube) = post_simplification_stage(
         mesh,
         convexity_threshold,
         convexity_merge_threshold,
         &mut cleaned_skeleton,
     );
 
-    SkeletonData {
-        contraction_mesh: Arc::new(contracted_mesh),
-        raw_curve_skeleton: Some(raw_curve_skeleton),
-        cleaned_skeleton: Some(cleaned_skeleton),
-        collapse_history: Some(history),
-        labeled_skeleton: labeled,
-    }
+    (
+        SkeletonData {
+            contraction_mesh: Arc::new(contracted_mesh),
+            raw_curve_skeleton: Some(raw_curve_skeleton),
+            cleaned_skeleton: Some(cleaned_skeleton),
+            collapse_history: Some(history),
+            labeled_skeleton: labeled,
+        },
+        polycube,
+    )
 }
 
 fn surgery_and_simplification(
@@ -174,7 +181,11 @@ fn post_simplification_stage(
     convexity_threshold: f64,
     convexity_merge_threshold: f64,
     cleaned_skeleton: &mut CurveSkeleton,
-) -> (Option<LabeledCurveSkeleton>, VolumeCollapseHistory) {
+) -> (
+    Option<LabeledCurveSkeleton>,
+    VolumeCollapseHistory,
+    Option<Polycube>,
+) {
     // Convexify skeleton to make patch volume close to convex shapes, which map nicely to cubes.
     convexify(
         cleaned_skeleton,
@@ -201,11 +212,17 @@ fn post_simplification_stage(
     let history = volume_based_collapse(&*cleaned_skeleton, &mesh);
 
     // Generate polycube based on labeled skeleton
-    // TODO: polycube generation
+    let polycube: Option<Polycube> = match &labeled {
+        Some(labeled) => {
+            let (polycube, _voxel_map) = generate_polycube(labeled);
+            Some(polycube)
+        },
+        None => None,
+    };
 
     // Create the mapping between input mesh and polycube
     // TODO: mapping
-    (labeled, history)
+    (labeled, history, polycube)
 }
 
 /// Generates surface-embedded loops from a polycube and polycube map.
