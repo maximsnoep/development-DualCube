@@ -1,7 +1,7 @@
 use std::collections::HashSet;
 
 use log::info;
-use mehsh::prelude::{HasPosition, HasVertices, Mesh, Vector3D, EPS};
+use mehsh::prelude::{HasPosition, HasVertices, Mesh, Vector3D, EPS, FaceLocation};
 use petgraph::graph::NodeIndex;
 
 use crate::{
@@ -17,6 +17,9 @@ use crate::{
 /// when a node can be removed and the resulting edge is still within the mesh, it can be removed
 /// We do this iteratively until no more nodes can be removed.
 pub fn simplify_skeleton(skeleton: &mut CurveSkeleton, original_mesh: &Mesh<INPUT>) {
+    // build a BVH for the mesh
+    let face_bvh = original_mesh.bvh();
+
     // Cache intersection tests that came up negative. Valid as nodes never move.
     let mut intersection_cache: HashSet<(NodeIndex, NodeIndex)> = HashSet::new();
 
@@ -55,7 +58,7 @@ pub fn simplify_skeleton(skeleton: &mut CurveSkeleton, original_mesh: &Mesh<INPU
             }
 
             // If the segment A->B hits the mesh, we cannot remove 'node' as it preserves geometry.
-            if segment_intersects_mesh(pos_a, pos_b, original_mesh) {
+            if segment_intersects_mesh(pos_a, pos_b, original_mesh, &face_bvh) {
                 intersection_cache.insert((neighbors[0], neighbors[1]));
                 continue;
             }
@@ -167,10 +170,12 @@ pub fn convexify(
 }
 
 /// Checks if a line segment from `p0` to `p1` intersects any triangle in the mesh.
-///
-/// Note that is a naive O(n) implementation that checks each triangle one at a time.
-/// This could be optimized using a spatial data structure like an octree.
-fn segment_intersects_mesh(p0: Vector3D, p1: Vector3D, mesh: &Mesh<INPUT>) -> bool {
+fn segment_intersects_mesh(
+    p0: Vector3D,
+    p1: Vector3D,
+    mesh: &Mesh<INPUT>,
+    face_bvh: &FaceLocation<INPUT>,
+) -> bool {
     let direction = p1 - p0;
     let segment_length_sq = direction.norm_squared();
 
@@ -179,11 +184,21 @@ fn segment_intersects_mesh(p0: Vector3D, p1: Vector3D, mesh: &Mesh<INPUT>) -> bo
         return false;
     }
 
-    for face_id in mesh.face_ids_iter() {
-        // Get vertices of this face
-        let verts: Vec<_> = mesh.vertices(face_id).map(|v| mesh.position(v)).collect();
+    // build a tight AABB around the segment and query the BVH for candidate
+    // faces whose bounding boxes intersect it.
+    let min_x = p0.x.min(p1.x);
+    let min_y = p0.y.min(p1.y);
+    let min_z = p0.z.min(p1.z);
+    let max_x = p0.x.max(p1.x);
+    let max_y = p0.y.max(p1.y);
+    let max_z = p0.z.max(p1.z);
 
-        // For faces with more than 3 vertices, use fan triangulation
+    for face_id in face_bvh.faces_intersecting_bounds(
+        [min_x, min_y, min_z],
+        [max_x, max_y, max_z],
+    ) {
+        // retrieve mesh geometry and perform exact intersection test
+        let verts: Vec<_> = mesh.vertices(face_id).map(|v| mesh.position(v)).collect();
         for i in 1..verts.len() - 1 {
             let v0 = verts[0];
             let v1 = verts[i];
@@ -197,7 +212,6 @@ fn segment_intersects_mesh(p0: Vector3D, p1: Vector3D, mesh: &Mesh<INPUT>) -> bo
 
     false
 }
-
 /// Moller–Trumbore algorithm to check if a segment intersects a triangle.
 /// Returns true if the segment from `p` to `q` intersects the triangle (t0, t1, t2).
 fn segment_intersects_triangle(
