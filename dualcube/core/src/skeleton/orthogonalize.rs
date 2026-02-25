@@ -49,6 +49,16 @@ fn preferred_axes_from_displacement(disp: nalgebra::Vector3<f64>) -> [PrincipalD
     [entries[0].0, entries[1].0, entries[2].0]
 }
 
+/// Returns the component of a 3‑D vector along the given principal axis.
+fn axis_value(v: nalgebra::Vector3<f64>, axis: PrincipalDirection) -> f64 {
+    match axis {
+        PrincipalDirection::X => v.x,
+        PrincipalDirection::Y => v.y,
+        PrincipalDirection::Z => v.z,
+    }
+}
+
+// TODO: REMOVE IN FAVOR OF PROPER 1 DIR + SIDE PER NODE PER EDGE
 fn axis_count_around_node(
     partial: &PartialEdgeLabeledCurveSkeleton,
     node: NodeIndex,
@@ -61,6 +71,10 @@ fn axis_count_around_node(
         .count()
 }
 
+/// Build a working copy of the skeleton with all edges unlabeled.
+///
+/// Returns the partial graph plus two maps: one mapping original nodes to the
+/// new ones, and a reverse map.
 fn build_unlabeled_partial(
     curve_skeleton: &CurveSkeleton,
 ) -> (
@@ -72,15 +86,15 @@ fn build_unlabeled_partial(
     let mut node_map: HashMap<NodeIndex, NodeIndex> = HashMap::new();
     let mut reverse_node_map: HashMap<NodeIndex, NodeIndex> = HashMap::new();
 
-    for n in curve_skeleton.node_indices() {
-        let w = curve_skeleton.node_weight(n).unwrap().clone();
+    for node in curve_skeleton.node_indices() {
+        let w = curve_skeleton.node_weight(node).unwrap().clone();
         let out_n = partial.add_node(w);
-        node_map.insert(n, out_n);
-        reverse_node_map.insert(out_n, n);
+        node_map.insert(node, out_n);
+        reverse_node_map.insert(out_n, node);
     }
 
-    for e in curve_skeleton.edge_indices() {
-        let (a, b) = curve_skeleton.edge_endpoints(e).unwrap();
+    for edge in curve_skeleton.edge_indices() {
+        let (a, b) = curve_skeleton.edge_endpoints(edge).unwrap();
         partial.add_edge(node_map[&a], node_map[&b], None);
     }
 
@@ -99,6 +113,9 @@ fn build_node_list_and_index_map<N, E>(
     (nodes, idx_map)
 }
 
+/// Generic component labelling helper.
+///
+/// Traverses the graph using BFS, only following allowed edges.
 fn components_excluding_with<N, E, F>(
     g: &UnGraph<N, E>,
     nodes: &[NodeIndex],
@@ -174,28 +191,24 @@ fn components_excluding_labeled(
     components_excluding_with(g, nodes, idx_map, |w| w.direction != forbidden)
 }
 
-/// Assigns compact integer coordinates to components ordered by geometric mean.
-fn ranked_component_coordinates(
-    s: &EdgeLabeledCurveSkeleton,
+/// Initially all D-components have their own coordinate. We use a DAG to compress these coordinates as much as possible.
+fn rank_and_compress_components(
+    skeleton: &EdgeLabeledCurveSkeleton,
     axis: PrincipalDirection,
     comps: &[usize],
     nodes: &[NodeIndex],
+    idx_map: &HashMap<NodeIndex, usize>,
 ) -> Vec<i32> {
     let nr_components = comps.iter().copied().max().map_or(0, |m| m + 1);
-    let mut sums = vec![0.0f64; nr_components];
-    let mut counts = vec![0usize; nr_components];
 
+    // Get mean coordinate per components
+    let mut sums: Vec<f64> = vec![0.0; nr_components];
+    let mut counts: Vec<usize> = vec![0; nr_components];
     for (i, &node) in nodes.iter().enumerate() {
         let c = comps[i];
-        let pos = s[node].position;
-        sums[c] += match axis {
-            PrincipalDirection::X => pos.x,
-            PrincipalDirection::Y => pos.y,
-            PrincipalDirection::Z => pos.z,
-        } as f64;
+        sums[c] += axis_value(skeleton[node].position, axis);
         counts[c] += 1;
     }
-
     let means: Vec<f64> = (0..nr_components)
         .map(|c| {
             if counts[c] == 0 {
@@ -206,6 +219,7 @@ fn ranked_component_coordinates(
         })
         .collect();
 
+    // Sort components by mean
     let mut component_ids: Vec<usize> = (0..nr_components).collect();
     component_ids.sort_by(|&a, &b| {
         means[a]
@@ -214,18 +228,49 @@ fn ranked_component_coordinates(
             .then(a.cmp(&b))
     });
 
-    let mut component_to_coord = vec![0i32; nr_components];
-    for (coord, &component_id) in component_ids.iter().enumerate() {
-        component_to_coord[component_id] = coord as i32;
+    let mut sorted_index = vec![0; nr_components];
+    for (i, &cid) in component_ids.iter().enumerate() {
+        sorted_index[cid] = i;
+    }
+
+    // Build adjacency in sorted space
+    let mut adjacency: Vec<Vec<usize>> = vec![Vec::new(); nr_components];
+    for e in skeleton.edge_indices() {
+        if let Some(w) = skeleton.edge_weight(e) {
+            if w.direction == axis {
+                let (u, v) = skeleton.edge_endpoints(e).unwrap();
+                let cu = comps[idx_map[&u]];
+                let cv = comps[idx_map[&v]];
+                if cu != cv {
+                    let iu = sorted_index[cu];
+                    let iv = sorted_index[cv];
+                    if iu < iv {
+                        adjacency[iu].push(iv);
+                    } else if iv < iu {
+                        adjacency[iv].push(iu);
+                    }
+                }
+            }
+        }
+    }
+
+    // Propagate coordinates
+    let mut coord_per_sorted = vec![0i32; nr_components];
+    for i in 0..nr_components {
+        for &j in &adjacency[i] {
+            if coord_per_sorted[j] < coord_per_sorted[i] + 1 {
+                coord_per_sorted[j] = coord_per_sorted[i] + 1;
+            }
+        }
     }
 
     comps
         .iter()
-        .map(|&component_id| component_to_coord[component_id])
+        .map(|&cid| coord_per_sorted[sorted_index[cid]])
         .collect()
 }
 
-/// Converts a fully labeled skeleton to partial form.
+/// Converts a fully labeled skeleton to partial form, so we method can be reused.
 fn partial_from_edge_labeled(s: &EdgeLabeledCurveSkeleton) -> PartialEdgeLabeledCurveSkeleton {
     let mut out = PartialEdgeLabeledCurveSkeleton::new_undirected();
     let mut map: HashMap<NodeIndex, NodeIndex> = HashMap::new();
@@ -498,15 +543,16 @@ pub fn realize(s: &EdgeLabeledCurveSkeleton) -> Option<LabeledCurveSkeleton> {
 
     let (nodes, idx_map) = build_node_list_and_index_map(s);
 
-    // Collect per-axis component IDs and map them to coordinates ordered by original
-    // geometry along each axis.
+    // Determine the component ID of each node when all edges of the current
+    // axis are removed.  the subsequent call computes compressed coordinates
+    // that still respect the adjacency constraints.
     let comp_x = components_excluding_labeled(s, PrincipalDirection::X, &nodes, &idx_map);
     let comp_y = components_excluding_labeled(s, PrincipalDirection::Y, &nodes, &idx_map);
     let comp_z = components_excluding_labeled(s, PrincipalDirection::Z, &nodes, &idx_map);
 
-    let cx = ranked_component_coordinates(s, PrincipalDirection::X, &comp_x, &nodes);
-    let cy = ranked_component_coordinates(s, PrincipalDirection::Y, &comp_y, &nodes);
-    let cz = ranked_component_coordinates(s, PrincipalDirection::Z, &comp_z, &nodes);
+    let cx = rank_and_compress_components(s, PrincipalDirection::X, &comp_x, &nodes, &idx_map);
+    let cy = rank_and_compress_components(s, PrincipalDirection::Y, &comp_y, &nodes, &idx_map);
+    let cz = rank_and_compress_components(s, PrincipalDirection::Z, &comp_z, &nodes, &idx_map);
 
     // Assemble coordinate vector for each node.
     let mut coords: Vec<IVector3D> = Vec::with_capacity(nodes.len());
@@ -650,8 +696,8 @@ pub fn greedy_orthogonalization(curve_skeleton: &CurveSkeleton) -> Option<Labele
                     displacement.z.abs(),
                 ];
                 magnitudes.sort_by(|a, b| b.partial_cmp(a).unwrap_or(std::cmp::Ordering::Equal));
-                let confidence = (magnitudes[0] - magnitudes[1]); // How good the best is relative to second best
-                
+                let confidence = magnitudes[0] - magnitudes[1]; // How good the best is relative to second best
+
                 (
                     std::cmp::Reverse((size as f64 * confidence) as usize),
                     std::cmp::Reverse(size),
