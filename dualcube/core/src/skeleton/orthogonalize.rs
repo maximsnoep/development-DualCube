@@ -4,6 +4,7 @@ use petgraph::visit::EdgeRef;
 use serde::{Deserialize, Serialize};
 
 use std::collections::{HashMap, HashSet, VecDeque};
+use bimap::BiHashMap;
 
 use crate::{
     prelude::{CurveSkeleton, PrincipalDirection},
@@ -73,32 +74,28 @@ fn axis_count_around_node(
 
 /// Build a working copy of the skeleton with all edges unlabeled.
 ///
-/// Returns the partial graph plus two maps: one mapping original nodes to the
-/// new ones, and a reverse map.
+/// Returns the partial graph along with a bidirectional map between original
+/// and copied node indices.
 fn build_unlabeled_partial(
     curve_skeleton: &CurveSkeleton,
-) -> (
-    PartialEdgeLabeledCurveSkeleton,
-    HashMap<NodeIndex, NodeIndex>,
-    HashMap<NodeIndex, NodeIndex>,
-) {
+) -> (PartialEdgeLabeledCurveSkeleton, BiHashMap<NodeIndex, NodeIndex>) {
     let mut partial = PartialEdgeLabeledCurveSkeleton::new_undirected();
-    let mut node_map: HashMap<NodeIndex, NodeIndex> = HashMap::new();
-    let mut reverse_node_map: HashMap<NodeIndex, NodeIndex> = HashMap::new();
+    let mut map: BiHashMap<NodeIndex, NodeIndex> = BiHashMap::new();
 
     for node in curve_skeleton.node_indices() {
         let w = curve_skeleton.node_weight(node).unwrap().clone();
         let out_n = partial.add_node(w);
-        node_map.insert(node, out_n);
-        reverse_node_map.insert(out_n, node);
+        map.insert(node, out_n);
     }
 
     for edge in curve_skeleton.edge_indices() {
         let (a, b) = curve_skeleton.edge_endpoints(edge).unwrap();
-        partial.add_edge(node_map[&a], node_map[&b], None);
+        let pa = *map.get_by_left(&a).expect("Node missing in map");
+        let pb = *map.get_by_left(&b).expect("Node missing in map");
+        partial.add_edge(pa, pb, None);
     }
 
-    (partial, node_map, reverse_node_map)
+    (partial, map)
 }
 
 /// Collects all node indices and builds a map from NodeIndex to dense vector index.
@@ -337,7 +334,7 @@ fn finalize_partial_to_realized(
 ///
 /// Edge priority is weighted by patch size and directional confidence.
 fn backtracking_orthogonalization(curve_skeleton: &CurveSkeleton) -> Option<LabeledCurveSkeleton> {
-    let (mut partial, _node_map, reverse_node_map) = build_unlabeled_partial(curve_skeleton);
+    let (mut partial, node_map) = build_unlabeled_partial(curve_skeleton);
 
     warn!("Greedy orthogonalization failed, falling back to backtracking search.");
 
@@ -353,8 +350,12 @@ fn backtracking_orthogonalization(curve_skeleton: &CurveSkeleton) -> Option<Labe
         .edge_indices()
         .map(|edge| {
             let (u, v) = partial.edge_endpoints(edge).unwrap();
-            let orig_u = reverse_node_map[&u];
-            let orig_v = reverse_node_map[&v];
+            let orig_u = *node_map
+                .get_by_right(&u)
+                .expect("Partial node not found in map");
+            let orig_v = *node_map
+                .get_by_right(&v)
+                .expect("Partial node not found in map");
             let disp = curve_skeleton[orig_v].position - curve_skeleton[orig_u].position;
             let pref = preferred_axes_from_displacement(disp);
             let preference_weight = std::cmp::max(
@@ -396,7 +397,7 @@ fn backtracking_orthogonalization(curve_skeleton: &CurveSkeleton) -> Option<Labe
         plans: &[EdgePlan],
         partial: &mut PartialEdgeLabeledCurveSkeleton,
         curve_skeleton: &CurveSkeleton,
-        reverse_node_map: &HashMap<NodeIndex, NodeIndex>,
+        node_map: &BiHashMap<NodeIndex, NodeIndex>,
         current_score: i64,
         best_score: &mut i64,
         best_labels: &mut Option<HashMap<EdgeIndex, PrincipalDirection>>,
@@ -424,8 +425,12 @@ fn backtracking_orthogonalization(curve_skeleton: &CurveSkeleton) -> Option<Labe
 
         let plan = &plans[depth];
         let (u, v) = partial.edge_endpoints(plan.edge).unwrap();
-        let orig_u = reverse_node_map[&u];
-        let orig_v = reverse_node_map[&v];
+        let orig_u = *node_map
+            .get_by_right(&u)
+            .expect("Partial node not found in map");
+        let orig_v = *node_map
+            .get_by_right(&v)
+            .expect("Partial node not found in map");
         let disp = curve_skeleton[orig_v].position - curve_skeleton[orig_u].position;
         let candidate_axes = preferred_axes_from_displacement(disp);
 
@@ -449,7 +454,7 @@ fn backtracking_orthogonalization(curve_skeleton: &CurveSkeleton) -> Option<Labe
                     plans,
                     partial,
                     curve_skeleton,
-                    reverse_node_map,
+                    node_map,
                     next_score,
                     best_score,
                     best_labels,
@@ -465,7 +470,7 @@ fn backtracking_orthogonalization(curve_skeleton: &CurveSkeleton) -> Option<Labe
         &plans,
         &mut partial,
         curve_skeleton,
-        &reverse_node_map,
+        &node_map,
         0,
         &mut best_score,
         &mut best_labels,
@@ -638,7 +643,7 @@ pub fn realize(s: &EdgeLabeledCurveSkeleton) -> Option<LabeledCurveSkeleton> {
 ///
 /// If greedy gets stuck, a global backtracking search is used.
 pub fn greedy_orthogonalization(curve_skeleton: &CurveSkeleton) -> Option<LabeledCurveSkeleton> {
-    let (mut partial, node_map, _reverse_node_map) = build_unlabeled_partial(curve_skeleton);
+    let (mut partial, node_map) = build_unlabeled_partial(curve_skeleton);
 
     // Helper to pick the best (highest-degree, then largest patch) unvisited node.
     let pick_best_unvisited = |visited: &HashSet<NodeIndex>| {
@@ -709,8 +714,12 @@ pub fn greedy_orthogonalization(curve_skeleton: &CurveSkeleton) -> Option<Labele
 
             for v in neighbors {
                 // Edge in the partial graph.
-                let pu = node_map[&u];
-                let pv = node_map[&v];
+                let pu = *node_map
+                    .get_by_left(&u)
+                    .expect("Original node missing in map");
+                let pv = *node_map
+                    .get_by_left(&v)
+                    .expect("Original node missing in map");
                 let eidx = partial
                     .find_edge(pu, pv)
                     .expect("Edge must exist in partial copy");
