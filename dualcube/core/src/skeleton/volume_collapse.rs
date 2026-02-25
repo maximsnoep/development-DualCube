@@ -45,6 +45,7 @@ pub fn volume_based_collapse(
                 source_node: *smallest_leaf,
                 target_node: parent,
             });
+            // Can't ever fail as leaves cannot share neighbors with their parent.
             skeleton.merge_nodes(*smallest_leaf, parent, MergeBehavior::SourceIntoTarget);
             changed = true;
         }
@@ -69,6 +70,7 @@ pub fn construct_skeleton_from_history(
 
     for collapse in &history.history[0..end] {
         // Merge the patch vertices of source into target
+        // We are sure these merges work as they did in the past.
         skeleton.merge_nodes(collapse.source_node, collapse.target_node, MergeBehavior::SourceIntoTarget);
     }
 
