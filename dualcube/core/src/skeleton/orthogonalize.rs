@@ -1,11 +1,10 @@
-use log::error;
-use petgraph::graph::{NodeIndex, UnGraph};
+use log::{error, warn};
+use petgraph::graph::{EdgeIndex, NodeIndex, UnGraph};
 use petgraph::visit::EdgeRef;
 use serde::{Deserialize, Serialize};
 
 use std::collections::{HashMap, HashSet, VecDeque};
 
-use crate::prelude::to_principal_direction;
 use crate::{
     prelude::{CurveSkeleton, PrincipalDirection},
     skeleton::curve_skeleton::SkeletonNode,
@@ -13,7 +12,6 @@ use crate::{
 
 /// A 3-dimensional integer vector.
 pub type IVector3D = nalgebra::Vector3<i32>;
-
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct OrthogonalSkeletonNode {
@@ -35,7 +33,61 @@ type EdgeLabeledCurveSkeleton = UnGraph<SkeletonNode, OrthogonalSkeletonEdge>;
 /// Used while building up a labeling incrementally.
 type PartialEdgeLabeledCurveSkeleton = UnGraph<SkeletonNode, Option<PrincipalDirection>>;
 
-// Collects all node indices and builds a map from NodeIndex to a dense position in that slice.
+/// Gives an ordering to axes based on the displacement between the edge endpoints, from most aligned to least.
+fn preferred_axes_from_displacement(disp: nalgebra::Vector3<f64>) -> [PrincipalDirection; 3] {
+    let mut entries = [
+        (PrincipalDirection::X, disp.x.abs()),
+        (PrincipalDirection::Y, disp.y.abs()),
+        (PrincipalDirection::Z, disp.z.abs()),
+    ];
+    entries.sort_by(|(axis_a, value_a), (axis_b, value_b)| {
+        value_b
+            .partial_cmp(value_a)
+            .unwrap_or(std::cmp::Ordering::Equal)
+            .then((*axis_a as usize).cmp(&(*axis_b as usize)))
+    });
+    [entries[0].0, entries[1].0, entries[2].0]
+}
+
+fn axis_count_around_node(
+    partial: &PartialEdgeLabeledCurveSkeleton,
+    node: NodeIndex,
+    axis: PrincipalDirection,
+) -> usize {
+    partial
+        .edges(node)
+        .filter_map(|edge| *edge.weight())
+        .filter(|&dir| dir == axis)
+        .count()
+}
+
+fn build_unlabeled_partial(
+    curve_skeleton: &CurveSkeleton,
+) -> (
+    PartialEdgeLabeledCurveSkeleton,
+    HashMap<NodeIndex, NodeIndex>,
+    HashMap<NodeIndex, NodeIndex>,
+) {
+    let mut partial = PartialEdgeLabeledCurveSkeleton::new_undirected();
+    let mut node_map: HashMap<NodeIndex, NodeIndex> = HashMap::new();
+    let mut reverse_node_map: HashMap<NodeIndex, NodeIndex> = HashMap::new();
+
+    for n in curve_skeleton.node_indices() {
+        let w = curve_skeleton.node_weight(n).unwrap().clone();
+        let out_n = partial.add_node(w);
+        node_map.insert(n, out_n);
+        reverse_node_map.insert(out_n, n);
+    }
+
+    for e in curve_skeleton.edge_indices() {
+        let (a, b) = curve_skeleton.edge_endpoints(e).unwrap();
+        partial.add_edge(node_map[&a], node_map[&b], None);
+    }
+
+    (partial, node_map, reverse_node_map)
+}
+
+/// Collects all node indices and builds a map from NodeIndex to dense vector index.
 fn build_node_list_and_index_map<N, E>(
     graph: &UnGraph<N, E>,
 ) -> (Vec<NodeIndex>, HashMap<NodeIndex, usize>) {
@@ -47,17 +99,15 @@ fn build_node_list_and_index_map<N, E>(
     (nodes, idx_map)
 }
 
-// BFS connected-component labeling over the partial skeleton, ignoring all edges labeled
-// `forbidden` (or unlabeled). Each node gets the integer ID of its component.
-//
-// The resulting component IDs serve directly as integer grid coordinates: two nodes share
-// a D-coordinate iff they are in the same D-component (connected without crossing a D-edge).
-fn components_excluding_partial(
-    g: &PartialEdgeLabeledCurveSkeleton,
-    forbidden: PrincipalDirection,
+fn components_excluding_with<N, E, F>(
+    g: &UnGraph<N, E>,
     nodes: &[NodeIndex],
     idx_map: &HashMap<NodeIndex, usize>,
-) -> Vec<usize> {
+    mut edge_allowed: F,
+) -> Vec<usize>
+where
+    F: FnMut(&E) -> bool,
+{
     let mut comp = vec![usize::MAX; nodes.len()];
     let mut cur = 0usize;
 
@@ -66,28 +116,26 @@ fn components_excluding_partial(
         if comp[si] != usize::MAX {
             continue;
         }
+
         let mut q = VecDeque::new();
         q.push_back(start);
         comp[si] = cur;
 
         while let Some(u) = q.pop_front() {
             for edge in g.edges(u) {
-                match *edge.weight() {
-                    Some(dir) if dir != forbidden => {
-                        // Pick the endpoint that is not u.
-                        let v = if edge.source() == u {
-                            edge.target()
-                        } else {
-                            edge.source()
-                        };
-                        let vi = idx_map[&v];
-                        if comp[vi] == usize::MAX {
-                            comp[vi] = cur;
-                            q.push_back(v);
-                        }
-                    }
-                    // Unlabeled or forbidden edges are excluded from this component.
-                    _ => {}
+                if !edge_allowed(edge.weight()) {
+                    continue;
+                }
+
+                let v = if edge.source() == u {
+                    edge.target()
+                } else {
+                    edge.source()
+                };
+                let vi = idx_map[&v];
+                if comp[vi] == usize::MAX {
+                    comp[vi] = cur;
+                    q.push_back(v);
                 }
             }
         }
@@ -98,7 +146,86 @@ fn components_excluding_partial(
     comp
 }
 
-// Wrap edges such that we can reuse labeling and realizability-checking code.
+/// Connected components in a partial labeling while excluding a given axis.
+///
+/// Allowed traversal edges are labeled edges whose axis is not `forbidden`.
+/// Unlabeled edges are ignored.
+fn components_excluding_partial(
+    g: &PartialEdgeLabeledCurveSkeleton,
+    forbidden: PrincipalDirection,
+    nodes: &[NodeIndex],
+    idx_map: &HashMap<NodeIndex, usize>,
+) -> Vec<usize> {
+    components_excluding_with(
+        g,
+        nodes,
+        idx_map,
+        |w| matches!(*w, Some(dir) if dir != forbidden),
+    )
+}
+
+/// Connected components in a fully labeled skeleton while excluding a given axis.
+fn components_excluding_labeled(
+    g: &EdgeLabeledCurveSkeleton,
+    forbidden: PrincipalDirection,
+    nodes: &[NodeIndex],
+    idx_map: &HashMap<NodeIndex, usize>,
+) -> Vec<usize> {
+    components_excluding_with(g, nodes, idx_map, |w| w.direction != forbidden)
+}
+
+/// Assigns compact integer coordinates to components ordered by geometric mean.
+fn ranked_component_coordinates(
+    s: &EdgeLabeledCurveSkeleton,
+    axis: PrincipalDirection,
+    comps: &[usize],
+    nodes: &[NodeIndex],
+) -> Vec<i32> {
+    let nr_components = comps.iter().copied().max().map_or(0, |m| m + 1);
+    let mut sums = vec![0.0f64; nr_components];
+    let mut counts = vec![0usize; nr_components];
+
+    for (i, &node) in nodes.iter().enumerate() {
+        let c = comps[i];
+        let pos = s[node].position;
+        sums[c] += match axis {
+            PrincipalDirection::X => pos.x,
+            PrincipalDirection::Y => pos.y,
+            PrincipalDirection::Z => pos.z,
+        } as f64;
+        counts[c] += 1;
+    }
+
+    let means: Vec<f64> = (0..nr_components)
+        .map(|c| {
+            if counts[c] == 0 {
+                0.0
+            } else {
+                sums[c] / counts[c] as f64
+            }
+        })
+        .collect();
+
+    let mut component_ids: Vec<usize> = (0..nr_components).collect();
+    component_ids.sort_by(|&a, &b| {
+        means[a]
+            .partial_cmp(&means[b])
+            .unwrap_or(std::cmp::Ordering::Equal)
+            .then(a.cmp(&b))
+    });
+
+    let mut component_to_coord = vec![0i32; nr_components];
+    for (coord, &component_id) in component_ids.iter().enumerate() {
+        component_to_coord[component_id] = coord as i32;
+    }
+
+    comps
+        .iter()
+        .map(|&component_id| component_to_coord[component_id])
+        .collect()
+}
+
+/// Converts a fully labeled skeleton to partial form.
 fn partial_from_edge_labeled(s: &EdgeLabeledCurveSkeleton) -> PartialEdgeLabeledCurveSkeleton {
     let mut out = PartialEdgeLabeledCurveSkeleton::new_undirected();
     let mut map: HashMap<NodeIndex, NodeIndex> = HashMap::new();
@@ -117,6 +244,197 @@ fn partial_from_edge_labeled(s: &EdgeLabeledCurveSkeleton) -> PartialEdgeLabeled
     }
 
     out
+}
+
+/// Realizes a partial labeling as a fully labeled skeleton.
+fn finalize_partial_to_realized(
+    partial: &PartialEdgeLabeledCurveSkeleton,
+) -> Option<LabeledCurveSkeleton> {
+    for edge_ref in partial.edge_references() {
+        if edge_ref.weight().is_none() {
+            error!(
+                "edge from {:?} to {:?} is still unlabeled after assignment, this should not happen",
+                edge_ref.source(),
+                edge_ref.target()
+            );
+            return None;
+        }
+    }
+
+    let mut full = EdgeLabeledCurveSkeleton::new_undirected();
+    let mut out_map: HashMap<NodeIndex, NodeIndex> = HashMap::new();
+    for n in partial.node_indices() {
+        let w = partial.node_weight(n).unwrap().clone();
+        let out_n = full.add_node(w);
+        out_map.insert(n, out_n);
+    }
+    for e in partial.edge_references() {
+        let a = e.source();
+        let b = e.target();
+        let dir = match *e.weight() {
+            Some(d) => d,
+            None => unreachable!(),
+        };
+        full.add_edge(
+            out_map[&a],
+            out_map[&b],
+            OrthogonalSkeletonEdge {
+                direction: dir,
+                length: 1,
+            },
+        );
+    }
+
+    realize(&full)
+}
+
+/// Global search for labelings that maximize preferred-axis matches.
+///
+/// Edge priority is weighted by patch size and directional confidence.
+fn backtracking_orthogonalization(curve_skeleton: &CurveSkeleton) -> Option<LabeledCurveSkeleton> {
+    let (mut partial, _node_map, reverse_node_map) = build_unlabeled_partial(curve_skeleton);
+
+    warn!("Greedy orthogonalization failed, falling back to backtracking search.");
+
+    #[derive(Clone)]
+    struct EdgePlan {
+        edge: EdgeIndex,
+        primary: PrincipalDirection,
+        preference_weight: i64,
+        confidence: f64,
+    }
+
+    let mut plans: Vec<EdgePlan> = partial
+        .edge_indices()
+        .map(|edge| {
+            let (u, v) = partial.edge_endpoints(edge).unwrap();
+            let orig_u = reverse_node_map[&u];
+            let orig_v = reverse_node_map[&v];
+            let disp = curve_skeleton[orig_v].position - curve_skeleton[orig_u].position;
+            let pref = preferred_axes_from_displacement(disp);
+            let preference_weight = std::cmp::max(
+                curve_skeleton[orig_u].patch_vertices.len(),
+                curve_skeleton[orig_v].patch_vertices.len(),
+            ) as i64;
+            let confidence = {
+                let mut mags = [disp.x.abs(), disp.y.abs(), disp.z.abs()];
+                mags.sort_by(|a, b| b.partial_cmp(a).unwrap_or(std::cmp::Ordering::Equal));
+                mags[0] - mags[1]
+            };
+            EdgePlan {
+                edge,
+                primary: pref[0],
+                preference_weight,
+                confidence,
+            }
+        })
+        .collect();
+
+    plans.sort_by(|a, b| {
+        b.preference_weight.cmp(&a.preference_weight).then(
+            b.confidence
+                .partial_cmp(&a.confidence)
+                .unwrap_or(std::cmp::Ordering::Equal),
+        )
+    });
+
+    let mut suffix_max_possible = vec![0i64; plans.len() + 1];
+    for i in (0..plans.len()).rev() {
+        suffix_max_possible[i] = suffix_max_possible[i + 1] + plans[i].preference_weight;
+    }
+
+    let mut best_score = i64::MIN;
+    let mut best_labels: Option<HashMap<EdgeIndex, PrincipalDirection>> = None;
+
+    fn dfs(
+        depth: usize,
+        plans: &[EdgePlan],
+        partial: &mut PartialEdgeLabeledCurveSkeleton,
+        curve_skeleton: &CurveSkeleton,
+        reverse_node_map: &HashMap<NodeIndex, NodeIndex>,
+        current_score: i64,
+        best_score: &mut i64,
+        best_labels: &mut Option<HashMap<EdgeIndex, PrincipalDirection>>,
+        suffix_max_possible: &[i64],
+    ) {
+        if current_score + suffix_max_possible[depth] < *best_score {
+            return;
+        }
+
+        if depth == plans.len() {
+            if !is_partially_realizable(partial) {
+                return;
+            }
+
+            if current_score > *best_score {
+                let labels = partial
+                    .edge_indices()
+                    .map(|e| (e, partial.edge_weight(e).copied().flatten().unwrap()))
+                    .collect();
+                *best_score = current_score;
+                *best_labels = Some(labels);
+            }
+            return;
+        }
+
+        let plan = &plans[depth];
+        let (u, v) = partial.edge_endpoints(plan.edge).unwrap();
+        let orig_u = reverse_node_map[&u];
+        let orig_v = reverse_node_map[&v];
+        let disp = curve_skeleton[orig_v].position - curve_skeleton[orig_u].position;
+        let candidate_axes = preferred_axes_from_displacement(disp);
+
+        for cand in candidate_axes {
+            if axis_count_around_node(partial, u, cand) >= 2
+                || axis_count_around_node(partial, v, cand) >= 2
+            {
+                continue;
+            }
+
+            *partial.edge_weight_mut(plan.edge).unwrap() = Some(cand);
+            if is_partially_realizable(partial) {
+                let next_score = current_score
+                    + if cand == plan.primary {
+                        plan.preference_weight
+                    } else {
+                        0
+                    };
+                dfs(
+                    depth + 1,
+                    plans,
+                    partial,
+                    curve_skeleton,
+                    reverse_node_map,
+                    next_score,
+                    best_score,
+                    best_labels,
+                    suffix_max_possible,
+                );
+            }
+            *partial.edge_weight_mut(plan.edge).unwrap() = None;
+        }
+    }
+
+    dfs(
+        0,
+        &plans,
+        &mut partial,
+        curve_skeleton,
+        &reverse_node_map,
+        0,
+        &mut best_score,
+        &mut best_labels,
+        &suffix_max_possible,
+    );
+
+    if let Some(labels) = best_labels {
+        for (edge, dir) in labels {
+            *partial.edge_weight_mut(edge).unwrap() = Some(dir);
+        }
+        finalize_partial_to_realized(&partial)
+    } else {
+        None
+    }
 }
 
 /// Returns true if the partial edge-labeling is still consistent with some valid orthogonal
@@ -169,14 +487,10 @@ pub fn is_partially_realizable(p: &PartialEdgeLabeledCurveSkeleton) -> bool {
     true
 }
 
-/// Assigns integer grid coordinates to every node and computes correct edge lengths.
-///
-/// Each node's coordinate along axis D is the ID of its D-component (connected component
-/// with all D-edges removed). Edge lengths are recomputed as the coordinate difference
-/// along the labeled axis.
+/// Assigns integer grid coordinates and recomputes axis-aligned edge lengths.
 pub fn realize(s: &EdgeLabeledCurveSkeleton) -> Option<LabeledCurveSkeleton> {
-    // Convert to partial form once so we can use the same methods for both the
-    // realizability check and the coordinate computation. // TODO: maybe better way with traits?
+    // Convert to partial form once so realizability and coordinate assignment
+    // use the same edge semantics.
     let partial = partial_from_edge_labeled(s);
     if !is_partially_realizable(&partial) {
         return None;
@@ -184,15 +498,20 @@ pub fn realize(s: &EdgeLabeledCurveSkeleton) -> Option<LabeledCurveSkeleton> {
 
     let (nodes, idx_map) = build_node_list_and_index_map(s);
 
-    // Collect per-axis component IDs, each is the assigned integer coordinate along that axis.
-    let cx = components_excluding_partial(&partial, PrincipalDirection::X, &nodes, &idx_map);
-    let cy = components_excluding_partial(&partial, PrincipalDirection::Y, &nodes, &idx_map);
-    let cz = components_excluding_partial(&partial, PrincipalDirection::Z, &nodes, &idx_map);
+    // Collect per-axis component IDs and map them to coordinates ordered by original
+    // geometry along each axis.
+    let comp_x = components_excluding_labeled(s, PrincipalDirection::X, &nodes, &idx_map);
+    let comp_y = components_excluding_labeled(s, PrincipalDirection::Y, &nodes, &idx_map);
+    let comp_z = components_excluding_labeled(s, PrincipalDirection::Z, &nodes, &idx_map);
+
+    let cx = ranked_component_coordinates(s, PrincipalDirection::X, &comp_x, &nodes);
+    let cy = ranked_component_coordinates(s, PrincipalDirection::Y, &comp_y, &nodes);
+    let cz = ranked_component_coordinates(s, PrincipalDirection::Z, &comp_z, &nodes);
 
     // Assemble coordinate vector for each node.
     let mut coords: Vec<IVector3D> = Vec::with_capacity(nodes.len());
     for i in 0..nodes.len() {
-        coords.push(IVector3D::new(cx[i] as i32, cy[i] as i32, cz[i] as i32));
+        coords.push(IVector3D::new(cx[i], cy[i], cz[i]));
     }
 
     // Build the output graph: copy nodes (with computed coordinates) and edges.
@@ -203,7 +522,7 @@ pub fn realize(s: &EdgeLabeledCurveSkeleton) -> Option<LabeledCurveSkeleton> {
         let node = s.node_weight(orig).unwrap().clone();
         let weight = OrthogonalSkeletonNode {
             skeleton_node: node,
-            grid_position: IVector3D::new(0,0,0) // overwritten later
+            grid_position: IVector3D::new(0, 0, 0),
         };
         let out_n = out.add_node(weight);
         out_index_map.insert(orig, out_n);
@@ -264,34 +583,16 @@ pub fn realize(s: &EdgeLabeledCurveSkeleton) -> Option<LabeledCurveSkeleton> {
     Some(out)
 }
 
-/// Greedily assigns an axis label to every edge so that the skeleton can be realized as
-/// an orthogonal integer-grid embedding.
+/// Assigns axis labels to edges and realizes the orthogonal skeleton.
 ///
 /// BFS starts from the highest-degree node (secondarily largest patch).
 /// For each unlabeled edge, the axis most aligned with the geometric displacement
 /// is tried first; the other two axes are fallbacks. The first choice that keeps the partial
 /// labeling consistent is accepted.
 ///
-/// Can fail when cycles impose conflicting global constraints that the greedy has no
-/// lookahead to resolve.
-///
-/// TODO: fallback ILP or backtracking search for cases greedy cannot solve.
+/// If greedy gets stuck, a global backtracking search is used.
 pub fn greedy_orthogonalization(curve_skeleton: &CurveSkeleton) -> Option<LabeledCurveSkeleton> {
-    // Build an unlabeled copy of the skeleton. node_map translates NodeIndex values
-    // so we can update edge weights in `partial` while searching over curve_skeleton.
-    let mut partial = PartialEdgeLabeledCurveSkeleton::new_undirected();
-    let mut node_map: HashMap<NodeIndex, NodeIndex> = HashMap::new();
-
-    for n in curve_skeleton.node_indices() {
-        let w = curve_skeleton.node_weight(n).unwrap().clone();
-        let out_n = partial.add_node(w);
-        node_map.insert(n, out_n);
-    }
-
-    for e in curve_skeleton.edge_indices() {
-        let (a, b) = curve_skeleton.edge_endpoints(e).unwrap();
-        partial.add_edge(node_map[&a], node_map[&b], None);
-    }
+    let (mut partial, node_map, _reverse_node_map) = build_unlabeled_partial(curve_skeleton);
 
     // Helper to pick the best (highest-degree, then largest patch) unvisited node.
     let pick_best_unvisited = |visited: &HashSet<NodeIndex>| {
@@ -322,9 +623,10 @@ pub fn greedy_orthogonalization(curve_skeleton: &CurveSkeleton) -> Option<Labele
     let mut visited: HashSet<NodeIndex> = HashSet::new();
     let mut queue: VecDeque<NodeIndex> = VecDeque::new();
 
-    // Process all connected components.
+    // Process all
     while visited.len() < curve_skeleton.node_count() {
         if queue.is_empty() {
+            // Should only happen once, as we only have one component.
             let start = match pick_best_unvisited(&visited) {
                 Some(s) => s,
                 None => break,
@@ -335,20 +637,37 @@ pub fn greedy_orthogonalization(curve_skeleton: &CurveSkeleton) -> Option<Labele
 
         while let Some(u) = queue.pop_front() {
             // Sort neighbors so higher-degree / larger-patch neighbors are preferred.
-            let mut neighs: Vec<_> = curve_skeleton.neighbors(u).collect();
-            neighs.sort_by_key(|&v| {
-                let deg = curve_skeleton.neighbors(v).count();
-                let patch = curve_skeleton[v].patch_vertices.len();
-                (std::cmp::Reverse(deg), std::cmp::Reverse(patch))
+            let mut neighbors: Vec<_> = curve_skeleton.neighbors(u).collect();
+            neighbors.sort_by_key(|&v| {
+                let degree = curve_skeleton.neighbors(v).count();
+                let patch_u = curve_skeleton[u].patch_vertices.len();
+                let patch_v = curve_skeleton[v].patch_vertices.len();
+                let size = std::cmp::max(patch_u, patch_v);
+                let displacement = curve_skeleton[v].position - curve_skeleton[u].position;
+                let mut magnitudes = [
+                    displacement.x.abs(),
+                    displacement.y.abs(),
+                    displacement.z.abs(),
+                ];
+                magnitudes.sort_by(|a, b| b.partial_cmp(a).unwrap_or(std::cmp::Ordering::Equal));
+                let confidence = (magnitudes[0] - magnitudes[1]); // How good the best is relative to second best
+                
+                (
+                    std::cmp::Reverse((size as f64 * confidence) as usize),
+                    std::cmp::Reverse(size),
+                    std::cmp::Reverse(confidence.to_bits()),
+                    std::cmp::Reverse(degree),
+                    std::cmp::Reverse(patch_v),
+                )
             });
 
-            for v in neighs {
+            for v in neighbors {
                 // Edge in the partial graph.
                 let pu = node_map[&u];
                 let pv = node_map[&v];
                 let eidx = partial
                     .find_edge(pu, pv)
-                    .expect("edge must exist in partial copy");
+                    .expect("Edge must exist in partial copy");
 
                 // Edge already labeled (encountered from the other endpoint earlier in BFS).
                 // Nothing to re-label, just ensure v is queued if not yet visited.
@@ -361,21 +680,18 @@ pub fn greedy_orthogonalization(curve_skeleton: &CurveSkeleton) -> Option<Labele
 
                 // Try the geometrically closest axis first, then fall back to the other two.
                 let disp = curve_skeleton[v].position - curve_skeleton[u].position;
-                let (primary_axis, _orient) = to_principal_direction(disp);
-                let mut candidates = vec![primary_axis];
-                for &d in &[
-                    PrincipalDirection::X,
-                    PrincipalDirection::Y,
-                    PrincipalDirection::Z,
-                ] {
-                    if d != primary_axis {
-                        candidates.push(d);
-                    }
-                }
+                let candidates = preferred_axes_from_displacement(disp);
 
                 // Accept the first candidate that keeps the partial labeling realizable.
                 let mut assigned = false;
                 for cand in candidates {
+                    if axis_count_around_node(&partial, pu, cand) >= 2
+                        || axis_count_around_node(&partial, pv, cand) >= 2
+                    {
+                        // At most 2 edges of the same direction per node
+                        continue;
+                    }
+
                     *partial.edge_weight_mut(eidx).unwrap() = Some(cand);
                     if is_partially_realizable(&partial) {
                         assigned = true;
@@ -385,8 +701,8 @@ pub fn greedy_orthogonalization(curve_skeleton: &CurveSkeleton) -> Option<Labele
                 }
 
                 if !assigned {
-                    // TODO: some kind of backtracking later?
-                    return None;
+                    // Fall back to global search from scratch, maximizing preferred directions.
+                    return backtracking_orthogonalization(curve_skeleton);
                 }
 
                 if visited.insert(v) {
@@ -396,35 +712,5 @@ pub fn greedy_orthogonalization(curve_skeleton: &CurveSkeleton) -> Option<Labele
         }
     }
 
-    // Convert to EdgeLabeledCurveSkeleton, edge lengths are placeholders that realize will recompute.
-    for edge_ref in partial.edge_references() {
-        if edge_ref.weight().is_none() {
-            error!("edge from {:?} to {:?} is still unlabeled after greedy assignment, this should not happen",
-                edge_ref.source(), edge_ref.target());
-            return None;
-        }
-    }
-    let mut full = EdgeLabeledCurveSkeleton::new_undirected();
-    let mut out_map: HashMap<NodeIndex, NodeIndex> = HashMap::new();
-    for n in partial.node_indices() {
-        let w = partial.node_weight(n).unwrap().clone();
-        let out_n = full.add_node(w);
-        out_map.insert(n, out_n);
-    }
-    for e in partial.edge_references() {
-        let a = e.source();
-        let b = e.target();
-        let dir = match *e.weight() {
-            Some(d) => d,
-            None => unreachable!(),
-        };
-        let weight = OrthogonalSkeletonEdge {
-            direction: dir,
-            length: 1, // placeholder, will be recomputed in realize
-        };
-        full.add_edge(out_map[&a], out_map[&b], weight);
-    }
-
-    // Compute integer coordinates and correct edge lengths.
-    realize(&full)
+    finalize_partial_to_realized(&partial)
 }
