@@ -425,6 +425,6 @@ pub fn create_patch_convexity_mesh(
 
     build_region_mesh(curve_skeleton, mesh, translation, scale, |region| {
         let score = region_scores.get(&region).copied().unwrap_or(0.0) as f32;
-        colors::map(score, &colors::SCALE_MAGMA)
+        colors::map(score, &colors::PARULA)
     })
 }
