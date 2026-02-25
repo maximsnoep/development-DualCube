@@ -168,7 +168,8 @@ impl Solution {
     ) {
         let mesh = self.mesh_ref.clone();
         if let Some(data) = &mut self.skeleton {
-            data.update_convexity(mesh, convexity_threshold, convexity_merge_threshold);
+            let polycube = data.update_convexity(mesh, convexity_threshold, convexity_merge_threshold);
+            self.polycube = polycube;
         } else {
             let (skeleton, polycube) = get_skeleton_based_mapping(
                 mesh,
