@@ -5,18 +5,11 @@ use mehsh::prelude::Mesh;
 use serde::{Deserialize, Serialize};
 
 use crate::{
-    prelude::{Polycube, INPUT},
+    prelude::{INPUT, Polycube},
     skeleton::{
-        connectivity_surgery::extract_skeleton,
-        contraction::{contract_mesh, CONTRACTION},
-        curve_skeleton::{CurveSkeleton, CurveSkeletonManipulation},
-        embeddability::make_embedding_possible,
-        orthogonalize::{greedy_orthogonalization, LabeledCurveSkeleton},
-        voxelize::generate_polycube,
-        simplify::{convexify, simplify_skeleton},
-        volume_collapse::{
-            construct_skeleton_from_history, volume_based_collapse, VolumeCollapseHistory,
-        },
+        connectivity_surgery::extract_skeleton, contraction::{CONTRACTION, contract_mesh}, curve_skeleton::{CurveSkeleton, CurveSkeletonManipulation, CurveSkeletonSpatial}, embeddability::make_embedding_possible, orthogonalize::{LabeledCurveSkeleton, greedy_orthogonalization}, simplify::{convexify, simplify_skeleton}, volume_collapse::{
+            VolumeCollapseHistory, construct_skeleton_from_history, volume_based_collapse
+        }, voxelize::generate_polycube
     },
 };
 
@@ -196,6 +189,10 @@ fn post_simplification_stage(
 
     // Fix necessary conditions for orthogonal embeddability, most of the times this changes nothing.
     make_embedding_possible(cleaned_skeleton, &mesh);
+
+    // Before labeling (which uses geometric node position), refine position again.
+    // Positions likely are not accurate anymore after merges and splits and such.
+    cleaned_skeleton.refine_embeddings(&mesh);
 
     // Orthogonalize the curve skeleton
     let labeled = greedy_orthogonalization(&*cleaned_skeleton);
