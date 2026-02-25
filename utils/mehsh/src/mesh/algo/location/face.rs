@@ -20,6 +20,24 @@ impl<M: Tag> FaceLocation<M> {
         self.0.0 = Bvh::build(shapes);
         self.0.1 = shapes.to_vec();
     }
+
+    /// Return all faces whose bounding box intersects a axis-aligned box
+    pub fn faces_intersecting_bounds(
+        &self,
+        min_corner: [f64; 3],
+        max_corner: [f64; 3],
+    ) -> Vec<FaceKey<M>> {
+        let query = Aabb::with_bounds(
+            nalgebra::Point3::from(min_corner),
+            nalgebra::Point3::from(max_corner),
+        );
+        self.0
+            .0
+            .traverse(&query, &self.0.1)
+            .into_iter()
+            .map(|shape| shape.real_index)
+            .collect()
+    }
 }
 impl<M: Tag> Default for FaceLocation<M> {
     fn default() -> Self {
