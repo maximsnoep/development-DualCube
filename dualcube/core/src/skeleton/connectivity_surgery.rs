@@ -13,11 +13,10 @@ use mehsh::prelude::{HasNeighbors, HasPosition, HasVertices, Mesh, Vector3D, Ver
 use nalgebra::{Matrix4, Vector4};
 
 use super::contraction::CONTRACTION;
-use super::curve_skeleton::CurveSkeleton;
+use super::curve_skeleton::{CurveSkeleton, CurveSkeletonSpatial};
 use crate::prelude::INPUT;
 use crate::skeleton::boundary_loop::BoundaryLoop;
 use crate::skeleton::curve_skeleton::SkeletonNode;
-use crate::skeleton::patch::patch_centroid;
 
 /// Internal vertex index type for contraction mesh.
 type VIdx = VertKey<CONTRACTION>;
@@ -328,22 +327,6 @@ impl SurgeryContext {
         self.neighbors.get_mut(&u).unwrap().clear();
     }
 
-    /// Refines the embedding by moving skeleton nodes to the centroid
-    /// of their corresponding original mesh vertices.
-    fn refine_embedding(&mut self, original_mesh: &Mesh<INPUT>) {
-        for (&skel_vert, originals) in &self.vertex_to_original {
-            if self.is_dead.contains(&skel_vert) || originals.is_empty() {
-                continue;
-            }
-
-            // Compute centroid
-            let centroid = patch_centroid(&originals, original_mesh);
-
-            // Convert to normalized space
-            self.positions
-                .insert(skel_vert, (centroid - self.center) * self.scale);
-        }
-    }
 
     /// Builds the final CurveSkeleton graph from the surgery result.
     fn to_curve_skeleton(&self, original_mesh: &Mesh<INPUT>) -> CurveSkeleton {
@@ -503,11 +486,13 @@ pub fn extract_skeleton(
         ctx.positions.len() - ctx.is_dead.len()
     );
 
-    // Refine embedding using original mesh positions
-    ctx.refine_embedding(original_mesh);
+    // Build the skeleton
+    let mut skeleton = ctx.to_curve_skeleton(original_mesh);
 
-    // Build and return the curve skeleton graph
-    ctx.to_curve_skeleton(original_mesh)
+    // Refine embedding using original mesh positions
+    skeleton.refine_embeddings(original_mesh);
+
+    skeleton
 }
 
 /// Computes the edge quadric matrix (Eq 4 in paper).

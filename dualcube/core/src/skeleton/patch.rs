@@ -10,6 +10,25 @@ use petgraph::graph::NodeIndex;
 use petgraph::visit::EdgeRef;
 
 impl CurveSkeletonSpatial for CurveSkeleton {
+    /// Shift the position of a node to the centroid of its patch vertices.
+    fn refine_embedding(&mut self, node_index: NodeIndex, mesh: &Mesh<INPUT>) {
+        if let Some(node) = self.node_weight_mut(node_index) {
+            if node.patch_vertices.is_empty() {
+                return;
+            }
+            let centroid = patch_centroid(&node.patch_vertices, mesh);
+            node.position = centroid;
+        }
+    }
+
+    /// Apply `refine_embedding` to every node in the skeleton.
+    fn refine_embeddings(&mut self, mesh: &Mesh<INPUT>) {
+        let indices: Vec<_> = self.node_indices().collect();
+        for idx in indices {
+            self.refine_embedding(idx, mesh);
+        }
+    }
+
     /// Places a virtual vertex in the centroid of the boundaries, to close up the holes.
     /// Then uses tetrahedron volumes to compute the volume of the patch.
     fn patch_volume(&self, node_index: NodeIndex, mesh: &Mesh<INPUT>) -> f64 {

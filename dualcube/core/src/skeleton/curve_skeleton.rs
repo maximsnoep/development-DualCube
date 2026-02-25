@@ -93,6 +93,10 @@ pub trait CurveSkeletonSpatial {
 
     /// Convexity score for a group of connected patches, in [0,1].
     fn patches_convexity_score(&self, node_indices: &[NodeIndex], mesh: &Mesh<INPUT>) -> f64;
+    
+    /// Reposition the given skeleton node to the centroid of its induced surface patch.
+    fn refine_embedding(&mut self, node_index: NodeIndex, mesh: &Mesh<INPUT>);
 
-    // TODO: move patch centroid into here maybe
+    /// Reposition every node in the skeleton according to its patch centroid.
+    fn refine_embeddings(&mut self, mesh: &Mesh<INPUT>);
 }
