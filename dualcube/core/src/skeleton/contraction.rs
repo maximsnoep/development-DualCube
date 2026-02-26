@@ -1,12 +1,9 @@
 use std::collections::HashMap;
 
 use faer::{
-    linalg::solvers::Solve,
-    sparse::{
-        linalg::solvers::{Llt, SymbolicLlt},
-        SparseColMat, Triplet,
-    },
-    Mat, Side,
+    Mat, prelude::SolveLstsq, sparse::{
+        SparseColMat, Triplet, linalg::solvers::{Qr, SymbolicQr}
+    }
 };
 use log::{error, info, warn};
 use mehsh::prelude::{
@@ -14,7 +11,6 @@ use mehsh::prelude::{
 };
 use serde::{Deserialize, Serialize};
 
-// TODO:    better solver, currently squaring the weights makes precision problematic
 // TODO:    scale the input mesh to unit size (and back after contraction),
 //           currently, a very large input mesh will make forces not be balanced (initially, so convergence takes longer)
 
@@ -54,7 +50,7 @@ struct ContractionState {
     pub unstable: bool,
 
     /// Cache symbolic factorization since topology is static in this step.
-    pub symbolic: Option<SymbolicLlt<usize>>,
+    pub symbolic: Option<SymbolicQr<usize>>,
 }
 
 impl ContractionState {
@@ -93,10 +89,12 @@ impl ContractionState {
 
         // Initial wl = 10^-3 * sqrt(avg_area)
         let mut total_area = 0.0;
-        for f in mesh.face_ids() {
+        let face_ids = mesh.face_ids();
+        let num_faces = face_ids.len();
+        for f in face_ids {
             total_area += mesh.size(f);
         }
-        let avg_area = total_area / n as f64;
+        let avg_area = total_area / num_faces as f64;
         let wl = 1e-3 * avg_area.sqrt();
 
         Self {
@@ -165,8 +163,10 @@ pub fn contract_mesh<M: Tag>(mesh: &Mesh<M>, max_iterations: usize) -> Mesh<CONT
 /// Performs a single iteration of geometry contraction.
 ///
 /// # Steps
-/// 1. Construct Linear System (W_L^2 * L^T * L + W_H^2) V' = W_H^2 V
-/// 2. Solve for new positions V'
+/// 1. Construct overdetermined stacked system M V' = B
+///    where M = [ W_L * L ] and B = [   0   ]
+///              [   W_H   ]         [ W_H V ]
+/// 2. Solve for new positions V' in the least-squares sense using Sparse QR
 /// 3. Update weights W_L and W_H
 fn contract_once(mesh: &mut Mesh<CONTRACTION>, state: &mut ContractionState) {
     let num_verts = state.vert_ids.len();
@@ -174,65 +174,45 @@ fn contract_once(mesh: &mut Mesh<CONTRACTION>, state: &mut ContractionState) {
     // Setup Laplacian L triplets for sparse matrix assembly
     let l_triplets = get_laplacian_triplets(mesh, state);
 
-    // Assemble System Matrix A = (W_L * L)^T (W_L * L) + W_H^2,
-    // which simplifies to: A = W_L^2 * L^2 + W_H^2 (since L is symmetric).
-    // We compute L^2 sparse triplets manually via adjacency.
-    let mut a_entries: HashMap<(usize, usize), f64> = HashMap::new();
+    // Assemble System Matrix M (2N x N)
+    let mut triplets_m = Vec::with_capacity(l_triplets.len() + num_verts);
 
-    // Build efficient adjacency for L to compute L*L
-    let mut adj_l: Vec<Vec<(usize, f64)>> = vec![Vec::new(); num_verts];
-    for (r, c, v) in &l_triplets {
-        adj_l[*r].push((*c, *v));
+    // Top block: W_L * L
+    for (r, c, val) in l_triplets {
+        triplets_m.push(Triplet::new(r, c, state.wl * val));
     }
 
-    let wl_sq = state.wl * state.wl;
-
-    // A += W_L^2 * (L * L)
-    for i in 0..num_verts {
-        for (k, val_ik) in &adj_l[i] {
-            // L_ik exists. Now find L_kj (neighbors of k).
-            for (j, val_kj) in &adj_l[*k] {
-                let val = wl_sq * val_ik * val_kj;
-                *a_entries.entry((i, *j)).or_default() += val;
-            }
-        }
-    }
-
-    // A += W_H^2 (Diagonal)
+    // Bottom block: W_H (Diagonal)
     for (i, &v) in state.vert_ids.iter().enumerate() {
         let wh = state.wh[&v];
-        let wh_sq = wh * wh;
-        *a_entries.entry((i, i)).or_default() += wh_sq;
+        triplets_m.push(Triplet::new(num_verts + i, i, wh));
     }
 
-    // Convert Map to faer Triplets
-    let triplets_a: Vec<Triplet<usize, usize, f64>> = a_entries
-        .into_iter()
-        .map(|((r, c), val)| Triplet::new(r, c, val))
-        .collect();
-
-    // Create Sparse Matrix A
-    let mat_a = SparseColMat::try_new_from_triplets(num_verts, num_verts, &triplets_a)
+    // Create Sparse Matrix M
+    let mat_m = SparseColMat::try_new_from_triplets(2 * num_verts, num_verts, &triplets_m)
         .expect("Failed to create sparse matrix from triplets");
 
-    // Assemble RHS Matrix B = W_H^2 * V_old (dense N x 3 matrix)
-    let mat_b = Mat::from_fn(num_verts, 3, |r, c| {
-        let v = state.vert_ids[r];
-        let wh = state.wh[&v];
-        let wh_sq = wh * wh;
-        let pos = mesh.position(v);
-        match c {
-            0 => wh_sq * pos.x,
-            1 => wh_sq * pos.y,
-            2 => wh_sq * pos.z,
-            _ => unreachable!(),
+    // Assemble RHS Matrix B (2N x 3)
+    let mat_b = Mat::from_fn(2 * num_verts, 3, |r, c| {
+        if r < num_verts {
+            0.0
+        } else {
+            let i = r - num_verts;
+            let v = state.vert_ids[i];
+            let wh = state.wh[&v];
+            let pos = mesh.position(v);
+            match c {
+                0 => wh * pos.x,
+                1 => wh * pos.y,
+                2 => wh * pos.z,
+                _ => unreachable!(),
+            }
         }
     });
 
-    // Solve AX = B
-    // A is Symmetric Positive Definite (SPD)
+    // Solve M X = B in the least-squares sense
     if state.symbolic.is_none() {
-        match SymbolicLlt::try_new(mat_a.symbolic(), Side::Lower) {
+        match SymbolicQr::try_new(mat_m.symbolic()) {
             Ok(sym) => state.symbolic = Some(sym),
             Err(error) => {
                 warn!("Symbolic factorization failed: {}", error);
@@ -241,10 +221,11 @@ fn contract_once(mesh: &mut Mesh<CONTRACTION>, state: &mut ContractionState) {
             }
         }
     }
+    
     // Guaranteed to exist now
     let symbolic = state.symbolic.clone().unwrap();
 
-    let llt = match Llt::try_new_with_symbolic(symbolic, mat_a.as_ref(), Side::Lower) {
+    let qr = match Qr::try_new_with_symbolic(symbolic, mat_m.as_ref()) {
         Ok(factorization) => factorization,
         Err(error) => {
             warn!("Numeric factorization failed: {}", error);
@@ -252,7 +233,7 @@ fn contract_once(mesh: &mut Mesh<CONTRACTION>, state: &mut ContractionState) {
             return;
         }
     };
-    let solution = llt.solve(mat_b.as_ref());
+    let solution = qr.solve_lstsq(mat_b.as_ref());
 
     // Update vertex positions from solution
     for (i, &v) in state.vert_ids.iter().enumerate() {
