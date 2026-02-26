@@ -11,9 +11,6 @@ use mehsh::prelude::{
 };
 use serde::{Deserialize, Serialize};
 
-// TODO:    scale the input mesh to unit size (and back after contraction),
-//           currently, a very large input mesh will make forces not be balanced (initially, so convergence takes longer)
-
 /// Tag type for contraction-view of skeleton.
 #[derive(Debug, Clone, Default, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub struct CONTRACTION;
