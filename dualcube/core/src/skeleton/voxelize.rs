@@ -28,9 +28,9 @@ const X: IVector3D = IVector3D::new(1, 0, 0);
 const Y: IVector3D = IVector3D::new(0, 1, 0);
 const Z: IVector3D = IVector3D::new(0, 0, 1);
 
-pub fn generate_polycube(
-    skeleton: &LabeledCurveSkeleton,
-) -> (Polycube, HashMap<IVector3D, VoxelOwner>) {
+/// Generates a polycube based on an orthogonalized skeleton, and a labeled skeleton with the same structure,
+/// but with the regions on the polycube.
+pub fn generate_polycube(skeleton: &LabeledCurveSkeleton) -> (Polycube, LabeledCurveSkeleton) {
     // Map voxels to the node/edge they belong to.
     let mut voxel_owners: HashMap<IVector3D, VoxelOwner> = HashMap::default();
 
@@ -154,13 +154,30 @@ pub fn generate_polycube(
             .0
     };
 
+    let polycube_skeleton = generate_labeled_skeleton(skeleton, &mesh, voxel_owners);
+
     (
         Polycube {
             structure: mesh,
             region_to_vertex: BiHashMap::new(), // We do not have a dual (yet) so this has to be empty // TODO: create trivial dual
         },
-        voxel_owners,
+        polycube_skeleton,
     )
+}
+
+/// For a given polycube based on a skeleton, generates an isomorphic skeleton but with the regions of the polycube.
+fn generate_labeled_skeleton(
+    original: &LabeledCurveSkeleton,
+    mesh: &Mesh<POLYCUBE>,
+    voxel_owners: HashMap<IVector3D, VoxelOwner>,
+) -> LabeledCurveSkeleton {
+    // We want the exact same skeleton structure (including node IDs). We will only change mesh vertices (and centroids).
+    let mut poly_skeleton = original.clone();
+
+    // TODO change stuff here actually
+
+    poly_skeleton
+
 }
 
 const DIRECTIONS: [(IVector3D, [IVector3D; 4]); 6] = [

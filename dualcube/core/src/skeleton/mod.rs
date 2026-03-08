@@ -5,12 +5,11 @@ use mehsh::prelude::Mesh;
 use serde::{Deserialize, Serialize};
 
 use crate::{
-    prelude::{INPUT, Polycube},
-    skeleton::{
+    polycube, prelude::{INPUT, Polycube}, skeleton::{
         connectivity_surgery::extract_skeleton, contraction::{CONTRACTION, contract_mesh}, curve_skeleton::{CurveSkeleton, CurveSkeletonManipulation, CurveSkeletonSpatial}, embeddability::make_embedding_possible, orthogonalize::{LabeledCurveSkeleton, greedy_orthogonalization}, simplify::{convexify, simplify_skeleton}, volume_collapse::{
             VolumeCollapseHistory, construct_skeleton_from_history, volume_based_collapse
         }, voxelize::generate_polycube
-    },
+    }
 };
 
 pub mod curve_skeleton;
@@ -49,6 +48,9 @@ pub struct SkeletonData {
     ///  - Each node has an unique integer location,
     ///  - Each edge has a direction and length.
     labeled_skeleton: Option<LabeledCurveSkeleton>,
+
+    /// A skeleton isomorphic to `labeled_skeleton`, but with node positions and patch vertices updated to match the polycube structure.
+    polycube_skeleton: Option<LabeledCurveSkeleton>,
 }
 
 impl SkeletonData {
@@ -105,17 +107,23 @@ impl SkeletonData {
             surgery_and_simplification(&mesh, &self.contraction_mesh);
 
         // Reuse pipeline post simplifcation
-        let (labeled, history, polycube) = post_simplification_stage(
+        let (labeled, history, polycube_and_skeleton) = post_simplification_stage(
             mesh,
             convexity_threshold,
             convexity_merge_threshold,
             &mut cleaned_skeleton,
         );
 
+        let (polycube, polycube_skeleton) = match polycube_and_skeleton {
+            Some((p, s)) => (Some(p), Some(s)),
+            None => (None, None),
+        };
+
         self.raw_curve_skeleton = Some(curve_skeleton); // Not updated now, but we calculate it anyways so might as well save it
         self.cleaned_skeleton = Some(cleaned_skeleton);
         self.collapse_history = Some(history);
         self.labeled_skeleton = labeled;
+        self.polycube_skeleton = polycube_skeleton;
 
         polycube
     }
@@ -134,12 +142,17 @@ pub fn get_skeleton_based_mapping(
     let (raw_curve_skeleton, mut cleaned_skeleton) =
         surgery_and_simplification(&mesh, &contracted_mesh);
 
-    let (labeled, history, polycube) = post_simplification_stage(
+    let (labeled, history, polycube_and_skeleton) = post_simplification_stage(
         mesh,
         convexity_threshold,
         convexity_merge_threshold,
         &mut cleaned_skeleton,
     );
+
+    let (polycube, polycube_skeleton) = match polycube_and_skeleton {
+        Some((p, s)) => (Some(p), Some(s)),
+        None => (None, None),
+    };
 
     (
         SkeletonData {
@@ -148,6 +161,7 @@ pub fn get_skeleton_based_mapping(
             cleaned_skeleton: Some(cleaned_skeleton),
             collapse_history: Some(history),
             labeled_skeleton: labeled,
+            polycube_skeleton
         },
         polycube,
     )
@@ -178,7 +192,7 @@ fn post_simplification_stage(
 ) -> (
     Option<LabeledCurveSkeleton>,
     VolumeCollapseHistory,
-    Option<Polycube>,
+    Option<(Polycube, LabeledCurveSkeleton)>,
 ) {
     // Convexify skeleton to make patch volume close to convex shapes, which map nicely to cubes.
     convexify(
@@ -210,10 +224,9 @@ fn post_simplification_stage(
     let history = volume_based_collapse(&*cleaned_skeleton, &mesh);
 
     // Generate polycube based on labeled skeleton
-    let polycube: Option<Polycube> = match &labeled {
+    let polycube: Option<(Polycube, LabeledCurveSkeleton)> = match &labeled {
         Some(labeled) => {
-            let (polycube, _voxel_map) = generate_polycube(labeled);
-            Some(polycube)
+            Some(generate_polycube(labeled))
         },
         None => None,
     };
