@@ -25,6 +25,7 @@ mod patch;
 mod voxelize;
 mod simplify;
 mod volume_collapse;
+mod cross_parameterize;
 
 /// Holds all relevant information for skeleton-based polycube initialization.
 ///
