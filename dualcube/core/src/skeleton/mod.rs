@@ -5,11 +5,19 @@ use mehsh::prelude::Mesh;
 use serde::{Deserialize, Serialize};
 
 use crate::{
-    polycube, prelude::{INPUT, Polycube}, skeleton::{
-        connectivity_surgery::extract_skeleton, contraction::{CONTRACTION, contract_mesh}, curve_skeleton::{CurveSkeleton, CurveSkeletonManipulation, CurveSkeletonSpatial}, embeddability::make_embedding_possible, orthogonalize::{LabeledCurveSkeleton, greedy_orthogonalization}, simplify::{convexify, simplify_skeleton}, volume_collapse::{
-            VolumeCollapseHistory, construct_skeleton_from_history, volume_based_collapse
-        }, voxelize::generate_polycube
-    }
+    prelude::{Polycube, INPUT},
+    skeleton::{
+        connectivity_surgery::extract_skeleton,
+        contraction::{contract_mesh, CONTRACTION},
+        curve_skeleton::{CurveSkeleton, CurveSkeletonManipulation, CurveSkeletonSpatial},
+        embeddability::make_embedding_possible,
+        orthogonalize::{greedy_orthogonalization, LabeledCurveSkeleton},
+        simplify::{convexify, simplify_skeleton},
+        volume_collapse::{
+            construct_skeleton_from_history, volume_based_collapse, VolumeCollapseHistory,
+        },
+        voxelize::generate_polycube,
+    },
 };
 
 pub mod curve_skeleton;
@@ -18,13 +26,13 @@ pub mod orthogonalize;
 mod boundary_loop;
 mod connectivity_surgery;
 mod contraction;
+mod cross_parameterize;
 mod embeddability;
 mod manipulation;
 mod patch;
-mod voxelize;
 mod simplify;
 mod volume_collapse;
-mod cross_parameterize;
+mod voxelize;
 
 /// Holds all relevant information for skeleton-based polycube initialization.
 ///
@@ -161,7 +169,7 @@ pub fn get_skeleton_based_mapping(
             cleaned_skeleton: Some(cleaned_skeleton),
             collapse_history: Some(history),
             labeled_skeleton: labeled,
-            polycube_skeleton
+            polycube_skeleton,
         },
         polycube,
     )
@@ -225,9 +233,7 @@ fn post_simplification_stage(
 
     // Generate polycube based on labeled skeleton
     let polycube: Option<(Polycube, LabeledCurveSkeleton)> = match &labeled {
-        Some(labeled) => {
-            Some(generate_polycube(labeled))
-        },
+        Some(labeled) => Some(generate_polycube(labeled)),
         None => None,
     };
 

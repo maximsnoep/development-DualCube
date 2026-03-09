@@ -3,12 +3,12 @@ use petgraph::graph::{EdgeIndex, NodeIndex, UnGraph};
 use petgraph::visit::EdgeRef;
 use serde::{Deserialize, Serialize};
 
-use std::collections::{BinaryHeap, HashMap, HashSet, VecDeque};
 use bimap::BiHashMap;
+use std::collections::{BinaryHeap, HashMap, HashSet, VecDeque};
 
 use crate::{
     prelude::{CurveSkeleton, PrincipalDirection},
-    skeleton::curve_skeleton::SkeletonNode,
+    skeleton::{boundary_loop::BoundaryLoop, curve_skeleton::SkeletonNode},
 };
 
 /// A 3-dimensional integer vector.
@@ -25,13 +25,13 @@ pub struct OrthogonalSkeletonEdge {
     #[serde(default)]
     pub sign: AxisSign,
     pub length: u32,
+    pub boundary_loop: BoundaryLoop,
 }
 /// Curve skeleton with axis-aligned edges and integer grid coordinates assigned to each node.
 pub type LabeledCurveSkeleton = UnGraph<OrthogonalSkeletonNode, OrthogonalSkeletonEdge>;
 
 /// Curve skeleton where every edge has an axis label, but node coordinates are not yet assigned.
 type EdgeLabeledCurveSkeleton = UnGraph<SkeletonNode, OrthogonalSkeletonEdge>;
-
 
 /// Sign along a principal axis (+X vs -X).
 #[derive(Copy, Clone, Default, PartialEq, Eq, Debug, Hash, Serialize, Deserialize)]
@@ -166,13 +166,19 @@ fn axis_sign_conflict_around_node(
 
 /// Build a working copy of the skeleton with all edges unlabeled.
 ///
-/// Returns the partial graph along with a bidirectional map between original
-/// and copied node indices.
+/// Returns the partial graph, a bidirectional node-index map, and a map from
+/// each partial `EdgeIndex` to the boundary loop already stored on that edge
+/// in the source skeleton.
 fn build_unlabeled_partial(
     curve_skeleton: &CurveSkeleton,
-) -> (PartialEdgeLabeledCurveSkeleton, BiHashMap<NodeIndex, NodeIndex>) {
+) -> (
+    PartialEdgeLabeledCurveSkeleton,
+    BiHashMap<NodeIndex, NodeIndex>,
+    HashMap<EdgeIndex, BoundaryLoop>,
+) {
     let mut partial = PartialEdgeLabeledCurveSkeleton::new_undirected();
     let mut map: BiHashMap<NodeIndex, NodeIndex> = BiHashMap::new();
+    let mut boundary_loops: HashMap<EdgeIndex, BoundaryLoop> = HashMap::new();
 
     for node in curve_skeleton.node_indices() {
         let w = curve_skeleton.node_weight(node).unwrap().clone();
@@ -184,10 +190,14 @@ fn build_unlabeled_partial(
         let (a, b) = curve_skeleton.edge_endpoints(edge).unwrap();
         let pa = *map.get_by_left(&a).expect("Node missing in map");
         let pb = *map.get_by_left(&b).expect("Node missing in map");
-        partial.add_edge(pa, pb, None);
+        let partial_edge = partial.add_edge(pa, pb, None);
+        let bl = curve_skeleton.edge_weight(edge)
+            .expect("CurveSkeleton edge missing weight")
+            .clone();
+        boundary_loops.insert(partial_edge, bl);
     }
 
-    (partial, map)
+    (partial, map, boundary_loops)
 }
 
 /// Collects all node indices and builds a map from NodeIndex to dense vector index.
@@ -374,6 +384,7 @@ fn partial_from_edge_labeled(s: &EdgeLabeledCurveSkeleton) -> PartialEdgeLabeled
 /// Realizes a partial labeling as a fully labeled skeleton.
 fn finalize_partial_to_realized(
     partial: &PartialEdgeLabeledCurveSkeleton,
+    boundary_loops: &HashMap<EdgeIndex, BoundaryLoop>,
 ) -> Option<LabeledCurveSkeleton> {
     for edge_ref in partial.edge_references() {
         if edge_ref.weight().is_none() {
@@ -400,6 +411,10 @@ fn finalize_partial_to_realized(
             Some(d) => d,
             None => unreachable!(),
         };
+        let bl = boundary_loops
+            .get(&e.id())
+            .cloned()
+            .expect("every partial edge must have a boundary loop");
         full.add_edge(
             out_map[&a],
             out_map[&b],
@@ -407,6 +422,7 @@ fn finalize_partial_to_realized(
                 direction: signed.axis,
                 sign: signed.sign,
                 length: 1,
+                boundary_loop: bl,
             },
         );
     }
@@ -418,7 +434,7 @@ fn finalize_partial_to_realized(
 ///
 /// Edge priority is weighted by patch size and directional confidence.
 fn backtracking_orthogonalization(curve_skeleton: &CurveSkeleton) -> Option<LabeledCurveSkeleton> {
-    let (mut partial, node_map) = build_unlabeled_partial(curve_skeleton);
+    let (mut partial, node_map, boundary_loops) = build_unlabeled_partial(curve_skeleton);
 
     warn!("Greedy orthogonalization failed, falling back to backtracking search.");
 
@@ -521,8 +537,12 @@ fn backtracking_orthogonalization(curve_skeleton: &CurveSkeleton) -> Option<Labe
         for cand in candidate_axes {
             // Determine edge endpoint order in the partial graph; sign is stored from a->b.
             let (a, b) = partial.edge_endpoints(plan.edge).unwrap();
-            let orig_a = *node_map.get_by_right(&a).expect("Partial node not found in map");
-            let orig_b = *node_map.get_by_right(&b).expect("Partial node not found in map");
+            let orig_a = *node_map
+                .get_by_right(&a)
+                .expect("Partial node not found in map");
+            let orig_b = *node_map
+                .get_by_right(&b)
+                .expect("Partial node not found in map");
             let disp_ab = curve_skeleton[orig_b].position - curve_skeleton[orig_a].position;
             let preferred_sign = axis_sign_from_value(axis_value(disp_ab, cand));
             let sign_candidates = [preferred_sign, preferred_sign.flipped()];
@@ -576,7 +596,7 @@ fn backtracking_orthogonalization(curve_skeleton: &CurveSkeleton) -> Option<Labe
         for (edge, dir) in labels {
             *partial.edge_weight_mut(edge).unwrap() = Some(dir);
         }
-        finalize_partial_to_realized(&partial)
+        finalize_partial_to_realized(&partial, &boundary_loops)
     } else {
         None
     }
@@ -706,12 +726,9 @@ pub fn realize(s: &EdgeLabeledCurveSkeleton) -> Option<LabeledCurveSkeleton> {
     let comp_y = components_excluding_labeled(s, PrincipalDirection::Y, &nodes, &idx_map);
     let comp_z = components_excluding_labeled(s, PrincipalDirection::Z, &nodes, &idx_map);
 
-    let cx =
-        compress_components_from_oriented_edges(s, PrincipalDirection::X, &comp_x,  &idx_map)?;
-    let cy =
-        compress_components_from_oriented_edges(s, PrincipalDirection::Y, &comp_y,  &idx_map)?;
-    let cz =
-        compress_components_from_oriented_edges(s, PrincipalDirection::Z, &comp_z,  &idx_map)?;
+    let cx = compress_components_from_oriented_edges(s, PrincipalDirection::X, &comp_x, &idx_map)?;
+    let cy = compress_components_from_oriented_edges(s, PrincipalDirection::Y, &comp_y, &idx_map)?;
+    let cz = compress_components_from_oriented_edges(s, PrincipalDirection::Z, &comp_z, &idx_map)?;
 
     // Assemble coordinate vector for each node.
     let mut coords: Vec<IVector3D> = Vec::with_capacity(nodes.len());
@@ -743,6 +760,7 @@ pub fn realize(s: &EdgeLabeledCurveSkeleton) -> Option<LabeledCurveSkeleton> {
                     direction: w.direction,
                     sign: w.sign,
                     length: w.length,
+                    boundary_loop: w.boundary_loop.clone(),
                 },
             );
         }
@@ -798,7 +816,7 @@ pub fn realize(s: &EdgeLabeledCurveSkeleton) -> Option<LabeledCurveSkeleton> {
 ///
 /// If greedy gets stuck, a global backtracking search is used.
 pub fn greedy_orthogonalization(curve_skeleton: &CurveSkeleton) -> Option<LabeledCurveSkeleton> {
-    let (mut partial, node_map) = build_unlabeled_partial(curve_skeleton);
+    let (mut partial, node_map, boundary_loops) = build_unlabeled_partial(curve_skeleton);
 
     // Helper to pick the best (highest-degree, then largest patch) unvisited node.
     let pick_best_unvisited = |visited: &HashSet<NodeIndex>| {
@@ -897,8 +915,12 @@ pub fn greedy_orthogonalization(curve_skeleton: &CurveSkeleton) -> Option<Labele
                 for cand in candidates {
                     // Determine edge endpoint order in the partial graph; sign is stored from a->b.
                     let (a, b) = partial.edge_endpoints(eidx).unwrap();
-                    let orig_a = *node_map.get_by_right(&a).expect("Partial node not found in map");
-                    let orig_b = *node_map.get_by_right(&b).expect("Partial node not found in map");
+                    let orig_a = *node_map
+                        .get_by_right(&a)
+                        .expect("Partial node not found in map");
+                    let orig_b = *node_map
+                        .get_by_right(&b)
+                        .expect("Partial node not found in map");
                     let disp_ab = curve_skeleton[orig_b].position - curve_skeleton[orig_a].position;
                     let preferred_sign = axis_sign_from_value(axis_value(disp_ab, cand));
                     let sign_candidates = [preferred_sign, preferred_sign.flipped()];
@@ -911,7 +933,8 @@ pub fn greedy_orthogonalization(curve_skeleton: &CurveSkeleton) -> Option<Labele
                             continue;
                         }
 
-                        *partial.edge_weight_mut(eidx).unwrap() = Some(SignedAxis { axis: cand, sign });
+                        *partial.edge_weight_mut(eidx).unwrap() =
+                            Some(SignedAxis { axis: cand, sign });
                         if is_partially_realizable(&partial) {
                             assigned = true;
                             break;
@@ -935,5 +958,5 @@ pub fn greedy_orthogonalization(curve_skeleton: &CurveSkeleton) -> Option<Labele
         }
     }
 
-    finalize_partial_to_realized(&partial)
+    finalize_partial_to_realized(&partial, &boundary_loops)
 }

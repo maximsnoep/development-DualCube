@@ -1,7 +1,7 @@
 use std::collections::HashMap;
 
 use bimap::BiHashMap;
-use log::error;
+use log::{error, info};
 use mehsh::prelude::{Mesh, Vector3D};
 use petgraph::graph::NodeIndex;
 use petgraph::visit::EdgeRef;
@@ -174,10 +174,20 @@ fn generate_labeled_skeleton(
     // We want the exact same skeleton structure (including node IDs). We will only change mesh vertices (and centroids).
     let mut poly_skeleton = original.clone();
 
+    // TODO: recompute boundary loops from polycube mesh once patches are remapped.
+    for edge_idx in poly_skeleton.edge_indices() {
+        // temp debug test
+        let len = poly_skeleton
+            .edge_weight_mut(edge_idx)
+            .unwrap()
+            .boundary_loop.edge_midpoints.len();
+
+        info!("Edge {:?} has {} edge-midpoint voxels on its boundary loop.", edge_idx, len);
+    }
+
     // TODO change stuff here actually
 
     poly_skeleton
-
 }
 
 const DIRECTIONS: [(IVector3D, [IVector3D; 4]); 6] = [
