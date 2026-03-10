@@ -12,17 +12,16 @@ use crate::quad::Quad;
 use crate::skeleton::boundary_loop::BoundaryLoop;
 use crate::skeleton::orthogonalize::{IVector3D, LabeledCurveSkeleton};
 
-/// We keep track of which voxel belongs to which node/edge, to know where the regions belong.
-pub enum VoxelOwner {
+/// Which skeleton node a voxel's surface vertices belong to.
+enum VoxelOwner {
     /// A voxel that corresponds directly to a graph node.
     Node(NodeIndex),
-
-    /// A voxel that correspond to 1 node entirely.
+    /// A voxel along a skeleton edge, belonging to one node entirely.
     Edge(NodeIndex),
-
-    /// A voxel that sits at the midpoint of a graph edge, splitting ownership.
-    /// Stores (source node, target node, unit direction from source toward target).
-    EdgeMidpoint(NodeIndex, NodeIndex, IVector3D),
+    /// The single midpoint voxel on a skeleton edge, splitting ownership.
+    /// Surface vertices are assigned to `source` or `target` based on their
+    /// position relative to the voxel center along `dir`.
+    Midpoint { source: NodeIndex, target: NodeIndex, dir: IVector3D },
 }
 
 // TODO: integrate into type?
@@ -101,13 +100,12 @@ pub fn generate_polycube(skeleton: &LabeledCurveSkeleton, mut omega: usize) -> (
         for i in 1..total_steps {
             pos += step / 2;
 
-            // Determine Owner based on which side of the midpoint we are
             let owner = if i < mid_point {
                 VoxelOwner::Edge(source)
             } else if i > mid_point {
                 VoxelOwner::Edge(target)
             } else {
-                VoxelOwner::EdgeMidpoint(source, target, dir_vec)
+                VoxelOwner::Midpoint { source, target, dir: dir_vec }
             };
 
             voxel_owners.insert(pos, owner);
@@ -143,13 +141,19 @@ pub fn generate_polycube(skeleton: &LabeledCurveSkeleton, mut omega: usize) -> (
                         ));
                         idx
                     });
-                    // First non-midpoint voxel to touch this vertex claims ownership.
-                    if !vertex_owner_map.contains_key(&idx) {
-                        match owner {
-                            VoxelOwner::Node(node) | VoxelOwner::Edge(node) => {
-                                vertex_owner_map.insert(idx, *node);
+                    // Assign ownership to the vertex.
+                    match owner {
+                        VoxelOwner::Node(n) | VoxelOwner::Edge(n) => {
+                            vertex_owner_map.entry(idx).or_insert(*n);
+                        }
+                        VoxelOwner::Midpoint { source, target, dir } => {
+                            let d = grid_pos - center;
+                            let dot = d.x * dir.x + d.y * dir.y + d.z * dir.z;
+                            let node = if dot > 0 { *target } else { *source };
+                            let entry = vertex_owner_map.entry(idx).or_insert(node);
+                            if *entry != *source && *entry != *target {
+                                *entry = node;
                             }
-                            VoxelOwner::EdgeMidpoint(..) => {}
                         }
                     }
                     idx
@@ -159,30 +163,15 @@ pub fn generate_polycube(skeleton: &LabeledCurveSkeleton, mut omega: usize) -> (
         }
     }
 
-    // Second pass: assign vertices that belong exclusively to EdgeMidpoint voxels.
-    // Each such vertex is placed on the source or target side based on its position
-    // relative to the midpoint center along the edge direction.
-    for (&voxel_pos, owner) in &voxel_owners {
-        if let VoxelOwner::EdgeMidpoint(source, target, dir_vec) = owner {
-            let center = voxel_pos * 2;
-            for (dir, face_offsets) in &DIRECTIONS {
-                let neighbor_pos = voxel_pos + *dir;
-                if voxel_owners.contains_key(&neighbor_pos) {
-                    continue; // internal face, no surface vertices here
-                }
-                for offset in face_offsets {
-                    let grid_pos = center + *offset;
-                    if let Some(&idx) = vertex_map.get(&grid_pos) {
-                        if !vertex_owner_map.contains_key(&idx) {
-                            let d = grid_pos - center;
-                            let dot = d.x * dir_vec.x + d.y * dir_vec.y + d.z * dir_vec.z;
-                            let node = if dot > 0 { *target } else { *source };
-                            vertex_owner_map.insert(idx, node);
-                        }
-                    }
-                }
-            }
-        }
+    // Safety: every surface vertex should have been claimed by a Node or Edge voxel.
+    let unassigned = (0..positions.len())
+        .filter(|idx| !vertex_owner_map.contains_key(idx))
+        .count();
+    if unassigned > 0 {
+        error!(
+            "Polycube: {} of {} surface vertices were not assigned to any patch.",
+            unassigned, positions.len()
+        );
     }
 
     let (mesh, vert_id_map, _): (Mesh<POLYCUBE>, _, _) = if faces.is_empty() {
@@ -273,9 +262,24 @@ fn generate_labeled_skeleton(
             total_assigned, total_verts
         );
     }
+    // Check for empty patches.
+    for node_idx in poly_skeleton.node_indices() {
+        if poly_skeleton[node_idx].skeleton_node.patch_vertices.is_empty() {
+            warn!("Polycube skeleton node {:?} has 0 patch vertices.", node_idx);
+        }
+    }
     for edge_idx in poly_skeleton.edge_indices() {
         let loop_len = poly_skeleton.edge_weight(edge_idx).unwrap().boundary_loop.edge_midpoints.len();
-        if loop_len != 4 {
+        let (src, tgt) = poly_skeleton.edge_endpoints(edge_idx).unwrap();
+        if loop_len == 0 {
+            let src_n = poly_skeleton[src].skeleton_node.patch_vertices.len();
+            let tgt_n = poly_skeleton[tgt].skeleton_node.patch_vertices.len();
+            error!(
+                "Polycube skeleton edge {:?} ({:?}↔{:?}) has EMPTY boundary loop. \
+                 Source patch has {} verts, target patch has {} verts.",
+                edge_idx, src, tgt, src_n, tgt_n
+            );
+        } else if loop_len != 4 {
             warn!(
                 "Polycube skeleton edge {:?} has boundary loop of length {} (expected 4).",
                 edge_idx, loop_len
@@ -331,7 +335,24 @@ fn compute_quad_boundary_loop(
         .collect();
 
     if boundary_faces.is_empty() {
-        warn!("No boundary faces found between {:?} and {:?}.", source, target);
+        // Check: count faces that have at least one source + target vertex but
+        // were rejected because of a foreign vertex.
+        let near_miss_count = polycube_mesh.face_ids().iter().filter(|&&face_id| {
+            let mut has_source = false;
+            let mut has_target = false;
+            let mut has_foreign = false;
+            for v in polycube_mesh.vertices(face_id) {
+                if source_verts.contains(&v) { has_source = true; }
+                else if target_verts.contains(&v) { has_target = true; }
+                else { has_foreign = true; }
+            }
+            has_source && has_target && has_foreign
+        }).count();
+        warn!(
+            "No boundary faces found between {:?} and {:?}. \
+             ({} faces had source+target vertices but also a foreign vertex.)",
+            source, target, near_miss_count
+        );
         return BoundaryLoop { edge_midpoints: Vec::new() };
     }
 
@@ -383,7 +404,14 @@ fn compute_quad_boundary_loop(
 
         // If the twin lands on a non-boundary face, stop gracefully.
         if !boundary_faces.contains(&polycube_mesh.face(next)) {
-            warn!("Boundary loop left pure boundary faces; loop may be incomplete.");
+            let twin_face = polycube_mesh.face(next);
+            let face_verts: Vec<_> = polycube_mesh.vertices(twin_face).collect();
+            let owners: Vec<_> = face_verts.iter().map(|v| vertex_to_node.get(v)).collect();
+            warn!(
+                "Boundary loop left pure boundary faces; loop may be incomplete. \
+                 {:?}↔{:?}, twin face has {} verts with owners: {:?}",
+                source, target, face_verts.len(), owners
+            );
             break;
         }
 
