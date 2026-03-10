@@ -126,6 +126,8 @@ impl SkeletonData {
         convexity_merge_threshold: f64,
         omega: usize,
     ) -> (Option<Polycube>, Option<Quad>) {
+        let mesh_ref = Arc::clone(&mesh);
+
         // Reuse contraction
         let (curve_skeleton, mut cleaned_skeleton) =
             surgery_and_simplification(&mesh, &self.contraction_mesh);
@@ -144,12 +146,19 @@ impl SkeletonData {
             None => (None, None, None),
         };
 
+        let polycube_map = compute_polycube_map(
+            labeled.as_ref(),
+            polycube_skeleton.as_ref(),
+            &mesh_ref,
+            polycube.as_ref(),
+        );
+
         self.raw_curve_skeleton = Some(curve_skeleton); // Not updated now, but we calculate it anyways so might as well save it
         self.cleaned_skeleton = Some(cleaned_skeleton);
         self.collapse_history = Some(history);
         self.labeled_skeleton = labeled;
         self.polycube_skeleton = polycube_skeleton;
-        self.polycube_map = None; // TODO: compute cross-parameterization
+        self.polycube_map = polycube_map;
 
         (polycube, quad)
     }
@@ -165,6 +174,7 @@ pub fn get_skeleton_based_mapping(
 ) -> (SkeletonData, Option<Polycube>, Option<Quad>) {
     // Start by doing contraction
     let contracted_mesh = contract_mesh(&mesh, 50);
+    let mesh_ref = Arc::clone(&mesh);
 
     let (raw_curve_skeleton, mut cleaned_skeleton) =
         surgery_and_simplification(&mesh, &contracted_mesh);
@@ -182,6 +192,13 @@ pub fn get_skeleton_based_mapping(
         None => (None, None, None),
     };
 
+    let polycube_map = compute_polycube_map(
+        labeled.as_ref(),
+        polycube_skeleton.as_ref(),
+        &mesh_ref,
+        polycube.as_ref(),
+    );
+
     (
         SkeletonData {
             contraction_mesh: Arc::new(contracted_mesh),
@@ -190,11 +207,32 @@ pub fn get_skeleton_based_mapping(
             collapse_history: Some(history),
             labeled_skeleton: labeled,
             polycube_skeleton,
-            polycube_map: None, // TODO: compute cross-parameterization
+            polycube_map,
         },
         polycube,
         quad,
     )
+}
+
+/// Computes the polycube map if all required data is available.
+fn compute_polycube_map(
+    input_skeleton: Option<&LabeledCurveSkeleton>,
+    polycube_skeleton: Option<&LabeledCurveSkeleton>,
+    input_mesh: &Mesh<INPUT>,
+    polycube: Option<&Polycube>,
+) -> Option<PolycubeMap> {
+    match (input_skeleton, polycube_skeleton, polycube) {
+        (Some(input_skel), Some(poly_skel), Some(poly)) => {
+            let polycube_mesh: Mesh<INPUT> = Mesh::convert(&poly.structure);
+            Some(cross_parameterize::cross_parameterize(
+                input_skel,
+                poly_skel,
+                input_mesh,
+                &polycube_mesh,
+            ))
+        }
+        _ => None,
+    }
 }
 
 fn surgery_and_simplification(
