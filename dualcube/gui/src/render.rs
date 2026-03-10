@@ -1,4 +1,4 @@
-use crate::render_skeleton::{create_labeled_skeleton_gizmos, create_patch_boundary_gizmos, create_patch_convexity_mesh, create_patch_mesh, create_skeleton_gizmos};
+use crate::render_skeleton::{create_labeled_skeleton_gizmos, create_patch_boundary_gizmos, create_patch_convexity_mesh, create_patch_mesh, create_polycube_patch_mesh, create_polycube_patch_boundary_gizmos, create_skeleton_gizmos};
 use crate::ui::UiResource;
 use crate::{colors, MainMesh, PerpetualGizmos};
 use crate::{
@@ -377,6 +377,7 @@ pub fn update_render_settings(
                 |(Objects::InputMesh, "wireframe")
                 | (Objects::InputMesh, "patches")
                 | (Objects::Polycube, "gray")
+                | (Objects::Polycube, "patches")
                 | (Objects::Polycube, "paths")
                 | (Objects::Polycube, "flat paths")
                 | (Objects::PolycubeMap, "colored")
@@ -826,19 +827,37 @@ pub fn refresh(solution: &Solution, configuration: &Configuration) -> RenderObje
                         }
                     }
 
-                    render_object_store.add_object(
-                        object,
-                        RenderObject::default()
-                            .mesh(&polycube.structure, &black_color_map, "black")
-                            .mesh(&polycube.structure, &gray_color_map, "gray")
-                            .mesh(&polycube.structure, &colored_color_map, "colored")
-                            .gizmo(gizmos_xloops, 6., -0.001, "x-loops")
-                            .gizmo(gizmos_yloops, 6., -0.0011, "y-loops")
-                            .gizmo(gizmos_zloops, 6., -0.00111, "z-loops")
-                            .gizmo(gizmos_paths, 7., -0.001, "paths")
-                            .gizmo(gizmos_flat_paths, 5., -0.0011, "flat paths")
-                            .to_owned(),
-                    );
+                    let mut render_obj = RenderObject::default();
+                    render_obj
+                        .mesh(&polycube.structure, &black_color_map, "black")
+                        .mesh(&polycube.structure, &gray_color_map, "gray")
+                        .mesh(&polycube.structure, &colored_color_map, "colored")
+                        .gizmo(gizmos_xloops, 6., -0.001, "x-loops")
+                        .gizmo(gizmos_yloops, 6., -0.0011, "y-loops")
+                        .gizmo(gizmos_zloops, 6., -0.00111, "z-loops")
+                        .gizmo(gizmos_paths, 7., -0.001, "paths")
+                        .gizmo(gizmos_flat_paths, 5., -0.0011, "flat paths");
+
+                    // Add polycube patch visualization if polycube skeleton is available.
+                    if let Some(polycube_skeleton) = solution.skeleton.as_ref().and_then(|s| s.polycube_skeleton()) {
+                        let patch_mesh = create_polycube_patch_mesh(
+                            polycube_skeleton,
+                            &polycube.structure,
+                            translation,
+                            scale,
+                        );
+                        render_obj.bevy_mesh(patch_mesh, "patches");
+
+                        let boundary_gizmos = create_polycube_patch_boundary_gizmos(
+                            polycube_skeleton,
+                            &polycube.structure,
+                            translation,
+                            scale,
+                        );
+                        render_obj.gizmo(boundary_gizmos, 1.0, -0.00016, "patches");
+                    }
+
+                    render_object_store.add_object(object, render_obj);
                 }
             }
             // Adds the POLYCUBE to our RenderObjectStore, it has:

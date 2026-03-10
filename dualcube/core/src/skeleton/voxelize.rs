@@ -1,14 +1,15 @@
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 use bimap::BiHashMap;
 use log::{error, info, warn};
-use mehsh::prelude::{Mesh, Vector3D};
+use mehsh::prelude::{EdgeKey, FaceKey, HasEdges, HasVertices, Mesh, Vector3D, VertKey};
 use petgraph::graph::NodeIndex;
 use petgraph::visit::EdgeRef;
 
 use crate::polycube::POLYCUBE;
-use crate::prelude::{Polycube, PrincipalDirection};
-use crate::quad::{QUAD, Quad};
+use crate::prelude::{Polycube, PrincipalDirection, VertID, EdgeID, INPUT};
+use crate::quad::Quad;
+use crate::skeleton::boundary_loop::BoundaryLoop;
 use crate::skeleton::orthogonalize::{IVector3D, LabeledCurveSkeleton};
 
 /// We keep track of which voxel belongs to which node/edge, to know where the regions belong.
@@ -112,25 +113,15 @@ pub fn generate_polycube(skeleton: &LabeledCurveSkeleton, mut omega: usize) -> (
         }
     }
 
-    // Setup vertices and faces for polycube mesh.
+    // Build polycube mesh vertices and faces, tracking which node owns each vertex index.
     let mut vertex_map: HashMap<IVector3D, usize> = HashMap::default();
+    let mut vertex_owner_map: HashMap<usize, NodeIndex> = HashMap::default();
     let mut positions = Vec::<Vector3D>::new();
     let mut faces = Vec::<Vec<usize>>::new();
 
-    let mut intern_vertex = |grid_pos: IVector3D| -> usize {
-        *vertex_map.entry(grid_pos).or_insert_with(|| {
-            let idx = positions.len();
-            positions.push(Vector3D::new(
-                f64::from(grid_pos.x) / 2.,
-                f64::from(grid_pos.y) / 2.,
-                f64::from(grid_pos.z) / 2.,
-            ));
-            idx
-        })
-    };
-
     for &voxel_pos in voxel_owners.keys() {
         let center = voxel_pos * 2;
+        let owner = &voxel_owners[&voxel_pos];
 
         for (dir, face_offsets) in &DIRECTIONS {
             let neighbor_pos = voxel_pos + *dir;
@@ -140,19 +131,39 @@ pub fn generate_polycube(skeleton: &LabeledCurveSkeleton, mut omega: usize) -> (
 
             let quad = face_offsets
                 .iter()
-                .map(|offset| intern_vertex(center + *offset))
+                .map(|offset| {
+                    let grid_pos = center + *offset;
+                    let idx = *vertex_map.entry(grid_pos).or_insert_with(|| {
+                        let idx = positions.len();
+                        positions.push(Vector3D::new(
+                            f64::from(grid_pos.x) / 2.,
+                            f64::from(grid_pos.y) / 2.,
+                            f64::from(grid_pos.z) / 2.,
+                        ));
+                        idx
+                    });
+                    // First non-midpoint voxel to touch this vertex claims ownership.
+                    if !vertex_owner_map.contains_key(&idx) {
+                        match owner {
+                            VoxelOwner::Node(node) | VoxelOwner::Edge(node) => {
+                                vertex_owner_map.insert(idx, *node);
+                            }
+                            VoxelOwner::EdgeMidpoint() => {}
+                        }
+                    }
+                    idx
+                })
                 .collect::<Vec<_>>();
             faces.push(quad);
         }
     }
 
-    let mesh: Mesh<POLYCUBE> = if faces.is_empty() {
+    let (mesh, vert_id_map, _): (Mesh<POLYCUBE>, _, _) = if faces.is_empty() {
         error!("Polycube mesh has no faces.");
-        Mesh::default()
+        (Mesh::default(), Default::default(), Default::default())
     } else {
         Mesh::from(&faces, &positions)
             .expect("Failed to build voxel polycube mesh")
-            .0
     };
 
     // Generate a quad mesh for the polycube
@@ -163,8 +174,7 @@ pub fn generate_polycube(skeleton: &LabeledCurveSkeleton, mut omega: usize) -> (
     let quad = Quad::from_polycube(&mesh, omega)
         .expect("Failed to generate quad mesh from polycube");
 
-    // TODO: pass subdivided quad mesh instead
-    let polycube_skeleton = generate_labeled_skeleton(skeleton, &quad.quad_mesh_polycube, voxel_owners);
+    let polycube_skeleton = generate_labeled_skeleton(skeleton, &mesh, &vert_id_map, vertex_owner_map);
 
     (
         Polycube {
@@ -176,29 +186,193 @@ pub fn generate_polycube(skeleton: &LabeledCurveSkeleton, mut omega: usize) -> (
     )
 }
 
-/// For a given polycube based on a skeleton, generates an isomorphic skeleton but with the regions of the polycube.
+/// Generates an isomorphic skeleton with patches derived from the polycube mesh.
 fn generate_labeled_skeleton(
     original: &LabeledCurveSkeleton,
-    quad_mesh: &Mesh<QUAD>,
-    voxel_owners: HashMap<IVector3D, VoxelOwner>,
+    polycube_mesh: &Mesh<POLYCUBE>,
+    vert_id_map: &mehsh::utils::ids::IdMap<mehsh::prelude::VERT, POLYCUBE>,
+    vertex_owner_map: HashMap<usize, NodeIndex>,
 ) -> LabeledCurveSkeleton {
-    // We want the exact same skeleton structure (including node IDs). We will only change mesh vertices (and centroids).
     let mut poly_skeleton = original.clone();
 
-    // TODO: recompute boundary loops from polycube mesh once patches are remapped.
-    for edge_idx in poly_skeleton.edge_indices() {
-        // temp debug test
-        let len = poly_skeleton
-            .edge_weight_mut(edge_idx)
-            .unwrap()
-            .boundary_loop.edge_midpoints.len();
-
-        info!("Edge {:?} has {} edge-midpoint voxels on its boundary loop.", edge_idx, len);
+    // Use the IdMap from Mesh::from() for the canonical usize→VertKey mapping.
+    let mut vertex_to_node: HashMap<VertKey<POLYCUBE>, NodeIndex> = HashMap::new();
+    let mut node_patches: HashMap<NodeIndex, Vec<VertKey<POLYCUBE>>> = HashMap::new();
+    for node_idx in poly_skeleton.node_indices() {
+        node_patches.insert(node_idx, Vec::new());
     }
 
-    // TODO change stuff here actually
+    for (&pos_idx, &node) in &vertex_owner_map {
+        if let Some(&vert_key) = vert_id_map.key(pos_idx) {
+            vertex_to_node.insert(vert_key, node);
+            node_patches.entry(node).or_default().push(vert_key);
+        }
+    }
+
+    // Update each skeleton node with polycube patch vertices and integer grid position.
+    for node_idx in poly_skeleton.node_indices() {
+        let patch = &node_patches[&node_idx];
+        let grid_pos = original[node_idx].grid_position;
+        let position = Vector3D::new(
+            f64::from(grid_pos.x),
+            f64::from(grid_pos.y),
+            f64::from(grid_pos.z),
+        );
+
+        // Store VertKey<POLYCUBE> as VertID (= VertKey<INPUT>) via raw key conversion.
+        let converted_patch: Vec<VertID> = patch.iter()
+            .map(|&v| VertKey::<INPUT>::new(v.raw()))
+            .collect();
+
+        poly_skeleton[node_idx].skeleton_node.position = position;
+        poly_skeleton[node_idx].skeleton_node.patch_vertices = converted_patch;
+    }
+
+    // Compute boundary loops for each skeleton edge.
+    for edge_idx in poly_skeleton.edge_indices() {
+        let (source, target) = poly_skeleton.edge_endpoints(edge_idx).unwrap();
+        let boundary_loop = compute_quad_boundary_loop(polycube_mesh, &vertex_to_node, source, target);
+        poly_skeleton.edge_weight_mut(edge_idx).unwrap().boundary_loop = boundary_loop;
+    }
+
+    // Checks
+    let total_assigned: usize = poly_skeleton.node_indices()
+        .map(|n| poly_skeleton[n].skeleton_node.patch_vertices.len())
+        .sum();
+    let total_verts = polycube_mesh.vert_ids().len();
+    if total_assigned != total_verts {
+        warn!(
+            "Polycube skeleton: {} vertices assigned to patches, but mesh has {} vertices.",
+            total_assigned, total_verts
+        );
+    }
+    for edge_idx in poly_skeleton.edge_indices() {
+        let loop_len = poly_skeleton.edge_weight(edge_idx).unwrap().boundary_loop.edge_midpoints.len();
+        if loop_len != 4 {
+            warn!(
+                "Polycube skeleton edge {:?} has boundary loop of length {} (expected 4).",
+                edge_idx, loop_len
+            );
+        }
+    }
+
+    info!(
+        "Generated polycube skeleton: {} nodes, {} edges, {} mesh vertices assigned.",
+        poly_skeleton.node_count(),
+        poly_skeleton.edge_count(),
+        total_assigned
+    );
 
     poly_skeleton
+}
+
+/// Computes the boundary loop between two adjacent patches on the polycube quad mesh.
+///
+/// Collects "pure" boundary faces (all vertices belong to source or target, with both
+/// present) and walks face-by-face to extract the ordered cycle of crossing half-edges.
+fn compute_quad_boundary_loop(
+    polycube_mesh: &Mesh<POLYCUBE>,
+    vertex_to_node: &HashMap<VertKey<POLYCUBE>, NodeIndex>,
+    source: NodeIndex,
+    target: NodeIndex,
+) -> BoundaryLoop {
+    let source_verts: HashSet<VertKey<POLYCUBE>> = vertex_to_node.iter()
+        .filter(|(_, &n)| n == source)
+        .map(|(&v, _)| v)
+        .collect();
+    let target_verts: HashSet<VertKey<POLYCUBE>> = vertex_to_node.iter()
+        .filter(|(_, &n)| n == target)
+        .map(|(&v, _)| v)
+        .collect();
+
+    // Collect faces where all vertices are in {source, target} and both are present.
+    let boundary_faces: HashSet<FaceKey<POLYCUBE>> = polycube_mesh.face_ids().iter().copied()
+        .filter(|&face_id| {
+            let mut has_source = false;
+            let mut has_target = false;
+            for v in polycube_mesh.vertices(face_id) {
+                if source_verts.contains(&v) {
+                    has_source = true;
+                } else if target_verts.contains(&v) {
+                    has_target = true;
+                } else {
+                    return false; // vertex from a third patch or unowned
+                }
+            }
+            has_source && has_target
+        })
+        .collect();
+
+    if boundary_faces.is_empty() {
+        warn!("No boundary faces found between {:?} and {:?}.", source, target);
+        return BoundaryLoop { edge_midpoints: Vec::new() };
+    }
+
+    // Find a starting crossing half-edge on a pure boundary face.
+    let is_crossing = |e: EdgeKey<POLYCUBE>| -> bool {
+        let u = polycube_mesh.root(e);
+        let v = polycube_mesh.toor(e);
+        (source_verts.contains(&u) && target_verts.contains(&v))
+            || (target_verts.contains(&u) && source_verts.contains(&v))
+    };
+
+    let start = boundary_faces.iter()
+        .flat_map(|&fid| polycube_mesh.edges(fid))
+        .find(|&e| is_crossing(e));
+
+    let Some(start) = start else {
+        warn!("No crossing edge found between {:?} and {:?}.", source, target);
+        return BoundaryLoop { edge_midpoints: Vec::new() };
+    };
+
+    // Walk the boundary: on each pure boundary face find the two crossing edges,
+    // then cross to the adjacent face via twin.
+    let mut loop_edges: Vec<EdgeKey<POLYCUBE>> = Vec::new();
+    let mut current = start;
+
+    loop {
+        loop_edges.push(current);
+
+        // Find the other crossing edge on the same face.
+        let mut e = polycube_mesh.next(current);
+        let mut found = None;
+        for _ in 0..3 {
+            if is_crossing(e) {
+                found = Some(e);
+                break;
+            }
+            e = polycube_mesh.next(e);
+        }
+
+        let Some(other) = found else {
+            warn!("Boundary face has only one crossing edge; loop may be incomplete.");
+            break;
+        };
+
+        let next = polycube_mesh.twin(other);
+        if next == start {
+            break;
+        }
+
+        // If the twin lands on a non-boundary face, stop gracefully.
+        if !boundary_faces.contains(&polycube_mesh.face(next)) {
+            warn!("Boundary loop left pure boundary faces; loop may be incomplete.");
+            break;
+        }
+
+        current = next;
+
+        if loop_edges.len() > boundary_faces.len() * 4 {
+            error!("Boundary loop walk exceeded limit, aborting.");
+            break;
+        }
+    }
+
+    let converted: Vec<EdgeID> = loop_edges.iter()
+        .map(|&e| EdgeKey::<INPUT>::new(e.raw()))
+        .collect();
+
+    BoundaryLoop { edge_midpoints: converted }
 }
 
 const DIRECTIONS: [(IVector3D, [IVector3D; 4]); 6] = [
