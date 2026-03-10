@@ -8,7 +8,7 @@ use petgraph::visit::EdgeRef;
 
 use crate::polycube::POLYCUBE;
 use crate::prelude::{Polycube, PrincipalDirection};
-use crate::quad::Quad;
+use crate::quad::{QUAD, Quad};
 use crate::skeleton::orthogonalize::{IVector3D, LabeledCurveSkeleton};
 
 /// We keep track of which voxel belongs to which node/edge, to know where the regions belong.
@@ -164,7 +164,7 @@ pub fn generate_polycube(skeleton: &LabeledCurveSkeleton, mut omega: usize) -> (
         .expect("Failed to generate quad mesh from polycube");
 
     // TODO: pass subdivided quad mesh instead
-    let polycube_skeleton = generate_labeled_skeleton(skeleton, &mesh, voxel_owners);
+    let polycube_skeleton = generate_labeled_skeleton(skeleton, &quad.quad_mesh_polycube, voxel_owners);
 
     (
         Polycube {
@@ -179,7 +179,7 @@ pub fn generate_polycube(skeleton: &LabeledCurveSkeleton, mut omega: usize) -> (
 /// For a given polycube based on a skeleton, generates an isomorphic skeleton but with the regions of the polycube.
 fn generate_labeled_skeleton(
     original: &LabeledCurveSkeleton,
-    mesh: &Mesh<POLYCUBE>,
+    quad_mesh: &Mesh<QUAD>,
     voxel_owners: HashMap<IVector3D, VoxelOwner>,
 ) -> LabeledCurveSkeleton {
     // We want the exact same skeleton structure (including node IDs). We will only change mesh vertices (and centroids).
