@@ -222,7 +222,7 @@ fn generate_labeled_skeleton(
 ) -> LabeledCurveSkeleton {
     let mut poly_skeleton = original.clone();
 
-    // Use the IdMap from Mesh::from() for the canonical usize→VertKey mapping.
+    // Use the IdMap from Mesh::from() for the canonical usize->VertKey mapping.
     let mut vertex_to_node: HashMap<VertKey<POLYCUBE>, NodeIndex> = HashMap::new();
     let mut node_patches: HashMap<NodeIndex, Vec<VertKey<POLYCUBE>>> = HashMap::new();
     for node_idx in poly_skeleton.node_indices() {
