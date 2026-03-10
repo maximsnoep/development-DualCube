@@ -57,6 +57,67 @@ impl Quad {
             .collect_vec()
     }
 
+    /// Converts a list of quad faces (4 vertices each) into triangles by splitting
+    /// each quad along one diagonal.
+    fn triangulate_quads(quad_faces: &[Vec<usize>]) -> Vec<Vec<usize>> {
+        quad_faces
+            .iter()
+            .flat_map(|quad| {
+                assert!(quad.len() == 4, "Expected quad face with 4 vertices");
+                let (v0, v1, v2, v3) = (quad[0], quad[1], quad[2], quad[3]);
+                [vec![v0, v1, v2], vec![v0, v2, v3]]
+            })
+            .collect()
+    }
+
+    /// Builds a `Mesh<QUAD>` from pre-computed grid faces and vertex positions, and
+    /// computes the associated metadata (face-to-vert map, edge-to-vert map, frozen set).
+    fn build_quad_mesh(
+        faces: &[Vec<usize>],
+        vertex_positions: &[Vector3D],
+        face_to_verts_usize: &HashMap<FaceKey<POLYCUBE>, Vec<Vec<usize>>>,
+        edge_to_verts_usize: &HashMap<EdgeKey<POLYCUBE>, Vec<usize>>,
+        polycube: &Mesh<POLYCUBE>,
+    ) -> Option<(
+        Mesh<QUAD>,
+        HashMap<FaceKey<POLYCUBE>, Vec<Vec<VertKey<QUAD>>>>,
+        HashMap<EdgeKey<POLYCUBE>, Vec<VertKey<QUAD>>>,
+        HashSet<VertKey<QUAD>>,
+    )> {
+        let (quad_mesh, vert_id_map, _) = Mesh::<QUAD>::from(faces, vertex_positions).ok()?;
+
+        let mut face_to_verts = HashMap::new();
+        for (face_id, vert_ids) in face_to_verts_usize {
+            let vert_keys = vert_ids
+                .iter()
+                .map(|row| row.iter().map(|&v| vert_id_map.key(v).unwrap().to_owned()).collect_vec())
+                .collect_vec();
+            face_to_verts.insert(face_id.to_owned(), vert_keys);
+        }
+
+        let mut edge_to_verts = HashMap::new();
+        for (edge_id, vert_ids) in edge_to_verts_usize {
+            let vert_keys = vert_ids.iter().map(|&v| vert_id_map.key(v).unwrap().to_owned()).collect_vec();
+            edge_to_verts.insert(edge_id.to_owned(), vert_keys.clone());
+            let twin_id = polycube.twin(*edge_id);
+            let rev_vert_keys = vert_keys.iter().rev().cloned().collect_vec();
+            edge_to_verts.insert(twin_id, rev_vert_keys);
+        }
+
+        let mut frozen = HashSet::new();
+        for vert_id in quad_mesh.vert_ids() {
+            let mut surrounding_normals = HashSet::new();
+            for neighbor in quad_mesh.neighbors(vert_id) {
+                surrounding_normals.insert(to_principal_direction(quad_mesh.normal(neighbor)));
+            }
+            if surrounding_normals.len() > 1 {
+                frozen.insert(vert_id);
+            }
+        }
+
+        Some((quad_mesh, face_to_verts, edge_to_verts, frozen))
+    }
+
     #[must_use]
     pub fn from_layout(layout: &Layout, omega: usize) -> Option<Self> {
         let mut triangle_mesh_polycube = layout.granulated_mesh.clone();
@@ -66,9 +127,6 @@ impl Quad {
 
         let mut faces = vec![];
         let mut vertex_positions = vec![];
-
-        // set of frozen vertices. Should be vertices that lie on important boundaries or features.
-        let mut frozen = HashSet::new();
 
         // For every patch in the layout (corresponding to a face in the polycube), we map this patch to a unit square
         // 1. Map the boundary of the patch to the boundary of a unit square via arc-length parameterization
@@ -85,10 +143,7 @@ impl Quad {
         let mut patches_done = HashSet::new();
 
         let mut face_to_verts_usize: HashMap<FaceKey<POLYCUBE>, Vec<Vec<usize>>> = HashMap::new();
-        let mut face_to_verts: HashMap<FaceKey<POLYCUBE>, Vec<Vec<VertKey<QUAD>>>> = HashMap::new();
-
         let mut edge_to_verts_usize: HashMap<EdgeKey<POLYCUBE>, Vec<usize>> = HashMap::new();
-        let mut edge_to_verts: HashMap<EdgeKey<POLYCUBE>, Vec<VertKey<QUAD>>> = HashMap::new();
 
         while let Some(patch_id) = queue.pop() {
             if patches_done.contains(&patch_id) {
@@ -469,41 +524,13 @@ impl Quad {
 
         assert!(patches_done.len() == polycube.face_ids().len(), "Not all patches were done!");
 
-        // Create the polycube quad mesh:
-        if let Ok((quad_mesh_polycube, vert_id_map, _)) = Mesh::<QUAD>::from(&faces, &vertex_positions) {
-            for (face_id, vert_ids) in &face_to_verts_usize {
-                // Convert usize to VertKey<QUAD>
-                let vert_keys = vert_ids
-                    .iter()
-                    .map(|row| row.iter().map(|&v| vert_id_map.key(v).unwrap().to_owned()).collect_vec())
-                    .collect_vec();
-                face_to_verts.insert(face_id.to_owned(), vert_keys);
-            }
+        let (quad_mesh_polycube, face_to_verts, edge_to_verts, frozen) =
+            Self::build_quad_mesh(&faces, &vertex_positions, &face_to_verts_usize, &edge_to_verts_usize, &polycube)
+                .expect("Failed to create quad mesh from faces and vertex positions");
 
-            for (edge_id, vert_ids) in &edge_to_verts_usize {
-                // Convert usize to VertKey<QUAD>
-                let vert_keys = vert_ids.iter().map(|&v| vert_id_map.key(v).unwrap().to_owned()).collect_vec();
-                edge_to_verts.insert(edge_id.to_owned(), vert_keys.clone());
-                let twin_id = polycube.twin(*edge_id);
-                let rev_vert_keys = vert_keys.iter().rev().cloned().collect_vec();
-                edge_to_verts.insert(twin_id, rev_vert_keys);
-            }
-
-            // For each vert_id in quad_mesh_polycube, check the surrounding normals. If surrounding normals are all equal, then this vertex is NOT frozen. Else it is frozen (its a boundary vertex)
-            for vert_id in quad_mesh_polycube.vert_ids() {
-                let mut surrounding_normals = HashSet::new();
-                for neighbor in quad_mesh_polycube.neighbors(vert_id) {
-                    surrounding_normals.insert(to_principal_direction(quad_mesh_polycube.normal(neighbor)));
-                }
-                if surrounding_normals.len() > 1 {
-                    frozen.insert(vert_id);
-                }
-            }
-
-            // Create the quad mesh
-            // First, create copy of quad_mesh_polycube
-            let mut quad_mesh = quad_mesh_polycube.clone();
-            let triangle_lookup = triangle_mesh_polycube.bvh();
+        // Create the quad mesh by mapping polycube positions back to original surface via barycentric coordinates
+        let mut quad_mesh = quad_mesh_polycube.clone();
+        let triangle_lookup = triangle_mesh_polycube.bvh();
 
             // Now, we need to set the positions of the vertices in the quad mesh based on barycentric coordinates of the mapped triangles
             for vert_id in quad_mesh.vert_ids() {
@@ -557,16 +584,232 @@ impl Quad {
                 }
             }
 
-            Some(Self {
-                triangle_mesh_polycube,
-                quad_mesh_polycube,
-                quad_mesh,
-                face_to_verts,
-                edge_to_verts,
-                frozen,
-            })
-        } else {
-            panic!("Failed to create quad mesh from faces and vertex positions");
+        Some(Self {
+            triangle_mesh_polycube,
+            quad_mesh_polycube,
+            quad_mesh,
+            face_to_verts,
+            edge_to_verts,
+            frozen,
+        })
+    }
+
+    /// Constructs a quad mesh directly from a polycube mesh (without a layout).
+    ///
+    /// Each axis-aligned face of the polycube is subdivided into a grid of quads,
+    /// where the grid resolution is determined by `omega` (number of subdivisions per
+    /// unit edge length). Shared edges and corners between adjacent faces are handled
+    /// consistently, just as in [`Quad::from_layout`].
+    ///
+    /// Since there is no input-mesh mapping, `quad_mesh` is identical to `quad_mesh_polycube`.
+    #[must_use]
+    pub fn from_polycube(polycube: &Mesh<POLYCUBE>, omega: usize) -> Option<Self> {
+        let mut edges_done: HashMap<EdgeKey<POLYCUBE>, Vec<usize>> = HashMap::new();
+        let mut corners_done: HashMap<VertKey<POLYCUBE>, usize> = HashMap::new();
+
+        let mut faces = vec![];
+        let mut vertex_positions = vec![];
+
+        let mut face_to_verts_usize: HashMap<FaceKey<POLYCUBE>, Vec<Vec<usize>>> = HashMap::new();
+        let mut edge_to_verts_usize: HashMap<EdgeKey<POLYCUBE>, Vec<usize>> = HashMap::new();
+
+        let mut queue = vec![];
+        queue.push(polycube.face_ids()[0]);
+
+        let mut patches_done = HashSet::new();
+
+        while let Some(patch_id) = queue.pop() {
+            if patches_done.contains(&patch_id) {
+                continue;
+            }
+            patches_done.insert(patch_id);
+            for neighbor in polycube.neighbors(patch_id) {
+                if !patches_done.contains(&neighbor) {
+                    queue.push(neighbor);
+                }
+            }
+
+            let Some([edge1, edge2, edge3, edge4]) = polycube.edges(patch_id).collect_array::<4>() else {
+                panic!("Polycube face does not have exactly 4 edges!")
+            };
+
+            let corner1 = polycube.vertices(edge1).next().unwrap();
+            let corner2 = polycube.vertices(edge2).next().unwrap();
+            let corner3 = polycube.vertices(edge3).next().unwrap();
+            let corner4 = polycube.vertices(edge4).next().unwrap();
+
+            let d3p1 = polycube.position(corner1);
+            let d3p2 = polycube.position(corner2);
+            let d3p3 = polycube.position(corner3);
+            let d3p4 = polycube.position(corner4);
+
+            // Grid dimensions based on polycube edge lengths
+            let grid_width = polycube.size(edge1).round() as usize;
+            let grid_height = polycube.size(edge2).round() as usize;
+            let grid_n = grid_width * omega + 1;
+            let grid_m = grid_height * omega + 1;
+
+            // Linear interpolation on the polycube face
+            let to_pos = |i: usize, j: usize| -> Vector3D {
+                let u = i as f64 / (grid_m - 1) as f64;
+                let v = j as f64 / (grid_n - 1) as f64;
+                let e1_vector = d3p2 - d3p1;
+                let e2_vector = d3p3 - d3p2;
+                d3p1 + e1_vector * v + e2_vector * u
+            };
+
+            let mut vert_map = vec![vec![None; grid_n]; grid_m];
+
+            // Reuse previously created corners
+            if let Some(&corner_pos) = corners_done.get(&corner1) {
+                vert_map[0][0] = Some(corner_pos);
+            }
+            if let Some(&corner_pos) = corners_done.get(&corner2) {
+                vert_map[0][grid_n - 1] = Some(corner_pos);
+            }
+            if let Some(&corner_pos) = corners_done.get(&corner3) {
+                vert_map[grid_m - 1][grid_n - 1] = Some(corner_pos);
+            }
+            if let Some(&corner_pos) = corners_done.get(&corner4) {
+                vert_map[grid_m - 1][0] = Some(corner_pos);
+            }
+
+            // Reuse previously created edge vertices
+            if let Some(edge_verts) = edges_done.get(&edge1).cloned() {
+                assert!(edge_verts.len() == grid_n);
+                for (j, &vert) in edge_verts.iter().enumerate() {
+                    vert_map[0][j] = Some(vert);
+                }
+                edge_to_verts_usize.insert(edge1, edge_verts);
+            }
+
+            if let Some(edge_verts) = edges_done.get(&edge2).cloned() {
+                assert!(edge_verts.len() == grid_m);
+                for (i, &vert) in edge_verts.iter().enumerate() {
+                    vert_map[i][grid_n - 1] = Some(vert);
+                }
+                edge_to_verts_usize.insert(edge2, edge_verts);
+            }
+
+            if let Some(edge_verts) = edges_done.get(&edge3).cloned() {
+                assert!(edge_verts.len() == grid_n);
+                for (j, &vert) in edge_verts.iter().enumerate() {
+                    vert_map[grid_m - 1][grid_n - 1 - j] = Some(vert);
+                }
+                edge_to_verts_usize.insert(edge3, edge_verts);
+            }
+
+            if let Some(edge_verts) = edges_done.get(&edge4).cloned() {
+                assert!(edge_verts.len() == grid_m);
+                for (i, &vert) in edge_verts.iter().enumerate() {
+                    vert_map[grid_m - 1 - i][0] = Some(vert);
+                }
+                edge_to_verts_usize.insert(edge4, edge_verts);
+            }
+
+            // Create quad faces from the grid
+            for i in 0..grid_m - 1 {
+                for j in 0..grid_n - 1 {
+                    if vert_map[i][j].is_none() {
+                        vert_map[i][j] = Some(vertex_positions.len());
+                        vertex_positions.push(to_pos(i, j));
+                    }
+                    if vert_map[i][j + 1].is_none() {
+                        vert_map[i][j + 1] = Some(vertex_positions.len());
+                        vertex_positions.push(to_pos(i, j + 1));
+                    }
+                    if vert_map[i + 1][j + 1].is_none() {
+                        vert_map[i + 1][j + 1] = Some(vertex_positions.len());
+                        vertex_positions.push(to_pos(i + 1, j + 1));
+                    }
+                    if vert_map[i + 1][j].is_none() {
+                        vert_map[i + 1][j] = Some(vertex_positions.len());
+                        vertex_positions.push(to_pos(i + 1, j));
+                    }
+
+                    let (v0, v1, v2, v3) = (
+                        vert_map[i][j].unwrap(),
+                        vert_map[i][j + 1].unwrap(),
+                        vert_map[i + 1][j + 1].unwrap(),
+                        vert_map[i + 1][j].unwrap(),
+                    );
+
+                    faces.push(vec![v0, v1, v2, v3]);
+                }
+            }
+
+            face_to_verts_usize.insert(
+                patch_id,
+                vert_map.iter().map(|row| row.iter().filter_map(|&v| v).collect_vec()).collect_vec(),
+            );
+
+            // Record corners for reuse by neighboring faces
+            corners_done.insert(corner1, vert_map[0][0].unwrap());
+            corners_done.insert(corner2, vert_map[0][grid_n - 1].unwrap());
+            corners_done.insert(corner3, vert_map[grid_m - 1][grid_n - 1].unwrap());
+            corners_done.insert(corner4, vert_map[grid_m - 1][0].unwrap());
+
+            // Record twin edges for reuse (reversed) by neighboring faces
+            // Edge1: i=0, j=0..grid_n-1
+            {
+                let mut vs = vec![];
+                for j in (0..grid_n).rev() {
+                    vs.push(vert_map[0][j].unwrap());
+                }
+                edges_done.insert(polycube.twin(edge1), vs);
+            }
+            // Edge2: j=grid_n-1, i=0..grid_m-1
+            {
+                let mut vs = vec![];
+                for i in (0..grid_m).rev() {
+                    vs.push(vert_map[i][grid_n - 1].unwrap());
+                }
+                edges_done.insert(polycube.twin(edge2), vs);
+            }
+            // Edge3: i=grid_m-1, j=grid_n-1..0
+            {
+                let mut vs = vec![];
+                for j in 0..grid_n {
+                    vs.push(vert_map[grid_m - 1][j].unwrap());
+                }
+                edges_done.insert(polycube.twin(edge3), vs);
+            }
+            // Edge4: j=0, i=grid_m-1..0
+            {
+                let mut vs = vec![];
+                #[allow(clippy::needless_range_loop)]
+                for i in 0..grid_m {
+                    vs.push(vert_map[i][0].unwrap());
+                }
+                edges_done.insert(polycube.twin(edge4), vs);
+            }
         }
+
+        assert!(
+            patches_done.len() == polycube.face_ids().len(),
+            "Not all polycube patches were processed!"
+        );
+
+        // Build triangle mesh by splitting each quad along a diagonal
+        let tri_faces = Self::triangulate_quads(&faces);
+        let triangle_mesh_polycube = Mesh::<INPUT>::from(&tri_faces, &vertex_positions)
+            .expect("Failed to build triangle mesh from polycube")
+            .0;
+
+        let (quad_mesh_polycube, face_to_verts, edge_to_verts, frozen) =
+            Self::build_quad_mesh(&faces, &vertex_positions, &face_to_verts_usize, &edge_to_verts_usize, polycube)
+                .expect("Failed to create quad mesh from polycube");
+
+        // Without a layout, quad_mesh is identical to quad_mesh_polycube
+        let quad_mesh = quad_mesh_polycube.clone();
+
+        Some(Self {
+            triangle_mesh_polycube,
+            quad_mesh_polycube,
+            quad_mesh,
+            face_to_verts,
+            edge_to_verts,
+            frozen,
+        })
     }
 }
