@@ -131,9 +131,33 @@ pub(super) fn find_cut_paths(
         let boundary_a = &boundaries[&edge_a];
         let boundary_b = &boundaries[&edge_b];
 
-        // Run Dijkstra from all vertices on boundary_a, restricted to region interior
-        // (excluding vertices on other boundaries, except the two we're connecting).
-        let sources: HashSet<VertID> = boundary_a.vertices.iter().copied().collect();
+        // Run Dijkstra from vertices on boundary_a that are separated from any
+        // previously committed endpoints on this boundary.  This prevents two
+        // cuts from sharing the same source-side endpoint.
+        let committed_a_snapshot: Vec<f64> = committed.get(&edge_a).cloned().unwrap_or_default();
+        let sources: HashSet<VertID> = if committed_a_snapshot.is_empty() {
+            boundary_a.vertices.iter().copied().collect()
+        } else {
+            let filtered: HashSet<VertID> = boundary_a.vertices.iter().copied()
+                .filter(|&v| {
+                    let pos = boundary_a.normalized_position(v);
+                    committed_a_snapshot.iter().all(|&c| {
+                        let diff = (pos - c).abs();
+                        diff.min(1.0 - diff) >= MIN_CUT_SEPARATION
+                    })
+                })
+                .collect();
+            // Fall back to all vertices if filtering removed everything.
+            if filtered.is_empty() {
+                warn!(
+                    "All vertices on boundary {:?} are too close to existing committed endpoints, ignoring separation for this cut.",
+                    edge_a
+                );
+                boundary_a.vertices.iter().copied().collect()
+            } else {
+                filtered
+            }
+        };
         let exclude: HashSet<VertID> = all_boundary_verts
             .iter()
             .copied()
@@ -331,13 +355,20 @@ fn euler_tour(
     });
 
     let mut current_vertex = entry_vertex;
+    let mut is_root_first_child = parent_cut.is_none();
     for child in &sorted_children {
         // Boundary arc from current_vertex to this child's endpoint.
-        // Skip when they coincide (happens at root where entry = first child's endpoint).
         if current_vertex != child.endpoint_here {
             let arc = boundary.arc_between(current_vertex, child.endpoint_here);
             segments.push(arc);
+        } else if !is_root_first_child {
+            // Two consecutive cut endpoints coincide on this boundary.
+            // Create a degenerate single-vertex segment to preserve segment count.
+            segments.push(vec![current_vertex]);
         }
+        // At the root, the first child's endpoint == entry_vertex by construction;
+        // that intentional skip is compensated by the closing arc.
+        is_root_first_child = false;
 
         // Forward cut path.
         visited_cuts.insert(child.cut_idx);
@@ -376,9 +407,15 @@ fn euler_tour(
     }
 
     // Final arc: from last child's endpoint back to entry_vertex.
-    let closing_arc = boundary.arc_between(current_vertex, entry_vertex);
-    // For the root, this closes the loop. For non-root, this returns to parent entry.
-    segments.push(closing_arc);
+    if current_vertex != entry_vertex || parent_cut.is_none() {
+        // Normal closing arc.  At the root, arc_between(V, V) returns the full
+        // cycle, which correctly covers the portion skipped at the first child.
+        let closing_arc = boundary.arc_between(current_vertex, entry_vertex);
+        segments.push(closing_arc);
+    } else {
+        // Non-root: last child's endpoint coincides with parent entry → degenerate.
+        segments.push(vec![current_vertex]);
+    }
 }
 
 /// Extracts ordered boundary vertices on *our* side of a boundary loop, plus the

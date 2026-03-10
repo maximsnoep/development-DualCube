@@ -206,6 +206,16 @@ fn parameterize_side(
         );
     }
 
+    // Guard: if any boundary loop is empty, we can't parameterize this region.
+    let has_empty = boundaries.iter().any(|(_, b)| b.vertices.is_empty());
+    if has_empty {
+        warn!(
+            "Node {:?}: at least one boundary loop has 0 vertices, skipping parameterization.",
+            node_idx
+        );
+        return HashMap::new();
+    }
+
     if degree == 1 {
         let edge_direction = skeleton.edges(node_idx).next().unwrap().weight().direction;
         return parameterize_degree_one(patch_verts, &boundaries, edge_direction, mesh);
