@@ -83,6 +83,11 @@ impl SkeletonData {
         self.labeled_skeleton.as_ref()
     }
 
+    /// Returns a reference to the polycube skeleton if it has been computed.
+    pub fn polycube_skeleton(&self) -> Option<&LabeledCurveSkeleton> {
+        self.polycube_skeleton.as_ref()
+    }
+
     /// Reconstructs what a skeleton looked like at a certain point in the volume collapse history, if the history is available.
     pub fn reconstruct_skeleton_from_collapse_history(
         &self,

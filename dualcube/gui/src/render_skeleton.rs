@@ -1,6 +1,7 @@
 use crate::colors;
 use crate::render::world_to_view;
 use bevy::prelude::{Color, *};
+use dualcube::polycube::POLYCUBE;
 use dualcube::prelude::*;
 use dualcube::skeleton::curve_skeleton::CurveSkeletonSpatial;
 use dualcube::skeleton::orthogonalize::LabeledCurveSkeleton;
@@ -9,6 +10,31 @@ use mehsh::integrations::bevy::MeshBuilder;
 use mehsh::prelude::*;
 use std::collections::HashMap;
 
+/// Builds a vertex-to-region map for the input mesh from a CurveSkeleton.
+fn build_vertex_to_region_map(curve_skeleton: &CurveSkeleton) -> HashMap<VertKey<INPUT>, usize> {
+    let mut map = HashMap::new();
+    for node_idx in curve_skeleton.node_indices() {
+        for &vert_key in &curve_skeleton[node_idx].patch_vertices {
+            map.insert(vert_key, node_idx.index());
+        }
+    }
+    map
+}
+
+/// Builds a vertex-to-region map for the polycube mesh from a LabeledCurveSkeleton.
+/// Converts VertID back to VertKey<POLYCUBE> via raw key.
+fn build_polycube_vertex_to_region_map(
+    labeled_skeleton: &LabeledCurveSkeleton,
+) -> HashMap<VertKey<POLYCUBE>, usize> {
+    let mut map = HashMap::new();
+    for node_idx in labeled_skeleton.node_indices() {
+        for &vert_id in &labeled_skeleton[node_idx].skeleton_node.patch_vertices {
+            map.insert(VertKey::<POLYCUBE>::new(vert_id.raw()), node_idx.index());
+        }
+    }
+    map
+}
+
 /// Creates gizmos for patch boundaries by connecting midpoints of edges that the boundary crosses.
 pub fn create_patch_boundary_gizmos(
     curve_skeleton: &CurveSkeleton,
@@ -16,41 +42,8 @@ pub fn create_patch_boundary_gizmos(
     translation: Vector3D,
     scale: f64,
 ) -> GizmoAsset {
-    let mut gizmos = GizmoAsset::new();
-    let boundary_color = colors::to_bevy(colors::GRAY);
-
-    // Build vertex-to-node mapping
-    let mut vertex_to_node: HashMap<VertKey<INPUT>, usize> = HashMap::new();
-    for node_idx in curve_skeleton.node_indices() {
-        for &vert_key in &curve_skeleton[node_idx].patch_vertices {
-            vertex_to_node.insert(vert_key, node_idx.index());
-        }
-    }
-
-    // For each face, find edges that cross a patch boundary and connect their midpoints
-    for face_id in mesh.face_ids() {
-        let mut boundary_midpoints: Vec<Vec3> = Vec::new();
-
-        for edge_id in mesh.edges(face_id) {
-            let Some([v1, v2]) = mesh.vertices(edge_id).collect_array::<2>() else {
-                continue;
-            };
-            let r1 = vertex_to_node.get(&v1);
-            let r2 = vertex_to_node.get(&v2);
-            if let (Some(r1), Some(r2)) = (r1, r2) {
-                if r1 != r2 {
-                    let midpoint = (mesh.position(v1) + mesh.position(v2)) * 0.5;
-                    boundary_midpoints.push(world_to_view(midpoint, translation, scale));
-                }
-            }
-        }
-
-        if boundary_midpoints.len() == 2 {
-            gizmos.line(boundary_midpoints[0], boundary_midpoints[1], boundary_color);
-        }
-    }
-
-    gizmos
+    let vertex_to_region = build_vertex_to_region_map(curve_skeleton);
+    boundary_gizmos_from_regions(mesh, &vertex_to_region, translation, scale)
 }
 
 /// Creates gizmos for visualizing a curve skeleton with spheres for nodes and lines for edges.
@@ -229,9 +222,11 @@ fn get_region_color(region: usize) -> [f32; 3] {
 }
 
 /// Shared helper: builds a Bevy mesh coloring patches by a per-region color function.
-fn build_region_mesh<F>(
-    curve_skeleton: &CurveSkeleton,
-    mesh: &mehsh::prelude::Mesh<INPUT>,
+/// Works for any mesh type — triangles are split at boundary midpoints, quads are split
+/// into two sub-quads along the boundary.
+fn build_region_mesh<T: Tag, F>(
+    mesh: &mehsh::prelude::Mesh<T>,
+    vertex_to_region: &HashMap<VertKey<T>, usize>,
     translation: Vector3D,
     scale: f64,
     region_color_fn: F,
@@ -239,105 +234,97 @@ fn build_region_mesh<F>(
 where
     F: Fn(usize) -> [f32; 3],
 {
-    // Build a mapping from vertex to region index
-    let mut vertex_to_region: HashMap<VertKey<INPUT>, usize> = HashMap::new();
-    for node_idx in curve_skeleton.node_indices() {
-        let node = &curve_skeleton[node_idx];
-        for &vert_key in &node.patch_vertices {
-            vertex_to_region.insert(vert_key, node_idx.index());
-        }
-    }
-
     let mut builder = MeshBuilder::default();
 
-    // Helper to transform and add a vertex to the builder
     let mut add_vertex = |pos: Vector3D, normal: Vector3D, color: &[f32; 3]| {
         let transformed_pos = pos * scale + translation;
         builder.add_vertex(&transformed_pos, &normal, color);
     };
 
-    // For each face, handle based on region assignment
     for face_id in mesh.face_ids() {
         let face_verts: Vec<_> = mesh.vertices(face_id).collect();
-        if face_verts.len() != 3 {
-            continue; // Skip non-triangular faces
-        }
+        let face_normal = mesh.normal(face_id);
 
-        let v0 = face_verts[0];
-        let v1 = face_verts[1];
-        let v2 = face_verts[2];
+        if face_verts.len() == 3 {
+            let v0 = face_verts[0];
+            let v1 = face_verts[1];
+            let v2 = face_verts[2];
 
-        let p0 = mesh.position(v0);
-        let p1 = mesh.position(v1);
-        let p2 = mesh.position(v2);
+            let p0 = mesh.position(v0);
+            let p1 = mesh.position(v1);
+            let p2 = mesh.position(v2);
 
-        let n0 = mesh.normal(v0);
-        let n1 = mesh.normal(v1);
-        let n2 = mesh.normal(v2);
+            let r0 = vertex_to_region.get(&v0).copied();
+            let r1 = vertex_to_region.get(&v1).copied();
+            let r2 = vertex_to_region.get(&v2).copied();
 
-        // Get the region for each vertex
-        let r0 = vertex_to_region.get(&v0).copied();
-        let r1 = vertex_to_region.get(&v1).copied();
-        let r2 = vertex_to_region.get(&v2).copied();
-
-        match (r0, r1, r2) {
-            // All vertices have regions
-            (Some(r0), Some(r1), Some(r2)) => {
-                if r0 == r1 && r1 == r2 {
-                    // All same region, simply draw the triangle
-                    let color = region_color_fn(r0);
-                    add_vertex(p0, n0, &color);
-                    add_vertex(p1, n1, &color);
-                    add_vertex(p2, n2, &color);
-                } else if r0 == r1 {
-                    // v0, v1 share region X; v2 is region Y
-                    split_triangle(
-                        &mut add_vertex,
-                        p0,
-                        p1,
-                        p2,
-                        n0,
-                        n1,
-                        n2,
-                        r0,
-                        r2,
-                        &region_color_fn,
-                    );
-                } else if r1 == r2 {
-                    // v1, v2 share region X; v0 is region Y
-                    split_triangle(
-                        &mut add_vertex,
-                        p1,
-                        p2,
-                        p0,
-                        n1,
-                        n2,
-                        n0,
-                        r1,
-                        r0,
-                        &region_color_fn,
-                    );
-                } else if r0 == r2 {
-                    // v0, v2 share region X; v1 is region Y
-                    split_triangle(
-                        &mut add_vertex,
-                        p2,
-                        p0,
-                        p1,
-                        n2,
-                        n0,
-                        n1,
-                        r0,
-                        r1,
-                        &region_color_fn,
-                    );
-                } else {
-                    unreachable!(
-                        "Triangle with all three vertices in different regions encountered."
-                    );
+            match (r0, r1, r2) {
+                (Some(r0), Some(r1), Some(r2)) => {
+                    if r0 == r1 && r1 == r2 {
+                        let color = region_color_fn(r0);
+                        add_vertex(p0, face_normal, &color);
+                        add_vertex(p1, face_normal, &color);
+                        add_vertex(p2, face_normal, &color);
+                    } else if r0 == r1 {
+                        split_triangle(
+                            &mut add_vertex,
+                            p0, p1, p2,
+                            face_normal, face_normal, face_normal,
+                            r0, r2, &region_color_fn,
+                        );
+                    } else if r1 == r2 {
+                        split_triangle(
+                            &mut add_vertex,
+                            p1, p2, p0,
+                            face_normal, face_normal, face_normal,
+                            r1, r0, &region_color_fn,
+                        );
+                    } else if r0 == r2 {
+                        split_triangle(
+                            &mut add_vertex,
+                            p2, p0, p1,
+                            face_normal, face_normal, face_normal,
+                            r0, r1, &region_color_fn,
+                        );
+                    } else {
+                        unreachable!(
+                            "Triangle with all three vertices in different regions encountered."
+                        );
+                    }
                 }
+                _ => {}
             }
-            _ => {}
+        } else if face_verts.len() == 4 {
+            let v0 = face_verts[0];
+            let v1 = face_verts[1];
+            let v2 = face_verts[2];
+            let v3 = face_verts[3];
+            let p0 = mesh.position(v0);
+            let p1 = mesh.position(v1);
+            let p2 = mesh.position(v2);
+            let p3 = mesh.position(v3);
+            let r0 = vertex_to_region.get(&v0).copied();
+            let r1 = vertex_to_region.get(&v1).copied();
+            let r2 = vertex_to_region.get(&v2).copied();
+            let r3 = vertex_to_region.get(&v3).copied();
+
+            match (r0, r1, r2, r3) {
+                (Some(a), Some(b), Some(c), Some(d)) if a == b && b == c && c == d => {
+                    let color = region_color_fn(a);
+                    add_vertex(p0, face_normal, &color);
+                    add_vertex(p1, face_normal, &color);
+                    add_vertex(p2, face_normal, &color);
+
+                    add_vertex(p0, face_normal, &color);
+                    add_vertex(p2, face_normal, &color);
+                    add_vertex(p3, face_normal, &color);
+                }
+                (Some(a), Some(b), Some(c), Some(d)) => {
+                    let regions = [(p0, a), (p1, b), (p2, c), (p3, d)];
+                    split_quad(&mut add_vertex, &regions, face_normal, &region_color_fn);
+                }
+                _ => {}
+            }
         }
     }
 
@@ -351,10 +338,8 @@ pub fn create_patch_mesh(
     translation: Vector3D,
     scale: f64,
 ) -> bevy::mesh::Mesh {
-    // Delegate to shared helper using Tailwind region colors
-    build_region_mesh(curve_skeleton, mesh, translation, scale, |region| {
-        get_region_color(region)
-    })
+    let vertex_to_region = build_vertex_to_region_map(curve_skeleton);
+    build_region_mesh(mesh, &vertex_to_region, translation, scale, get_region_color)
 }
 
 /// Splits a triangle where vertices a,b belong to region_x and vertex c belongs to region_y.
@@ -412,7 +397,6 @@ pub fn create_patch_convexity_mesh(
     translation: Vector3D,
     scale: f64,
 ) -> bevy::mesh::Mesh {
-    // Compute convexity score per region (clamped between 0 and 1),
     let mut region_scores: HashMap<usize, f64> = HashMap::new();
     for node_idx in curve_skeleton.node_indices() {
         let mut score = curve_skeleton.patch_convexity_score(node_idx, mesh);
@@ -423,8 +407,156 @@ pub fn create_patch_convexity_mesh(
         region_scores.insert(node_idx.index(), score.clamp(0.0, 1.0));
     }
 
-    build_region_mesh(curve_skeleton, mesh, translation, scale, |region| {
+    let vertex_to_region = build_vertex_to_region_map(curve_skeleton);
+    build_region_mesh(mesh, &vertex_to_region, translation, scale, |region| {
         let score = region_scores.get(&region).copied().unwrap_or(0.0) as f32;
         colors::map(score, &colors::PARULA)
     })
+}
+
+/// Creates a Bevy mesh for visualizing polycube surface patches using the labeled skeleton.
+pub fn create_polycube_patch_mesh(
+    labeled_skeleton: &LabeledCurveSkeleton,
+    polycube: &mehsh::prelude::Mesh<POLYCUBE>,
+    translation: Vector3D,
+    scale: f64,
+) -> bevy::mesh::Mesh {
+    let vertex_to_region = build_polycube_vertex_to_region_map(labeled_skeleton);
+    build_region_mesh(polycube, &vertex_to_region, translation, scale, get_region_color)
+}
+
+/// Splits a quad face that crosses a patch boundary.
+///
+/// Finds the two edges where the region changes, computes their midpoints, and draws
+/// two quads (each fan-triangulated) on either side of the boundary line.
+fn split_quad<F, C>(
+    add_vertex: &mut F,
+    regions: &[(Vector3D, usize); 4],
+    normal: Vector3D,
+    region_color: &C,
+) where
+    F: FnMut(Vector3D, Vector3D, &[f32; 3]),
+    C: Fn(usize) -> [f32; 3],
+{
+    let mut boundary_edges: Vec<usize> = Vec::new();
+    for i in 0..4 {
+        let j = (i + 1) % 4;
+        if regions[i].1 != regions[j].1 {
+            boundary_edges.push(i);
+        }
+    }
+
+    if boundary_edges.len() == 2 {
+        let e0 = boundary_edges[0];
+        let e1 = boundary_edges[1];
+        let e0_next = (e0 + 1) % 4;
+        let e1_next = (e1 + 1) % 4;
+
+        let mid0 = (regions[e0].0 + regions[e0_next].0) * 0.5;
+        let mid1 = (regions[e1].0 + regions[e1_next].0) * 0.5;
+
+        let region_a = regions[e0_next].1;
+        let region_b = regions[e0].1;
+
+        let color_a = region_color(region_a);
+        let color_b = region_color(region_b);
+
+        let mut side_a = vec![mid0];
+        let mut idx = e0_next;
+        loop {
+            side_a.push(regions[idx].0);
+            if idx == e1 {
+                break;
+            }
+            idx = (idx + 1) % 4;
+        }
+        side_a.push(mid1);
+
+        let mut side_b = vec![mid1];
+        let mut idx = e1_next;
+        loop {
+            side_b.push(regions[idx].0);
+            if idx == e0 {
+                break;
+            }
+            idx = (idx + 1) % 4;
+        }
+        side_b.push(mid0);
+
+        fan_triangulate(add_vertex, &side_a, normal, &color_a);
+        fan_triangulate(add_vertex, &side_b, normal, &color_b);
+    } else {
+        // Unexpected pattern (e.g. checkerboard ABAB). Fall back to majority color.
+        let majority_region = regions[0].1;
+        let color = region_color(majority_region);
+        add_vertex(regions[0].0, normal, &color);
+        add_vertex(regions[1].0, normal, &color);
+        add_vertex(regions[2].0, normal, &color);
+        add_vertex(regions[0].0, normal, &color);
+        add_vertex(regions[2].0, normal, &color);
+        add_vertex(regions[3].0, normal, &color);
+    }
+}
+
+/// Fan-triangulates a convex polygon (3+ vertices) from vertex 0.
+fn fan_triangulate<F>(
+    add_vertex: &mut F,
+    verts: &[Vector3D],
+    normal: Vector3D,
+    color: &[f32; 3],
+) where
+    F: FnMut(Vector3D, Vector3D, &[f32; 3]),
+{
+    for i in 1..(verts.len() - 1) {
+        add_vertex(verts[0], normal, color);
+        add_vertex(verts[i], normal, color);
+        add_vertex(verts[i + 1], normal, color);
+    }
+}
+
+/// Creates gizmos for patch boundaries on the polycube mesh.
+pub fn create_polycube_patch_boundary_gizmos(
+    labeled_skeleton: &LabeledCurveSkeleton,
+    polycube: &mehsh::prelude::Mesh<POLYCUBE>,
+    translation: Vector3D,
+    scale: f64,
+) -> GizmoAsset {
+    let vertex_to_region = build_polycube_vertex_to_region_map(labeled_skeleton);
+    boundary_gizmos_from_regions(polycube, &vertex_to_region, translation, scale)
+}
+
+/// Shared helper: draws gray lines at edge midpoints where two adjacent vertices belong to
+/// different regions. Works for any mesh type (INPUT triangles or POLYCUBE quads).
+fn boundary_gizmos_from_regions<T: Tag>(
+    mesh: &mehsh::prelude::Mesh<T>,
+    vertex_to_region: &HashMap<VertKey<T>, usize>,
+    translation: Vector3D,
+    scale: f64,
+) -> GizmoAsset {
+    let mut gizmos = GizmoAsset::new();
+    let boundary_color = colors::to_bevy(colors::GRAY);
+
+    for face_id in mesh.face_ids() {
+        let mut boundary_midpoints: Vec<Vec3> = Vec::new();
+
+        for edge_id in mesh.edges(face_id) {
+            let Some([v1, v2]) = mesh.vertices(edge_id).collect_array::<2>() else {
+                continue;
+            };
+            let r1 = vertex_to_region.get(&v1);
+            let r2 = vertex_to_region.get(&v2);
+            if let (Some(r1), Some(r2)) = (r1, r2) {
+                if r1 != r2 {
+                    let midpoint = (mesh.position(v1) + mesh.position(v2)) * 0.5;
+                    boundary_midpoints.push(world_to_view(midpoint, translation, scale));
+                }
+            }
+        }
+
+        if boundary_midpoints.len() == 2 {
+            gizmos.line(boundary_midpoints[0], boundary_midpoints[1], boundary_color);
+        }
+    }
+
+    gizmos
 }

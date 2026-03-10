@@ -14,7 +14,10 @@ pub struct SkeletonNode {
     /// The embedded 3D position of this node in space, ideally inside the volume of the mesh.
     pub position: Vector3D,
 
-    /// The list of original mesh vertex keys that represent the induced surface patch for this node.
+    /// The list of surface mesh vertex keys that represent the induced surface patch for this node.
+    /// NOTE: These are always stored as `VertID`, even for polycube skeletons where the keys
+    /// actually reference `Mesh<POLYCUBE>` vertices. convert via raw key at the usage site.
+    /// This could be made generic but then generics would cascade everywhere while not adding much value.
     pub patch_vertices: Vec<VertID>,
 }
 
