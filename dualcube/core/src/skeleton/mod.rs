@@ -6,6 +6,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::{
     prelude::{Polycube, INPUT},
+    quad::Quad,
     skeleton::{
         connectivity_surgery::extract_skeleton,
         contraction::{contract_mesh, CONTRACTION},
@@ -109,7 +110,8 @@ impl SkeletonData {
         mesh: Arc<Mesh<INPUT>>,
         convexity_threshold: f64,
         convexity_merge_threshold: f64,
-    ) -> Option<Polycube> {
+        omega: usize,
+    ) -> (Option<Polycube>, Option<Quad>) {
         // Reuse contraction
         let (curve_skeleton, mut cleaned_skeleton) =
             surgery_and_simplification(&mesh, &self.contraction_mesh);
@@ -120,11 +122,12 @@ impl SkeletonData {
             convexity_threshold,
             convexity_merge_threshold,
             &mut cleaned_skeleton,
+            omega,
         );
 
-        let (polycube, polycube_skeleton) = match polycube_and_skeleton {
-            Some((p, s)) => (Some(p), Some(s)),
-            None => (None, None),
+        let (polycube, polycube_skeleton, quad) = match polycube_and_skeleton {
+            Some((p, s, q)) => (Some(p), Some(s), Some(q)),
+            None => (None, None, None),
         };
 
         self.raw_curve_skeleton = Some(curve_skeleton); // Not updated now, but we calculate it anyways so might as well save it
@@ -133,7 +136,7 @@ impl SkeletonData {
         self.labeled_skeleton = labeled;
         self.polycube_skeleton = polycube_skeleton;
 
-        polycube
+        (polycube, quad)
     }
 }
 
@@ -143,7 +146,8 @@ pub fn get_skeleton_based_mapping(
     mesh: Arc<Mesh<INPUT>>,
     convexity_threshold: f64,
     convexity_merge_threshold: f64,
-) -> (SkeletonData, Option<Polycube>) {
+    omega: usize,
+) -> (SkeletonData, Option<Polycube>, Option<Quad>) {
     // Start by doing contraction
     let contracted_mesh = contract_mesh(&mesh, 50);
 
@@ -155,11 +159,12 @@ pub fn get_skeleton_based_mapping(
         convexity_threshold,
         convexity_merge_threshold,
         &mut cleaned_skeleton,
+        omega,
     );
 
-    let (polycube, polycube_skeleton) = match polycube_and_skeleton {
-        Some((p, s)) => (Some(p), Some(s)),
-        None => (None, None),
+    let (polycube, polycube_skeleton, quad) = match polycube_and_skeleton {
+        Some((p, s, q)) => (Some(p), Some(s), Some(q)),
+        None => (None, None, None),
     };
 
     (
@@ -172,6 +177,7 @@ pub fn get_skeleton_based_mapping(
             polycube_skeleton,
         },
         polycube,
+        quad,
     )
 }
 
@@ -197,10 +203,11 @@ fn post_simplification_stage(
     convexity_threshold: f64,
     convexity_merge_threshold: f64,
     cleaned_skeleton: &mut CurveSkeleton,
+    omega: usize,
 ) -> (
     Option<LabeledCurveSkeleton>,
     VolumeCollapseHistory,
-    Option<(Polycube, LabeledCurveSkeleton)>,
+    Option<(Polycube, LabeledCurveSkeleton, Quad)>,
 ) {
     // Convexify skeleton to make patch volume close to convex shapes, which map nicely to cubes.
     convexify(
@@ -232,8 +239,8 @@ fn post_simplification_stage(
     let history = volume_based_collapse(&*cleaned_skeleton, &mesh);
 
     // Generate polycube based on labeled skeleton
-    let polycube: Option<(Polycube, LabeledCurveSkeleton)> = match &labeled {
-        Some(labeled) => Some(generate_polycube(labeled)),
+    let polycube: Option<(Polycube, LabeledCurveSkeleton, Quad)> = match &labeled {
+        Some(labeled) => Some(generate_polycube(labeled, omega)),
         None => None,
     };
 

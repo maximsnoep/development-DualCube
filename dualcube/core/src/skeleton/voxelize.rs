@@ -1,13 +1,14 @@
 use std::collections::HashMap;
 
 use bimap::BiHashMap;
-use log::{error, info};
+use log::{error, info, warn};
 use mehsh::prelude::{Mesh, Vector3D};
 use petgraph::graph::NodeIndex;
 use petgraph::visit::EdgeRef;
 
 use crate::polycube::POLYCUBE;
 use crate::prelude::{Polycube, PrincipalDirection};
+use crate::quad::Quad;
 use crate::skeleton::orthogonalize::{IVector3D, LabeledCurveSkeleton};
 
 /// We keep track of which voxel belongs to which node/edge, to know where the regions belong.
@@ -30,7 +31,7 @@ const Z: IVector3D = IVector3D::new(0, 0, 1);
 
 /// Generates a polycube based on an orthogonalized skeleton, and a labeled skeleton with the same structure,
 /// but with the regions on the polycube.
-pub fn generate_polycube(skeleton: &LabeledCurveSkeleton) -> (Polycube, LabeledCurveSkeleton) {
+pub fn generate_polycube(skeleton: &LabeledCurveSkeleton, mut omega: usize) -> (Polycube, LabeledCurveSkeleton, Quad) {
     // Map voxels to the node/edge they belong to.
     let mut voxel_owners: HashMap<IVector3D, VoxelOwner> = HashMap::default();
 
@@ -154,6 +155,15 @@ pub fn generate_polycube(skeleton: &LabeledCurveSkeleton) -> (Polycube, LabeledC
             .0
     };
 
+    // Generate a quad mesh for the polycube
+    if omega % 2 == 0 {
+        warn!("Even omega values are currently not supported. Increasing by 1.");
+        omega += 1;
+    }
+    let quad = Quad::from_polycube(&mesh, omega)
+        .expect("Failed to generate quad mesh from polycube");
+
+    // TODO: pass subdivided quad mesh instead
     let polycube_skeleton = generate_labeled_skeleton(skeleton, &mesh, voxel_owners);
 
     (
@@ -162,6 +172,7 @@ pub fn generate_polycube(skeleton: &LabeledCurveSkeleton) -> (Polycube, LabeledC
             region_to_vertex: BiHashMap::new(), // We do not have a dual (yet) so this has to be empty // TODO: create trivial dual
         },
         polycube_skeleton,
+        quad,
     )
 }
 

@@ -165,19 +165,23 @@ impl Solution {
         &mut self,
         convexity_threshold: f64,
         convexity_merge_threshold: f64,
+        omega: usize,
     ) {
         let mesh = self.mesh_ref.clone();
         if let Some(data) = &mut self.skeleton {
-            let polycube = data.update_convexity(mesh, convexity_threshold, convexity_merge_threshold);
+            let (polycube, quad) = data.update_convexity(mesh, convexity_threshold, convexity_merge_threshold, omega);
             self.polycube = polycube;
+            self.quad = quad;
         } else {
-            let (skeleton, polycube) = get_skeleton_based_mapping(
+            let (skeleton, polycube, quad) = get_skeleton_based_mapping(
                 mesh,
                 convexity_threshold,
                 convexity_merge_threshold,
+                omega,
             );
             self.skeleton = Some(skeleton);
             self.polycube = polycube;
+            self.quad = quad;
         }
         generate_loops();
     }
