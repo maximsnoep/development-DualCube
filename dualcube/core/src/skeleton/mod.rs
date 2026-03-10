@@ -10,6 +10,7 @@ use crate::{
     skeleton::{
         connectivity_surgery::extract_skeleton,
         contraction::{contract_mesh, CONTRACTION},
+        cross_parameterize::PolycubeMap,
         curve_skeleton::{CurveSkeleton, CurveSkeletonManipulation, CurveSkeletonSpatial},
         embeddability::make_embedding_possible,
         orthogonalize::{greedy_orthogonalization, LabeledCurveSkeleton},
@@ -23,11 +24,11 @@ use crate::{
 
 pub mod curve_skeleton;
 pub mod orthogonalize;
+pub mod cross_parameterize;
 
 mod boundary_loop;
 mod connectivity_surgery;
 mod contraction;
-mod cross_parameterize;
 mod embeddability;
 mod manipulation;
 mod patch;
@@ -60,6 +61,9 @@ pub struct SkeletonData {
 
     /// A skeleton isomorphic to `labeled_skeleton`, but with node positions and patch vertices updated to match the polycube structure.
     polycube_skeleton: Option<LabeledCurveSkeleton>,
+
+    /// The cross-parameterization map between the input mesh surface and the polycube surface.
+    polycube_map: Option<PolycubeMap>,
 }
 
 impl SkeletonData {
@@ -86,6 +90,11 @@ impl SkeletonData {
     /// Returns a reference to the polycube skeleton if it has been computed.
     pub fn polycube_skeleton(&self) -> Option<&LabeledCurveSkeleton> {
         self.polycube_skeleton.as_ref()
+    }
+
+    /// Returns a reference to the polycube map if it has been computed.
+    pub fn polycube_map(&self) -> Option<&PolycubeMap> {
+        self.polycube_map.as_ref()
     }
 
     /// Reconstructs what a skeleton looked like at a certain point in the volume collapse history, if the history is available.
@@ -140,6 +149,7 @@ impl SkeletonData {
         self.collapse_history = Some(history);
         self.labeled_skeleton = labeled;
         self.polycube_skeleton = polycube_skeleton;
+        self.polycube_map = None; // TODO: compute cross-parameterization
 
         (polycube, quad)
     }
@@ -180,6 +190,7 @@ pub fn get_skeleton_based_mapping(
             collapse_history: Some(history),
             labeled_skeleton: labeled,
             polycube_skeleton,
+            polycube_map: None, // TODO: compute cross-parameterization
         },
         polycube,
         quad,
