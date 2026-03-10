@@ -1,13 +1,13 @@
 use std::collections::{HashMap, HashSet};
 
 use log::warn;
-use mehsh::prelude::{Mesh, Vector2D};
+use mehsh::prelude::{HasPosition, Mesh, Vector2D};
 use ordered_float::OrderedFloat;
 use petgraph::graph::{EdgeIndex, NodeIndex};
 use petgraph::visit::EdgeRef;
 use serde::{Deserialize, Serialize};
 
-use crate::prelude::{VertID, INPUT};
+use crate::prelude::{PrincipalDirection, VertID, INPUT};
 use crate::skeleton::orthogonalize::LabeledCurveSkeleton;
 
 mod cutting_plan;
@@ -207,7 +207,8 @@ fn parameterize_side(
     }
 
     if degree == 1 {
-        return parameterize_degree_one(patch_verts, &boundaries, mesh);
+        let edge_direction = skeleton.edges(node_idx).next().unwrap().weight().direction;
+        return parameterize_degree_one(patch_verts, &boundaries, edge_direction, mesh);
     }
 
     // Degree is at least 2 now
@@ -239,22 +240,127 @@ fn parameterize_side(
     let (boundary_positions, cut_dual_values) =
         parameterize_disk_to_polygon(&segments, degree, mesh);
 
+    // Compute UV positions for cross-boundary (other-patch) vertices.
+    let cross_uvs = compute_cross_boundary_uvs(&boundaries, &boundary_positions);
+
     // Solve harmonic 2D with cut-aware boundary handling.
     solve_harmonic_2d_with_cuts(
         patch_verts,
         &boundary_positions,
         &cut_dual_values,
         &cut_paths,
+        &cross_uvs,
         mesh,
     )
 }
 
+/// For each cross-boundary vertex, interpolates a UV position from the UV values
+/// of the two bracketing our-side boundary vertices.
+fn compute_cross_boundary_uvs(
+    boundaries: &HashMap<EdgeIndex, OrderedBoundary>,
+    boundary_positions: &HashMap<VertID, Vector2D>,
+) -> HashMap<VertID, Vector2D> {
+    let mut result = HashMap::new();
+
+    for boundary in boundaries.values() {
+        let n = boundary.vertices.len();
+        if n == 0 {
+            continue;
+        }
+
+        // Build sorted anchors: (normalized_position, vertex).
+        // cumulative is monotonically increasing by construction.
+        let anchors: Vec<(f64, VertID)> = (0..n)
+            .map(|i| {
+                let t = if boundary.total_length > 0.0 {
+                    boundary.cumulative[i] / boundary.total_length
+                } else {
+                    i as f64 / n as f64
+                };
+                (t, boundary.vertices[i])
+            })
+            .collect();
+
+        for (ci, &cross_v) in boundary.cross_vertices.iter().enumerate() {
+            if result.contains_key(&cross_v) {
+                continue;
+            }
+
+            let t = boundary.cross_positions[ci];
+
+            // Binary search for the insertion point in the sorted anchors.
+            let pos = anchors.partition_point(|(at, _)| *at <= t);
+
+            let (t_prev, v_prev) = if pos == 0 {
+                anchors[n - 1] // wrap to last
+            } else {
+                anchors[pos - 1]
+            };
+            let (t_next, v_next) = if pos < n {
+                anchors[pos]
+            } else {
+                anchors[0] // wrap to first
+            };
+
+            if let (Some(&uv_prev), Some(&uv_next)) = (
+                boundary_positions.get(&v_prev),
+                boundary_positions.get(&v_next),
+            ) {
+                // Cyclic interpolation fraction.
+                let dt = {
+                    let d = t_next - t_prev;
+                    if d <= 0.0 {
+                        d + 1.0
+                    } else {
+                        d
+                    }
+                };
+                let d_cross = {
+                    let d = t - t_prev;
+                    if d < 0.0 {
+                        d + 1.0
+                    } else {
+                        d
+                    }
+                };
+                let frac = if dt > 0.0 {
+                    (d_cross / dt).clamp(0.0, 1.0)
+                } else {
+                    0.0
+                };
+
+                let uv = Vector2D::new(
+                    uv_prev.x * (1.0 - frac) + uv_next.x * frac,
+                    uv_prev.y * (1.0 - frac) + uv_next.y * frac,
+                );
+                result.insert(cross_v, uv);
+            }
+        }
+    }
+
+    result
+}
+
+/// Returns two tangent-axis indices for a given principal direction.
+/// The first tangent axis is used to pick a deterministic starting vertex.
+fn tangent_axes(dir: PrincipalDirection) -> (usize, usize) {
+    match dir {
+        PrincipalDirection::X => (1, 2), // Y, Z
+        PrincipalDirection::Y => (2, 0), // Z, X
+        PrincipalDirection::Z => (0, 1), // X, Y
+    }
+}
 
 /// For a region with a single boundary loop: split the boundary into 4 equal arcs,
 /// map them to the 4 sides of a square, and solve Dirichlet problem for the interior.
+///
+/// `edge_direction` is the skeleton edge's principal axis, used to pick a consistent
+/// starting vertex on both the input and polycube sides so their canonical-domain
+/// orientations match.
 fn parameterize_degree_one(
     patch_verts: &[VertID],
     boundaries: &HashMap<EdgeIndex, OrderedBoundary>,
+    edge_direction: PrincipalDirection,
     mesh: &Mesh<INPUT>,
 ) -> HashMap<VertID, Vector2D> {
     let boundary = boundaries.values().next().unwrap();
@@ -267,13 +373,47 @@ fn parameterize_degree_one(
         return HashMap::new();
     }
 
-    // Pick 4 approximately equally-spaced corner vertices by arc-length.
+    // Both input and polycube sides use the same tangent-axis criterion so that
+    // their canonical-domain orientations match.  The vertex with the maximum
+    // coordinate along the first tangent axis is chosen as the start.
+    let (axis_a, _) = tangent_axes(edge_direction);
+    let start_idx = boundary
+        .vertices
+        .iter()
+        .enumerate()
+        .max_by(|(_, a), (_, b)| {
+            let pa = mesh.position(**a)[axis_a];
+            let pb = mesh.position(**b)[axis_a];
+            pa.partial_cmp(&pb).unwrap_or(std::cmp::Ordering::Equal)
+        })
+        .unwrap()
+        .0;
+
+    // Rotate cumulative arc-lengths so that start_idx has arc-length 0.
+    let base_al = boundary.cumulative[start_idx];
+    let rotated_cumulative: Vec<f64> = (0..n)
+        .map(|k| {
+            let i = (start_idx + k) % n;
+            let al = boundary.cumulative[i] - base_al;
+            if al < 0.0 {
+                al + boundary.total_length
+            } else {
+                al
+            }
+        })
+        .collect();
+
+    // Rotated vertex order.
+    let rotated_verts: Vec<VertID> = (0..n)
+        .map(|k| boundary.vertices[(start_idx + k) % n])
+        .collect();
+
+    // Pick 4 corners at equal arc-length spacing from the start.
     let quarter = boundary.total_length / 4.0;
     let corners: Vec<usize> = (0..4)
         .map(|i| {
             let target = quarter * (i as f64);
-            boundary
-                .cumulative
+            rotated_cumulative
                 .iter()
                 .enumerate()
                 .min_by_key(|(_, &al)| OrderedFloat((al - target).abs()))
@@ -287,26 +427,29 @@ fn parameterize_degree_one(
     // Assign boundary positions by arc-length interpolation per segment.
     let mut boundary_positions: HashMap<VertID, Vector2D> = HashMap::new();
     for seg in 0..4 {
-        let start_idx = corners[seg];
-        let end_idx = corners[(seg + 1) % 4];
+        let ci_start = corners[seg];
+        let ci_end = corners[(seg + 1) % 4];
         let p0 = polygon[seg];
         let p1 = polygon[(seg + 1) % 4];
 
-        let arc_start = boundary.cumulative[start_idx];
-        let arc_end_raw = boundary.cumulative[end_idx];
-        let seg_length = if end_idx > start_idx {
+        let arc_start = rotated_cumulative[ci_start];
+        let arc_end_raw = rotated_cumulative[ci_end];
+        let seg_length = if ci_end > ci_start {
             arc_end_raw - arc_start
         } else {
             (boundary.total_length - arc_start) + arc_end_raw
         };
 
-        let mut i = start_idx;
+        let mut k = ci_start;
         loop {
-            let al = boundary.cumulative[i];
-            let al_adj = if i >= start_idx {
-                al - arc_start
-            } else {
-                (boundary.total_length - arc_start) + al
+            let al_adj = {
+                let al = rotated_cumulative[k];
+                let d = al - arc_start;
+                if d < 0.0 {
+                    d + boundary.total_length
+                } else {
+                    d
+                }
             };
             let t = if seg_length > 0.0 {
                 (al_adj / seg_length).clamp(0.0, 1.0)
@@ -314,15 +457,18 @@ fn parameterize_degree_one(
                 0.0
             };
             boundary_positions.insert(
-                boundary.vertices[i],
+                rotated_verts[k],
                 Vector2D::new(p0.x * (1.0 - t) + p1.x * t, p0.y * (1.0 - t) + p1.y * t),
             );
-            if i == end_idx {
+            if k == ci_end {
                 break;
             }
-            i = (i + 1) % n;
+            k = (k + 1) % n;
         }
     }
 
-    solve_harmonic_2d(patch_verts, &boundary_positions, mesh)
+    // Cross-boundary UVs.
+    let cross_uvs = compute_cross_boundary_uvs(boundaries, &boundary_positions);
+
+    solve_harmonic_2d(patch_verts, &boundary_positions, &cross_uvs, mesh)
 }

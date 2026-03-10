@@ -11,16 +11,26 @@ use crate::prelude::{VertID, INPUT};
 use crate::skeleton::boundary_loop::BoundaryLoop;
 
 /// Ordered boundary vertices on one side of a boundary loop, with arc-length data.
+///
+/// Arc-lengths are computed from **boundary-loop midpoint** positions (the geometric
+/// midpoints of each cross-boundary half-edge) rather than from the vertices themselves.
+/// This places the parameterization on the true geometric boundary between patches.
 pub(super) struct OrderedBoundary {
     /// Vertices in traversal order around the boundary, on our side of the loop.
     pub vertices: Vec<VertID>,
-    /// `cumulative[i]` = arc-length from `vertices[0]` to `vertices[i]` along the boundary.
+    /// `cumulative[i]` = midpoint-based arc-length from the start to `vertices[i]`.
     /// `cumulative[0] = 0.0`.
     pub cumulative: Vec<f64>,
-    /// Total perimeter (including the closing edge from last back to first).
+    /// Total perimeter of the midpoint curve (full cycle).
     pub total_length: f64,
-    /// Inverse: vertex -> index in `vertices`.
+    /// Inverse: vertex → index in `vertices`.
     pub vert_index: HashMap<VertID, usize>,
+    /// Other-side (cross-boundary) vertices, in traversal order, deduplicated.
+    /// These are vertices from the adjacent patch, connected to our boundary
+    /// vertices by the boundary-loop half-edges.
+    pub cross_vertices: Vec<VertID>,
+    /// Normalized [0, 1) midpoint arc-length position for each cross vertex.
+    pub cross_positions: Vec<f64>,
 }
 
 impl OrderedBoundary {
@@ -371,53 +381,87 @@ fn euler_tour(
     segments.push(closing_arc);
 }
 
-/// Extracts ordered boundary vertices on *our* side of a boundary loop.
+/// Extracts ordered boundary vertices on *our* side of a boundary loop, plus the
+/// other-side (cross-boundary) vertices.
 ///
-/// For each half-edge in the loop, takes the endpoint in `patch_set`.
-/// Deduplicates consecutive duplicates and forms a cycle.
+/// Arc-lengths are computed from the **midpoint positions** of each boundary half-edge
+/// (`(root + toor) / 2`), not from the vertices on our side alone.  This places the
+/// parameterization on the true geometric boundary between patches.
 pub(super) fn ordered_boundary_on_our_side(
     boundary_loop: &BoundaryLoop,
     patch_set: &HashSet<VertID>,
     mesh: &Mesh<INPUT>,
 ) -> OrderedBoundary {
-    let mut vertices = Vec::new();
+    let m = boundary_loop.edge_midpoints.len();
+
+    // Classify each half-edge's endpoints and compute midpoint positions.
+    let mut our_raw = Vec::with_capacity(m);
+    let mut cross_raw = Vec::with_capacity(m);
+    let mut midpoints = Vec::with_capacity(m);
+
     for &he in &boundary_loop.edge_midpoints {
         let r = mesh.root(he);
         let t = mesh.toor(he);
-        let ours = if patch_set.contains(&r) { r } else { t };
-        if vertices.last() != Some(&ours) {
-            vertices.push(ours);
-        }
-    }
-    // Remove closing duplicate (cycle).
-    if vertices.len() > 1 && vertices.first() == vertices.last() {
-        vertices.pop();
+        let (ours, theirs) = if patch_set.contains(&r) { (r, t) } else { (t, r) };
+        our_raw.push(ours);
+        cross_raw.push(theirs);
+        midpoints.push((mesh.position(r) + mesh.position(t)) * 0.5);
     }
 
-    let n = vertices.len();
-    let mut cumulative = vec![0.0_f64; n];
-    for i in 1..n {
-        cumulative[i] = cumulative[i - 1]
-            + (mesh.position(vertices[i]) - mesh.position(vertices[i - 1])).norm();
+    // Compute midpoint-to-midpoint cumulative arc-lengths.
+    let mut mid_cumulative: Vec<f64> = vec![0.0; m];
+    for i in 1..m {
+        mid_cumulative[i] = mid_cumulative[i - 1] + (midpoints[i] - midpoints[i - 1]).norm();
     }
-    let closing = if n > 1 {
-        (mesh.position(vertices[0]) - mesh.position(vertices[n - 1])).norm()
+    let closing = if m > 1 {
+        (midpoints[0] - midpoints[m - 1]).norm()
     } else {
         0.0
     };
-    let total_length = if n > 0 {
-        cumulative[n - 1] + closing
-    } else {
-        0.0
-    };
+    let total_length = if m > 0 { mid_cumulative[m - 1] + closing } else { 0.0 };
+
+    // Deduplicate our-side vertices, assign midpoint arc-lengths.
+    let mut vertices = Vec::new();
+    let mut cumulative = Vec::new();
+    for i in 0..m {
+        if vertices.last() != Some(&our_raw[i]) {
+            vertices.push(our_raw[i]);
+            cumulative.push(mid_cumulative[i]);
+        }
+    }
+    if vertices.len() > 1 && vertices.first() == vertices.last() {
+        vertices.pop();
+        cumulative.pop();
+    }
 
     let vert_index: HashMap<VertID, usize> =
         vertices.iter().enumerate().map(|(i, &v)| (v, i)).collect();
+
+    // Deduplicate cross-boundary vertices.
+    let mut cross_vertices = Vec::new();
+    let mut cross_positions = Vec::new();
+    for i in 0..m {
+        if cross_vertices.last() != Some(&cross_raw[i]) {
+            cross_vertices.push(cross_raw[i]);
+            let t = if total_length > 0.0 {
+                mid_cumulative[i] / total_length
+            } else {
+                0.0
+            };
+            cross_positions.push(t);
+        }
+    }
+    if cross_vertices.len() > 1 && cross_vertices.first() == cross_vertices.last() {
+        cross_vertices.pop();
+        cross_positions.pop();
+    }
 
     OrderedBoundary {
         vertices,
         cumulative,
         total_length,
         vert_index,
+        cross_vertices,
+        cross_positions,
     }
 }

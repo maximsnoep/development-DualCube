@@ -61,15 +61,15 @@ pub(super) fn parameterize_disk_to_polygon(
         let p1 = corners[(seg_idx + 1) % n_sides];
 
         // Compute cumulative arc-lengths within this segment.
-        let mut cum = vec![0.0_f64; seg.len()];
+        let mut cumulative: Vec<f64> = vec![0.0; seg.len()];
         for i in 1..seg.len() {
-            cum[i] = cum[i - 1] + (mesh.position(seg[i]) - mesh.position(seg[i - 1])).norm();
+            cumulative[i] = cumulative[i - 1] + (mesh.position(seg[i]) - mesh.position(seg[i - 1])).norm();
         }
-        let seg_total = cum[seg.len() - 1];
+        let seg_total = cumulative[seg.len() - 1];
 
         for (i, &v) in seg.iter().enumerate() {
             let t = if seg_total > 0.0 {
-                (cum[i] / seg_total).clamp(0.0, 1.0)
+                (cumulative[i] / seg_total).clamp(0.0, 1.0)
             } else {
                 0.0
             };
@@ -151,14 +151,24 @@ fn classify_cut_side(
 /// For boundary-loop vertices and cut endpoints: single fixed position from `boundary_positions`.
 /// For cut-interior vertices: two positions; the correct one is chosen based on which
 /// side of the cut each free neighbor is on.
+///
+/// `cross_boundary_positions` supplies UV for vertices from *adjacent* patches that
+/// are connected to our patch through boundary-loop half-edges. Including them ensures
+/// the Laplacian accounts for every mesh edge incident on free vertices.
 pub(super) fn solve_harmonic_2d_with_cuts(
     all_vertices: &[VertID],
     boundary_positions: &HashMap<VertID, Vector2D>,
     cut_dual_values: &[(VertID, Vector2D, Vector2D)],
     cut_paths: &[CutPath],
+    cross_boundary_positions: &HashMap<VertID, Vector2D>,
     mesh: &Mesh<INPUT>,
 ) -> HashMap<VertID, Vector2D> {
-    let all_boundary: HashSet<VertID> = boundary_positions.keys().copied().collect();
+    // Combine our-side boundary and cross-boundary into a single set.
+    let all_boundary: HashSet<VertID> = boundary_positions
+        .keys()
+        .chain(cross_boundary_positions.keys())
+        .copied()
+        .collect();
 
     let mut free_mapping: HashMap<VertID, usize> = HashMap::new();
     let mut free_vertices: Vec<VertID> = Vec::new();
@@ -171,7 +181,9 @@ pub(super) fn solve_harmonic_2d_with_cuts(
 
     let n_free = free_vertices.len();
     if n_free == 0 {
-        return boundary_positions.clone();
+        let mut result = boundary_positions.clone();
+        result.extend(cross_boundary_positions);
+        return result;
     }
 
     // Pre-compute side-aware boundary values for cut-interior vertices.
@@ -212,22 +224,30 @@ pub(super) fn solve_harmonic_2d_with_cuts(
 
     for (row_idx, &mesh_key) in free_vertices.iter().enumerate() {
         let neighbors: Vec<VertID> = mesh.neighbors(mesh_key).collect();
-        let degree = neighbors.len() as f64;
-        triplets.push(Triplet::new(row_idx, row_idx, degree));
+
+        // Only count neighbours that are part of our system (free or boundary).
+        // Cross-patch neighbours NOT in all_boundary would inflate the diagonal.
+        let mut degree: f64 = 0.0;
 
         for &nbr in &neighbors {
             if let Some(&col_idx) = free_mapping.get(&nbr) {
+                degree += 1.0;
                 triplets.push(Triplet::new(row_idx, col_idx, -1.0));
             } else if all_boundary.contains(&nbr) {
+                degree += 1.0;
                 let pos = override_positions
                     .get(&(mesh_key, nbr))
-                    .or_else(|| boundary_positions.get(&nbr));
+                    .or_else(|| boundary_positions.get(&nbr))
+                    .or_else(|| cross_boundary_positions.get(&nbr));
                 if let Some(pos) = pos {
                     rhs_u[(row_idx, 0)] += pos.x;
                     rhs_v[(row_idx, 0)] += pos.y;
                 }
             }
+            // Neighbours outside both sets are ignored (and not counted in degree).
         }
+
+        triplets.push(Triplet::new(row_idx, row_idx, degree));
     }
 
     let lhs = match SparseColMat::<usize, f64>::try_new_from_triplets(n_free, n_free, &triplets) {
@@ -256,17 +276,19 @@ pub(super) fn solve_harmonic_2d_with_cuts(
     let x_v = llt.solve(rhs_v.as_ref());
 
     let mut result: HashMap<VertID, Vector2D> = boundary_positions.clone();
+    result.extend(cross_boundary_positions);
     for (i, &v) in free_vertices.iter().enumerate() {
         result.insert(v, Vector2D::new(x_u[(i, 0)], x_v[(i, 0)]));
     }
     result
 }
 
-/// Simple 2D Dirichlet solve (no cuts). Used for degree-1 regions.
+/// Simple 2D Dirichlet solve (no cuts, no cross-boundary). Used for degree-1 regions.
 pub(super) fn solve_harmonic_2d(
     all_vertices: &[VertID],
     boundary_positions: &HashMap<VertID, Vector2D>,
+    cross_boundary_positions: &HashMap<VertID, Vector2D>,
     mesh: &Mesh<INPUT>,
 ) -> HashMap<VertID, Vector2D> {
-    solve_harmonic_2d_with_cuts(all_vertices, boundary_positions, &[], &[], mesh)
+    solve_harmonic_2d_with_cuts(all_vertices, boundary_positions, &[], &[], cross_boundary_positions, mesh)
 }

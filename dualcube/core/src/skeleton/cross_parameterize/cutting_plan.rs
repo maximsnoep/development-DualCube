@@ -39,12 +39,12 @@ pub fn compute_cutting_plan(
         .values()
         .copied()
         .filter(|d| d.is_finite())
-        .fold(0.0_f64, f64::max);
+        .fold(0.0, f64::max);
     let polycube_max = polycube_distances
         .values()
         .copied()
         .filter(|d| d.is_finite())
-        .fold(0.0_f64, f64::max);
+        .fold(0.0, f64::max);
 
     // Build combined cost for every boundary pair.
     let mut weighted_edges: Vec<(EdgeIndex, EdgeIndex, f64)> = Vec::new();
