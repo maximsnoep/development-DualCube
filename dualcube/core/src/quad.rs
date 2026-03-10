@@ -790,12 +790,6 @@ impl Quad {
             "Not all polycube patches were processed!"
         );
 
-        // Build triangle mesh by splitting each quad along a diagonal
-        let tri_faces = Self::triangulate_quads(&faces);
-        let triangle_mesh_polycube = Mesh::<INPUT>::from(&tri_faces, &vertex_positions)
-            .expect("Failed to build triangle mesh from polycube")
-            .0;
-
         let (quad_mesh_polycube, face_to_verts, edge_to_verts, frozen) =
             Self::build_quad_mesh(&faces, &vertex_positions, &face_to_verts_usize, &edge_to_verts_usize, polycube)
                 .expect("Failed to create quad mesh from polycube");
@@ -804,7 +798,7 @@ impl Quad {
         let quad_mesh = quad_mesh_polycube.clone();
 
         Some(Self {
-            triangle_mesh_polycube,
+            triangle_mesh_polycube: Mesh::default(),
             quad_mesh_polycube,
             quad_mesh,
             face_to_verts,
