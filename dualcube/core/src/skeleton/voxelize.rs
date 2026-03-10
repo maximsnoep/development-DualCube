@@ -21,7 +21,8 @@ pub enum VoxelOwner {
     Edge(NodeIndex),
 
     /// A voxel that sits at the midpoint of a graph edge, splitting ownership.
-    EdgeMidpoint(),
+    /// Stores (source node, target node, unit direction from source toward target).
+    EdgeMidpoint(NodeIndex, NodeIndex, IVector3D),
 }
 
 // TODO: integrate into type?
@@ -106,7 +107,7 @@ pub fn generate_polycube(skeleton: &LabeledCurveSkeleton, mut omega: usize) -> (
             } else if i > mid_point {
                 VoxelOwner::Edge(target)
             } else {
-                VoxelOwner::EdgeMidpoint()
+                VoxelOwner::EdgeMidpoint(source, target, dir_vec)
             };
 
             voxel_owners.insert(pos, owner);
@@ -148,13 +149,39 @@ pub fn generate_polycube(skeleton: &LabeledCurveSkeleton, mut omega: usize) -> (
                             VoxelOwner::Node(node) | VoxelOwner::Edge(node) => {
                                 vertex_owner_map.insert(idx, *node);
                             }
-                            VoxelOwner::EdgeMidpoint() => {}
+                            VoxelOwner::EdgeMidpoint(..) => {}
                         }
                     }
                     idx
                 })
                 .collect::<Vec<_>>();
             faces.push(quad);
+        }
+    }
+
+    // Second pass: assign vertices that belong exclusively to EdgeMidpoint voxels.
+    // Each such vertex is placed on the source or target side based on its position
+    // relative to the midpoint center along the edge direction.
+    for (&voxel_pos, owner) in &voxel_owners {
+        if let VoxelOwner::EdgeMidpoint(source, target, dir_vec) = owner {
+            let center = voxel_pos * 2;
+            for (dir, face_offsets) in &DIRECTIONS {
+                let neighbor_pos = voxel_pos + *dir;
+                if voxel_owners.contains_key(&neighbor_pos) {
+                    continue; // internal face, no surface vertices here
+                }
+                for offset in face_offsets {
+                    let grid_pos = center + *offset;
+                    if let Some(&idx) = vertex_map.get(&grid_pos) {
+                        if !vertex_owner_map.contains_key(&idx) {
+                            let d = grid_pos - center;
+                            let dot = d.x * dir_vec.x + d.y * dir_vec.y + d.z * dir_vec.z;
+                            let node = if dot > 0 { *target } else { *source };
+                            vertex_owner_map.insert(idx, node);
+                        }
+                    }
+                }
+            }
         }
     }
 
