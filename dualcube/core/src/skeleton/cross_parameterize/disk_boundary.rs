@@ -12,7 +12,7 @@ use crate::skeleton::boundary_loop::BoundaryLoop;
 
 /// Ordered boundary vertices on one side of a boundary loop, with arc-length data.
 ///
-/// Arc-lengths are computed from **boundary-loop midpoint** positions (the geometric
+/// Arc-lengths are computed from boundary-loop midpoint positions (the geometric
 /// midpoints of each cross-boundary half-edge) rather than from the vertices themselves.
 /// This places the parameterization on the true geometric boundary between patches.
 pub(super) struct OrderedBoundary {
@@ -23,7 +23,7 @@ pub(super) struct OrderedBoundary {
     pub cumulative: Vec<f64>,
     /// Total perimeter of the midpoint curve (full cycle).
     pub total_length: f64,
-    /// Inverse: vertex → index in `vertices`.
+    /// Inverse: vertex -> index in `vertices`.
     pub vert_index: HashMap<VertID, usize>,
     /// Other-side (cross-boundary) vertices, in traversal order, deduplicated.
     /// These are vertices from the adjacent patch, connected to our boundary
@@ -413,7 +413,7 @@ fn euler_tour(
         let closing_arc = boundary.arc_between(current_vertex, entry_vertex);
         segments.push(closing_arc);
     } else {
-        // Non-root: last child's endpoint coincides with parent entry → degenerate.
+        // Non-root: last child's endpoint coincides with parent entry -> degenerate.
         segments.push(vec![current_vertex]);
     }
 }
@@ -421,7 +421,7 @@ fn euler_tour(
 /// Extracts ordered boundary vertices on *our* side of a boundary loop, plus the
 /// other-side (cross-boundary) vertices.
 ///
-/// Arc-lengths are computed from the **midpoint positions** of each boundary half-edge
+/// Arc-lengths are computed from the midpoint positions of each boundary half-edge
 /// (`(root + toor) / 2`), not from the vertices on our side alone.  This places the
 /// parameterization on the true geometric boundary between patches.
 pub(super) fn ordered_boundary_on_our_side(
