@@ -538,7 +538,7 @@ impl Quad {
                 let point = quad_mesh_polycube.position(vert_id);
                 let triangle = triangle_lookup.nearest(&[point.x, point.y, point.z]);
                 let Some([a, b, c]) = triangle_mesh_polycube.vertices(triangle).collect_array::<3>() else {
-                    panic!("Triangle does not have 3 vertices!");
+                    unreachable!("Triangle does not have 3 vertices!");
                 };
 
                 // check distance from point to triangle
@@ -805,5 +805,62 @@ impl Quad {
             edge_to_verts,
             frozen,
         })
+    }
+
+    /// Maps `quad_mesh` vertices from the polycube surface to the input surface
+    /// using the `triangle_mesh_polycube` as the bridge.
+    ///
+    /// For each quad vertex, finds the nearest triangle in `triangle_mesh_polycube`,
+    /// computes barycentric coordinates, then applies those to the original input mesh
+    /// positions to obtain the input-surface position.
+    ///
+    /// This is analogous to the mapping step in `from_layout`, but decoupled so it
+    /// can be called after the cross-parameterization populates `triangle_mesh_polycube`.
+    pub fn map_quad_to_input_surface(&mut self, input_mesh: &Mesh<INPUT>) {
+        if self.triangle_mesh_polycube.vert_ids().is_empty() {
+            return;
+        }
+        let triangle_lookup = self.triangle_mesh_polycube.bvh();
+
+        for vert_id in self.quad_mesh.vert_ids() {
+            let point = self.quad_mesh_polycube.position(vert_id);
+            let triangle = triangle_lookup.nearest(&[point.x, point.y, point.z]);
+            let Some([a, b, c]) = self.triangle_mesh_polycube.vertices(triangle).collect_array::<3>() else {
+                continue;
+            };
+
+            let distance = mehsh::utils::geom::distance_to_triangle(
+                point,
+                (
+                    self.triangle_mesh_polycube.position(a),
+                    self.triangle_mesh_polycube.position(b),
+                    self.triangle_mesh_polycube.position(c),
+                ),
+            );
+
+            if distance > 0.001 {
+                continue;
+            }
+
+            let (u, v, w) = mehsh::utils::geom::calculate_barycentric_coordinates(
+                point,
+                (
+                    self.triangle_mesh_polycube.position(a),
+                    self.triangle_mesh_polycube.position(b),
+                    self.triangle_mesh_polycube.position(c),
+                ),
+            );
+
+            let new_position = mehsh::utils::geom::inverse_barycentric_coordinates(
+                u, v, w,
+                (
+                    input_mesh.position(a),
+                    input_mesh.position(b),
+                    input_mesh.position(c),
+                ),
+            );
+
+            self.quad_mesh.set_position(vert_id, new_position);
+        }
     }
 }

@@ -1,7 +1,7 @@
 use std::collections::{HashMap, HashSet};
 
-use log::warn;
-use mehsh::prelude::{HasPosition, Mesh, Vector2D};
+use log::{error, warn};
+use mehsh::prelude::{FaceKey, HasFaces, HasPosition, HasVertices, Mesh, SetPosition, Vector2D, Vector3D};
 use ordered_float::OrderedFloat;
 use petgraph::graph::{EdgeIndex, NodeIndex};
 use petgraph::visit::EdgeRef;
@@ -84,19 +84,99 @@ impl PolycubeMap {
     /// interpolating within the polycube parameterization of the same region.
     pub fn to_triangle_mesh_polycube(
         &self,
-        _input_mesh: &Mesh<INPUT>,
-        _polycube_skeleton: &LabeledCurveSkeleton,
+        input_mesh: &Mesh<INPUT>,
+        input_skeleton: &LabeledCurveSkeleton,
+        polycube_mesh: &Mesh<INPUT>,
     ) -> Mesh<INPUT> {
-        // TODO: For each region:
-        //   1. Clone the input mesh
-        //   2. For each input vertex in the region, get its canonical (u, v) coords
-        //   3. Find the triangle in the polycube parameterization containing that (u, v)
-        //   4. Interpolate to get the 3D polycube-surface position
-        //   5. set_position on the cloned mesh
-        // NOTE: Step 3-4 requires triangulating the polycube parameterization and building
-        //       a point-location structure. A simple approach is barycentric interpolation
-        //       over the polycube triangulation in 2D canonical space.
-        Mesh::default()
+        let mut result = input_mesh.clone();
+
+        // Build a lookup: input vertex -> region (NodeIndex).
+        let mut vert_to_region: HashMap<VertID, NodeIndex> = HashMap::new();
+        for node_idx in input_skeleton.node_indices() {
+            for &v in &input_skeleton[node_idx].skeleton_node.patch_vertices {
+                vert_to_region.insert(v, node_idx);
+            }
+        }
+
+        // Pre-build per-region triangulated polycube faces in canonical UV space.
+        // Each triangle stores: (uv_a, uv_b, uv_c, pos_a, pos_b, pos_c).
+        let mut region_triangles: HashMap<NodeIndex, Vec<UVTriangle>> = HashMap::new();
+        for (&node_idx, region) in &self.regions {
+            let poly_uv = &region.polycube_to_canonical;
+            if poly_uv.is_empty() {
+                continue;
+            }
+            let poly_verts_set: HashSet<VertID> = poly_uv.keys().copied().collect();
+
+            // Collect polycube faces whose vertices are all in this region.
+            let mut region_faces: HashSet<FaceKey<INPUT>> = HashSet::new();
+            for &v in poly_uv.keys() {
+                for f in polycube_mesh.faces(v) {
+                    if polycube_mesh.vertices(f).all(|fv| poly_verts_set.contains(&fv)) {
+                        region_faces.insert(f);
+                    }
+                }
+            }
+
+            let mut triangles = Vec::new();
+            for f in region_faces {
+                let face_verts: Vec<VertID> = polycube_mesh.vertices(f).collect();
+                // Triangulate: fan from first vertex.
+                for i in 1..face_verts.len() - 1 {
+                    let va = face_verts[0];
+                    let vb = face_verts[i];
+                    let vc = face_verts[i + 1];
+                    if let (Some(&uv_a), Some(&uv_b), Some(&uv_c)) =
+                        (poly_uv.get(&va), poly_uv.get(&vb), poly_uv.get(&vc))
+                    {
+                        triangles.push(UVTriangle {
+                            uv: [uv_a, uv_b, uv_c],
+                            pos: [
+                                polycube_mesh.position(va),
+                                polycube_mesh.position(vb),
+                                polycube_mesh.position(vc),
+                            ],
+                        });
+                    }
+                }
+            }
+            region_triangles.insert(node_idx, triangles);
+        }
+
+        let mut unmapped = 0usize;
+        for &v in input_mesh.vert_ids().iter() {
+            let Some(&node_idx) = vert_to_region.get(&v) else { continue };
+            let Some(region) = self.regions.get(&node_idx) else { continue };
+            let Some(&uv) = region.input_to_canonical.get(&v) else { continue };
+            let Some(triangles) = region_triangles.get(&node_idx) else { continue };
+
+            if let Some(pos) = locate_in_triangles(uv, triangles) {
+                result.set_position(v, pos);
+            } else {
+                // Fallback: project onto the nearest triangle.  This should not
+                // happen if the triangulation fully covers the canonical domain.
+                error!(
+                    "to_triangle_mesh_polycube: vertex {:?} in region {:?} \
+                     at UV ({:.4}, {:.4}) not inside any polycube triangle \
+                     ({} triangles in region). Using nearest fallback.",
+                    v, node_idx, uv.x, uv.y, triangles.len()
+                );
+                if let Some(pos) = nearest_triangle_fallback(uv, triangles) {
+                    result.set_position(v, pos);
+                } else {
+                    unmapped += 1;
+                }
+            }
+        }
+
+        if unmapped > 0 {
+            warn!(
+                "to_triangle_mesh_polycube: {} input vertices could not be mapped.",
+                unmapped
+            );
+        }
+
+        result
     }
 }
 
@@ -254,14 +334,21 @@ fn parameterize_side(
     let cross_uvs = compute_cross_boundary_uvs(&boundaries, &boundary_positions);
 
     // Solve harmonic 2D with cut-aware boundary handling.
-    solve_harmonic_2d_with_cuts(
+    let mut result = solve_harmonic_2d_with_cuts(
         patch_verts,
         &boundary_positions,
         &cut_dual_values,
         &cut_paths,
         &cross_uvs,
         mesh,
-    )
+    );
+
+    // Include cross-boundary UVs so that boundary polycube faces (which span two
+    // regions) can be fully triangulated in canonical UV space.
+    for (v, uv) in cross_uvs {
+        result.entry(v).or_insert(uv);
+    }
+    result
 }
 
 /// For each cross-boundary vertex, interpolates a UV position from the UV values
@@ -480,5 +567,96 @@ fn parameterize_degree_one(
     // Cross-boundary UVs.
     let cross_uvs = compute_cross_boundary_uvs(boundaries, &boundary_positions);
 
-    solve_harmonic_2d(patch_verts, &boundary_positions, &cross_uvs, mesh)
+    let mut result = solve_harmonic_2d(patch_verts, &boundary_positions, &cross_uvs, mesh);
+
+    // Include cross-boundary UVs so that boundary polycube faces (which span two
+    // regions) can be fully triangulated in canonical UV space.
+    for (v, uv) in cross_uvs {
+        result.entry(v).or_insert(uv);
+    }
+    result
+}
+
+/// A triangle in canonical UV space with associated 3D polycube positions.
+struct UVTriangle {
+    uv: [Vector2D; 3],
+    pos: [Vector3D; 3],
+}
+
+/// Computes 2D barycentric coordinates of `p` in triangle `(a, b, c)`.
+/// Returns `(u, v, w)` where `p = u*a + v*b + w*c`.
+fn bary_2d(p: Vector2D, a: Vector2D, b: Vector2D, c: Vector2D) -> (f64, f64, f64) {
+    let v0 = Vector2D::new(b.x - a.x, b.y - a.y);
+    let v1 = Vector2D::new(c.x - a.x, c.y - a.y);
+    let v2 = Vector2D::new(p.x - a.x, p.y - a.y);
+
+    let d00 = v0.x * v0.x + v0.y * v0.y;
+    let d01 = v0.x * v1.x + v0.y * v1.y;
+    let d11 = v1.x * v1.x + v1.y * v1.y;
+    let d20 = v2.x * v0.x + v2.y * v0.y;
+    let d21 = v2.x * v1.x + v2.y * v1.y;
+
+    let denom = d00 * d11 - d01 * d01;
+    if denom.abs() < 1e-15 {
+        return (1.0, 0.0, 0.0);
+    }
+    let v = (d11 * d20 - d01 * d21) / denom;
+    let w = (d00 * d21 - d01 * d20) / denom;
+    let u = 1.0 - v - w;
+    (u, v, w)
+}
+
+/// Small tolerance for point-in-triangle test.
+const BARY_EPS: f64 = -1e-6;
+
+/// Finds the polycube 3D position for a canonical UV point by locating it in
+/// a set of triangulated polycube faces.
+fn locate_in_triangles(uv: Vector2D, triangles: &[UVTriangle]) -> Option<Vector3D> {
+    for tri in triangles {
+        let (u, v, w) = bary_2d(uv, tri.uv[0], tri.uv[1], tri.uv[2]);
+        if u >= BARY_EPS && v >= BARY_EPS && w >= BARY_EPS {
+            return Some(tri.pos[0] * u + tri.pos[1] * v + tri.pos[2] * w);
+        }
+    }
+    None
+}
+
+/// Fallback: project onto the nearest triangle by clamping barycentric coords.
+fn nearest_triangle_fallback(uv: Vector2D, triangles: &[UVTriangle]) -> Option<Vector3D> {
+    if triangles.is_empty() {
+        return None;
+    }
+
+    let mut best_dist = f64::INFINITY;
+    let mut best_pos = None;
+    for tri in triangles {
+        let (u, v, w) = bary_2d(uv, tri.uv[0], tri.uv[1], tri.uv[2]);
+        // Clamp to triangle
+        let (cu, cv, cw) = clamp_bary(u, v, w);
+        let projected = Vector2D::new(
+            cu * tri.uv[0].x + cv * tri.uv[1].x + cw * tri.uv[2].x,
+            cu * tri.uv[0].y + cv * tri.uv[1].y + cw * tri.uv[2].y,
+        );
+        let dx = uv.x - projected.x;
+        let dy = uv.y - projected.y;
+        let dist = dx * dx + dy * dy;
+        if dist < best_dist {
+            best_dist = dist;
+            best_pos = Some(tri.pos[0] * cu + tri.pos[1] * cv + tri.pos[2] * cw);
+        }
+    }
+    best_pos
+}
+
+/// Clamps barycentric coordinates to the triangle, projecting to the nearest
+/// point on the triangle boundary if outside.
+fn clamp_bary(u: f64, v: f64, w: f64) -> (f64, f64, f64) {
+    let cu = u.max(0.0);
+    let cv = v.max(0.0);
+    let cw = w.max(0.0);
+    let sum = cu + cv + cw;
+    if sum < 1e-15 {
+        return (1.0 / 3.0, 1.0 / 3.0, 1.0 / 3.0);
+    }
+    (cu / sum, cv / sum, cw / sum)
 }
