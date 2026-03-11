@@ -9,7 +9,7 @@ use crate::prelude::{EdgeID, VertID, INPUT};
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct BoundaryLoop {
     /// The list of surface edges that form this boundary loop, in traversal order.
-    /// This is always a simple cycle.
+    /// This is always a simple cycle, thus there are never any triple points.
     pub edge_midpoints: Vec<EdgeID>,
 }
 
