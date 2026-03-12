@@ -1,5 +1,5 @@
 use mehsh::prelude::{Mesh, Vector3D};
-use petgraph::graph::{EdgeIndex, NodeIndex, UnGraph};
+use petgraph::{graph::{EdgeIndex, NodeIndex}, prelude::StableUnGraph};
 use serde::{Deserialize, Serialize};
 
 use crate::{
@@ -22,7 +22,7 @@ pub struct SkeletonNode {
 }
 
 /// The extracted 1D skeleton, embedded in 3D space.
-pub type CurveSkeleton = UnGraph<SkeletonNode, BoundaryLoop>;
+pub type CurveSkeleton = StableUnGraph<SkeletonNode, BoundaryLoop>;
 
 /// Methods for manipulating curve skeletons, along with their induced surface patches.
 pub trait CurveSkeletonManipulation {

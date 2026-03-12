@@ -11,6 +11,7 @@ use crate::prelude::{Polycube, PrincipalDirection, VertID, EdgeID, INPUT};
 use crate::quad::Quad;
 use crate::skeleton::boundary_loop::BoundaryLoop;
 use crate::skeleton::orthogonalize::{IVector3D, LabeledCurveSkeleton};
+use petgraph::visit::IntoEdgeReferences;
 
 /// Which skeleton node a voxel's surface vertices belong to.
 enum VoxelOwner {
@@ -47,10 +48,10 @@ pub fn generate_polycube(skeleton: &LabeledCurveSkeleton, mut omega: usize) -> (
 
     // Place Edge Voxels
     for edge in skeleton.edge_references() {
-        let source = edge.source();
+        let source: NodeIndex = edge.source();
         let source_pos = skeleton[source].grid_position;
 
-        let target = edge.target();
+        let target: NodeIndex = edge.target();
         let target_pos = skeleton[target].grid_position;
 
         let edge_weight = edge.weight();
@@ -214,7 +215,7 @@ fn generate_labeled_skeleton(
     // Use the IdMap from Mesh::from() for the canonical usize->VertKey mapping.
     let mut vertex_to_node: HashMap<VertKey<POLYCUBE>, NodeIndex> = HashMap::new();
     let mut node_patches: HashMap<NodeIndex, Vec<VertKey<POLYCUBE>>> = HashMap::new();
-    for node_idx in poly_skeleton.node_indices() {
+    for node_idx in poly_skeleton.node_indices().collect::<Vec<_>>() {
         node_patches.insert(node_idx, Vec::new());
     }
 
@@ -226,7 +227,7 @@ fn generate_labeled_skeleton(
     }
 
     // Update each skeleton node with polycube patch vertices and integer grid position.
-    for node_idx in poly_skeleton.node_indices() {
+    for node_idx in poly_skeleton.node_indices().collect::<Vec<_>>() {
         let patch = &node_patches[&node_idx];
         let grid_pos = original[node_idx].grid_position;
         let position = Vector3D::new(
@@ -245,7 +246,7 @@ fn generate_labeled_skeleton(
     }
 
     // Compute boundary loops for each skeleton edge.
-    for edge_idx in poly_skeleton.edge_indices() {
+    for edge_idx in poly_skeleton.edge_indices().collect::<Vec<_>>() {
         let (source, target) = poly_skeleton.edge_endpoints(edge_idx).unwrap();
         let boundary_loop = compute_quad_boundary_loop(polycube_mesh, &vertex_to_node, source, target);
         poly_skeleton.edge_weight_mut(edge_idx).unwrap().boundary_loop = boundary_loop;
