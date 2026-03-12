@@ -275,7 +275,7 @@ fn generate_labeled_skeleton(
             let src_n = poly_skeleton[src].skeleton_node.patch_vertices.len();
             let tgt_n = poly_skeleton[tgt].skeleton_node.patch_vertices.len();
             error!(
-                "Polycube skeleton edge {:?} ({:?}↔{:?}) has EMPTY boundary loop. \
+                "Polycube skeleton edge {:?} ({:?}<->{:?}) has EMPTY boundary loop. \
                  Source patch has {} verts, target patch has {} verts.",
                 edge_idx, src, tgt, src_n, tgt_n
             );
@@ -409,7 +409,7 @@ fn compute_quad_boundary_loop(
             let owners: Vec<_> = face_verts.iter().map(|v| vertex_to_node.get(v)).collect();
             warn!(
                 "Boundary loop left pure boundary faces; loop may be incomplete. \
-                 {:?}↔{:?}, twin face has {} verts with owners: {:?}",
+                 {:?}<->{:?}, twin face has {} verts with owners: {:?}",
                 source, target, face_verts.len(), owners
             );
             break;

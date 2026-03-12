@@ -1,7 +1,6 @@
 use std::cmp::{Ordering, Reverse};
 use std::collections::{BinaryHeap, HashMap, HashSet};
 
-use log::error;
 use mehsh::prelude::{HasNeighbors, HasPosition, Mesh, Vector3D};
 use ordered_float::OrderedFloat;
 use petgraph::graph::{EdgeIndex, NodeIndex};
@@ -12,7 +11,8 @@ use crate::skeleton::boundary_loop::BoundaryLoop;
 use crate::skeleton::orthogonalize::LabeledCurveSkeleton;
 
 use super::{
-    BoundaryParameterization, CutPath, CuttingPlan, SurfacePath, SurfacePoint, MIN_CUT_SEPARATION,
+    BoundaryParameterization, CutPath, CuttingPlan, SurfacePoint, MIN_CUT_SEPARATION,
+    geodesic::straighten_vertex_path,
 };
 
 /// Computes cutting plans for both the input and polycube sides of a region.
@@ -218,14 +218,15 @@ fn compute_cut_topology(
 
     let mst = kruskal_mst(&weighted_edges);
 
-    if mst.len() != degree - 1 {
-        error!(
-            "Cut topology for node {:?}: expected {} cuts but MST has {}.",
-            node_idx,
-            degree - 1,
-            mst.len()
-        );
-    }
+    assert_eq!(
+        mst.len(),
+        degree - 1,
+        "Cut topology for node {:?}: expected {} cuts but MST has {}. \
+         The region's boundary loops may not be fully connected.",
+        node_idx,
+        degree - 1,
+        mst.len()
+    );
 
     mst
 }
@@ -320,13 +321,13 @@ fn find_cut_path(
         }
     }
 
-    let best_b_idx = match best_b_idx {
-        Some(idx) => idx,
-        None => {
-            error!("No path found from boundary {:?} to {:?}", edge_a, edge_b);
-            return empty_cut(edge_a, edge_b);
-        }
-    };
+    let best_b_idx = best_b_idx.unwrap_or_else(|| {
+        panic!(
+            "No path found from boundary {:?} to {:?}: Dijkstra could not reach any \
+             boundary-B vertex from boundary-A within the region",
+            edge_a, edge_b
+        )
+    });
 
     // Reconstruct vertex path (from source in A to target in B).
     let mut path_indices = Vec::new();
@@ -357,30 +358,28 @@ fn find_cut_path(
     let start_t = pick_t_with_separation(start_midpoint_idx, param_a, loop_a, used_t.get(&edge_a));
     let end_t = pick_t_with_separation(end_midpoint_idx, param_b, loop_b, used_t.get(&edge_b));
 
-    // Assemble the SurfacePath:
-    //   boundary midpoint A → (interior vertices) → boundary midpoint B
+    // Build the surface path: Dijkstra gives a vertex path; geodesic straightening
+    // produces a path that crosses triangle edges at optimal positions.
     let start_edge = loop_a.edge_midpoints[start_midpoint_idx];
     let end_edge = loop_b.edge_midpoints[end_midpoint_idx];
 
-    let mut points = Vec::with_capacity(vertex_path.len() + 2);
-    points.push(SurfacePoint::OnEdge {
-        edge: start_edge,
-        t: 0.5,
-    });
-    for &v in &vertex_path {
-        points.push(SurfacePoint::OnVertex { vertex: v });
-    }
-    points.push(SurfacePoint::OnEdge {
-        edge: end_edge,
-        t: 0.5,
-    });
+    let prefix = SurfacePoint::OnEdge { edge: start_edge, t: 0.5 };
+    let suffix = SurfacePoint::OnEdge { edge: end_edge, t: 0.5 };
+
+    let path = straighten_vertex_path(
+        &vertex_path,
+        mesh,
+        patch_set,
+        Some(prefix),
+        Some(suffix),
+    );
 
     CutPath {
         start_boundary: edge_a,
         start_t,
         end_boundary: edge_b,
         end_t,
-        path: SurfacePath { points },
+        path,
     }
 }
 
@@ -425,8 +424,8 @@ fn pick_t_with_separation(
         }
     }
 
-    // Could not find a well-separated point; use the original.
-    error!("Could not find well-separated cut endpoint on boundary");
+    // All midpoints are too close to an existing endpoint. Use the original
+    // t-value — with very few boundary edges this can legitimately happen.
     t
 }
 
@@ -465,16 +464,6 @@ fn edge_midpoint_position(edge: EdgeID, mesh: &Mesh<INPUT>) -> Vector3D {
     (p0 + p1) * 0.5
 }
 
-/// Creates a degenerate empty cut (error fallback).
-fn empty_cut(edge_a: EdgeIndex, edge_b: EdgeIndex) -> CutPath {
-    CutPath {
-        start_boundary: edge_a,
-        start_t: 0.0,
-        end_boundary: edge_b,
-        end_t: 0.0,
-        path: SurfacePath { points: Vec::new() },
-    }
-}
 
 /// Returns the set of vertices *within this region* that lie on a specific boundary loop.
 ///

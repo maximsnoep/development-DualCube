@@ -11,6 +11,7 @@ use crate::prelude::{EdgeID, PrincipalDirection, VertID, INPUT};
 use crate::skeleton::orthogonalize::LabeledCurveSkeleton;
 
 mod cutting_plan;
+mod geodesic;
 mod harmonic;
 
 pub use cutting_plan::compute_cutting_plans;
