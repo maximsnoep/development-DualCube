@@ -13,9 +13,9 @@ use std::collections::HashMap;
 /// Builds a vertex-to-region map for the input mesh from a CurveSkeleton.
 fn build_vertex_to_region_map(curve_skeleton: &CurveSkeleton) -> HashMap<VertKey<INPUT>, usize> {
     let mut map = HashMap::new();
-    for node_idx in curve_skeleton.node_indices() {
+    for (compact_id, node_idx) in curve_skeleton.node_indices().enumerate() {
         for &vert_key in &curve_skeleton[node_idx].patch_vertices {
-            map.insert(vert_key, node_idx.index());
+            map.insert(vert_key, compact_id);
         }
     }
     map
@@ -27,9 +27,9 @@ fn build_polycube_vertex_to_region_map(
     labeled_skeleton: &LabeledCurveSkeleton,
 ) -> HashMap<VertKey<POLYCUBE>, usize> {
     let mut map = HashMap::new();
-    for node_idx in labeled_skeleton.node_indices() {
+    for (compact_id, node_idx) in labeled_skeleton.node_indices().enumerate() {
         for &vert_id in &labeled_skeleton[node_idx].skeleton_node.patch_vertices {
-            map.insert(VertKey::<POLYCUBE>::new(vert_id.raw()), node_idx.index());
+            map.insert(VertKey::<POLYCUBE>::new(vert_id.raw()), compact_id);
         }
     }
     map
@@ -398,13 +398,13 @@ pub fn create_patch_convexity_mesh(
     scale: f64,
 ) -> bevy::mesh::Mesh {
     let mut region_scores: HashMap<usize, f64> = HashMap::new();
-    for node_idx in curve_skeleton.node_indices() {
+    for (compact_id, node_idx) in curve_skeleton.node_indices().enumerate() {
         let mut score = curve_skeleton.patch_convexity_score(node_idx, mesh);
         info!("Convexity score for node {:?}: {:.3}", node_idx, score);
         if !score.is_finite() {
             score = 0.0;
         }
-        region_scores.insert(node_idx.index(), score.clamp(0.0, 1.0));
+        region_scores.insert(compact_id, score.clamp(0.0, 1.0));
     }
 
     let vertex_to_region = build_vertex_to_region_map(curve_skeleton);
