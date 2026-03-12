@@ -1,5 +1,6 @@
 use log::{error, warn};
 use petgraph::graph::{EdgeIndex, NodeIndex, UnGraph};
+use petgraph::prelude::StableUnGraph;
 use petgraph::visit::EdgeRef;
 use serde::{Deserialize, Serialize};
 
@@ -28,7 +29,7 @@ pub struct OrthogonalSkeletonEdge {
     pub boundary_loop: BoundaryLoop,
 }
 /// Curve skeleton with axis-aligned edges and integer grid coordinates assigned to each node.
-pub type LabeledCurveSkeleton = UnGraph<OrthogonalSkeletonNode, OrthogonalSkeletonEdge>;
+pub type LabeledCurveSkeleton = StableUnGraph<OrthogonalSkeletonNode, OrthogonalSkeletonEdge>;
 
 /// Curve skeleton where every edge has an axis label, but node coordinates are not yet assigned.
 type EdgeLabeledCurveSkeleton = UnGraph<SkeletonNode, OrthogonalSkeletonEdge>;
@@ -737,7 +738,7 @@ pub fn realize(s: &EdgeLabeledCurveSkeleton) -> Option<LabeledCurveSkeleton> {
     }
 
     // Build the output graph: copy nodes (with computed coordinates) and edges.
-    let mut out = LabeledCurveSkeleton::new_undirected();
+    let mut out: LabeledCurveSkeleton = Default::default();
     let mut out_index_map: HashMap<NodeIndex, NodeIndex> = HashMap::new();
 
     for &orig in &nodes {
@@ -781,7 +782,7 @@ pub fn realize(s: &EdgeLabeledCurveSkeleton) -> Option<LabeledCurveSkeleton> {
         rev_out_map.insert(*outn, *orig);
     }
 
-    for e in out.edge_indices() {
+    for e in out.edge_indices().collect::<Vec<_>>() {
         let (a, b) = out.edge_endpoints(e).unwrap();
         let orig_a = rev_out_map[&a];
         let orig_b = rev_out_map[&b];
