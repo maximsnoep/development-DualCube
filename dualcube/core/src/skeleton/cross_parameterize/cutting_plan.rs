@@ -11,8 +11,8 @@ use crate::skeleton::boundary_loop::BoundaryLoop;
 use crate::skeleton::orthogonalize::LabeledCurveSkeleton;
 
 use super::{
-    BoundaryParameterization, CutPath, CuttingPlan, SurfacePoint, MIN_CUT_SEPARATION,
-    geodesic::straighten_vertex_path,
+    geodesic::straighten_vertex_path, BoundaryParameterization, CutPath, CuttingPlan, SurfacePoint,
+    MIN_CUT_SEPARATION,
 };
 
 /// Computes cutting plans for both the input and polycube sides of a region.
@@ -103,9 +103,7 @@ fn parameterize_all_boundaries(
 
 /// Computes the arc-length parameterization of a single boundary loop.
 ///
-/// The basis point (`t = 0`) is the edge midpoint with the greatest x coordinate,
-/// breaking ties with y, then z. Parameters are assigned by cumulative arc length
-/// normalised to `[0, 1)`.
+/// Set a basis point (`t = 0`). Parameters are assigned by cumulative arc length along the loop, normalised to `[0, 1)`.
 fn parameterize_boundary(boundary: &BoundaryLoop, mesh: &Mesh<INPUT>) -> BoundaryParameterization {
     let n = boundary.edge_midpoints.len();
     assert!(n > 0, "Boundary loop must have at least one edge");
@@ -363,16 +361,16 @@ fn find_cut_path(
     let start_edge = loop_a.edge_midpoints[start_midpoint_idx];
     let end_edge = loop_b.edge_midpoints[end_midpoint_idx];
 
-    let prefix = SurfacePoint::OnEdge { edge: start_edge, t: 0.5 };
-    let suffix = SurfacePoint::OnEdge { edge: end_edge, t: 0.5 };
+    let prefix = SurfacePoint::OnEdge {
+        edge: start_edge,
+        t: 0.5,
+    };
+    let suffix = SurfacePoint::OnEdge {
+        edge: end_edge,
+        t: 0.5,
+    };
 
-    let path = straighten_vertex_path(
-        &vertex_path,
-        mesh,
-        patch_set,
-        Some(prefix),
-        Some(suffix),
-    );
+    let path = straighten_vertex_path(&vertex_path, mesh, patch_set, Some(prefix), Some(suffix));
 
     CutPath {
         start_boundary: edge_a,
@@ -463,7 +461,6 @@ fn edge_midpoint_position(edge: EdgeID, mesh: &Mesh<INPUT>) -> Vector3D {
     let p1 = mesh.position(mesh.toor(edge));
     (p0 + p1) * 0.5
 }
-
 
 /// Returns the set of vertices *within this region* that lie on a specific boundary loop.
 ///

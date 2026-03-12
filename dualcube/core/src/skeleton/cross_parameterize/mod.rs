@@ -13,6 +13,7 @@ use crate::skeleton::orthogonalize::LabeledCurveSkeleton;
 mod cutting_plan;
 mod geodesic;
 mod harmonic;
+pub mod virtual_mesh;
 
 pub use cutting_plan::compute_cutting_plans;
 
