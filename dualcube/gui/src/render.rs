@@ -1,4 +1,8 @@
-use crate::render_skeleton::{create_labeled_skeleton_gizmos, create_patch_boundary_gizmos, create_patch_convexity_mesh, create_patch_mesh, create_polycube_patch_mesh, create_polycube_patch_boundary_gizmos, create_skeleton_gizmos};
+use crate::render_skeleton::{
+    create_labeled_skeleton_gizmos, create_patch_boundary_gizmos, create_patch_convexity_mesh,
+    create_patch_mesh, create_polycube_patch_boundary_gizmos, create_polycube_patch_mesh,
+    create_skeleton_gizmos,
+};
 use crate::ui::UiResource;
 use crate::{colors, MainMesh, PerpetualGizmos};
 use crate::{
@@ -20,6 +24,7 @@ use bevy_egui::PrimaryEguiContext;
 use bevy_orbit_camera::*;
 use bevy_toon::ToonMaterial;
 use core::f32;
+use dualcube::polycube::POLYCUBE;
 use dualcube::prelude::*;
 use egui_dock::LeafNode;
 use enum_iterator::{all, Sequence};
@@ -128,7 +133,9 @@ impl PartialEq for RenderFeatureSetting {
 
 impl RenderFeature {
     pub fn new(asset: RenderAsset) -> Self {
-        Self { assets: vec![asset] }
+        Self {
+            assets: vec![asset],
+        }
     }
 }
 
@@ -374,14 +381,17 @@ pub fn update_render_settings(
         matches!(
             (object, label),
             // (Objects::InputMesh, "gray")
-                |(Objects::InputMesh, "wireframe")
+            (Objects::InputMesh, "wireframe")
                 | (Objects::InputMesh, "patches")
+                | (Objects::InputMesh, "cuts")
                 | (Objects::Polycube, "gray")
                 | (Objects::Polycube, "patches")
+                | (Objects::Polycube, "cuts")
                 | (Objects::Polycube, "paths")
                 | (Objects::Polycube, "flat paths")
                 | (Objects::PolycubeMap, "colored")
                 | (Objects::PolycubeMap, "triangles")
+                | (Objects::PolycubeMap, "cuts")
                 | (Objects::QuadMesh, "gray")
                 | (Objects::QuadMesh, "wireframe")
                 | (Objects::ContractedMesh, "gray")
@@ -472,61 +482,62 @@ pub fn respawn_renders(
                 let assets = &features.get(feature).unwrap().assets;
                 if visible {
                     for asset in assets {
-                    match asset {
-                        RenderAsset::Mesh(mesh) => {
-                            let mesh_handle = MeshBundle::new(meshes.add(mesh.clone())).0;
-                            match object {
-                                Objects::InputMesh => {
-                                    commands.spawn((
-                                        mesh_handle,
-                                        MeshMaterial3d(toon_material.clone()),
-                                        Transform {
-                                            translation: Vec3::from(object),
-                                            ..Default::default()
-                                        },
-                                        Rendered,
-                                        MainMesh,
-                                    ));
-                                }
-                                Objects::QuadMesh | Objects::ContractedMesh => {
-                                    commands.spawn((
-                                        mesh_handle,
-                                        MeshMaterial3d(toon_material.clone()),
-                                        Transform {
-                                            translation: Vec3::from(object),
-                                            ..Default::default()
-                                        },
-                                        Rendered,
-                                    ));
-                                }
-                                Objects::PolycubeMap | Objects::Polycube => {
-                                    commands.spawn((
-                                        mesh_handle,
-                                        MeshMaterial3d(flat_material.clone()),
-                                        Transform {
-                                            translation: Vec3::from(object),
-                                            ..Default::default()
-                                        },
-                                        Rendered,
-                                    ));
+                        match asset {
+                            RenderAsset::Mesh(mesh) => {
+                                let mesh_handle = MeshBundle::new(meshes.add(mesh.clone())).0;
+                                match object {
+                                    Objects::InputMesh => {
+                                        commands.spawn((
+                                            mesh_handle,
+                                            MeshMaterial3d(toon_material.clone()),
+                                            Transform {
+                                                translation: Vec3::from(object),
+                                                ..Default::default()
+                                            },
+                                            Rendered,
+                                            MainMesh,
+                                        ));
+                                    }
+                                    Objects::QuadMesh | Objects::ContractedMesh => {
+                                        commands.spawn((
+                                            mesh_handle,
+                                            MeshMaterial3d(toon_material.clone()),
+                                            Transform {
+                                                translation: Vec3::from(object),
+                                                ..Default::default()
+                                            },
+                                            Rendered,
+                                        ));
+                                    }
+                                    Objects::PolycubeMap | Objects::Polycube => {
+                                        commands.spawn((
+                                            mesh_handle,
+                                            MeshMaterial3d(flat_material.clone()),
+                                            Transform {
+                                                translation: Vec3::from(object),
+                                                ..Default::default()
+                                            },
+                                            Rendered,
+                                        ));
+                                    }
                                 }
                             }
+                            RenderAsset::Gizmo(gizmo) => {
+                                let gizmo_handle =
+                                    GizmoBundle::new(gizmos.add(gizmo.0.clone()), gizmo.1, gizmo.2)
+                                        .0;
+                                commands.spawn((
+                                    (
+                                        gizmo_handle,
+                                        Transform {
+                                            translation: Vec3::from(object),
+                                            ..Default::default()
+                                        },
+                                    ),
+                                    Rendered,
+                                ));
+                            }
                         }
-                        RenderAsset::Gizmo(gizmo) => {
-                            let gizmo_handle =
-                                GizmoBundle::new(gizmos.add(gizmo.0.clone()), gizmo.1, gizmo.2).0;
-                            commands.spawn((
-                                (
-                                    gizmo_handle,
-                                    Transform {
-                                        translation: Vec3::from(object),
-                                        ..Default::default()
-                                    },
-                                ),
-                                Rendered,
-                            ));
-                        }
-                    }
                     }
                 }
             }
@@ -839,7 +850,11 @@ pub fn refresh(solution: &Solution, configuration: &Configuration) -> RenderObje
                         .gizmo(gizmos_flat_paths, 5., -0.0011, "flat paths");
 
                     // Add polycube patch visualization if polycube skeleton is available.
-                    if let Some(polycube_skeleton) = solution.skeleton.as_ref().and_then(|s| s.polycube_skeleton()) {
+                    if let Some(polycube_skeleton) = solution
+                        .skeleton
+                        .as_ref()
+                        .and_then(|s| s.polycube_skeleton())
+                    {
                         let patch_mesh = create_polycube_patch_mesh(
                             polycube_skeleton,
                             &polycube.structure,
@@ -855,6 +870,21 @@ pub fn refresh(solution: &Solution, configuration: &Configuration) -> RenderObje
                             scale,
                         );
                         render_obj.gizmo(boundary_gizmos, 1.0, -0.00016, "patches");
+                    }
+
+                    if let Some(pmap) = solution.skeleton.as_ref().and_then(|s| s.polycube_map()) {
+                        let mut gizmos_cuts = GizmoAsset::new();
+                        let cut_color = colors::to_bevy(colors::SNOEP_YELLOW);
+                        for region in pmap.regions.values() {
+                            for cut_path in &region.polycube_cuts {
+                                let positions: Vec<Vec3> = cut_path
+                                    .iter()
+                                    .map(|&p| world_to_view(p, translation, scale))
+                                    .collect::<Vec<Vec3>>();
+                                gizmos_cuts.linestrip(positions, cut_color);
+                            }
+                        }
+                        render_obj.gizmo(gizmos_cuts, 5.0, -0.001, "cuts");
                     }
 
                     render_object_store.add_object(object, render_obj);
@@ -873,24 +903,39 @@ pub fn refresh(solution: &Solution, configuration: &Configuration) -> RenderObje
                         color_map.insert(face_id, color);
                     }
 
-                    render_object_store.add_object(
-                        object,
-                        RenderObject::default()
-                            .mesh(&quad.quad_mesh_polycube, &color_map, "colored")
-                            .gizmo(
-                                quad.quad_mesh_polycube.gizmos(colors::GRAY),
-                                2.,
-                                -0.01,
-                                "quads",
-                            )
-                            .gizmo(
-                                quad.triangle_mesh_polycube.gizmos(colors::GRAY),
-                                2.,
-                                -0.01,
-                                "triangles",
-                            )
-                            .to_owned(),
-                    );
+                    let mut render_obj = RenderObject::default();
+                    render_obj
+                        .mesh(&quad.quad_mesh_polycube, &color_map, "colored")
+                        .gizmo(
+                            quad.quad_mesh_polycube.gizmos(colors::GRAY),
+                            2.,
+                            -0.01,
+                            "quads",
+                        )
+                        .gizmo(
+                            quad.triangle_mesh_polycube.gizmos(colors::GRAY),
+                            2.,
+                            -0.01,
+                            "triangles",
+                        );
+
+                    if let Some(pmap) = solution.skeleton.as_ref().and_then(|s| s.polycube_map()) {
+                        let mut gizmos_cuts = GizmoAsset::new();
+                        let cut_color = colors::to_bevy(colors::SNOEP_YELLOW);
+                        let (scale, translation) = quad.triangle_mesh_polycube.scale_translation();
+                        for region in pmap.regions.values() {
+                            for cut_path in &region.polycube_cuts {
+                                let positions: Vec<Vec3> = cut_path
+                                    .iter()
+                                    .map(|&p| world_to_view(p, translation, scale))
+                                    .collect();
+                                gizmos_cuts.linestrip(positions, cut_color);
+                            }
+                        }
+                        render_obj.gizmo(gizmos_cuts, 5.0, -0.001, "cuts");
+                    }
+
+                    render_object_store.add_object(object, render_obj);
                 }
             }
             Objects::InputMesh => {
@@ -1042,8 +1087,11 @@ pub fn refresh(solution: &Solution, configuration: &Configuration) -> RenderObje
                         // Check for labeled skeleton
                         if let Some(labeled_skeleton) = skeleton_data.labeled_skeleton() {
                             // Add coloring based on labels
-                            gizmos_cleaned_skeleton =
-                                create_labeled_skeleton_gizmos(labeled_skeleton, translation, scale);
+                            gizmos_cleaned_skeleton = create_labeled_skeleton_gizmos(
+                                labeled_skeleton,
+                                translation,
+                                scale,
+                            );
                         } else {
                             // Labelling failed, just show cleaned skeleton
                             gizmos_cleaned_skeleton =
@@ -1218,14 +1266,13 @@ pub fn refresh(solution: &Solution, configuration: &Configuration) -> RenderObje
                     let dmax_y: f64 = eigenvectors[(1, 1)];
 
                     // Map 2D eigenvectors back to 3D tangent vectors
-                    let dir_min 
-                    //= (t1 * dmin_x + t2 * dmin_y).normalize()
-                    ;
+                    // let dir_min = (t1 * dmin_x + t2 * dmin_y).normalize();
+
                     let mut dir_max = (t1 * dmax_x + t2 * dmax_y).normalize();
 
                     // Enforce perfect tangency + orthogonality (cleaner field)
                     dir_max = (dir_max - n * dir_max.dot(&n)).normalize();
-                    dir_min = n.cross(&dir_max).normalize();
+                    let dir_min = n.cross(&dir_max).normalize();
 
                     // -------------------------
                     // Sanity checks (debug-friendly)
@@ -1312,14 +1359,21 @@ pub fn refresh(solution: &Solution, configuration: &Configuration) -> RenderObje
                     render_obj.bevy_mesh(pm, "patches");
                 }
                 // Patch boundary edges for cleaned skeleton
-                if let Some(cleaned) = solution.skeleton.as_ref().and_then(|s| s.cleaned_skeleton()) {
-                    let boundary_gizmos = create_patch_boundary_gizmos(cleaned, input, translation, scale);
+                if let Some(cleaned) = solution
+                    .skeleton
+                    .as_ref()
+                    .and_then(|s| s.cleaned_skeleton())
+                {
+                    let boundary_gizmos =
+                        create_patch_boundary_gizmos(cleaned, input, translation, scale);
                     render_obj.gizmo(boundary_gizmos, 1.0, -0.00016, "patches");
                 }
                 // Build collapse history patch overlay if history is available
                 if let Some(skeleton_data) = &solution.skeleton {
                     if let Some(history_skeleton) = skeleton_data
-                        .reconstruct_skeleton_from_collapse_history(configuration.collapse_history_step)
+                        .reconstruct_skeleton_from_collapse_history(
+                            configuration.collapse_history_step,
+                        )
                     {
                         collapse_history_mesh = Some(create_patch_mesh(
                             &history_skeleton,
@@ -1327,8 +1381,18 @@ pub fn refresh(solution: &Solution, configuration: &Configuration) -> RenderObje
                             translation,
                             scale,
                         ));
-                        let history_boundary_gizmos = create_patch_boundary_gizmos(&history_skeleton, input, translation, scale);
-                        render_obj.gizmo(history_boundary_gizmos, 1.2, -0.00017, "collapse history");
+                        let history_boundary_gizmos = create_patch_boundary_gizmos(
+                            &history_skeleton,
+                            input,
+                            translation,
+                            scale,
+                        );
+                        render_obj.gizmo(
+                            history_boundary_gizmos,
+                            1.2,
+                            -0.00017,
+                            "collapse history",
+                        );
                     }
                 }
                 if let Some(chm) = collapse_history_mesh {
@@ -1367,6 +1431,21 @@ pub fn refresh(solution: &Solution, configuration: &Configuration) -> RenderObje
                         -0.00013,
                         "minimum principal curvature",
                     );
+
+                if let Some(pmap) = solution.skeleton.as_ref().and_then(|s| s.polycube_map()) {
+                    let mut gizmos_cuts = GizmoAsset::new();
+                    let cut_color = colors::to_bevy(colors::SNOEP_YELLOW);
+                    for region in pmap.regions.values() {
+                        for cut_path in &region.input_cuts {
+                            let positions: Vec<Vec3> = cut_path
+                                .iter()
+                                .map(|&p| world_to_view(p, translation, scale))
+                                .collect::<Vec<Vec3>>();
+                            gizmos_cuts.linestrip(positions, cut_color);
+                        }
+                    }
+                    render_obj.gizmo(gizmos_cuts, 5.0, -0.001, "cuts");
+                }
 
                 render_object_store.add_object(object, render_obj);
             }

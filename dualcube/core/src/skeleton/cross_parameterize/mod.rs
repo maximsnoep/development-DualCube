@@ -46,6 +46,12 @@ pub struct RegionParameterization {
     /// NOTE: Keys are VertKey<POLYCUBE> stored as VertID via raw key, same convention as
     /// `SkeletonNode::patch_vertices` on the polycube skeleton.
     pub polycube_to_canonical: HashMap<VertID, Vector2D>,
+
+    /// The cut paths used to parameterize the input mesh side, stored only for visualisation.
+    pub input_cuts: Vec<Vec<Vector3D>>,
+
+    /// The cut paths used to parameterize the polycube mesh side, stored only for visualisation.
+    pub polycube_cuts: Vec<Vec<Vector3D>>,
 }
 
 /// A bijection between the input mesh surface and the polycube surface,
@@ -233,10 +239,10 @@ fn parameterize_region(
     );
 
     // Parameterize each side independently using the shared cutting plan.
-    let input_to_canonical =
+    let (input_to_canonical, input_cuts) =
         parameterize_side(node_idx, degree, input_skeleton, input_mesh, &cutting_plan);
 
-    let polycube_to_canonical = parameterize_side(
+    let (polycube_to_canonical, polycube_cuts) = parameterize_side(
         node_idx,
         degree,
         polycube_skeleton,
@@ -247,6 +253,8 @@ fn parameterize_region(
     RegionParameterization {
         input_to_canonical,
         polycube_to_canonical,
+        input_cuts,
+        polycube_cuts,
     }
 }
 
@@ -258,20 +266,21 @@ fn parameterize_region(
 /// 3. Arc-length parameterizes boundary onto the 4(d-1)-gon (or square for d=1)
 /// 4. Solves Dirichlet problem for interior vertices
 ///
-/// Returns a map from vertex ID to 2D canonical-domain position.
+/// Returns a map from vertex ID to 2D canonical-domain position and the cut paths
+/// as 3D position sequences extended to the geometric boundary.
 fn parameterize_side(
     node_idx: NodeIndex,
     degree: usize,
     skeleton: &LabeledCurveSkeleton,
     mesh: &Mesh<INPUT>,
     cutting_plan: &CuttingPlan,
-) -> HashMap<VertID, Vector2D> {
+) -> (HashMap<VertID, Vector2D>, Vec<Vec<Vector3D>>) {
     if degree == 0 {
         warn!(
             "TODO: Degree 0 node {:?}, skipping parameterization",
             node_idx
         );
-        return HashMap::new();
+        return (HashMap::new(), Vec::new());
     }
 
     let patch_verts = &skeleton[node_idx].skeleton_node.patch_vertices;
@@ -293,12 +302,12 @@ fn parameterize_side(
             "Node {:?}: at least one boundary loop has 0 vertices, skipping parameterization.",
             node_idx
         );
-        return HashMap::new();
+        return (HashMap::new(), Vec::new());
     }
 
     if degree == 1 {
         let edge_direction = skeleton.edges(node_idx).next().unwrap().weight().direction;
-        return parameterize_degree_one(patch_verts, &boundaries, edge_direction, mesh);
+        return (parameterize_degree_one(patch_verts, &boundaries, edge_direction, mesh), Vec::new());
     }
 
     // Degree is at least 2 now
@@ -348,7 +357,37 @@ fn parameterize_side(
     for (v, uv) in cross_uvs {
         result.entry(v).or_insert(uv);
     }
-    result
+
+    let mut cuts = Vec::new();
+    for cp in cut_paths {
+        let mut path_positions = Vec::new();
+
+        // Extend to midpoint on boundary_a.
+        if let Some(mid_a) = boundaries[&cp.boundary_a].vertex_to_midpoint.get(&cp.endpoint_a()) {
+            path_positions.push(*mid_a);
+        }
+
+        // Add actual path vertices.
+        for &v in &cp.path {
+            path_positions.push(mesh.position(v));
+        }
+
+        // Extend to midpoint on boundary_b.
+        if let Some(mid_b) = boundaries[&cp.boundary_b].vertex_to_midpoint.get(&cp.endpoint_b()) {
+            path_positions.push(*mid_b);
+        }
+
+        cuts.push(path_positions);
+    }
+
+    log::info!(
+        "Node {:?}: parameterized side with {} cuts. Path lengths: {:?}",
+        node_idx,
+        cuts.len(),
+        cuts.iter().map(|c| c.len()).collect::<Vec<_>>()
+    );
+
+    (result, cuts)
 }
 
 /// For each cross-boundary vertex, interpolates a UV position from the UV values
