@@ -247,17 +247,28 @@ fn compute_polycube_map(
     input_mesh: &Mesh<INPUT>,
     polycube: Option<&Polycube>,
 ) -> Option<PolycubeMap> {
+    log::info!(
+        "compute_polycube_map: input_skeleton={}, polycube_skeleton={}, polycube={}",
+        input_skeleton.is_some(),
+        polycube_skeleton.is_some(),
+        polycube.is_some()
+    );
     match (input_skeleton, polycube_skeleton, polycube) {
         (Some(input_skel), Some(poly_skel), Some(poly)) => {
             let polycube_mesh: Mesh<INPUT> = Mesh::convert(&poly.structure);
-            Some(cross_parameterize::cross_parameterize(
+            let pmap = cross_parameterize::cross_parameterize(
                 input_skel,
                 poly_skel,
                 input_mesh,
                 &polycube_mesh,
-            ))
+            );
+            log::info!("compute_polycube_map: success, {} regions", pmap.regions.len());
+            Some(pmap)
         }
-        _ => None,
+        _ => {
+            log::warn!("compute_polycube_map: insufficient data");
+            None
+        }
     }
 }
 

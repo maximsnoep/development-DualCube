@@ -1,7 +1,7 @@
 use std::collections::{HashMap, HashSet};
 
 use log::warn;
-use mehsh::prelude::{HasPosition, Mesh};
+use mehsh::prelude::{HasPosition, Mesh, Vector3D};
 use ordered_float::OrderedFloat;
 use petgraph::graph::EdgeIndex;
 
@@ -25,6 +25,9 @@ pub(super) struct OrderedBoundary {
     pub total_length: f64,
     /// Inverse: vertex -> index in `vertices`.
     pub vert_index: HashMap<VertID, usize>,
+    /// Geometric midpoint associated with each boundary vertex.
+    /// Used to extend cut paths to the true geometric boundary.
+    pub vertex_to_midpoint: HashMap<VertID, Vector3D>,
     /// Other-side (cross-boundary) vertices, in traversal order, deduplicated.
     /// These are vertices from the adjacent patch, connected to our boundary
     /// vertices by the boundary-loop half-edges.
@@ -460,10 +463,28 @@ pub(super) fn ordered_boundary_on_our_side(
     // Deduplicate our-side vertices, assign midpoint arc-lengths.
     let mut vertices = Vec::new();
     let mut cumulative = Vec::new();
+    let mut vertex_to_midpoint: HashMap<VertID, Vector3D> = HashMap::new();
     for i in 0..m {
-        if vertices.last() != Some(&our_raw[i]) {
-            vertices.push(our_raw[i]);
+        let v = our_raw[i];
+        if vertices.last() != Some(&v) {
+            vertices.push(v);
             cumulative.push(mid_cumulative[i]);
+        }
+        // Store midpoint. If multiple midpoints per vertex, choose the one
+        // closest to the vertex position.
+        let new_mid = midpoints[i];
+        let vert_pos = mesh.position(v);
+        let new_dist = (new_mid - vert_pos).norm();
+        match vertex_to_midpoint.get(&v) {
+            Some(&old_mid) => {
+                let old_dist = (old_mid - vert_pos).norm();
+                if new_dist < old_dist {
+                    vertex_to_midpoint.insert(v, new_mid);
+                }
+            }
+            None => {
+                vertex_to_midpoint.insert(v, new_mid);
+            }
         }
     }
     if vertices.len() > 1 && vertices.first() == vertices.last() {
@@ -498,6 +519,7 @@ pub(super) fn ordered_boundary_on_our_side(
         cumulative,
         total_length,
         vert_index,
+        vertex_to_midpoint,
         cross_vertices,
         cross_positions,
     }
