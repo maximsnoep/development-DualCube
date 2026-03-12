@@ -1,24 +1,120 @@
 use std::collections::HashMap;
 
-use log::{error, warn};
-use mehsh::prelude::{Mesh, Vector2D, Vector3D};
+use log::warn;
+use mehsh::prelude::{HasPosition, Mesh, Vector2D, Vector3D};
 
 use petgraph::graph::{EdgeIndex, NodeIndex};
 
 use serde::{Deserialize, Serialize};
 
-use crate::prelude::{PrincipalDirection, VertID, INPUT};
+use crate::prelude::{EdgeID, PrincipalDirection, VertID, INPUT};
 use crate::skeleton::orthogonalize::LabeledCurveSkeleton;
 
 mod cutting_plan;
 mod harmonic;
 
-pub use cutting_plan::compute_cutting_plan;
+pub use cutting_plan::compute_cutting_plans;
 
 /// Minimum separation between cut endpoints on the same boundary,
 /// measured in [0, 1] normalized arc-length. Two cut endpoints on the
 /// same boundary loop must be at least this far apart.
 const MIN_CUT_SEPARATION: f64 = 0.15;
+
+/// A point on the mesh surface.
+///
+/// Can represent an arbitrary position along a mesh edge (useful for boundary
+/// midpoints and generic surface traversal) or exactly at a mesh vertex.
+#[derive(Debug, Clone, Copy)]
+pub enum SurfacePoint {
+    /// A point on a mesh edge at interpolation parameter `t in [0, 1]`.
+    /// Position = `(1 − t) · root_position + t · toor_position`.
+    OnEdge { edge: EdgeID, t: f64 },
+
+    /// Exactly at a mesh vertex.
+    OnVertex { vertex: VertID },
+}
+
+impl SurfacePoint {
+    /// Computes the 3D world-space position of this surface point.
+    pub fn position(&self, mesh: &Mesh<INPUT>) -> Vector3D {
+        match *self {
+            SurfacePoint::OnEdge { edge, t } => {
+                let p0 = mesh.position(mesh.root(edge));
+                let p1 = mesh.position(mesh.toor(edge));
+                p0 * (1.0 - t) + p1 * t
+            }
+            SurfacePoint::OnVertex { vertex } => mesh.position(vertex),
+        }
+    }
+}
+
+/// A path across the mesh surface, stored as a sequence of [`SurfacePoint`]s.
+///
+/// Consecutive points should share a triangle face (or be connected by a mesh
+/// edge). This representation allows paths to cross faces at arbitrary
+/// positions, not just along mesh edges.
+#[derive(Debug, Clone)]
+pub struct SurfacePath {
+    pub points: Vec<SurfacePoint>,
+}
+
+impl SurfacePath {
+    /// Converts this surface path to a sequence of 3D positions (e.g. for visualisation).
+    pub fn to_positions(&self, mesh: &Mesh<INPUT>) -> Vec<Vector3D> {
+        self.points.iter().map(|p| p.position(mesh)).collect()
+    }
+}
+
+/// Arc-length parameterization of a boundary loop into `[0, 1)`.
+///
+/// Each midpoint of the boundary loop's edges is assigned a `t` value based on
+/// cumulative arc length.  The basis point (`t = 0`) is the midpoint with the
+/// greatest x coordinate (breaking ties with y, then z).
+#[derive(Debug, Clone)]
+pub struct BoundaryParameterization {
+    /// For each edge midpoint in the boundary loop, its `t` value in `[0, 1)`.
+    /// Indices correspond to `BoundaryLoop::edge_midpoints`.
+    pub t_values: Vec<f64>,
+
+    /// Total arc length of the boundary loop.
+    pub total_length: f64,
+
+    /// Index into `edge_midpoints` that was chosen as the basis (`t = 0`).
+    pub basis_index: usize,
+}
+
+/// A single cut connecting two boundary loops, with the exact surface path.
+#[derive(Debug, Clone)]
+pub struct CutPath {
+    /// The boundary loop (skeleton edge) where this cut starts.
+    pub start_boundary: EdgeIndex,
+
+    /// The `t`-parameter on the start boundary where the cut begins.
+    pub start_t: f64,
+
+    /// The boundary loop (skeleton edge) where this cut ends.
+    pub end_boundary: EdgeIndex,
+
+    /// The `t`-parameter on the end boundary where the cut ends.
+    pub end_t: f64,
+
+    /// The actual path across the surface, from start boundary to end boundary.
+    pub path: SurfacePath,
+}
+
+/// Complete cutting plan for one side of a region, including boundary
+/// parameterizations and the exact cut paths.
+///
+/// For degree `d ≥ 2`, contains `d − 1` cuts forming a spanning tree over the
+/// `d` boundary loops.  For degree 0 or 1, `cuts` is empty.
+#[derive(Debug, Clone)]
+pub struct CuttingPlan {
+    /// Arc-length parameterization for every boundary loop of this region.
+    pub boundary_params: HashMap<EdgeIndex, BoundaryParameterization>,
+
+    /// The `d − 1` cut paths connecting boundary loops.
+    pub cuts: Vec<CutPath>,
+}
 
 /// The parameterization of a single region (skeleton node) onto a canonical 2D domain.
 ///
@@ -57,22 +153,6 @@ pub struct PolycubeMap {
     /// Per skeleton-node parameterization. The `NodeIndex` keys are valid for both
     /// the input and polycube `LabeledCurveSkeleton` (skeleton-graphs are isomorphic).
     pub regions: HashMap<NodeIndex, RegionParameterization>,
-}
-
-/// Describes how to cut a region with multiple boundary loops to disk topology.
-///
-/// For degree d ≥ 2, we need d-1 cuts forming a spanning tree over the d boundary loops.
-/// Each cut is identified by the pair of skeleton `EdgeIndex`es whose boundary loops
-/// it connects. The resulting disk has a single boundary, and the canonical domain
-/// is a regular 4(d-1)-gon.
-///
-/// For degree 0 or 1, no cuts are needed (`cuts` is empty).
-#[derive(Debug, Clone)]
-pub struct CuttingPlan {
-    /// Each entry `(edge_a, edge_b)` means: cut from the boundary loop on skeleton
-    /// edge `edge_a` to the one on `edge_b`. There are d-1 such cuts for a degree d region.
-    /// // TODO: also needs to specify at what t-parameter along the boundary the cut endpointS are.
-    pub cuts: Vec<(EdgeIndex, EdgeIndex)>,
 }
 
 impl PolycubeMap {
@@ -136,10 +216,10 @@ fn parameterize_region(
     input_mesh: &Mesh<INPUT>,
     polycube_mesh: &Mesh<INPUT>,
 ) -> RegionParameterization {
-    // Compute a shared cutting plan using combined geodesic distances from both sides.
-    // This determines *which* boundary loops to connect (the topology of the cuts).
-    // The actual cut paths (the *how*) are computed later per-side in parameterize_side.
-    let cutting_plan = compute_cutting_plan(
+    // Compute cutting plans for both sides.
+    // The cut topology (which boundary loops to connect) is shared, computed
+    // from combined geodesic distances. The actual cut paths are per-side.
+    let (input_plan, polycube_plan) = compute_cutting_plans(
         node_idx,
         input_skeleton,
         polycube_skeleton,
@@ -147,16 +227,16 @@ fn parameterize_region(
         polycube_mesh,
     );
 
-    // Parameterize each side independently using the shared cutting plan.
+    // Parameterize each side independently using its cutting plan.
     let (input_to_canonical, input_cuts) =
-        parameterize_side(node_idx, degree, input_skeleton, input_mesh, &cutting_plan);
+        parameterize_side(node_idx, degree, input_skeleton, input_mesh, &input_plan);
 
     let (polycube_to_canonical, polycube_cuts) = parameterize_side(
         node_idx,
         degree,
         polycube_skeleton,
         polycube_mesh,
-        &cutting_plan,
+        &polycube_plan,
     );
 
     RegionParameterization {
@@ -192,11 +272,16 @@ fn parameterize_side(
         return (HashMap::new(), Vec::new());
     }
 
+    // Convert cut paths to 3D position sequences for visualisation.
+    let cut_positions: Vec<Vec<Vector3D>> = cutting_plan
+        .cuts
+        .iter()
+        .map(|cut| cut.path.to_positions(mesh))
+        .collect();
 
-    // TODO
-    (HashMap::new(), Vec::new())
+    // TODO: harmonic parameterization
+    (HashMap::new(), cut_positions)
 }
-
 
 /// Returns two tangent-axis indices for a given principal direction.
 /// The first tangent axis is used to pick a deterministic starting vertex.
