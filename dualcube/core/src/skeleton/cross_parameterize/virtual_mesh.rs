@@ -1,6 +1,7 @@
 use std::collections::{HashMap, HashSet};
 
-use mehsh::prelude::{HasEdges, HasNeighbors, HasPosition, HasVertices, Mesh, Vector3D};
+use log::error;
+use mehsh::prelude::{HasEdges, HasPosition, HasVertices, Mesh, Vector3D};
 use petgraph::graph::{EdgeIndex, NodeIndex};
 use petgraph::stable_graph::StableUnGraph;
 use petgraph::visit::EdgeRef;
@@ -153,6 +154,16 @@ struct Builder<'a> {
 
     // Same but for on-edge surface points on cuts (keyed by EdgeID, side).
     cut_edge_point_sides: HashMap<(EdgeID, u8), petgraph::graph::NodeIndex>,
+
+    // Ordered boundary edge IDs per skeleton edge, for explicit boundary construction.
+    boundary_edge_order: HashMap<EdgeIndex, Vec<EdgeID>>,
+
+    // Reverse map: boundary EdgeID → skeleton edge index.
+    skeleton_edge_for_midpoint: HashMap<EdgeID, EdgeIndex>,
+
+    // Cut side chains: per cut index, [side 0 chain, side 1 chain].
+    // Each chain is an ordered list [start_midpoint_node, ..interior.., end_midpoint_node].
+    cut_side_chains: Vec<[Vec<NIdx>; 2]>,
 }
 
 /// Internal record for a single cut.
@@ -185,10 +196,14 @@ impl<'a> Builder<'a> {
             edges_on_cuts: HashMap::new(),
             cut_node_sides: HashMap::new(),
             cut_edge_point_sides: HashMap::new(),
+            boundary_edge_order: HashMap::new(),
+            skeleton_edge_for_midpoint: HashMap::new(),
+            cut_side_chains: Vec::new(),
         }
     }
 
     fn add_boundary_midpoints(&mut self, boundary: &BoundaryLoop, edge_idx: EdgeIndex) {
+        let mut order = Vec::new();
         for &edge in &boundary.edge_midpoints {
             let pos = self.mesh.position(self.mesh.root(edge)) + self.mesh.vector(edge) * 0.5;
 
@@ -200,7 +215,10 @@ impl<'a> Builder<'a> {
                 },
             });
             self.midpoint_nodes.insert(edge, node);
+            self.skeleton_edge_for_midpoint.insert(edge, edge_idx);
+            order.push(edge);
         }
+        self.boundary_edge_order.insert(edge_idx, order);
     }
 
     fn register_cuts(&mut self, cuts: &[CutPath]) {
@@ -250,7 +268,13 @@ impl<'a> Builder<'a> {
                 // Duplicate: create two copies.
                 let pos = self.mesh.position(v);
                 let cuts_for_v = self.verts_on_cuts[&v].clone();
-                let cut_index = cuts_for_v[0]; // primary cut (vertex can only be on one cut path in the simple-cycle case)
+                debug_assert_eq!(
+                    cuts_for_v.len(),
+                    1,
+                    "Vertex {v:?} is on {} cuts; expected exactly one",
+                    cuts_for_v.len()
+                );
+                let cut_index = cuts_for_v[0];
 
                 let n0 = self.graph.add_node(VirtualNode {
                     position: pos,
@@ -350,6 +374,9 @@ impl<'a> Builder<'a> {
         // Wire boundary midpoints to their adjacent mesh vertices.
         self.wire_boundary_midpoints();
 
+        // Ensure boundary arc edges between consecutive patch vertices exist.
+        self.wire_boundary_arcs();
+
         // Wire consecutive cut points along each cut (both sides).
         self.wire_cut_chains();
     }
@@ -383,7 +410,7 @@ impl<'a> Builder<'a> {
                     // This edge is cut — don't connect va and vb directly.
                     // Instead, connect each to the appropriate side of the cut
                     // point that lies on this edge.
-                    let side = face_side.unwrap_or(0);
+                    let side = face_side.expect("Face with a cut edge must have a classified side");
 
                     if let Some(&cut_node) = self.cut_edge_point_sides.get(&(edge_ab, side)) {
                         let na = self.resolve_node(va, Some(side));
@@ -428,127 +455,278 @@ impl<'a> Builder<'a> {
     }
 
     /// Wires consecutive cut points along each cut, on both sides.
+    /// Also stores the cut side chains for explicit boundary construction.
     fn wire_cut_chains(&mut self) {
         let mut added: HashSet<(NIdx, NIdx)> = HashSet::new();
 
         // Pre-collect all node chains to avoid borrowing self.cuts while mutating self.graph.
-        let mut chains: Vec<Vec<NIdx>> = Vec::new();
+        let mut all_side_chains: Vec<[Vec<NIdx>; 2]> = Vec::new();
         for cut in &self.cuts {
+            let mut sides: [Vec<NIdx>; 2] = [Vec::new(), Vec::new()];
             for side in 0..2u8 {
                 let nodes: Vec<NIdx> = cut
                     .points
                     .iter()
                     .map(|pt| self.resolve_cut_point(pt, side, cut))
                     .collect();
-                chains.push(nodes);
+                sides[side as usize] = nodes;
+            }
+            all_side_chains.push(sides);
+        }
+
+        for sides in &all_side_chains {
+            for side_nodes in sides {
+                for pair in side_nodes.windows(2) {
+                    self.add_edge_once(pair[0], pair[1], &mut added);
+                }
             }
         }
 
-        for nodes in &chains {
-            for pair in nodes.windows(2) {
-                self.add_edge_once(pair[0], pair[1], &mut added);
-            }
-        }
+        self.cut_side_chains = all_side_chains;
     }
 
     /// Traces the single boundary loop of the virtual mesh.
     ///
-    /// After all cuts the topology is a disk. The boundary consists of:
-    /// - Arcs of boundary midpoints (and their neighboring mesh vertices on the
-    ///   boundary) between cut endpoints.
-    /// - Both sides of each cut path.
-    ///
-    /// We walk the boundary by starting at any boundary midpoint and repeatedly
-    /// moving to the next boundary node (a node with fewer graph neighbors than
-    /// expected, or more practically, a node whose degree in the virtual graph is
-    /// less than what a fully interior node would have).
+    /// For regions with no cuts (degree ≤ 1), walks the single boundary loop
+    /// using the known boundary-edge order.  For regions with cuts (degree ≥ 2),
+    /// explicitly constructs the boundary from the boundary-loop topology and
+    /// cut-side chains via a DFS traversal of the boundary-loop spanning tree.
     fn trace_boundary(&self) -> Vec<NIdx> {
-        // A node is on the boundary if it is a boundary midpoint, a cut
-        // duplicate, or a mesh vertex that has at least one neighbor outside the
-        // patch (i.e., it is on the original mesh boundary).
-        let mut boundary_set: HashSet<NIdx> = HashSet::new();
-
-        // All boundary midpoints are on the boundary.
-        for &n in self.midpoint_nodes.values() {
-            boundary_set.insert(n);
+        if self.cuts.is_empty() {
+            return self.trace_boundary_no_cuts();
         }
+        self.trace_boundary_with_cuts()
+    }
 
-        // All cut duplicates are on the boundary.
-        for &n in self.cut_node_sides.values() {
-            boundary_set.insert(n);
-        }
-        for &n in self.cut_edge_point_sides.values() {
-            boundary_set.insert(n);
-        }
-
-        // Mesh boundary vertices (those adjacent to a vertex outside the patch).
-        for (&v, nodes) in &self.vert_to_nodes {
-            let on_mesh_boundary = self
-                .mesh
-                .neighbors(v)
-                .any(|nbr| !self.patch_set.contains(&nbr));
-            if on_mesh_boundary {
-                for &n in nodes {
-                    boundary_set.insert(n);
-                }
-            }
-        }
-
-        if boundary_set.is_empty() {
+    /// Boundary trace for regions with no cuts (degree ≤ 1).
+    fn trace_boundary_no_cuts(&self) -> Vec<NIdx> {
+        if self.boundary_edge_order.is_empty() {
             return Vec::new();
         }
+        let edges = self.boundary_edge_order.values().next().unwrap();
+        let n = edges.len();
+        if n == 0 {
+            return Vec::new();
+        }
+        let mut result = Vec::new();
+        for i in 0..n {
+            let edge = edges[i];
+            let next_edge = edges[(i + 1) % n];
+            result.push(self.midpoint_nodes[&edge]);
+            self.emit_connecting_vertices(edge, next_edge, &mut result);
+        }
+        result
+    }
 
-        // Walk the boundary: start at an arbitrary boundary-midpoint node (which
-        // is guaranteed to be on the boundary), and follow boundary-neighbor links.
-        let start = *self.midpoint_nodes.values().next().unwrap();
-        let mut loop_nodes = vec![start];
-        let mut visited: HashSet<NIdx> = HashSet::new();
-        visited.insert(start);
+    /// Constructs the boundary loop explicitly for regions with cuts.
+    ///
+    /// The boundary of the cut-open disk is assembled by DFS over the
+    /// boundary-loop tree (nodes = boundary loops, edges = cuts).  At each
+    /// boundary loop the method walks the ordered boundary midpoints,
+    /// interleaving mesh-boundary arcs with cut-side detours.
+    fn trace_boundary_with_cuts(&self) -> Vec<NIdx> {
+        // Build the boundary-loop spanning tree.
+        let mut tree_adj: HashMap<EdgeIndex, Vec<(EdgeIndex, usize)>> = HashMap::new();
+        for (cut_idx, cut) in self.cuts.iter().enumerate() {
+            let start_skel = self.skeleton_edge_for_midpoint[&cut.start_midpoint_edge];
+            let end_skel = self.skeleton_edge_for_midpoint[&cut.end_midpoint_edge];
+            tree_adj
+                .entry(start_skel)
+                .or_default()
+                .push((end_skel, cut_idx));
+            tree_adj
+                .entry(end_skel)
+                .or_default()
+                .push((start_skel, cut_idx));
+        }
 
-        let mut current = start;
-        loop {
-            // Among the graph neighbors of `current`, find the next boundary node
-            // we haven't visited yet.
-            let next = self
-                .graph
-                .edges(current)
-                .map(|e| {
-                    let other = if e.source() == current {
-                        e.target()
+        let root_skel = *self.boundary_edge_order.keys().next().unwrap();
+        let mut result = Vec::new();
+        let mut visited_boundaries: HashSet<EdgeIndex> = HashSet::new();
+
+        self.dfs_boundary(
+            root_skel,
+            None,
+            &tree_adj,
+            &mut visited_boundaries,
+            &mut result,
+        );
+
+        result
+    }
+
+    /// DFS step: emits boundary nodes for one boundary loop, entering at
+    /// `entry_midpoint_edge` (None for the tree root).
+    fn dfs_boundary(
+        &self,
+        boundary_idx: EdgeIndex,
+        entry_midpoint_edge: Option<EdgeID>,
+        tree_adj: &HashMap<EdgeIndex, Vec<(EdgeIndex, usize)>>,
+        visited: &mut HashSet<EdgeIndex>,
+        result: &mut Vec<NIdx>,
+    ) {
+        visited.insert(boundary_idx);
+
+        let edges = match self.boundary_edge_order.get(&boundary_idx) {
+            Some(e) => e,
+            None => return,
+        };
+        let n = edges.len();
+        if n == 0 {
+            return;
+        }
+
+        // Identify cut endpoints on this boundary that lead to unvisited children.
+        let mut cuts_here: HashMap<EdgeID, (usize, EdgeIndex)> = HashMap::new();
+        if let Some(adjs) = tree_adj.get(&boundary_idx) {
+            for &(target, cut_idx) in adjs {
+                if visited.contains(&target) {
+                    continue;
+                }
+                let cut = &self.cuts[cut_idx];
+                let mid_edge =
+                    if self.skeleton_edge_for_midpoint.get(&cut.start_midpoint_edge)
+                        == Some(&boundary_idx)
+                    {
+                        cut.start_midpoint_edge
                     } else {
-                        e.source()
+                        cut.end_midpoint_edge
                     };
-                    other
-                })
-                .find(|&n| boundary_set.contains(&n) && !visited.contains(&n));
-
-            match next {
-                Some(n) => {
-                    loop_nodes.push(n);
-                    visited.insert(n);
-                    current = n;
-                }
-                None => {
-                    // Check if we can close the loop back to start.
-                    let can_close = self.graph.edges(current).any(|e| {
-                        let other = if e.source() == current {
-                            e.target()
-                        } else {
-                            e.source()
-                        };
-                        other == start
-                    });
-                    if can_close && loop_nodes.len() > 2 {
-                        // Closed loop — done.
-                        break;
-                    }
-                    // Dead end — boundary tracing is imperfect. Return what we have.
-                    break;
-                }
+                cuts_here.insert(mid_edge, (cut_idx, target));
             }
         }
 
-        loop_nodes
+        // Find starting position in the boundary loop.
+        let start_idx = if let Some(entry) = entry_midpoint_edge {
+            edges.iter().position(|&e| e == entry).unwrap_or(0)
+        } else {
+            // Root: start at the first cut endpoint if any, otherwise 0.
+            edges
+                .iter()
+                .position(|&e| cuts_here.contains_key(&e))
+                .unwrap_or(0)
+        };
+
+        // Walk the full boundary loop.
+        for i in 0..n {
+            let idx = (start_idx + i) % n;
+            let edge = edges[idx];
+            let next_edge = edges[(idx + 1) % n];
+
+            // Emit midpoint of current boundary edge.
+            result.push(self.midpoint_nodes[&edge]);
+
+            // If this midpoint is a cut endpoint leading to an unvisited
+            // boundary, perform the cut detour.
+            if let Some(&(cut_idx, target)) = cuts_here.get(&edge) {
+                let cut = &self.cuts[cut_idx];
+                let chains = &self.cut_side_chains[cut_idx];
+                let starts_here = cut.start_midpoint_edge == edge;
+                let other_mid_edge = if starts_here {
+                    cut.end_midpoint_edge
+                } else {
+                    cut.start_midpoint_edge
+                };
+
+                // Emit interior nodes of cut side 0.
+                let interior = &chains[0][1..chains[0].len().saturating_sub(1)];
+                if starts_here {
+                    for &node in interior {
+                        result.push(node);
+                    }
+                } else {
+                    for &node in interior.iter().rev() {
+                        result.push(node);
+                    }
+                }
+
+                // Recurse into the connected boundary loop.
+                self.dfs_boundary(target, Some(other_mid_edge), tree_adj, visited, result);
+
+                // Emit the returning midpoint on the other boundary.
+                result.push(self.midpoint_nodes[&other_mid_edge]);
+
+                // Emit interior nodes of cut side 1 (reverse direction).
+                let interior = &chains[1][1..chains[1].len().saturating_sub(1)];
+                if starts_here {
+                    for &node in interior.iter().rev() {
+                        result.push(node);
+                    }
+                } else {
+                    for &node in interior {
+                        result.push(node);
+                    }
+                }
+            }
+
+            // Emit connecting mesh vertices to the next midpoint.
+            self.emit_connecting_vertices(edge, next_edge, result);
+        }
+    }
+
+    /// Adds edges between consecutive patch-side boundary vertices where they
+    /// are not already connected through patch faces.
+    fn wire_boundary_arcs(&mut self) {
+        let mut added: HashSet<(NIdx, NIdx)> = HashSet::new();
+        let mut pairs: Vec<(VertID, VertID)> = Vec::new();
+        for edges in self.boundary_edge_order.values() {
+            let n = edges.len();
+            for i in 0..n {
+                let e_from = edges[i];
+                let e_to = edges[(i + 1) % n];
+                let from_root = self.mesh.root(e_from);
+                let from_v = if self.patch_set.contains(&from_root) {
+                    from_root
+                } else {
+                    self.mesh.toor(e_from)
+                };
+                let to_root = self.mesh.root(e_to);
+                let to_v = if self.patch_set.contains(&to_root) {
+                    to_root
+                } else {
+                    self.mesh.toor(e_to)
+                };
+                if from_v != to_v {
+                    pairs.push((from_v, to_v));
+                }
+            }
+        }
+        for (from_v, to_v) in pairs {
+            let na = self.resolve_node_boundary(from_v);
+            let nb = self.resolve_node_boundary(to_v);
+            self.add_edge_once(na, nb, &mut added);
+        }
+    }
+
+    /// Returns the vertex of a boundary edge that belongs to the current patch.
+    fn patch_vertex_of_boundary_edge(&self, edge: EdgeID) -> VertID {
+        let root = self.mesh.root(edge);
+        if self.patch_set.contains(&root) {
+            root
+        } else {
+            self.mesh.toor(edge)
+        }
+    }
+
+    /// Emits the mesh boundary vertices connecting two consecutive midpoints.
+    ///
+    /// Between midpoint(from_edge) and midpoint(to_edge) there is either one
+    /// shared patch vertex (when the boundary face's minority vertex is in the
+    /// patch) or two distinct patch vertices (when both majority vertices are).
+    fn emit_connecting_vertices(
+        &self,
+        from_edge: EdgeID,
+        to_edge: EdgeID,
+        result: &mut Vec<NIdx>,
+    ) {
+        let from_vert = self.patch_vertex_of_boundary_edge(from_edge);
+        let to_vert = self.patch_vertex_of_boundary_edge(to_edge);
+        if from_vert == to_vert {
+            result.push(self.resolve_node_boundary(from_vert));
+        } else {
+            result.push(self.resolve_node_boundary(from_vert));
+            result.push(self.resolve_node_boundary(to_vert));
+        }
     }
 
     /// Resolves a mesh vertex to its virtual node, picking the correct side if
@@ -605,6 +783,7 @@ impl<'a> Builder<'a> {
     /// one of its edges is crossed by a cut, we determine the side by looking at
     /// the face's position relative to the cut direction (using the cross product
     /// of the cut tangent with the face normal).
+    ///  TODO: why not just do Option bool, or something else?
     fn classify_face_side(&self, face: FaceID) -> Option<u8> {
         let face_verts: Vec<VertID> = self.mesh.vertices(face).collect();
 
@@ -644,14 +823,14 @@ impl<'a> Builder<'a> {
         // Find the closest cut point to the face center and use the cut tangent there.
         let (cut_pos, cut_tangent) = self.cut_tangent_near(cut, &face_center);
 
-        // Surface normal at the cut point (average face normal).
-        let surface_normal = face_verts
+        // Face vertex positions, used to compute the face normal.
+        let face_positions = face_verts
             .iter()
             .map(|&v| self.mesh.position(v))
             .collect::<Vec<_>>();
-        let face_normal = if surface_normal.len() >= 3 {
-            let e1 = surface_normal[1] - surface_normal[0];
-            let e2 = surface_normal[2] - surface_normal[0];
+        let face_normal = if face_positions.len() >= 3 {
+            let e1 = face_positions[1] - face_positions[0];
+            let e2 = face_positions[2] - face_positions[0];
             e1.cross(&e2)
         } else {
             Vector3D::new(0.0, 0.0, 1.0)
@@ -660,6 +839,11 @@ impl<'a> Builder<'a> {
         // The side is determined by the sign of dot(cross(tangent, normal), face_center - cut_pos).
         let to_face = face_center - cut_pos;
         let side_vec = cut_tangent.cross(&face_normal);
+        if side_vec.dot(&side_vec) < 1e-20 {
+            // Degenerate: cut tangent nearly parallel to face normal.
+            error!("Degenerate cut tangent and face normal; defaulting to side 0");
+            return 0;
+        }
         if side_vec.dot(&to_face) >= 0.0 {
             0
         } else {
