@@ -6,7 +6,7 @@ use crate::{
 };
 use bevy::picking::backend::ray::RayMap;
 use bevy::prelude::*;
-use dualcube::prelude::*;
+use dualcube::{elastica, prelude::*};
 use itertools::Itertools;
 use mehsh::prelude::*;
 use ordered_float::OrderedFloat;
@@ -200,6 +200,55 @@ pub fn loop_modification_system(
         .mesh
         .edges_in_face_with_vert(nearest_face, nearest_vert)
         .unwrap();
+
+    // get the nearest_vert (one of 3 corners of nearest_face)
+    let nearest_vert = mesh_resmut
+        .mesh
+        .vertices(nearest_face)
+        .min_by_key(|&v| OrderedFloat(position.metric_distance(&mesh_resmut.mesh.position(v))))
+        .unwrap()
+        .to_owned();
+
+    let edgepair = mesh_resmut
+        .mesh
+        .edges_in_face_with_vert(nearest_face, nearest_vert)
+        .unwrap();
+
+    // Calculate the minimum weight cycle from the currently hovered edge.
+    let cycle = solution
+        .current_solution
+        .elastica_graph
+        .compute_mwc_for_edge(edgepair[0]);
+
+    println!("Cycle: {:?}", cycle);
+
+    if let Some(cycle) = cycle {
+        for edge in cycle.1.windows(2) {
+            let u = mesh_resmut.mesh.position(edge[0]);
+            let v = mesh_resmut.mesh.position(edge[1]);
+
+            let color = colors::from_direction(
+                configuration.direction,
+                Some(Perspective::Dual),
+                Some(Orientation::Backwards),
+            );
+
+            let u_transformed = world_to_view(
+                u,
+                mesh_resmut.properties.translation,
+                mesh_resmut.properties.scale,
+            );
+            let v_transformed = world_to_view(
+                v,
+                mesh_resmut.properties.translation,
+                mesh_resmut.properties.scale,
+            );
+
+            gizmos.line(u_transformed, v_transformed, colors::to_bevy(color));
+        }
+    }
+
+    return Ok(());
 
     // Render all current solutions  (for currently selected direction)
     for (&edgepair, sol) in &solution.next[configuration.direction as usize] {

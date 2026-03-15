@@ -8,6 +8,7 @@ snoep6 = []
 bettina = []
 gray = []
 pastel = []
+light_mode = []
 
 [dependencies]
 dualcube = { path = "../core" }
@@ -16,11 +17,12 @@ mehsh = { path = "../../utils/mehsh", features = ["bevy", "obj", "stl", "petgrap
 grapff = { path = "../../utils/grapff" }
 
 bevy = "0.18.0"
-bevy_egui = "0.39.0"
+bevy_egui = "0.39.1"
 egui_dock = "0.18.0"
-bevy-orbit-camera = "0.2.2"
+bevy-orbit-camera = "0.2.4"
 # bevy-orbit-camera = { path = "../../../bevy-orbit-camera" }
-bevy-axes-gizmo = "0.3.0"
+bevy-axes-gizmo = "0.3.1"
+# bevy-axes-gizmo = { path = "../../../bevy-axes-gizmo" }
 bevy-blossom = "0.2.0"
 bevy-toon = "0.2.0"
 bevy-wicon = "0.18.1"
@@ -29,10 +31,8 @@ rayon = "1.8.1"
 itertools = "0.14.0"
 ordered-float = "5.0.0"
 log = "0.4.27"
-rand = "0.9.1"
-
-
-rfd = "0.15.3"
+rand = "0.10.0"
+rfd = "0.17.2"
 enum-iterator = "2.1.0"
 
 slotmap = "1.0.7"

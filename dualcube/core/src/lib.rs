@@ -1,4 +1,5 @@
 pub mod dual;
+pub mod elastica;
 pub mod feature;
 pub mod field;
 pub mod layout;

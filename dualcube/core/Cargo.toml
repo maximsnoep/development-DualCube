@@ -18,6 +18,7 @@ serde = "1.0.188"
 bitcode = "0.6.6"
 thiserror = "2.0.17"
 orx-parallel = "3.4.0"
+petgraph = "0.8.2"
 
 [lints]
 workspace = true

@@ -5,7 +5,9 @@ use std::collections::HashSet;
 impl<M: Tag> Mesh<M> {
     #[must_use]
     pub fn root(&self, id: EdgeKey<M>) -> VertKey<M> {
-        self.edge_root.get(id).unwrap_or_else(|| panic!("{id:?} has no root"))
+        self.edge_root
+            .get(id)
+            .unwrap_or_else(|| panic!("{id:?} has no root"))
     }
 
     #[must_use]
@@ -15,12 +17,16 @@ impl<M: Tag> Mesh<M> {
 
     #[must_use]
     pub fn twin(&self, id: EdgeKey<M>) -> EdgeKey<M> {
-        self.edge_twin.get(id).unwrap_or_else(|| panic!("{id:?} has no twin"))
+        self.edge_twin
+            .get(id)
+            .unwrap_or_else(|| panic!("{id:?} has no twin"))
     }
 
     #[must_use]
     pub fn next(&self, id: EdgeKey<M>) -> EdgeKey<M> {
-        self.edge_next.get(id).unwrap_or_else(|| panic!("{id:?} has no next"))
+        self.edge_next
+            .get(id)
+            .unwrap_or_else(|| panic!("{id:?} has no next"))
     }
 
     // Returns the four edges around a given edge.
@@ -36,12 +42,17 @@ impl<M: Tag> Mesh<M> {
 
     #[must_use]
     pub fn face(&self, id: EdgeKey<M>) -> FaceKey<M> {
-        self.edge_face.get(id).unwrap_or_else(|| panic!("{id:?} has no face"))
+        self.edge_face
+            .get(id)
+            .unwrap_or_else(|| panic!("{id:?} has no face"))
     }
 
     #[must_use]
     pub fn common_endpoint(&self, edge_a: EdgeKey<M>, edge_b: EdgeKey<M>) -> Option<VertKey<M>> {
-        if let (Some([a0, a1]), Some([b0, b1])) = (self.vertices(edge_a).collect_array::<2>(), self.vertices(edge_b).collect_array::<2>()) {
+        if let (Some([a0, a1]), Some([b0, b1])) = (
+            self.vertices(edge_a).collect_array::<2>(),
+            self.vertices(edge_b).collect_array::<2>(),
+        ) {
             if a0 == b0 || a0 == b1 {
                 Some(a0)
             } else if a1 == b0 || a1 == b1 {
@@ -134,7 +145,11 @@ impl<M: Tag> HasNeighbors<EDGE, M> for Mesh<M> {
         })
     }
 
-    fn neighbors_k(&self, id: ids::Key<EDGE, M>, k: usize) -> impl Iterator<Item = ids::Key<EDGE, M>> {
+    fn neighbors_k(
+        &self,
+        id: ids::Key<EDGE, M>,
+        k: usize,
+    ) -> impl Iterator<Item = ids::Key<EDGE, M>> {
         let mut neighbors = vec![id];
         for _ in 0..k {
             neighbors = neighbors
@@ -149,17 +164,42 @@ impl<M: Tag> HasNeighbors<EDGE, M> for Mesh<M> {
     }
 }
 
+use std::collections::VecDeque;
+
 // More correct neighbors:
 impl<M: Tag> Mesh<M> {
     pub fn neighbors2(&self, id: EdgeKey<M>) -> HashSet<EdgeKey<M>> {
-        let mut neighbors = HashSet::new();
-        if let Some([v0, v1]) = self.vertices(id).collect_array::<2>() {
-            neighbors.extend(self.edges(v0).flat_map(|e| [e, self.twin(e)]));
-            neighbors.extend(self.edges(v1).flat_map(|e| [e, self.twin(e)]));
-            neighbors.retain(|&e| e != id);
-            neighbors
-        } else {
-            panic!("Expected exactly two vertices for edge {id:?}");
+        let mut out = HashSet::new();
+        for f in self.faces(id) {
+            for e in self.edges(f) {
+                if e != id {
+                    out.insert(e);
+                }
+            }
         }
+        out
+    }
+
+    pub fn neighbors2_k(&self, id: EdgeKey<M>, k: usize) -> HashSet<EdgeKey<M>> {
+        let mut visited = HashSet::new();
+        let mut q = VecDeque::new();
+
+        visited.insert(id);
+        q.push_back((id, 0usize));
+
+        while let Some((e, dist)) = q.pop_front() {
+            if dist == k {
+                continue;
+            }
+
+            for n in self.neighbors2(e) {
+                if visited.insert(n) {
+                    q.push_back((n, dist + 1));
+                }
+            }
+        }
+
+        visited.remove(&id);
+        visited
     }
 }

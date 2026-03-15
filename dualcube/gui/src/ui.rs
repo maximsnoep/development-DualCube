@@ -39,6 +39,26 @@ const BLUE: Color32 = Color32::from_rgb(
     (colors::SNOEP_BLUE[2] * 255.) as u8,
 );
 
+#[cfg(not(feature = "light_mode"))]
+const TEXT_COLOR: Color32 = Color32::from_gray(255);
+#[cfg(feature = "light_mode")]
+const TEXT_COLOR: Color32 = Color32::from_gray(27);
+
+#[cfg(not(feature = "light_mode"))]
+const TEXT_COLOR2: Color32 = Color32::from_gray(160);
+#[cfg(feature = "light_mode")]
+const TEXT_COLOR2: Color32 = Color32::from_gray(90);
+
+#[cfg(not(feature = "light_mode"))]
+const BG_COLOR: Color32 = Color32::from_gray(27);
+#[cfg(feature = "light_mode")]
+const BG_COLOR: Color32 = Color32::from_gray(255);
+
+#[cfg(not(feature = "light_mode"))]
+const OUTLINE_COLOR: Color32 = Color32::from_gray(50);
+#[cfg(feature = "light_mode")]
+const OUTLINE_COLOR: Color32 = Color32::from_gray(200);
+
 impl Default for UiResource {
     fn default() -> Self {
         UiResource {
@@ -90,13 +110,13 @@ impl egui_dock::TabViewer for TabViewer {
                 default_style.tab_body.bg_fill = Color32::TRANSPARENT;
             }
             _ => {
-                default_style.tab_body.bg_fill = Color32::from_gray(27);
+                default_style.tab_body.bg_fill = BG_COLOR;
             }
         }
 
-        default_style.active.bg_fill = Color32::from_gray(27);
         default_style.active.corner_radius = CornerRadius::same(0);
-        default_style.active.outline_color = Color32::from_gray(27);
+        default_style.active.bg_fill = BG_COLOR;
+        default_style.active.outline_color = BG_COLOR;
 
         default_style.active_with_kb_focus = default_style.active.clone();
         default_style.focused = default_style.active.clone();
@@ -105,15 +125,15 @@ impl egui_dock::TabViewer for TabViewer {
         default_style.inactive = default_style.active.clone();
         default_style.inactive_with_kb_focus = default_style.active.clone();
 
-        default_style.active.text_color = Color32::from_gray(255);
-        default_style.active_with_kb_focus.text_color = Color32::from_gray(255);
+        default_style.active.text_color = TEXT_COLOR;
+        default_style.active_with_kb_focus.text_color = TEXT_COLOR;
 
         default_style.inactive.text_color = Color32::from_gray(100);
         default_style.inactive_with_kb_focus.text_color = Color32::from_gray(100);
 
         default_style.hovered.text_color = Color32::from_gray(150);
-        default_style.focused.text_color = Color32::from_gray(255);
-        default_style.focused_with_kb_focus.text_color = Color32::from_gray(255);
+        default_style.focused.text_color = TEXT_COLOR;
+        default_style.focused_with_kb_focus.text_color = TEXT_COLOR;
 
         Some(default_style)
     }
@@ -144,7 +164,7 @@ impl egui_dock::TabViewer for TabViewer {
         bevy_egui::egui::Frame {
             stroke: bevy_egui::egui::epaint::Stroke {
                 width: 5.0,
-                color: Color32::from_gray(27),
+                color: BG_COLOR,
             },
             ..default()
         }
@@ -152,7 +172,7 @@ impl egui_dock::TabViewer for TabViewer {
             bevy_egui::egui::Frame {
                 stroke: bevy_egui::egui::epaint::Stroke {
                     width: 1.0,
-                    color: Color32::from_gray(50),
+                    color: OUTLINE_COLOR,
                 },
                 ..default()
             }
@@ -281,6 +301,18 @@ pub fn setup(
     ui.ctx_mut()?.style_mut(|style| {
         let zero = CornerRadius::same(0);
         let mut visuals = bevy_egui::egui::Visuals::dark();
+
+        #[cfg(feature = "light_mode")]
+        {
+            use bevy_egui::egui::epaint::AlphaFromCoverage;
+            visuals.dark_mode = false;
+            visuals.text_alpha_from_coverage = AlphaFromCoverage::DARK_MODE_DEFAULT;
+            visuals.widgets = bevy_egui::egui::style::Widgets::light();
+        }
+
+        visuals.window_fill = BG_COLOR;
+        visuals.panel_fill = BG_COLOR;
+
         visuals.widgets.open.corner_radius = zero;
         visuals.menu_corner_radius = zero;
         visuals.window_corner_radius = zero;
@@ -391,7 +423,7 @@ fn header(
 
                     space(ui);
 
-                    label(ui, "Presets", 12., Color32::WHITE);
+                    label(ui, "Presets", 12., TEXT_COLOR);
 
                     space(ui);
 
@@ -458,7 +490,7 @@ fn header(
 
                     space(ui);
 
-                    label(ui, "Automatic camera rotation", 12., Color32::WHITE);
+                    label(ui, "Automatic camera rotation", 12., TEXT_COLOR);
 
                     space(ui);
 
@@ -473,7 +505,7 @@ fn header(
 
                     sep(ui);
 
-                    label(ui, "Manual camera control sensitivity", 12., Color32::WHITE);
+                    label(ui, "Manual camera control sensitivity", 12., TEXT_COLOR);
 
                     space(ui);
 
@@ -512,11 +544,32 @@ fn header(
                     }
 
                     space(ui);
+
+                    if sleek_button(ui, "X up") {
+                        configuration.camera_up = Vec3::X;
+                    }
+                    if sleek_button(ui, "Y up") {
+                        configuration.camera_up = Vec3::Y;
+                    }
+                    if sleek_button(ui, "Z up") {
+                        configuration.camera_up = Vec3::Z;
+                    }
+
+                    space(ui);
                 });
 
                 space(ui);
 
                 menu_button(ui, "Manual", |ui| {
+                    space(ui);
+
+                    if sleek_button(ui, "FIELDS") {
+                        jobs.write(JobRequest::Run(Box::new(Job::Fields {
+                            solution: solution.current_solution.clone(),
+                            configuration: configuration.clone(),
+                        })));
+                    }
+
                     space(ui);
 
                     if configuration.interactive_mode == InteractiveMode::LoopModification {
@@ -610,12 +663,9 @@ fn header(
 fn footer(
     egui_ctx: &mut bevy_egui::EguiContexts,
     conf: &mut Configuration,
-    solution: &SolutionResource,
     diagnostics: &Res<DiagnosticsStore>,
     job_state: &Res<JobState>,
-    jobs: &mut MessageWriter<JobRequest>,
     time: &Res<Time>,
-    axes_texture: TextureId,
 ) -> Result<(), BevyError> {
     TopBottomPanel::bottom("footer")
         .show_separator_line(false)
@@ -633,7 +683,7 @@ fn footer(
 
                     let mut job = text::LayoutJob::default();
 
-                    job.append("right-hand: ", 0.0, text_format(size, Color32::LIGHT_GRAY));
+                    job.append("right-hand: ", 0.0, text_format(size, TEXT_COLOR));
                     let red = colors::from_direction(
                         PrincipalDirection::X,
                         Some(Perspective::Primal),
@@ -652,7 +702,7 @@ fn footer(
                         ),
                     );
 
-                    job.append(", ", 0.0, text_format(size, Color32::GRAY));
+                    job.append(", ", 0.0, text_format(size, TEXT_COLOR));
 
                     let yellow = colors::from_direction(
                         PrincipalDirection::Y,
@@ -672,7 +722,7 @@ fn footer(
                         ),
                     );
 
-                    job.append(", ", 0.0, text_format(size, Color32::GRAY));
+                    job.append(", ", 0.0, text_format(size, TEXT_COLOR));
 
                     let green = colors::from_direction(
                         PrincipalDirection::Z,
@@ -698,7 +748,7 @@ fn footer(
 
                     fn usage_color(value: f64) -> Color32 {
                         if value < 70.0 {
-                            Color32::LIGHT_GRAY // neutral
+                            TEXT_COLOR // neutral
                         } else if value < 90.0 {
                             LIGHT_RED // faded red
                         } else {
@@ -712,7 +762,7 @@ fn footer(
                         } else if fps < 50.0 {
                             LIGHT_RED // warning
                         } else {
-                            Color32::LIGHT_GRAY // normal
+                            TEXT_COLOR // normal
                         }
                     }
 
@@ -741,7 +791,7 @@ fn footer(
                         .and_then(|d| d.smoothed())
                         .unwrap_or(0.0);
 
-                    job.append("  |  ", 0.0, text_format(9.0, Color32::GRAY));
+                    job.append("  |  ", 0.0, text_format(9.0, TEXT_COLOR));
 
                     job.append(
                         &format!("fps {:>3.0}", fps),
@@ -749,7 +799,7 @@ fn footer(
                         text_format(size, fps_color(fps)),
                     );
 
-                    job.append("  |  ", 0.0, text_format(9.0, Color32::GRAY));
+                    job.append("  |  ", 0.0, text_format(9.0, TEXT_COLOR));
 
                     job.append(
                         &format!("scpu {:>3.0}%", sys_cpu),
@@ -757,7 +807,7 @@ fn footer(
                         text_format(size, usage_color(sys_cpu)),
                     );
 
-                    job.append("  |  ", 0.0, text_format(9.0, Color32::GRAY));
+                    job.append("  |  ", 0.0, text_format(9.0, TEXT_COLOR));
 
                     job.append(
                         &format!("smem {:>3.0}%", sys_mem),
@@ -765,7 +815,7 @@ fn footer(
                         text_format(size, usage_color(sys_mem)),
                     );
 
-                    job.append("  |  ", 0.0, text_format(9.0, Color32::GRAY));
+                    job.append("  |  ", 0.0, text_format(9.0, TEXT_COLOR));
 
                     job.append(
                         &format!("pcpu {:>3.0}%", proc_cpu),
@@ -773,7 +823,7 @@ fn footer(
                         text_format(size, usage_color(proc_cpu)),
                     );
 
-                    job.append("  |  ", 0.0, text_format(9.0, Color32::GRAY));
+                    job.append("  |  ", 0.0, text_format(9.0, TEXT_COLOR));
 
                     job.append(
                         &format!("pmem {:>3.0}%", proc_mem),
@@ -781,29 +831,25 @@ fn footer(
                         text_format(size, usage_color(proc_mem)),
                     );
 
-                    job.append("  |  ", 0.0, text_format(9.0, Color32::GRAY));
+                    job.append("  |  ", 0.0, text_format(9.0, TEXT_COLOR));
 
                     let mode = match conf.interactive_mode {
                         InteractiveMode::None => "automatic",
                         InteractiveMode::LoopModification => "manual loops",
                         InteractiveMode::SegmentationModification => "manual seg",
                     };
-                    job.append(
-                        &format!("{}", mode),
-                        0.0,
-                        text_format(size, Color32::LIGHT_GRAY),
-                    );
+                    job.append(&format!("{}", mode), 0.0, text_format(size, TEXT_COLOR));
 
-                    job.append("  |  ", 0.0, text_format(9.0, Color32::GRAY));
+                    job.append("  |  ", 0.0, text_format(9.0, TEXT_COLOR));
 
                     if let Some(request) = &job_state.request {
                         job.append(
                             &format!("{}  {}", request, &timer_animation(time)),
                             0.0,
-                            text_format(size, Color32::LIGHT_GRAY),
+                            text_format(size, TEXT_COLOR),
                         );
                     } else {
-                        job.append("idle", 0.0, text_format(size, Color32::LIGHT_GRAY));
+                        job.append("idle", 0.0, text_format(size, TEXT_COLOR));
                     }
 
                     ui.label(job);
@@ -824,7 +870,7 @@ fn footer(
 }
 
 fn display_label(job: &mut text::LayoutJob, label: &str) {
-    job.append(label, 0.0, text_format(9.0, Color32::WHITE));
+    job.append(label, 0.0, text_format(9.0, TEXT_COLOR));
 }
 
 pub fn update(
@@ -857,7 +903,7 @@ pub fn update(
             }
 
             ui.horizontal(|ui| {
-                ui.with_layout(Layout::top_down(Align::TOP), |ui| {
+                ui.with_layout(Layout::top_down(Align::Center), |ui| {
                     // FIRST ROW
                     header(
                         ui,
@@ -885,12 +931,12 @@ pub fn update(
                             // ****************
                             // INPUT
                             // ****************
-                            label(ui, "Input", text_size, Color32::WHITE);
+                            label(ui, "Input", text_size, TEXT_COLOR);
                             label(
                                 ui,
                                 &format!("({})", solution.current_solution.mesh_ref.nr_verts()),
                                 text_size,
-                                Color32::GRAY,
+                                TEXT_COLOR2,
                             );
 
                             let mut stopped = false;
@@ -911,7 +957,7 @@ pub fn update(
                             // LOOPS
                             // ****************
                             if solution.current_solution.mesh_ref.nr_verts() == 0 || stopped {
-                                label(ui, "Loops", text_size, Color32::GRAY);
+                                label(ui, "Loops", text_size, TEXT_COLOR2);
                             } else {
                                 menu_button(ui, "Loops", |ui| {
                                     if sleek_button(ui, "initialize") {
@@ -941,7 +987,7 @@ pub fn update(
                                     ui,
                                     &format!("({})", solution.current_solution.loops.len()),
                                     12.,
-                                    Color32::GRAY,
+                                    TEXT_COLOR2,
                                 );
                             }
 
@@ -959,7 +1005,7 @@ pub fn update(
                             // ****************
                             match (&solution.current_solution.loops.len(), stopped) {
                                 (0, _) | (_, true) => {
-                                    label(ui, "Dual", text_size, Color32::GRAY);
+                                    label(ui, "Dual", text_size, TEXT_COLOR2);
                                 }
                                 _ => {
                                     menu_button(ui, "Dual", |ui| {
@@ -977,7 +1023,7 @@ pub fn update(
                                         Ok(_) => "(Ok)",
                                         Err(_) => "(err)",
                                     };
-                                    label(ui, status, text_size, Color32::GRAY);
+                                    label(ui, status, text_size, TEXT_COLOR2);
                                 }
                             }
 
@@ -995,7 +1041,7 @@ pub fn update(
                             // ****************
                             match (&solution.current_solution.dual, stopped) {
                                 (Err(_), _) | (_, true) => {
-                                    label(ui, "Layout", text_size, Color32::GRAY);
+                                    label(ui, "Layout", text_size, TEXT_COLOR2);
                                 }
                                 (Ok(_), _) => {
                                     menu_button(ui, "Layout", |ui| {
@@ -1053,18 +1099,18 @@ pub fn update(
                                                     alignment, orthogonality
                                                 ),
                                                 text_size,
-                                                Color32::GRAY,
+                                                TEXT_COLOR2,
                                             );
                                         } else {
                                             label(
                                                 ui,
                                                 "(Quality missing(?))",
                                                 text_size,
-                                                Color32::GRAY,
+                                                TEXT_COLOR2,
                                             );
                                         }
                                     } else {
-                                        label(ui, "(None)", text_size, Color32::GRAY);
+                                        label(ui, "(None)", text_size, TEXT_COLOR2);
                                     }
                                 }
                             }
@@ -1083,7 +1129,7 @@ pub fn update(
                             // ****************
                             match (&solution.current_solution.layout, stopped) {
                                 (None, _) | (_, true) => {
-                                    label(ui, "Polycube", text_size, Color32::GRAY);
+                                    label(ui, "Polycube", text_size, TEXT_COLOR2);
                                 }
                                 (Some(_), _) => {
                                     menu_button(ui, "Polycube", |ui| {
@@ -1115,7 +1161,7 @@ pub fn update(
                             // ****************
                             match (&solution.current_solution.quad, stopped) {
                                 (None, _) | (_, true) => {
-                                    label(ui, "Quad", text_size, Color32::GRAY);
+                                    label(ui, "Quad", text_size, TEXT_COLOR2);
                                 }
                                 (Some(_quad), _) => {
                                     menu_button(ui, "Quad", |ui| {
@@ -1132,7 +1178,7 @@ pub fn update(
                                         slider(ui, "omega", &mut conf.omega, 1..=20);
                                     });
 
-                                    label(ui, "(Ok)", 12., Color32::GRAY);
+                                    label(ui, "(Ok)", 12., TEXT_COLOR2);
                                 }
                             }
                         });
@@ -1143,16 +1189,7 @@ pub fn update(
             });
         });
 
-    footer(
-        &mut egui_ctx,
-        &mut conf,
-        &solution,
-        &diagnostics,
-        &job_state,
-        &mut jobs,
-        &time,
-        axes_texture,
-    )?;
+    footer(&mut egui_ctx, &mut conf, &diagnostics, &job_state, &time)?;
 
     let mut egui_handles = vec![];
     for obj in conf.window_shows_object.iter() {
@@ -1166,7 +1203,7 @@ pub fn update(
         .frame(Frame {
             stroke: bevy_egui::egui::epaint::Stroke {
                 width: 20.0,
-                color: Color32::from_gray(27),
+                color: BG_COLOR,
             },
             fill: Color32::TRANSPARENT,
             ..default()
@@ -1178,12 +1215,12 @@ pub fn update(
             let mut dock_area_style = Style::from_egui(ui.style());
             dock_area_style.dock_area_padding = Some(bevy_egui::egui::epaint::Margin::same(20));
             dock_area_style.tab_bar.corner_radius = CornerRadius::same(0);
-            dock_area_style.tab_bar.bg_fill = Color32::from_gray(27);
-            dock_area_style.tab_bar.hline_color = Color32::from_gray(27);
+            dock_area_style.tab_bar.bg_fill = BG_COLOR;
+            dock_area_style.tab_bar.hline_color = BG_COLOR;
             dock_area_style.separator.width = 1.;
-            dock_area_style.separator.color_dragged = Color32::from_gray(27);
-            dock_area_style.separator.color_hovered = Color32::from_gray(27);
-            dock_area_style.separator.color_idle = Color32::from_gray(27);
+            dock_area_style.separator.color_dragged = BG_COLOR;
+            dock_area_style.separator.color_hovered = BG_COLOR;
+            dock_area_style.separator.color_idle = BG_COLOR;
 
             dock_area_style.overlay.selection_color =
                 Color32::from_rgba_unmultiplied(50, 50, 50, 100);
@@ -1261,7 +1298,7 @@ fn radio<T: PartialEq<T> + std::fmt::Display>(
 }
 
 pub fn text(string: &str) -> text::LayoutJob {
-    colored_text(string, Color32::WHITE)
+    colored_text(string, TEXT_COLOR)
 }
 
 pub fn colored_text(string: &str, color: Color32) -> text::LayoutJob {
@@ -1282,22 +1319,18 @@ pub fn text_format(size: f32, color: Color32) -> TextFormat {
 }
 
 pub fn menu_button(ui: &mut Ui, label: &str, f: impl FnOnce(&mut Ui)) {
-    bevy_egui::egui::menu::menu_button(ui, RichText::new(label).color(Color32::WHITE).size(12.), f);
+    bevy_egui::egui::menu::menu_button(ui, RichText::new(label).color(TEXT_COLOR).size(12.), f);
 }
 
 #[allow(dead_code)]
 pub fn menu_button_unfocused(ui: &mut Ui, label: &str, f: impl FnOnce(&mut Ui)) {
-    bevy_egui::egui::menu::menu_button(ui, RichText::new(label).color(Color32::GRAY).size(12.), f);
+    bevy_egui::egui::menu::menu_button(ui, RichText::new(label).color(TEXT_COLOR).size(12.), f);
 }
 
 pub fn sleek_button(ui: &mut Ui, label: &str) -> bool {
-    bevy_egui::egui::menu::menu_button(
-        ui,
-        RichText::new(label).color(Color32::WHITE).size(12.),
-        |ui| {
-            ui.close_menu();
-        },
-    )
+    bevy_egui::egui::menu::menu_button(ui, RichText::new(label).color(TEXT_COLOR).size(12.), |ui| {
+        ui.close_menu();
+    })
     .response
     .clicked()
 }
@@ -1313,7 +1346,7 @@ pub fn sleek_button_warn(ui: &mut Ui, label: &str) -> bool {
 pub fn sleek_button_unfocused(ui: &mut Ui, label: &str) -> bool {
     bevy_egui::egui::menu::menu_button(
         ui,
-        RichText::new(label).color(Color32::GRAY).size(12.),
+        RichText::new(label).color(TEXT_COLOR2).size(12.),
         |ui| {
             ui.close_menu();
         },

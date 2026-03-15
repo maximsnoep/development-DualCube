@@ -36,8 +36,13 @@ impl<T: Tag> Field<T> {
     pub fn from_mesh(mesh: &Mesh<T>) -> Self {
         let mut field = Field::new();
 
+        println!(
+            "Initializing field from mesh with {} faces",
+            mesh.face_ids().len()
+        );
+
         // Populate the vectors
-        for vert_id in mesh.vert_ids() {
+        for id in mesh.vert_ids() {
             // random unit vector
             let vec = Vector3D::new(
                 rand::random::<f64>() - 0.5,
@@ -46,19 +51,27 @@ impl<T: Tag> Field<T> {
             )
             .normalize();
             let key = field.vectors.insert(vec);
-            field.map.insert(vert_id.to_owned(), key);
+            field.map.insert(id.to_owned(), key);
         }
         // Populate connectivity
-        for vert_id in mesh.vert_ids() {
-            let key = field.map.get(&vert_id).unwrap().to_owned();
+        for id in mesh.vert_ids() {
+            let key = field.map.get(&id).unwrap().to_owned();
             let neighbors = mesh
-                .neighbors(vert_id)
+                .neighbors(id)
                 .map(|id| field.map.get(&id).unwrap().to_owned())
                 .collect();
 
             field.connectivity.insert(key, neighbors);
         }
         field
+    }
+
+    pub fn align_with_normals(&mut self, mesh: &Mesh<T>, axis: Vector3D) {
+        for (id, vector_key) in &self.map {
+            let normal = mesh.normal(*id);
+            let direction = normal.cross(&axis);
+            self.vectors[*vector_key] = direction;
+        }
     }
 }
 

@@ -28,17 +28,36 @@ impl Polycube {
         let mut region_to_vertex = BiHashMap::new();
 
         // Each face to an int
-        let vert_to_int: HashMap<LoopRegionID, usize> = primal_vertices.clone().into_iter().enumerate().map(|(i, f)| (f, i)).collect();
+        let vert_to_int: HashMap<LoopRegionID, usize> = primal_vertices
+            .clone()
+            .into_iter()
+            .enumerate()
+            .map(|(i, f)| (f, i))
+            .collect();
 
         // Create the dual (primal)
         // By creating the primal faces
         let faces = primal_faces
             .iter()
-            .map(|&dual_vert_id| dual.loop_structure.faces(dual_vert_id).collect_vec().into_iter().rev().collect_vec())
+            .map(|&dual_vert_id| {
+                dual.loop_structure
+                    .faces(dual_vert_id)
+                    .collect_vec()
+                    .into_iter()
+                    .rev()
+                    .collect_vec()
+            })
             .collect_vec();
-        let int_faces = faces.iter().map(|face| face.iter().map(|vert| vert_to_int[vert]).collect_vec()).collect_vec();
+        let int_faces = faces
+            .iter()
+            .map(|face| face.iter().map(|vert| vert_to_int[vert]).collect_vec())
+            .collect_vec();
 
-        let (primal, vert_map, _) = Mesh::<POLYCUBE>::from(&int_faces, &vec![Vector3D::new(0., 0., 0.); primal_vertices.len()]).unwrap();
+        let (primal, vert_map, _) = Mesh::<POLYCUBE>::from(
+            &int_faces,
+            &vec![Vector3D::new(0., 0., 0.); primal_vertices.len()],
+        )
+        .unwrap();
 
         for vert_id in &primal.vert_ids() {
             let region_id = primal_vertices[vert_map.id(vert_id).unwrap().to_owned()];
@@ -52,7 +71,10 @@ impl Polycube {
 
         polycube.resize(dual, None);
 
-        log::info!("Constructed a polycube with {} faces.", polycube.structure.nr_faces());
+        log::info!(
+            "Constructed a polycube with {} faces.",
+            polycube.structure.nr_faces()
+        );
 
         polycube
     }
@@ -66,22 +88,38 @@ impl Polycube {
         let mut levels = [Vec::new(), Vec::new(), Vec::new()];
 
         // Fix the positions of the vertices that are in the same level
-        for direction in [PrincipalDirection::X, PrincipalDirection::Y, PrincipalDirection::Z] {
-            for (level, zones) in dual.level_graphs.levels[direction as usize].iter().enumerate() {
+        for direction in [
+            PrincipalDirection::X,
+            PrincipalDirection::Y,
+            PrincipalDirection::Z,
+        ] {
+            for (level, zones) in dual.level_graphs.levels[direction as usize]
+                .iter()
+                .enumerate()
+            {
                 let verts_in_level = zones
                     .iter()
                     .flat_map(|&zone_id| {
                         dual.level_graphs.zones[zone_id]
                             .regions
                             .iter()
-                            .map(|&region_id| self.region_to_vertex.get_by_left(&region_id).unwrap().to_owned())
+                            .map(|&region_id| {
+                                self.region_to_vertex
+                                    .get_by_left(&region_id)
+                                    .unwrap()
+                                    .to_owned()
+                            })
                     })
                     .collect_vec();
 
                 let value = layout.map_or(level as f64, |lay| {
                     let verts_in_mesh = verts_in_level
                         .iter()
-                        .map(|vert| lay.granulated_mesh.position(lay.vert_to_corner.get_by_left(vert).unwrap().to_owned())[direction as usize])
+                        .map(|vert| {
+                            lay.granulated_mesh
+                                .position(lay.vert_to_corner.get_by_left(vert).unwrap().to_owned())
+                                [direction as usize]
+                        })
                         .collect_vec();
                     mehsh::utils::math::calculate_average_f64(verts_in_mesh.into_iter())
                 });
@@ -92,7 +130,11 @@ impl Polycube {
 
         // scale the coordinates s.t. smallest edge is 1, and all other edges are multiples of 1 (integer lengths)
         let mut min_distance = f64::MAX;
-        for direction in [PrincipalDirection::X, PrincipalDirection::Y, PrincipalDirection::Z] {
+        for direction in [
+            PrincipalDirection::X,
+            PrincipalDirection::Y,
+            PrincipalDirection::Z,
+        ] {
             let direction_levels = &levels[direction as usize];
             for (level1, level2) in direction_levels.iter().tuple_windows() {
                 let distance = (level2.0 - level1.0).abs();
@@ -101,9 +143,16 @@ impl Polycube {
                 }
             }
         }
-        assert!(!(min_distance == 0.), "The distance between two levels is 0. This should not happen.");
+        assert!(
+            !(min_distance == 0.),
+            "The distance between two levels is 0. This should not happen."
+        );
         let scale = 1. / min_distance;
-        for direction in [PrincipalDirection::X, PrincipalDirection::Y, PrincipalDirection::Z] {
+        for direction in [
+            PrincipalDirection::X,
+            PrincipalDirection::Y,
+            PrincipalDirection::Z,
+        ] {
             for (level, verts_in_level) in levels[direction as usize].iter() {
                 println!("Level {:?}", level);
                 let value = level * scale;
@@ -124,8 +173,15 @@ impl Polycube {
     }
 
     // Get the signed direction of an edge in the polycube (+X, -X, +Y, -Y, +Z, or -Z)
-    pub fn get_direction_of_edge(&self, a: VertKey<POLYCUBE>, b: VertKey<POLYCUBE>) -> (PrincipalDirection, Orientation) {
-        to_principal_direction(self.structure.vector(self.structure.edge_between_verts(a, b).unwrap().0))
+    pub fn get_direction_of_edge(
+        &self,
+        a: VertKey<POLYCUBE>,
+        b: VertKey<POLYCUBE>,
+    ) -> (PrincipalDirection, Orientation) {
+        to_principal_direction(
+            self.structure
+                .vector(self.structure.edge_between_verts(a, b).unwrap().0),
+        )
     }
 
     pub fn to_dotgraph(dual: &Dual, layout: &Layout, path: &PathBuf) -> Result<(), std::io::Error> {
@@ -144,7 +200,10 @@ impl Polycube {
             "/ comments are lines starting with a slash (/), they should be ignored when parsing the file"
         )?;
         writeln!(file, "/ ")?;
-        writeln!(file, "/ number of faces, number of edges, and number of vertices:")?;
+        writeln!(
+            file,
+            "/ number of faces, number of edges, and number of vertices:"
+        )?;
         writeln!(
             file,
             "{} {} {}",
@@ -187,10 +246,17 @@ impl Polycube {
             let Some([v1, v2]) = polycube.structure.vertices(edge_id).collect_array::<2>() else {
                 panic!()
             };
-            edge_strings.push(format!("{} {} {label}", vert_ids.id(&v1).unwrap(), vert_ids.id(&v2).unwrap()));
+            edge_strings.push(format!(
+                "{} {} {label}",
+                vert_ids.id(&v1).unwrap(),
+                vert_ids.id(&v2).unwrap()
+            ));
 
             let path = layout.edge_to_path.get(&edge_id).unwrap();
-            let length_of_path = path.windows(2).map(|w| layout.granulated_mesh.distance(w[0], w[1])).sum::<f64>();
+            let length_of_path = path
+                .windows(2)
+                .map(|w| layout.granulated_mesh.distance(w[0], w[1]))
+                .sum::<f64>();
             edge_lengths.push(length_of_path);
         }
 

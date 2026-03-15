@@ -1,3 +1,4 @@
+use crate::elastica::ElasticaGraph;
 use crate::layout::LayoutError;
 use crate::polycube::POLYCUBE;
 use crate::prelude::*;
@@ -119,8 +120,11 @@ pub struct Solution {
     pub layout: Option<Layout>,
     pub quad: Option<Quad>,
 
+    #[serde(skip)]
     pub fields: Option<crate::field::Fields<INPUT>>,
-
+    #[serde(skip)]
+    pub elastica_graph: ElasticaGraph<INPUT>,
+    #[serde(skip)]
     pub external_flag: Option<ids::SecMap<FACE, INPUT, usize>>,
 }
 
@@ -138,7 +142,7 @@ impl Solution {
     // Create new solution
     pub fn new(mesh_ref: Arc<Mesh<INPUT>>) -> Self {
         Self {
-            mesh_ref,
+            mesh_ref: mesh_ref.clone(),
             loops: SlotMap::with_key(),
             occupied: ids::SecMap::new(),
             dual: Err(PropertyViolationError::default()),
@@ -148,6 +152,7 @@ impl Solution {
             external_flag: None,
             last_loop: None,
             fields: None,
+            elastica_graph: ElasticaGraph::new(mesh_ref.clone(), 2, 40, 0.5),
         }
     }
 

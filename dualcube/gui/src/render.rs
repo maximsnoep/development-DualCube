@@ -9,6 +9,7 @@ use bevy::camera::ScalingMode;
 use bevy::camera::Viewport;
 use bevy::camera::{visibility::RenderLayers, CameraOutputMode};
 use bevy::core_pipeline::tonemapping::Tonemapping;
+use bevy::gizmos::config;
 use bevy::prelude::*;
 use bevy::render::render_resource::{
     Extent3d, TextureDescriptor, TextureDimension, TextureFormat, TextureUsages,
@@ -523,16 +524,17 @@ pub fn respawn_renders(
 }
 
 pub fn update(
+    configuration: Res<Configuration>,
     ui_resource: Res<UiResource>,
     mut custom_materials: ResMut<Assets<ToonMaterial>>,
     window: Single<&Window>,
-    mut main_camera: Query<(&LookTransform, &Transform, &mut Camera), With<Controller>>,
+    mut main_camera: Query<(&mut LookTransform, &Transform, &mut Camera), With<Controller>>,
     mut other_cameras: Query<
         (&mut Transform, &mut Projection, &mut Camera, &CameraFor),
         Without<Controller>,
     >,
 ) {
-    let (_, main_transform, mut main_camera) = main_camera.single_mut().unwrap();
+    let (mut look, main_transform, mut main_camera) = main_camera.single_mut().unwrap();
 
     let (_, node_index, _) = ui_resource.tree.find_tab(&Objects::InputMesh).unwrap();
     let main_surface = ui_resource.tree.main_surface().clone();
@@ -567,6 +569,8 @@ pub fn update(
             ..Default::default()
         });
     }
+
+    look.up = configuration.camera_up.normalize();
 
     let normalized_translation = main_transform.translation - Vec3::from(Objects::InputMesh);
     let normalized_rotation = main_transform.rotation;
@@ -1216,6 +1220,21 @@ pub fn refresh(solution: &Solution) -> RenderObjectStore {
                         colors::to_bevy(colors::from_direction(PrincipalDirection::Z, None, None)),
                     );
                 }
+
+                // let mut elastica_gizmos = GizmoAsset::new();
+                // for (v1, v2s) in solution.elastica_graph.extended_edges() {
+                //     let p1 = input.position(v1);
+                //     for v2 in v2s {
+                //         let p2 = input.position(v2);
+                //         let p1_transformed = world_to_view(p1, translation, scale);
+                //         let p2_transformed = world_to_view(p2, translation, scale);
+                //         elastica_gizmos.line(
+                //             p1_transformed,
+                //             p2_transformed,
+                //             colors::to_bevy(colors::BLACK),
+                //         );
+                //     }
+                // }
 
                 render_object_store.add_object(
                     object,

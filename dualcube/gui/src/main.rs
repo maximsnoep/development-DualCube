@@ -63,6 +63,8 @@ pub struct Configuration {
     pub camera_zoom_sensitivity: f32,
     pub automatic_rotation_camera: bool,
 
+    pub camera_up: Vec3,
+
     pub stop: Phase,
 
     pub clear_color: [u8; 3],
@@ -70,7 +72,7 @@ pub struct Configuration {
 
 impl Default for Configuration {
     fn default() -> Self {
-        Self {
+        let mut c = Self {
             direction: PrincipalDirection::X,
             alpha: 0.5,
 
@@ -82,6 +84,8 @@ impl Default for Configuration {
 
             loop_anchors: vec![],
 
+            camera_up: Vec3::Y,
+
             stop: Phase::None,
 
             raycasted: None,
@@ -90,12 +94,18 @@ impl Default for Configuration {
             interactive_mode: InteractiveMode::None,
             window_shows_object: [Objects::PolycubeMap, Objects::QuadMesh, Objects::Polycube],
             clear_color: [27, 27, 27],
-            // clear_color: [255, 255, 255],
             camera_rotate_sensitivity: 0.2,
             camera_translate_sensitivity: 2.,
             camera_zoom_sensitivity: 0.2,
             automatic_rotation_camera: true,
+        };
+
+        #[cfg(feature = "light_mode")]
+        {
+            c.clear_color = [255, 255, 255];
         }
+
+        c
     }
 }
 
@@ -246,7 +256,7 @@ fn main() {
         .add_plugins(EguiPlugin::default())
         // My cool plugins c:
         .add_plugins((
-            bevy_blossom::BlossomPlugin,
+            // bevy_blossom::BlossomPlugin,
             bevy_orbit_camera::OrbitCameraPlugin,
             bevy_toon::ToonPlugin,
             bevy_axes_gizmo::AxesGizmoPlugin {
@@ -267,7 +277,7 @@ fn main() {
                         None,
                     )),
                 ],
-                width: 5.,
+                width: 3.,
                 ..default()
             },
             bevy_wicon::WindowIconPlugin::with_path("dualcube/gui/assets/logo-32.png"),

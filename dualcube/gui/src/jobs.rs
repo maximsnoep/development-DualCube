@@ -8,6 +8,7 @@ use dualcube::prelude::*;
 use dualcube::solutions::{Loop, LoopID};
 use io::Export;
 use itertools::Itertools;
+use mehsh::prelude::*;
 use mehsh::prelude::{HasPosition, SetPosition, VertKey};
 use ordered_float::OrderedFloat;
 use std::collections::HashMap;
@@ -34,6 +35,28 @@ async fn run_job(job: Job) -> Option<JobResult> {
             let mut solution = Solution::new(solution.mesh_ref.clone());
             solution.initialize(&flowgraphs);
             Some(JobResult::LoopsChanged((solution, configuration)))
+        }
+
+        Job::Fields {
+            solution,
+            configuration,
+        } => {
+            let mut solution = solution.clone();
+
+            let mesh = &solution.mesh_ref;
+            let mut field_x = dualcube::field::Field::from_mesh(mesh);
+            let mut field_y = dualcube::field::Field::from_mesh(mesh);
+            let mut field_z = dualcube::field::Field::from_mesh(mesh);
+            field_x.align_with_normals(mesh, Vector3D::from(PrincipalDirection::X));
+            field_y.align_with_normals(mesh, Vector3D::from(PrincipalDirection::Y));
+            field_z.align_with_normals(mesh, Vector3D::from(PrincipalDirection::Z));
+            solution.fields = Some(dualcube::field::Fields {
+                field_x,
+                field_y,
+                field_z,
+            });
+
+            return Some(JobResult::Refreshed(render::refresh(&solution)));
         }
 
         Job::Evolve {
@@ -568,6 +591,10 @@ pub enum Job {
         configuration: Configuration,
         flowgraphs: [grapff::fixed::FixedGraph<EdgeID, f64>; 3],
     },
+    Fields {
+        solution: Solution,
+        configuration: Configuration,
+    },
     Evolve {
         solution: Solution,
         configuration: Configuration,
@@ -646,6 +673,7 @@ pub enum Job {
 /// Job types
 #[derive(PartialEq, Clone)]
 pub enum JobType {
+    Fields,
     Import,
     Export,
     ExportNLR,
@@ -670,6 +698,7 @@ pub enum JobType {
 impl std::fmt::Display for JobType {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
+            JobType::Fields => write!(f, "computing fields"),
             JobType::Import => write!(f, "importing"),
             JobType::Export => write!(f, "exporting"),
             JobType::ExportNLR => write!(f, "exporting (NLR)"),
@@ -696,6 +725,7 @@ impl std::fmt::Display for JobType {
 impl Job {
     fn to_type(&self) -> JobType {
         match self {
+            Job::Fields { .. } => JobType::Fields,
             Job::Import { .. } => JobType::Import,
             Job::Export { .. } => JobType::Export,
             Job::ExportNLR { .. } => JobType::ExportNLR,
