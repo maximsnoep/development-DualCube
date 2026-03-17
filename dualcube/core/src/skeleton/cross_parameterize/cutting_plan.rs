@@ -31,7 +31,7 @@ pub fn compute_cutting_plans(
 ) -> (CuttingPlan, CuttingPlan) {
     let degree = input_skeleton.edges(node_idx).count();
 
-    // Step 1: Parameterize all boundaries on both sides.
+    // Parameterize all boundaries on both sides.
     let input_params = parameterize_all_boundaries(node_idx, input_skeleton, input_mesh);
     let polycube_params = parameterize_all_boundaries(node_idx, polycube_skeleton, polycube_mesh);
 
@@ -48,7 +48,7 @@ pub fn compute_cutting_plans(
         );
     }
 
-    // Step 2: Compute shared cut topology (which boundaries to connect).
+    // Compute shared cut topology (which boundaries to connect).
     let cut_topology = compute_cut_topology(
         node_idx,
         degree,
@@ -58,7 +58,7 @@ pub fn compute_cutting_plans(
         polycube_mesh,
     );
 
-    // Step 3: Find the actual cut paths on each side.
+    // Find the actual cut paths on each side.
     let input_cuts = compute_cut_paths(
         node_idx,
         &cut_topology,
