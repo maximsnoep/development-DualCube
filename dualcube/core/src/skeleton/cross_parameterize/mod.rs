@@ -15,7 +15,7 @@ mod geodesic;
 mod harmonic;
 pub mod virtual_mesh;
 
-pub use cutting_plan::compute_cutting_plans;
+use cutting_plan::compute_cutting_plans;
 
 /// Minimum separation between cut endpoints on the same boundary,
 /// measured in [0, 1] normalized arc-length. Two cut endpoints on the
@@ -230,8 +230,13 @@ fn parameterize_region(
     );
 
     // Parameterize each side independently using its cutting plan.
-    let (input_to_canonical, input_cuts) =
-        parameterize_side(node_idx, degree, input_skeleton, input_mesh, &input_plan);
+    let (input_to_canonical, input_cuts) = parameterize_side(
+        node_idx, 
+        degree, 
+        input_skeleton, 
+        input_mesh, 
+        &input_plan,
+    );
 
     let (polycube_to_canonical, polycube_cuts) = parameterize_side(
         node_idx,
@@ -250,12 +255,6 @@ fn parameterize_region(
 }
 
 /// Parameterizes one side (input or polycube) of a region onto the canonical domain.
-///
-/// Uses the cutting plan to determine cut topology, then:
-/// 1. Finds actual cut paths on this mesh surface
-/// 2. Assembles the full disk boundary (boundary arcs + cut paths)
-/// 3. Arc-length parameterizes boundary onto the 4(d-1)-gon (or square for d=1)
-/// 4. Solves Dirichlet problem for interior vertices
 ///
 /// Returns a map from vertex ID to 2D canonical-domain position and the cut paths
 /// as 3D position sequences extended to the geometric boundary.
@@ -281,18 +280,16 @@ fn parameterize_side(
         .map(|cut| cut.path.to_positions(mesh))
         .collect();
 
-    // TODO: harmonic parameterization
+    // Build virtual geometry by cutting the mesh along the cut paths, duplicating vertices as needed.
+    // TODO
+
+    // Determine boundary parameterizations (assign each node a 2D position on the canonical domain boundary).
+    // TODO
+
+    // Solve Dirichlet problem to find interior vertex positions in the canonical domain.
+    // TODO
+
+    // Note that we return the maps for original geometry, not for virtual geometry
+    // TODO: better return type, what to do with the duplicatd nodes? Maybe returning per triangle its corners makes more sense? So like a map from triangle ID+vertID to pos?
     (HashMap::new(), cut_positions)
 }
-
-/// Returns two tangent-axis indices for a given principal direction.
-/// The first tangent axis is used to pick a deterministic starting vertex.
-fn tangent_axes(dir: PrincipalDirection) -> (usize, usize) {
-    match dir {
-        PrincipalDirection::X => (1, 2), // Y, Z
-        PrincipalDirection::Y => (2, 0), // Z, X
-        PrincipalDirection::Z => (0, 1), // X, Y
-    }
-}
-
-
