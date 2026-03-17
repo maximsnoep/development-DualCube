@@ -2,9 +2,10 @@ use std::collections::{HashMap, HashSet};
 
 use log::error;
 use mehsh::prelude::{HasEdges, HasPosition, HasVertices, Mesh, Vector3D};
-use petgraph::graph::{EdgeIndex, NodeIndex};
+use petgraph::graph::{EdgeIndex, Node, NodeIndex};
 use petgraph::stable_graph::StableUnGraph;
 use petgraph::visit::EdgeRef;
+use serde::{Deserialize, Serialize};
 
 use crate::prelude::{EdgeID, FaceID, VertID, INPUT};
 use crate::skeleton::boundary_loop::BoundaryLoop;
@@ -14,7 +15,7 @@ use super::{CutPath, CuttingPlan, SurfacePoint};
 
 /// Tracks where a virtual node came from, so that we can map results back to the
 /// original mesh and relate duplicated cut nodes to each other.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum VirtualNodeOrigin {
     /// A regular mesh vertex that is not on any cut and not a boundary midpoint.
     MeshVertex(VertID),
@@ -34,7 +35,7 @@ pub enum VirtualNodeOrigin {
         original: SurfacePoint,
         /// The index of the other copy (the "peer" on the opposite side of the cut).
         /// Set to `None` during construction and filled in once both copies exist.
-        peer: Option<petgraph::graph::NodeIndex>,
+        peer: Option<NodeIndex>,
         /// Which cut this came from (index into `CuttingPlan::cuts`).
         cut_index: usize,
         /// Which side of the cut: 0 or 1.
@@ -43,8 +44,8 @@ pub enum VirtualNodeOrigin {
 }
 
 /// Weight on virtual-mesh edges. Currently stores the Euclidean length so that
-/// Laplacian weights are readily available.
-#[derive(Debug, Clone)]
+/// Laplacian weights are easy to compute.
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct VirtualEdgeWeight {
     pub length: f64,
 }
@@ -53,31 +54,48 @@ pub struct VirtualEdgeWeight {
 ///
 /// The surface is "opened up" along every cut so that each side of a cut has its
 /// own copy of the cut vertices. Boundary midpoints from the boundary loops are
-/// introduced as explicit vertices. The region is re-triangulated around the cuts 
+/// introduced as explicit vertices. The region is re-triangulated around the cuts
 /// so that the result is a proper manifold mesh with a single boundary loop.
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct VirtualFlatGeometry {
     /// The mesh-like adjacency graph. Each node carries a 3D position plus its
     /// origin information; each edge carries a length.
     pub graph: StableUnGraph<VirtualNode, VirtualEdgeWeight>,
 
-    /// Quick lookup: *original* mesh vertex → virtual node(s).
+    /// original mesh vertex -> virtual node(s).
     /// Interior vertices map to exactly one node; cut vertices map to two.
-    pub vert_to_nodes: HashMap<VertID, Vec<petgraph::graph::NodeIndex>>,
+    pub vert_to_nodes: HashMap<VertID, Vec<NodeIndex>>,
 
     /// The single boundary loop of this virtual mesh, as an ordered sequence of
     /// node indices. After all cuts are applied the topology is a disk, so the
     /// boundary is one simple cycle.
-    pub boundary_loop: Vec<petgraph::graph::NodeIndex>,
+    pub boundary_loop: Vec<NodeIndex>,
 }
 
 /// Per-node payload in the virtual graph.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct VirtualNode {
     pub position: Vector3D,
     pub origin: VirtualNodeOrigin,
 }
 
+impl Default for VirtualFlatGeometry {
+    fn default() -> Self {
+        Self::empty()
+    }
+}
+
 impl VirtualFlatGeometry {
+    /// Returns an empty `VirtualFlatGeometry` with no nodes, edges, or boundary.
+    /// Used as a placeholder for degree-0 regions that are TODO for now.
+    pub fn empty() -> Self {
+        VirtualFlatGeometry {
+            graph: StableUnGraph::default(),
+            vert_to_nodes: HashMap::new(),
+            boundary_loop: Vec::new(),
+        }
+    }
+
     /// Builds the virtual flat geometry for one side of a region, given the
     /// skeleton, the mesh, and the cutting plan that was already computed.
     pub fn build(
@@ -130,40 +148,40 @@ struct Builder<'a> {
 
     graph: StableUnGraph<VirtualNode, VirtualEdgeWeight>,
 
-    // Maps from mesh VertID → virtual node(s).
-    vert_to_nodes: HashMap<VertID, Vec<petgraph::graph::NodeIndex>>,
+    // Maps from mesh VertID -> virtual node(s).
+    vert_to_nodes: HashMap<VertID, Vec<NodeIndex>>,
 
-    // Boundary midpoint nodes: boundary EdgeID → virtual node index.
-    midpoint_nodes: HashMap<EdgeID, petgraph::graph::NodeIndex>,
+    // Boundary midpoint nodes: boundary EdgeID -> virtual node index.
+    midpoint_nodes: HashMap<EdgeID, NodeIndex>,
 
     // Cut information: for each cut, an ordered list of virtual surface points
     // along the cut (endpoints are boundary midpoints, interior points are
     // on-edge or on-vertex).
     cuts: Vec<CutInfo>,
 
-    // Which mesh vertices are on *any* cut. Maps VertID → list of cut indices.
+    // Which mesh vertices are on any cut. Maps VertID -> list of cut indices.
     verts_on_cuts: HashMap<VertID, Vec<usize>>,
 
     // For surface points that are on mesh edges (SurfacePoint::OnEdge), the
-    // mesh edge → cut index mapping, so we know which face-edges are crossed.
+    // mesh edge -> cut index mapping, so we know which face-edges are crossed.
     edges_on_cuts: HashMap<EdgeID, usize>,
 
     // After duplication: for each (VertID that's on a cut, side), the virtual node.
     // Side 0 and side 1 are the two sides of the cut.
-    cut_node_sides: HashMap<(VertID, u8), petgraph::graph::NodeIndex>,
+    cut_node_sides: HashMap<(VertID, u8), NodeIndex>,
 
     // Same but for on-edge surface points on cuts (keyed by EdgeID, side).
-    cut_edge_point_sides: HashMap<(EdgeID, u8), petgraph::graph::NodeIndex>,
+    cut_edge_point_sides: HashMap<(EdgeID, u8), NodeIndex>,
 
     // Ordered boundary edge IDs per skeleton edge, for explicit boundary construction.
     boundary_edge_order: HashMap<EdgeIndex, Vec<EdgeID>>,
 
-    // Reverse map: boundary EdgeID → skeleton edge index.
+    // Reverse map: boundary EdgeID -> skeleton edge index.
     skeleton_edge_for_midpoint: HashMap<EdgeID, EdgeIndex>,
 
     // Cut side chains: per cut index, [side 0 chain, side 1 chain].
     // Each chain is an ordered list [start_midpoint_node, ..interior.., end_midpoint_node].
-    cut_side_chains: Vec<[Vec<NIdx>; 2]>,
+    cut_side_chains: Vec<[Vec<NodeIndex>; 2]>,
 }
 
 /// Internal record for a single cut.
@@ -175,8 +193,6 @@ struct CutInfo {
     /// Index of the end boundary midpoint edge.
     end_midpoint_edge: EdgeID,
 }
-
-type NIdx = petgraph::graph::NodeIndex;
 
 impl<'a> Builder<'a> {
     fn new(
@@ -385,7 +401,7 @@ impl<'a> Builder<'a> {
     fn wire_interior_edges(&mut self) {
         // We iterate over patch faces and add edges for each face's three vertex
         // pairs. We track which pairs we've already added to avoid duplicates.
-        let mut added: HashSet<(NIdx, NIdx)> = HashSet::new();
+        let mut added: HashSet<(NodeIndex, NodeIndex)> = HashSet::new();
 
         for &face in self.patch_faces {
             let verts: Vec<VertID> = self.mesh.vertices(face).collect();
@@ -457,14 +473,14 @@ impl<'a> Builder<'a> {
     /// Wires consecutive cut points along each cut, on both sides.
     /// Also stores the cut side chains for explicit boundary construction.
     fn wire_cut_chains(&mut self) {
-        let mut added: HashSet<(NIdx, NIdx)> = HashSet::new();
+        let mut added: HashSet<(NodeIndex, NodeIndex)> = HashSet::new();
 
         // Pre-collect all node chains to avoid borrowing self.cuts while mutating self.graph.
-        let mut all_side_chains: Vec<[Vec<NIdx>; 2]> = Vec::new();
+        let mut all_side_chains: Vec<[Vec<NodeIndex>; 2]> = Vec::new();
         for cut in &self.cuts {
-            let mut sides: [Vec<NIdx>; 2] = [Vec::new(), Vec::new()];
+            let mut sides: [Vec<NodeIndex>; 2] = [Vec::new(), Vec::new()];
             for side in 0..2u8 {
-                let nodes: Vec<NIdx> = cut
+                let nodes: Vec<NodeIndex> = cut
                     .points
                     .iter()
                     .map(|pt| self.resolve_cut_point(pt, side, cut))
@@ -491,7 +507,7 @@ impl<'a> Builder<'a> {
     /// using the known boundary-edge order.  For regions with cuts (degree ≥ 2),
     /// explicitly constructs the boundary from the boundary-loop topology and
     /// cut-side chains via a DFS traversal of the boundary-loop spanning tree.
-    fn trace_boundary(&self) -> Vec<NIdx> {
+    fn trace_boundary(&self) -> Vec<NodeIndex> {
         if self.cuts.is_empty() {
             return self.trace_boundary_no_cuts();
         }
@@ -499,7 +515,7 @@ impl<'a> Builder<'a> {
     }
 
     /// Boundary trace for regions with no cuts (degree ≤ 1).
-    fn trace_boundary_no_cuts(&self) -> Vec<NIdx> {
+    fn trace_boundary_no_cuts(&self) -> Vec<NodeIndex> {
         if self.boundary_edge_order.is_empty() {
             return Vec::new();
         }
@@ -524,7 +540,7 @@ impl<'a> Builder<'a> {
     /// boundary-loop tree (nodes = boundary loops, edges = cuts).  At each
     /// boundary loop the method walks the ordered boundary midpoints,
     /// interleaving mesh-boundary arcs with cut-side detours.
-    fn trace_boundary_with_cuts(&self) -> Vec<NIdx> {
+    fn trace_boundary_with_cuts(&self) -> Vec<NodeIndex> {
         // Build the boundary-loop spanning tree.
         let mut tree_adj: HashMap<EdgeIndex, Vec<(EdgeIndex, usize)>> = HashMap::new();
         for (cut_idx, cut) in self.cuts.iter().enumerate() {
@@ -563,7 +579,7 @@ impl<'a> Builder<'a> {
         entry_midpoint_edge: Option<EdgeID>,
         tree_adj: &HashMap<EdgeIndex, Vec<(EdgeIndex, usize)>>,
         visited: &mut HashSet<EdgeIndex>,
-        result: &mut Vec<NIdx>,
+        result: &mut Vec<NodeIndex>,
     ) {
         visited.insert(boundary_idx);
 
@@ -667,7 +683,7 @@ impl<'a> Builder<'a> {
     /// Adds edges between consecutive patch-side boundary vertices where they
     /// are not already connected through patch faces.
     fn wire_boundary_arcs(&mut self) {
-        let mut added: HashSet<(NIdx, NIdx)> = HashSet::new();
+        let mut added: HashSet<(NodeIndex, NodeIndex)> = HashSet::new();
         let mut pairs: Vec<(VertID, VertID)> = Vec::new();
         for edges in self.boundary_edge_order.values() {
             let n = edges.len();
@@ -717,7 +733,7 @@ impl<'a> Builder<'a> {
         &self,
         from_edge: EdgeID,
         to_edge: EdgeID,
-        result: &mut Vec<NIdx>,
+        result: &mut Vec<NodeIndex>,
     ) {
         let from_vert = self.patch_vertex_of_boundary_edge(from_edge);
         let to_vert = self.patch_vertex_of_boundary_edge(to_edge);
@@ -731,7 +747,7 @@ impl<'a> Builder<'a> {
 
     /// Resolves a mesh vertex to its virtual node, picking the correct side if
     /// the vertex is on a cut.
-    fn resolve_node(&self, v: VertID, side: Option<u8>) -> NIdx {
+    fn resolve_node(&self, v: VertID, side: Option<u8>) -> NodeIndex {
         if let Some(s) = side {
             if let Some(&n) = self.cut_node_sides.get(&(v, s)) {
                 return n;
@@ -743,14 +759,14 @@ impl<'a> Builder<'a> {
 
     /// Like `resolve_node` but for boundary-midpoint wiring: always resolves to
     /// the non-cut node or the side-0 node if on a cut. (Boundary midpoint
-    /// vertices sit *on* the boundary, not on a cut interior.)
-    fn resolve_node_boundary(&self, v: VertID) -> NIdx {
+    /// vertices sit on the boundary, not on a cut interior.)
+    fn resolve_node_boundary(&self, v: VertID) -> NodeIndex {
         self.vert_to_nodes[&v][0]
     }
 
     /// Resolves a cut surface point to the corresponding virtual node on a given
     /// side. Cut endpoints (boundary midpoints) resolve to the midpoint node.
-    fn resolve_cut_point(&self, pt: &SurfacePoint, side: u8, cut: &CutInfo) -> NIdx {
+    fn resolve_cut_point(&self, pt: &SurfacePoint, side: u8, cut: &CutInfo) -> NodeIndex {
         match *pt {
             SurfacePoint::OnVertex { vertex } => self
                 .cut_node_sides
@@ -888,7 +904,7 @@ impl<'a> Builder<'a> {
     }
 
     /// Adds an edge between two virtual nodes if it hasn't been added yet.
-    fn add_edge_once(&mut self, a: NIdx, b: NIdx, added: &mut HashSet<(NIdx, NIdx)>) {
+    fn add_edge_once(&mut self, a: NodeIndex, b: NodeIndex, added: &mut HashSet<(NodeIndex, NodeIndex)>) {
         if a == b {
             return;
         }
