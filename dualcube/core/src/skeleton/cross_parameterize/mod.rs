@@ -1,13 +1,14 @@
 use std::collections::HashMap;
+use std::f64::consts::PI;
 
 use log::warn;
 use mehsh::prelude::{HasPosition, Mesh, Vector2D, Vector3D};
 
 use petgraph::graph::{EdgeIndex, NodeIndex};
-
 use serde::{Deserialize, Serialize};
 
-use crate::prelude::{EdgeID, PrincipalDirection, VertID, INPUT};
+use crate::prelude::{EdgeID, VertID, INPUT};
+use crate::skeleton::cross_parameterize::harmonic::solve_dirichlet;
 use crate::skeleton::orthogonalize::LabeledCurveSkeleton;
 
 mod cutting_plan;
@@ -16,6 +17,7 @@ mod harmonic;
 pub mod virtual_mesh;
 
 use cutting_plan::compute_cutting_plans;
+use virtual_mesh::VirtualFlatGeometry;
 
 /// Minimum separation between cut endpoints on the same boundary,
 /// measured in [0, 1] normalized arc-length. Two cut endpoints on the
@@ -26,7 +28,7 @@ const MIN_CUT_SEPARATION: f64 = 0.15;
 ///
 /// Can represent an arbitrary position along a mesh edge (useful for boundary
 /// midpoints and generic surface traversal) or exactly at a mesh vertex.
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, Serialize, Deserialize)]
 pub enum SurfacePoint {
     /// A point on a mesh edge at interpolation parameter `t in [0, 1]`.
     /// Position = `(1 − t) · root_position + t · toor_position`.
@@ -127,16 +129,26 @@ pub struct CuttingPlan {
 /// The canonical domains are:
 /// - degree 0: a sphere (??? TODO)
 /// - degree 1: a square, the single boundary maps to the entire boundary of the square
-/// - degree 2+: a regular 4(d-1) gon for degree d.
+/// - degree 2+: a regular 4(d-1)-gon for degree d.
+///
+/// UV coordinates are keyed by `VirtualFlatGeometry` node indices. Cut vertices
+/// appear twice in the VFG (one per side of the cut) and therefore have two distinct
+/// UV positions. Interior and non-cut boundary vertices appear once.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct RegionParameterization {
-    /// For each input mesh vertex in this region, its 2D position in the canonical domain.
-    pub input_to_canonical: HashMap<VertID, Vector2D>, // TODO: what to do with cut parts? These should be dual?
+    /// Virtual flat geometry for the input mesh side (cut-open disk representation).
+    pub input_vfg: VirtualFlatGeometry,
 
-    /// For each polycube mesh vertex in this region, its 2D position in the canonical domain.
-    /// NOTE: Keys are VertKey<POLYCUBE> stored as VertID via raw key, same convention as
-    /// `SkeletonNode::patch_vertices` on the polycube skeleton.
-    pub polycube_to_canonical: HashMap<VertID, Vector2D>, // TODO: what to do with cut parts? These should be dual?
+    /// Per-virtual-node canonical-domain UV for the input mesh side.
+    /// NOTE: keys are in VFG.
+    pub input_uv: HashMap<NodeIndex, Vector2D>,
+
+    /// Virtual flat geometry for the polycube mesh side.
+    pub polycube_vfg: VirtualFlatGeometry,
+
+    /// Per-virtual-node canonical-domain UV for the polycube mesh side.
+    /// NOTE: keys are in VFG.
+    pub polycube_uv: HashMap<NodeIndex, Vector2D>,
 
     /// The cut paths used to parameterize the input mesh side, stored only for visualisation.
     pub input_cuts: Vec<Vec<Vector3D>>,
@@ -230,15 +242,10 @@ fn parameterize_region(
     );
 
     // Parameterize each side independently using its cutting plan.
-    let (input_to_canonical, input_cuts) = parameterize_side(
-        node_idx, 
-        degree, 
-        input_skeleton, 
-        input_mesh, 
-        &input_plan,
-    );
+    let (input_vfg, input_uv, input_cuts) =
+        parameterize_side(node_idx, degree, input_skeleton, input_mesh, &input_plan);
 
-    let (polycube_to_canonical, polycube_cuts) = parameterize_side(
+    let (polycube_vfg, polycube_uv, polycube_cuts) = parameterize_side(
         node_idx,
         degree,
         polycube_skeleton,
@@ -247,30 +254,37 @@ fn parameterize_region(
     );
 
     RegionParameterization {
-        input_to_canonical,
-        polycube_to_canonical,
+        input_vfg,
+        input_uv,
+        polycube_vfg,
+        polycube_uv,
         input_cuts,
         polycube_cuts,
     }
 }
 
-/// Parameterizes one side (input or polycube) of a region onto the canonical domain.
+/// Parameterizes one side (input or polycube) of a region onto the canonical domain, by
+/// building virtual geometry for the cut-open disk and solving the Dirichlet problem with fixed boundary positions.
 ///
-/// Returns a map from vertex ID to 2D canonical-domain position and the cut paths
-/// as 3D position sequences extended to the geometric boundary.
+/// Returns `(vfg, uv_map, cut_positions)` where `uv_map` maps every VFG node
+/// index to its 2D canonical-domain position.
 fn parameterize_side(
     node_idx: NodeIndex,
     degree: usize,
     skeleton: &LabeledCurveSkeleton,
     mesh: &Mesh<INPUT>,
     cutting_plan: &CuttingPlan,
-) -> (HashMap<VertID, Vector2D>, Vec<Vec<Vector3D>>) {
+) -> (VirtualFlatGeometry, HashMap<NodeIndex, Vector2D>, Vec<Vec<Vector3D>>) {
     if degree == 0 {
         warn!(
             "TODO: Degree 0 node {:?}, skipping parameterization",
             node_idx
         );
-        return (HashMap::new(), Vec::new());
+        return (
+            VirtualFlatGeometry::empty(),
+            HashMap::new(),
+            Vec::new(),
+        );
     }
 
     // Convert cut paths to 3D position sequences for visualisation.
@@ -280,16 +294,84 @@ fn parameterize_side(
         .map(|cut| cut.path.to_positions(mesh))
         .collect();
 
-    // Build virtual geometry by cutting the mesh along the cut paths, duplicating vertices as needed.
-    // TODO
+    // Build virtual geometry by cutting the mesh open along cut paths,
+    // duplicating vertices so the result is a topological disk.
+    let vfg = VirtualFlatGeometry::build(node_idx, skeleton, mesh, cutting_plan);
 
-    // Determine boundary parameterizations (assign each node a 2D position on the canonical domain boundary).
-    // TODO
+    if vfg.boundary_loop.is_empty() {
+        warn!(
+            "Node {:?}: VFG boundary loop is empty, skipping parameterization",
+            node_idx
+        );
+        return (vfg, HashMap::new(), cut_positions);
+    }
 
-    // Solve Dirichlet problem to find interior vertex positions in the canonical domain.
-    // TODO
+    // Assign 2D positions to every node on the disk boundary.
+    // The canonical polygon has n_sides sides:
+    //   - degree 1 -> square (4 sides)
+    //   - degree d >= 2 -> regular 4(d-1)-gon
+    let n_sides = if degree == 1 { 4 } else { 4 * (degree - 1) };
+    let boundary_positions = map_boundary_to_polygon(&vfg, n_sides);
 
-    // Note that we return the maps for original geometry, not for virtual geometry
-    // TODO: better return type, what to do with the duplicatd nodes? Maybe returning per triangle its corners makes more sense? So like a map from triangle ID+vertID to pos?
-    (HashMap::new(), cut_positions)
+    // Solve the Dirichlet problem on the VFG graph.
+    let uv_map = solve_dirichlet(&vfg, &boundary_positions);
+
+    (vfg, uv_map, cut_positions)
+}
+
+/// Maps every node in `vfg.boundary_loop` to a 2D position on a regular `n_sides`-gon.
+///
+/// Positions are distributed proportionally by the 3D arc-length of consecutive
+/// boundary nodes. This ensures a valid Tutte embedding (boundary on a convex polygon)
+/// while preserving the structural order produced by the VFG boundary trace.
+///
+/// The polygon has circumradius 1 with vertices at angles `2πk/n_sides`.
+fn map_boundary_to_polygon(vfg: &VirtualFlatGeometry, n_sides: usize) -> HashMap<NodeIndex, Vector2D> {
+    let boundary = &vfg.boundary_loop;
+    let n = boundary.len();
+    if n == 0 {
+        return HashMap::new();
+    }
+
+    // Regular polygon vertices.
+    let polygon: Vec<Vector2D> = (0..n_sides)
+        .map(|k| {
+            let angle = 2.0 * PI * k as f64 / n_sides as f64;
+            Vector2D::new(angle.cos(), angle.sin())
+        })
+        .collect();
+
+    // Compute 3D arc lengths between consecutive boundary nodes (cyclic).
+    let mut seg_lengths: Vec<f64> = vec![0.0; n];
+    let mut total: f64 = 0.0;
+    for i in 0..n {
+        let a = vfg.graph[boundary[i]].position;
+        let b = vfg.graph[boundary[(i + 1) % n]].position;
+        let len = (b - a).norm();
+        seg_lengths[i] = len;
+        total += len;
+    }
+
+    // Place each boundary node at the polygon position corresponding to its
+    // cumulative arc-length fraction.
+    let mut result = HashMap::new();
+    let mut cumulative: f64 = 0.0;
+
+    for (i, &node) in boundary.iter().enumerate() {
+        let t = cumulative / total; // in [0, 1)
+
+        // Locate position on the polygon perimeter at t part.
+        let frac = t * n_sides as f64;
+        let side = (frac as usize).min(n_sides - 1);
+        let local_t = frac - side as f64;
+
+        let p0 = polygon[side];
+        let p1 = polygon[(side + 1) % n_sides];
+        let pos = p0 * (1.0 - local_t) + p1 * local_t;
+
+        result.insert(node, pos);
+        cumulative += seg_lengths[i];
+    }
+
+    result
 }
