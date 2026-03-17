@@ -109,13 +109,10 @@ pub struct CutPath {
 /// Complete cutting plan for one side of a region, including boundary
 /// parameterizations and the exact cut paths.
 ///
-/// For degree `d ≥ 2`, contains `d − 1` cuts forming a spanning tree over the
+/// For degree `d >= 2`, contains `d − 1` cuts forming a spanning tree over the
 /// `d` boundary loops.  For degree 0 or 1, `cuts` is empty.
 #[derive(Debug, Clone)]
-pub struct CuttingPlan {
-    /// Arc-length parameterization for every boundary loop of this region.
-    pub boundary_params: HashMap<EdgeIndex, BoundaryParameterization>,
-
+pub struct CuttingPlan {    
     /// The `d − 1` cut paths connecting boundary loops.
     pub cuts: Vec<CutPath>,
 }
