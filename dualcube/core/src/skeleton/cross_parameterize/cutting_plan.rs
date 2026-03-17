@@ -38,11 +38,9 @@ pub fn compute_cutting_plans(
     if degree < 2 {
         return (
             CuttingPlan {
-                boundary_params: input_params,
                 cuts: Vec::new(),
             },
             CuttingPlan {
-                boundary_params: polycube_params,
                 cuts: Vec::new(),
             },
         );
@@ -76,11 +74,9 @@ pub fn compute_cutting_plans(
 
     (
         CuttingPlan {
-            boundary_params: input_params,
             cuts: input_cuts,
         },
         CuttingPlan {
-            boundary_params: polycube_params,
             cuts: polycube_cuts,
         },
     )
