@@ -7,14 +7,9 @@ use crate::prelude::{EdgeID, FaceID, VertID, INPUT};
 use super::{SurfacePath, SurfacePoint};
 
 /// Given a vertex-to-vertex path through the mesh, computes the geodesic
-/// (shortest surface path) by:
-/// 1. Extracting the triangle strip (channel) the path passes through
-/// 2. Unfolding that strip into 2D
-/// 3. Computing the straight-line path in the unfolded domain
-/// 4. Mapping crossing points back to 3D surface edges
-///
+/// (shortest surface path).
 /// The result is a [`SurfacePath`] where interior points lie on triangle edges
-/// at optimal positions, rather than being pinned to mesh vertices.
+/// at better positions, rather than being pinned to mesh vertices.
 ///
 /// `prefix` and `suffix` are optional boundary-midpoint surface points to
 /// prepend/append to the final path (the first/last points of the cut).
@@ -39,7 +34,7 @@ pub fn straighten_vertex_path(
         return SurfacePath { points };
     }
 
-    // Step 1: Extract the triangle strip.
+    // Extract the triangle strip.
     let strip = extract_triangle_strip(vertex_path, mesh, patch_set);
 
     // If the strip extraction fails (degenerate cases), fall back to vertex path.
@@ -47,7 +42,7 @@ pub fn straighten_vertex_path(
         return vertex_path_to_surface_path(vertex_path, prefix, suffix);
     }
 
-    // Step 2+3: Unfold the strip and compute the straight-line path.
+    // Unfold the strip and compute the straight-line path.
     let crossing_points = funnel_straighten(&strip, vertex_path, mesh, prefix, suffix);
 
     SurfacePath {
