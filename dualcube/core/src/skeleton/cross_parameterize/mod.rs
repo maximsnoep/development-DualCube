@@ -292,15 +292,8 @@ fn parameterize_side(
 
     // Build virtual geometry by cutting the mesh open along cut paths,
     // duplicating vertices so the result is a topological disk.
+    // TODO: use this once implemented
     let vfg = VirtualFlatGeometry::build(node_idx, skeleton, mesh, cutting_plan);
-
-    if vfg.boundary_loop.is_empty() {
-        warn!(
-            "Node {:?}: VFG boundary loop is empty, skipping parameterization",
-            node_idx
-        );
-        return (vfg, HashMap::new(), cut_positions);
-    }
 
     // Assign 2D positions to every node on the disk boundary.
     // The canonical polygon has n_sides sides:
@@ -311,7 +304,7 @@ fn parameterize_side(
 
     // Solve the Dirichlet problem on the VFG graph.
     // let uv_map = solve_dirichlet(&vfg, &boundary_positions);
-    let uv_map = HashMap::new(); // TODO
+    let uv_map = HashMap::new(); // TODO implement later
 
     (vfg, uv_map, cut_positions)
 }
