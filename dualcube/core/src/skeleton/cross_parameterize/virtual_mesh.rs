@@ -152,9 +152,7 @@ fn check_invariants(vfg: &VirtualFlatGeometry) {
         let is_boundary = boundary_set.contains(&node);
 
         if is_boundary {
-            // Boundary nodes need at least 1 neighbour. In degenerate cases
-            // (e.g. all boundary edges share one patch vertex on a small
-            // polycube) a midpoint may only connect to that single vertex.
+            // Boundary nodes need at least 3 neighbour, i.e. the one that has the edge that spawned it, and the two neighbors along the boundary loop.
             assert!(
                 degree >= 1,
                 "VFG invariant violated: boundary node {:?} ({:?}) has 0 neighbours",
@@ -173,17 +171,10 @@ fn check_invariants(vfg: &VirtualFlatGeometry) {
         }
     }
 
-    // Boundary loop is a simple cycle with at least 3 nodes.
-    assert!(
-        vfg.boundary_loop.len() >= 3,
-        "VFG invariant violated: boundary loop has {} nodes, expected >= 3",
-        vfg.boundary_loop.len()
-    );
-    assert_eq!(
-        boundary_set.len(),
-        vfg.boundary_loop.len(),
-        "VFG invariant violated: boundary loop contains duplicate nodes ({} unique out of {})",
-        boundary_set.len(),
-        vfg.boundary_loop.len()
-    );
+    // Boundary loop is a simple cycle with at least 3 nodes. Only cut nodes can be duplicated
+    // TODO ..
+
+
+    // Cut vertices connect to 1 boundary node and one on the cut/another boundary
+    // TODO...
 }

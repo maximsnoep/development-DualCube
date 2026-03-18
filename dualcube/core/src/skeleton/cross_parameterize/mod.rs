@@ -8,7 +8,6 @@ use petgraph::graph::{EdgeIndex, NodeIndex};
 use serde::{Deserialize, Serialize};
 
 use crate::prelude::{EdgeID, VertID, INPUT};
-use crate::skeleton::cross_parameterize::harmonic::solve_dirichlet;
 use crate::skeleton::orthogonalize::LabeledCurveSkeleton;
 
 mod cutting_plan;
@@ -18,10 +17,13 @@ pub mod virtual_mesh;
 use cutting_plan::compute_cutting_plans;
 use virtual_mesh::VirtualFlatGeometry;
 
-/// Minimum separation between cut endpoints on the same boundary,
-/// measured in [0, 1] normalized arc-length. Two cut endpoints on the
-/// same boundary loop must be at least this far apart.
-const MIN_CUT_SEPARATION: f64 = 0.15;
+/// Minimum desired separation between cut endpoints on the same boundary,
+/// measured as a proportion of the boundary's total arc-length (i.e. in
+/// `[0, 1]` normalized arc-length). Two cut endpoints on the same
+/// boundary loop should ideally be at least this far apart. A warning is
+/// emitted if this is violated (the cut is still valid, just potentially
+/// lower quality for parameterization).
+const MIN_CUT_BOUNDARY_PROPORTION: f64 = 0.05;
 
 /// A point on the mesh surface.
 ///
@@ -92,13 +94,21 @@ pub struct CutPath {
     /// The boundary loop (skeleton edge) where this cut starts.
     pub start_boundary: EdgeIndex,
 
+    /// Index into the start boundary's `edge_midpoints` where this cut touches.
+    pub start_midpoint_idx: usize,
+
     /// The `t`-parameter on the start boundary where the cut begins.
+    /// Assigned after cut paths are found, based on shared boundary parameterization.
     pub start_t: f64,
 
     /// The boundary loop (skeleton edge) where this cut ends.
     pub end_boundary: EdgeIndex,
 
+    /// Index into the end boundary's `edge_midpoints` where this cut touches.
+    pub end_midpoint_idx: usize,
+
     /// The `t`-parameter on the end boundary where the cut ends.
+    /// Assigned after cut paths are found, based on shared boundary parameterization.
     pub end_t: f64,
 
     /// The actual path across the surface, from start boundary to end boundary.
@@ -111,9 +121,14 @@ pub struct CutPath {
 /// For degree `d >= 2`, contains `d − 1` cuts forming a spanning tree over the
 /// `d` boundary loops.  For degree 0 or 1, `cuts` is empty.
 #[derive(Debug, Clone)]
-pub struct CuttingPlan {    
+pub struct CuttingPlan {
     /// The `d − 1` cut paths connecting boundary loops.
     pub cuts: Vec<CutPath>,
+
+    /// Arc-length parameterization for each boundary loop of this region.
+    /// On the input side these are natural arc-length; on the polycube side
+    /// they are warped so that cut endpoint `t`-values match the input side.
+    pub boundary_params: HashMap<EdgeIndex, BoundaryParameterization>,
 }
 
 /// The parameterization of a single region (skeleton node) onto a canonical 2D domain.
@@ -175,10 +190,10 @@ impl PolycubeMap {
     pub fn to_triangle_mesh_polycube(
         &self,
         input_mesh: &Mesh<INPUT>,
-        input_skeleton: &LabeledCurveSkeleton,
-        polycube_mesh: &Mesh<INPUT>,
+        _input_skeleton: &LabeledCurveSkeleton, // TODO: use when needed
+        _polycube_mesh: &Mesh<INPUT>,
     ) -> Mesh<INPUT> {
-        let mut result = input_mesh.clone();
+        let result = input_mesh.clone();
 
         // TODO
         result
@@ -226,9 +241,8 @@ fn parameterize_region(
     input_mesh: &Mesh<INPUT>,
     polycube_mesh: &Mesh<INPUT>,
 ) -> RegionParameterization {
-    // Compute cutting plans for both sides.
-    // The cut topology (which boundary loops to connect) is shared, computed
-    // from combined geodesic distances. The actual cut paths are per-side.
+    // Compute cutting plans for both sides. Cut paths are found independently on each side, then boundary
+    // parameterizations are built so that cut endpoints share t-values.
     let (input_plan, polycube_plan) = compute_cutting_plans(
         node_idx,
         input_skeleton,
@@ -237,11 +251,23 @@ fn parameterize_region(
         polycube_mesh,
     );
 
-    // Parameterize each side independently using its cutting plan.
-    let (input_vfg, input_uv, input_cuts) =
+    // Finalize: save cut positions for visualisation.
+    let input_cuts: Vec<Vec<Vector3D>> = input_plan
+        .cuts
+        .iter()
+        .map(|cut| cut.path.to_positions(input_mesh))
+        .collect();
+    let polycube_cuts: Vec<Vec<Vector3D>> = polycube_plan
+        .cuts
+        .iter()
+        .map(|cut| cut.path.to_positions(polycube_mesh))
+        .collect();
+
+    // Build VFG and parameterize each side using its cutting plan.
+    let (input_vfg, input_uv) =
         parameterize_side(node_idx, degree, input_skeleton, input_mesh, &input_plan);
 
-    let (polycube_vfg, polycube_uv, polycube_cuts) = parameterize_side(
+    let (polycube_vfg, polycube_uv) = parameterize_side(
         node_idx,
         degree,
         polycube_skeleton,
@@ -262,33 +288,23 @@ fn parameterize_region(
 /// Parameterizes one side (input or polycube) of a region onto the canonical domain, by
 /// building virtual geometry for the cut-open disk and solving the Dirichlet problem with fixed boundary positions.
 ///
-/// Returns `(vfg, uv_map, cut_positions)` where `uv_map` maps every VFG node
-/// index to its 2D canonical-domain position.
+/// Returns `(vfg, uv_map)` where `uv_map` maps every VFG node index to its
+/// 2D canonical-domain position. Cut positions for visualisation are extracted
+/// by the caller before this function is called.
 fn parameterize_side(
     node_idx: NodeIndex,
     degree: usize,
     skeleton: &LabeledCurveSkeleton,
     mesh: &Mesh<INPUT>,
     cutting_plan: &CuttingPlan,
-) -> (VirtualFlatGeometry, HashMap<NodeIndex, Vector2D>, Vec<Vec<Vector3D>>) {
+) -> (VirtualFlatGeometry, HashMap<NodeIndex, Vector2D>) {
     if degree == 0 {
         warn!(
             "TODO: Degree 0 node {:?}, skipping parameterization",
             node_idx
         );
-        return (
-            VirtualFlatGeometry::empty(),
-            HashMap::new(),
-            Vec::new(),
-        );
+        return (VirtualFlatGeometry::empty(), HashMap::new());
     }
-
-    // Convert cut paths to 3D position sequences for visualisation.
-    let cut_positions: Vec<Vec<Vector3D>> = cutting_plan
-        .cuts
-        .iter()
-        .map(|cut| cut.path.to_positions(mesh))
-        .collect();
 
     // Build virtual geometry by cutting the mesh open along cut paths,
     // duplicating vertices so the result is a topological disk.
@@ -299,14 +315,15 @@ fn parameterize_side(
     // The canonical polygon has n_sides sides:
     //   - degree 1 -> square (4 sides)
     //   - degree d >= 2 -> regular 4(d-1)-gon
-    let n_sides = if degree == 1 { 4 } else { 4 * (degree - 1) };
-    let boundary_positions = map_boundary_to_polygon(&vfg, n_sides);
+    // TODO: use
+    // let n_sides = if degree == 1 { 4 } else { 4 * (degree - 1) };
+    // let boundary_positions = map_boundary_to_polygon(&vfg, n_sides);
 
     // Solve the Dirichlet problem on the VFG graph.
     // let uv_map = solve_dirichlet(&vfg, &boundary_positions);
     let uv_map = HashMap::new(); // TODO implement later
 
-    (vfg, uv_map, cut_positions)
+    (vfg, uv_map)
 }
 
 /// Maps every node in `vfg.boundary_loop` to a 2D position on a regular `n_sides`-gon.
