@@ -396,7 +396,7 @@ impl Solution {
         let mut solution_backup = self.clone();
 
         let mut solution_clone = self.clone();
-        let mut current_quality = solution_clone.get_quality().unwrap();
+        let mut current_quality;
 
         // Create priority queue with "quality" around a vertex as key;
         // let mut priority_queue = std::collections::BinaryHeap::new();

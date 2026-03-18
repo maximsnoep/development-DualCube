@@ -22,6 +22,7 @@ use super::virtual_mesh::VirtualFlatGeometry;
 ///
 /// Returns a map from every VFG node to its 2D position (boundary nodes are included
 /// unchanged, interior nodes are filled in by the solve).
+#[allow(dead_code)] // TODO use or remove
 pub(super) fn solve_dirichlet(
     vfg: &VirtualFlatGeometry,
     boundary_positions: &HashMap<NodeIndex, Vector2D>,
