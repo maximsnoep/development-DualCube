@@ -335,7 +335,7 @@ fn space(ui: &mut Ui) {
 fn header(
     ui: &mut Ui,
     solution: &mut SolutionResource,
-    jobs: &mut MessageWriter<JobRequest>,
+    _jobs: &mut MessageWriter<JobRequest>,
     configuration: &mut ResMut<Configuration>,
     automatic_rotation: &mut ResMut<AutomaticRotation>,
     render_object_settings_store: &mut ResMut<RenderObjectSettingStore>,
@@ -629,10 +629,10 @@ fn header(
 fn footer(
     egui_ctx: &mut bevy_egui::EguiContexts,
     conf: &mut Configuration,
-    solution: &SolutionResource,
+    _solution: &SolutionResource,
     diagnostics: &Res<DiagnosticsStore>,
     job_state: &Res<JobState>,
-    jobs: &mut MessageWriter<JobRequest>,
+    _jobs: &mut MessageWriter<JobRequest>,
     time: &Res<Time>,
     axes_texture: TextureId,
 ) -> Result<(), BevyError> {
@@ -859,8 +859,8 @@ pub fn update(
     diagnostics: Res<DiagnosticsStore>,
     mesh_ref: Res<InputResource>,
     axes_texture: Res<bevy_axes_gizmo::AxesGizmoTexture>,
-    mut gizmo_assets: ResMut<Assets<GizmoAsset>>,
-    mut commands: Commands,
+    mut _gizmo_assets: ResMut<Assets<GizmoAsset>>,
+    mut _commands: Commands,
     mut automatic_rotation: ResMut<AutomaticRotation>,
 ) -> Result<(), BevyError> {
     // Poll for async file dialog results
@@ -912,7 +912,7 @@ pub fn update(
 
                         let text_size = 12.;
 
-                        bevy_egui::egui::menu::bar(ui, |ui| {
+                        bevy_egui::egui::MenuBar::new().ui(ui, |ui| {
                             // ****************
                             // INPUT
                             // ****************
@@ -1016,7 +1016,7 @@ pub fn update(
                                                 configuration: conf.clone(),
                                             },
                                         )));
-                                        ui.close_menu();
+                                        ui.close();
                                     }
 
                                     if sleek_button(ui, "evolve") {
@@ -1025,7 +1025,7 @@ pub fn update(
                                             configuration: conf.clone(),
                                             flowgraphs: mesh_ref.flow_graphs.clone(),
                                         })));
-                                        ui.close_menu();
+                                        ui.close();
                                     }
                                     slider(ui, "iterations", &mut conf.iterations, 1..=20);
                                     slider(ui, "pool1", &mut conf.pool1, 1..=20);
@@ -1064,7 +1064,7 @@ pub fn update(
                                                     configuration: conf.clone(),
                                                 },
                                             )));
-                                            ui.close_menu();
+                                            ui.close();
                                         }
                                     });
                                     let status = match solution.current_solution.dual {
@@ -1101,7 +1101,7 @@ pub fn update(
                                                     configuration: conf.clone(),
                                                 },
                                             )));
-                                            ui.close_menu();
+                                            ui.close();
                                         }
                                         // Optimize corners
                                         if sleek_button(ui, "optimize corners") {
@@ -1111,7 +1111,7 @@ pub fn update(
                                                     configuration: conf.clone(),
                                                 },
                                             )));
-                                            ui.close_menu();
+                                            ui.close();
                                         }
                                         space(ui);
                                         // Place paths
@@ -1122,7 +1122,7 @@ pub fn update(
                                                     configuration: conf.clone(),
                                                 },
                                             )));
-                                            ui.close_menu();
+                                            ui.close();
                                         }
                                         // Optimize paths
                                         if sleek_button(ui, "optimize paths") {
@@ -1132,7 +1132,7 @@ pub fn update(
                                                     configuration: conf.clone(),
                                                 },
                                             )));
-                                            ui.close_menu();
+                                            ui.close();
                                         }
                                     });
 
@@ -1189,7 +1189,7 @@ pub fn update(
                                                     configuration: conf.clone(),
                                                 },
                                             )));
-                                            ui.close_menu();
+                                            ui.close();
                                         }
                                     });
                                 }
@@ -1220,7 +1220,7 @@ pub fn update(
                                                     configuration: conf.clone(),
                                                 },
                                             )));
-                                            ui.close_menu();
+                                            ui.close();
                                         }
 
                                         slider(ui, "omega", &mut conf.omega, 1..=20);
@@ -1376,44 +1376,27 @@ pub fn text_format(size: f32, color: Color32) -> TextFormat {
 }
 
 pub fn menu_button(ui: &mut Ui, label: &str, f: impl FnOnce(&mut Ui)) {
-    bevy_egui::egui::menu::menu_button(ui, RichText::new(label).color(Color32::WHITE).size(12.), f);
+    ui.menu_button(RichText::new(label).color(Color32::WHITE).size(12.), f);
 }
 
 #[allow(dead_code)]
 pub fn menu_button_unfocused(ui: &mut Ui, label: &str, f: impl FnOnce(&mut Ui)) {
-    bevy_egui::egui::menu::menu_button(ui, RichText::new(label).color(Color32::GRAY).size(12.), f);
+    ui.menu_button(RichText::new(label).color(Color32::GRAY).size(12.), f);
 }
 
 pub fn sleek_button(ui: &mut Ui, label: &str) -> bool {
-    bevy_egui::egui::menu::menu_button(
-        ui,
-        RichText::new(label).color(Color32::WHITE).size(12.),
-        |ui| {
-            ui.close_menu();
-        },
-    )
-    .response
-    .clicked()
+    ui.button(RichText::new(label).color(Color32::WHITE).size(12.))
+        .clicked()
 }
 
 pub fn sleek_button_warn(ui: &mut Ui, label: &str) -> bool {
-    bevy_egui::egui::menu::menu_button(ui, RichText::new(label).color(RED).size(12.), |ui| {
-        ui.close_menu();
-    })
-    .response
-    .clicked()
+    ui.button(RichText::new(label).color(RED).size(12.))
+        .clicked()
 }
 
 pub fn sleek_button_unfocused(ui: &mut Ui, label: &str) -> bool {
-    bevy_egui::egui::menu::menu_button(
-        ui,
-        RichText::new(label).color(Color32::GRAY).size(12.),
-        |ui| {
-            ui.close_menu();
-        },
-    )
-    .response
-    .clicked()
+    ui.button(RichText::new(label).color(Color32::GRAY).size(12.))
+        .clicked()
 }
 
 pub fn label(ui: &mut Ui, label: &str, size: f32, color: Color32) {
