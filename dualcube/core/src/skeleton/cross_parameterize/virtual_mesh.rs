@@ -58,8 +58,6 @@ pub struct VirtualEdgeWeight {
 /// single boundary loop.
 ///
 /// Cuts follow mesh edges exclusively — no face-interior crossing points exist.
-/// The only face-traversing segments are at cut endpoints (boundary midpoint ->
-/// first/last mesh vertex of the cut).
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct VirtualFlatGeometry {
     /// The mesh-like adjacency graph. Each node carries a 3D position plus its
