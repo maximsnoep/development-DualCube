@@ -641,7 +641,7 @@ impl Quad {
             let d3p1 = polycube.position(corner1);
             let d3p2 = polycube.position(corner2);
             let d3p3 = polycube.position(corner3);
-            let d3p4 = polycube.position(corner4);
+            // let d3p4 = polycube.position(corner4);
 
             // Grid dimensions based on polycube edge lengths
             let grid_width = polycube.size(edge1).round() as usize;
