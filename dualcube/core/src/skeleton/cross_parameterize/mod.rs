@@ -12,7 +12,6 @@ use crate::skeleton::cross_parameterize::harmonic::solve_dirichlet;
 use crate::skeleton::orthogonalize::LabeledCurveSkeleton;
 
 mod cutting_plan;
-mod geodesic;
 mod harmonic;
 pub mod virtual_mesh;
 
@@ -311,9 +310,8 @@ fn parameterize_side(
     let boundary_positions = map_boundary_to_polygon(&vfg, n_sides);
 
     // Solve the Dirichlet problem on the VFG graph.
-    // TODO: reenable when this works
     // let uv_map = solve_dirichlet(&vfg, &boundary_positions);
-    let uv_map = HashMap::new();
+    let uv_map = HashMap::new(); // TODO
 
     (vfg, uv_map, cut_positions)
 }
