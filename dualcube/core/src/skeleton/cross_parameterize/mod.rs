@@ -333,7 +333,7 @@ fn parameterize_side(
 /// while preserving the structural order produced by the VFG boundary trace.
 ///
 /// The polygon has circumradius 1 with vertices at angles `2πk/n_sides`.
-fn map_boundary_to_polygon(vfg: &VirtualFlatGeometry, n_sides: usize) -> HashMap<NodeIndex, Vector2D> {
+fn _map_boundary_to_polygon(vfg: &VirtualFlatGeometry, n_sides: usize) -> HashMap<NodeIndex, Vector2D> {
     let boundary = &vfg.boundary_loop;
     let n = boundary.len();
     if n == 0 {

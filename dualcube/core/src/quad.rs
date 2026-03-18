@@ -59,6 +59,7 @@ impl Quad {
 
     /// Converts a list of quad faces (4 vertices each) into triangles by splitting
     /// each quad along one diagonal.
+    #[allow(dead_code)] // TODO use or remove
     fn triangulate_quads(quad_faces: &[Vec<usize>]) -> Vec<Vec<usize>> {
         quad_faces
             .iter()

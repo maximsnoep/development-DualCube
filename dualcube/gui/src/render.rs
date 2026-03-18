@@ -24,7 +24,6 @@ use bevy_egui::PrimaryEguiContext;
 use bevy_orbit_camera::*;
 use bevy_toon::ToonMaterial;
 use core::f32;
-use dualcube::polycube::POLYCUBE;
 use dualcube::prelude::*;
 use egui_dock::LeafNode;
 use enum_iterator::{all, Sequence};

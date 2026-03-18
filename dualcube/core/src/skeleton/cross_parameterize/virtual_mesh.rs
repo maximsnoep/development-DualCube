@@ -1,17 +1,15 @@
 use std::collections::{HashMap, HashSet};
 
-use log::error;
-use mehsh::prelude::{HasPosition, HasVertices, Mesh, Vector3D};
+use mehsh::prelude::{Mesh, Vector3D};
 use petgraph::graph::{EdgeIndex, NodeIndex};
 use petgraph::stable_graph::StableUnGraph;
-use petgraph::visit::EdgeRef;
+
 use serde::{Deserialize, Serialize};
 
-use crate::prelude::{EdgeID, FaceID, VertID, INPUT};
-use crate::skeleton::boundary_loop::BoundaryLoop;
+use crate::prelude::{EdgeID, VertID, INPUT};
 use crate::skeleton::orthogonalize::LabeledCurveSkeleton;
 
-use super::{CutPath, CuttingPlan, SurfacePoint};
+use super::{CuttingPlan, SurfacePoint};
 
 /// Tracks where a virtual node came from, so that we can map results back to the
 /// original mesh and relate duplicated cut nodes to each other.
@@ -103,13 +101,10 @@ impl VirtualFlatGeometry {
     pub fn build(
         node_idx: NodeIndex,
         skeleton: &LabeledCurveSkeleton,
-        mesh: &Mesh<INPUT>,
-        cutting_plan: &CuttingPlan,
+        _mesh: &Mesh<INPUT>,
+        _cutting_plan: &CuttingPlan,
     ) -> Self {
-        let patch_verts = &skeleton[node_idx].skeleton_node.patch_vertices;
-        let patch_set: HashSet<VertID> = patch_verts.iter().copied().collect();
-
-        // Get all vertices of the patch
+        let _patch_verts = &skeleton[node_idx].skeleton_node.patch_vertices;
 
         // All all boundary midpoints as virtual nodes
 
@@ -142,6 +137,7 @@ impl VirtualFlatGeometry {
 }
 
 /// Checks structural invariants on the completed VFG.
+#[allow(dead_code)] // TODO uncomment when VFG works, and this is implemented fully..
 fn check_invariants(vfg: &VirtualFlatGeometry) {
     let boundary_set: HashSet<NodeIndex> = vfg.boundary_loop.iter().copied().collect();
 
@@ -171,7 +167,6 @@ fn check_invariants(vfg: &VirtualFlatGeometry) {
 
     // Boundary loop is a simple cycle with at least 3 nodes. Only cut nodes can be duplicated
     // TODO ..
-
 
     // Cut vertices connect to 1 boundary node and one on the cut/another boundary
     // TODO...

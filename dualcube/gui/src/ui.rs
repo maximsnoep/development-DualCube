@@ -634,7 +634,7 @@ fn footer(
     job_state: &Res<JobState>,
     _jobs: &mut MessageWriter<JobRequest>,
     time: &Res<Time>,
-    axes_texture: TextureId,
+    _axes_texture: TextureId,
 ) -> Result<(), BevyError> {
     TopBottomPanel::bottom("footer")
         .show_separator_line(false)

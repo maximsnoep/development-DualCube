@@ -136,7 +136,7 @@ pub struct CacheResource {
 pub struct InputResource {
     mesh: Arc<mehsh::prelude::Mesh<INPUT>>,
     properties: MeshProperties,
-    vertex_lookup: mehsh::prelude::VertLocation<INPUT>,
+    _vertex_lookup: mehsh::prelude::VertLocation<INPUT>,
     triangle_lookup: mehsh::prelude::FaceLocation<INPUT>,
     flow_graphs: [grapff::fixed::FixedGraph<EdgeID, f64>; 3],
 }
@@ -199,7 +199,7 @@ impl InputResource {
         Self {
             mesh,
             properties,
-            vertex_lookup,
+            _vertex_lookup: vertex_lookup,
             triangle_lookup,
             flow_graphs,
         }
@@ -311,6 +311,7 @@ fn main() {
         .run();
 }
 
+#[allow(dead_code)]
 #[inline]
 fn vec3_to_vector3d(v: Vec3) -> Vector3D {
     Vector3D::new(v.x.into(), v.y.into(), v.z.into())
