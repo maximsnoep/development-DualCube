@@ -11,15 +11,16 @@ use crate::skeleton::boundary_loop::BoundaryLoop;
 use crate::skeleton::orthogonalize::LabeledCurveSkeleton;
 
 use super::{
-    geodesic::straighten_vertex_path, BoundaryParameterization, CutPath, CuttingPlan, SurfacePoint,
-    MIN_CUT_SEPARATION,
+    BoundaryParameterization, CutPath, CuttingPlan, SurfacePath, SurfacePoint, MIN_CUT_SEPARATION,
 };
 
 /// Computes cutting plans for both the input and polycube sides of a region.
 ///
-/// The cut *topology* (which boundary loops to connect) is shared and computed
-/// from combined geodesic distances. Boundary parameterizations and the actual
-/// cut paths are computed independently per side.
+/// The input mesh is leading. Cuts are found on the input side first, and the
+/// boundary t-values are shared with the polycube side.
+/// 
+/// Cut paths follow mesh edges exclusively. The only face-traversing segments are 
+/// the first and last: boundary-midpoint to the nearest (internal) patch vertex.
 ///
 /// Returns `(input_plan, polycube_plan)`.
 pub fn compute_cutting_plans(
@@ -31,20 +32,16 @@ pub fn compute_cutting_plans(
 ) -> (CuttingPlan, CuttingPlan) {
     let degree = input_skeleton.edges(node_idx).count();
 
+    if degree < 2 {
+        return (
+            CuttingPlan { cuts: Vec::new() },
+            CuttingPlan { cuts: Vec::new() },
+        );
+    }
+
     // Parameterize all boundaries on both sides.
     let input_params = parameterize_all_boundaries(node_idx, input_skeleton, input_mesh);
     let polycube_params = parameterize_all_boundaries(node_idx, polycube_skeleton, polycube_mesh);
-
-    if degree < 2 {
-        return (
-            CuttingPlan {
-                cuts: Vec::new(),
-            },
-            CuttingPlan {
-                cuts: Vec::new(),
-            },
-        );
-    }
 
     // Compute shared cut topology (which boundaries to connect).
     let cut_topology = compute_cut_topology(
@@ -56,7 +53,7 @@ pub fn compute_cutting_plans(
         polycube_mesh,
     );
 
-    // Find the actual cut paths on each side.
+    // Find cuts on the INPUT side (leading side).
     let input_cuts = compute_cut_paths(
         node_idx,
         &cut_topology,
@@ -64,12 +61,15 @@ pub fn compute_cutting_plans(
         input_mesh,
         &input_params,
     );
-    let polycube_cuts = compute_cut_paths(
+
+    // Find cuts on the POLYCUBE side, matching input t-values.
+    let polycube_cuts = compute_cut_paths_matching_t(
         node_idx,
         &cut_topology,
         polycube_skeleton,
         polycube_mesh,
         &polycube_params,
+        &input_cuts,
     );
 
     (
@@ -225,7 +225,12 @@ fn compute_cut_topology(
     mst
 }
 
-/// Computes actual cut paths on one mesh side for the given cut topology.
+// ---------------------------------------------------------------------------
+//  Input-side cut path computation
+// ---------------------------------------------------------------------------
+
+/// Computes actual cut paths on the input mesh side for the given cut topology.
+/// Tracks used vertices to ensure all cut paths are disjoint.
 fn compute_cut_paths(
     node_idx: NodeIndex,
     cut_topology: &[(EdgeIndex, EdgeIndex)],
@@ -243,6 +248,8 @@ fn compute_cut_paths(
 
     // Track which t-values on each boundary are already used, for MIN_CUT_SEPARATION.
     let mut used_t: HashMap<EdgeIndex, Vec<f64>> = HashMap::new();
+    // Track which vertices are already used by previous cuts, for disjointness.
+    let mut used_verts: HashSet<VertID> = HashSet::new();
 
     let mut cuts = Vec::new();
     for &(edge_a, edge_b) in cut_topology {
@@ -266,8 +273,15 @@ fn compute_cut_paths(
             mesh,
             boundary_params,
             &used_t,
+            &used_verts,
         );
 
+        // Record used vertices for disjointness.
+        for pt in &cut.path.points {
+            if let SurfacePoint::OnVertex { vertex } = pt {
+                used_verts.insert(*vertex);
+            }
+        }
         used_t
             .entry(cut.start_boundary)
             .or_default()
@@ -276,10 +290,11 @@ fn compute_cut_paths(
         cuts.push(cut);
     }
 
+    verify_cuts_disjoint(&cuts);
     cuts
 }
 
-/// Finds one cut path between two boundary loops.
+/// Finds one cut path between two boundary loops on the input side.
 ///
 /// Uses multi-source Dijkstra from boundary-A region-vertices to find the closest
 /// boundary-B region-vertex, reconstructs the vertex path, then wraps it as a
@@ -296,17 +311,35 @@ fn find_cut_path(
     mesh: &Mesh<INPUT>,
     boundary_params: &HashMap<EdgeIndex, BoundaryParameterization>,
     used_t: &HashMap<EdgeIndex, Vec<f64>>,
+    forbidden_verts: &HashSet<VertID>,
 ) -> CutPath {
     let bverts_a = boundary_vertices_of_region(loop_a, patch_set, mesh);
     let bverts_b = boundary_vertices_of_region(loop_b, patch_set, mesh);
 
-    // Run Dijkstra from boundary-A vertices with predecessor tracking.
-    let (dist, pred) = dijkstra_with_predecessors(&bverts_a, patch_verts, vert_to_idx, mesh);
+    // Run Dijkstra from boundary-A vertices, avoiding forbidden interior vertices.
+    // Sources themselves are boundary vertices so we allow them even if "forbidden"
+    // (they sit on the boundary, not interior to a previous cut).
+    let sources: HashSet<VertID> = bverts_a
+        .iter()
+        .copied()
+        .filter(|v| !forbidden_verts.contains(v))
+        .collect();
+    assert!(
+        !sources.is_empty(),
+        "All boundary-A vertices for {:?} are forbidden — cannot route cut",
+        edge_a
+    );
 
-    // Find the closest boundary-B vertex.
+    let (dist, pred) =
+        dijkstra_with_predecessors(&sources, patch_verts, vert_to_idx, mesh, forbidden_verts);
+
+    // Find the closest reachable boundary-B vertex.
     let mut best_b_idx: Option<usize> = None;
     let mut best_dist = f64::INFINITY;
     for &v in &bverts_b {
+        if forbidden_verts.contains(&v) {
+            continue;
+        }
         if let Some(&idx) = vert_to_idx.get(&v) {
             if dist[idx] < best_dist {
                 best_dist = dist[idx];
@@ -337,6 +370,12 @@ fn find_cut_path(
     path_indices.reverse();
 
     let vertex_path: Vec<VertID> = path_indices.iter().map(|&i| patch_verts[i]).collect();
+    assert!(
+        vertex_path.len() == 0,
+        "Cut path between {:?} and {:?} has no vertices",
+        edge_a,
+        edge_b
+    );
 
     let start_vertex = vertex_path[0];
     let end_vertex = *vertex_path.last().unwrap();
@@ -352,21 +391,11 @@ fn find_cut_path(
     let start_t = pick_t_with_separation(start_midpoint_idx, param_a, loop_a, used_t.get(&edge_a));
     let end_t = pick_t_with_separation(end_midpoint_idx, param_b, loop_b, used_t.get(&edge_b));
 
-    // Build the surface path: Dijkstra gives a vertex path; geodesic straightening
-    // produces a path that crosses triangle edges at optimal positions.
+    // Build the surface path: [boundary_midpoint, v0, v1, …, vn, boundary_midpoint].
     let start_edge = loop_a.edge_midpoints[start_midpoint_idx];
     let end_edge = loop_b.edge_midpoints[end_midpoint_idx];
 
-    let prefix = SurfacePoint::OnEdge {
-        edge: start_edge,
-        t: 0.5,
-    };
-    let suffix = SurfacePoint::OnEdge {
-        edge: end_edge,
-        t: 0.5,
-    };
-
-    let path = straighten_vertex_path(&vertex_path, mesh, patch_set, Some(prefix), Some(suffix));
+    let path = build_vertex_surface_path(start_edge, &vertex_path, end_edge);
 
     CutPath {
         start_boundary: edge_a,
@@ -374,6 +403,174 @@ fn find_cut_path(
         end_boundary: edge_b,
         end_t,
         path,
+    }
+}
+
+// ---------------------------------------------------------------------------
+//  Polycube-side cut path computation (matches input t-values)
+// ---------------------------------------------------------------------------
+
+/// Computes cut paths on the polycube side that match the t-values from the
+/// input-side cuts. For each cut, finds the closest polycube boundary midpoint
+/// to the target t and routes an edge-only path between them.
+fn compute_cut_paths_matching_t(
+    node_idx: NodeIndex,
+    cut_topology: &[(EdgeIndex, EdgeIndex)],
+    skeleton: &LabeledCurveSkeleton,
+    mesh: &Mesh<INPUT>,
+    boundary_params: &HashMap<EdgeIndex, BoundaryParameterization>,
+    input_cuts: &[CutPath],
+) -> Vec<CutPath> {
+    let patch_verts = &skeleton[node_idx].skeleton_node.patch_vertices;
+    let patch_set: HashSet<VertID> = patch_verts.iter().copied().collect();
+    let vert_to_idx: HashMap<VertID, usize> = patch_verts
+        .iter()
+        .enumerate()
+        .map(|(i, &v)| (v, i))
+        .collect();
+
+    let mut used_verts: HashSet<VertID> = HashSet::new();
+
+    let mut cuts = Vec::new();
+    for (i, &(edge_a, edge_b)) in cut_topology.iter().enumerate() {
+        let loop_a = &skeleton
+            .edge_weight(edge_a)
+            .expect("skeleton edge_a missing")
+            .boundary_loop;
+        let loop_b = &skeleton
+            .edge_weight(edge_b)
+            .expect("skeleton edge_b missing")
+            .boundary_loop;
+
+        // Target t-values from input side.
+        let target_start_t = input_cuts[i].start_t;
+        let target_end_t = input_cuts[i].end_t;
+
+        let param_a = &boundary_params[&edge_a];
+        let param_b = &boundary_params[&edge_b];
+
+        // Find closest polycube boundary midpoints to target t-values.
+        let start_midpoint_idx = find_closest_midpoint_to_t(target_start_t, param_a);
+        let end_midpoint_idx = find_closest_midpoint_to_t(target_end_t, param_b);
+
+        let start_edge = loop_a.edge_midpoints[start_midpoint_idx];
+        let end_edge = loop_b.edge_midpoints[end_midpoint_idx];
+
+        // Get the patch vertices adjacent to these midpoints.
+        let start_vertex = patch_vertex_adjacent_to_midpoint(start_edge, &patch_set, mesh);
+        let end_vertex = patch_vertex_adjacent_to_midpoint(end_edge, &patch_set, mesh);
+
+        // Route between them using single-source Dijkstra, avoiding forbidden vertices.
+        let sources: HashSet<VertID> = [start_vertex].into_iter().collect();
+        let (dist, pred) =
+            dijkstra_with_predecessors(&sources, patch_verts, &vert_to_idx, mesh, &used_verts);
+
+        let end_idx = vert_to_idx[&end_vertex];
+        assert!(
+            dist[end_idx].is_finite(),
+            "No path from {:?} to {:?} on polycube side (boundary {:?} → {:?})",
+            start_vertex,
+            end_vertex,
+            edge_a,
+            edge_b
+        );
+
+        // Reconstruct vertex path.
+        let mut path_indices = Vec::new();
+        let mut current = end_idx;
+        for _ in 0..patch_verts.len() + 1 {
+            path_indices.push(current);
+            match pred[current] {
+                Some(prev) => current = prev,
+                None => break,
+            }
+        }
+        path_indices.reverse();
+
+        let vertex_path: Vec<VertID> = path_indices.iter().map(|&i| patch_verts[i]).collect();
+
+        // Track used vertices.
+        for &v in &vertex_path {
+            used_verts.insert(v);
+        }
+
+        let path = build_vertex_surface_path(start_edge, &vertex_path, end_edge);
+
+        cuts.push(CutPath {
+            start_boundary: edge_a,
+            start_t: target_start_t,
+            end_boundary: edge_b,
+            end_t: target_end_t,
+            path,
+        });
+    }
+
+    verify_cuts_disjoint(&cuts);
+    cuts
+}
+
+// ---------------------------------------------------------------------------
+//  Helpers
+// ---------------------------------------------------------------------------
+
+/// Builds a [`SurfacePath`] from a boundary midpoint, a vertex path, and an
+/// ending boundary midpoint. Interior points are all `OnVertex`.
+fn build_vertex_surface_path(
+    start_edge: EdgeID,
+    vertex_path: &[VertID],
+    end_edge: EdgeID,
+) -> SurfacePath {
+    let mut points = Vec::with_capacity(vertex_path.len() + 2);
+    points.push(SurfacePoint::OnEdge {
+        edge: start_edge,
+        t: 0.5,
+    });
+    for &v in vertex_path {
+        points.push(SurfacePoint::OnVertex { vertex: v });
+    }
+    points.push(SurfacePoint::OnEdge {
+        edge: end_edge,
+        t: 0.5,
+    });
+    SurfacePath { points }
+}
+
+/// Finds the boundary midpoint index whose t-value is closest to `target_t`
+/// (using circular distance on [0, 1)).
+fn find_closest_midpoint_to_t(target_t: f64, param: &BoundaryParameterization) -> usize {
+    param
+        .t_values
+        .iter()
+        .enumerate()
+        .min_by(|(_, &a), (_, &b)| {
+            let da = circular_dist(a, target_t);
+            let db = circular_dist(b, target_t);
+            da.partial_cmp(&db).unwrap_or(Ordering::Equal)
+        })
+        .map(|(i, _)| i)
+        .unwrap_or(0)
+}
+
+/// Circular distance on [0, 1).
+fn circular_dist(a: f64, b: f64) -> f64 {
+    let d = (a - b).abs();
+    d.min(1.0 - d)
+}
+
+/// Returns the patch vertex that is an endpoint of the given boundary edge.
+fn patch_vertex_adjacent_to_midpoint(
+    edge: EdgeID,
+    patch_set: &HashSet<VertID>,
+    mesh: &Mesh<INPUT>,
+) -> VertID {
+    let root = mesh.root(edge);
+    let toor = mesh.toor(edge);
+    if patch_set.contains(&root) {
+        root
+    } else if patch_set.contains(&toor) {
+        toor
+    } else {
+        panic!("Boundary midpoint edge has no endpoint in the patch")
     }
 }
 
@@ -459,9 +656,6 @@ fn edge_midpoint_position(edge: EdgeID, mesh: &Mesh<INPUT>) -> Vector3D {
 }
 
 /// Returns the set of vertices *within this region* that lie on a specific boundary loop.
-///
-/// Each half-edge in the boundary loop crosses between two patches; we keep the
-/// endpoint that belongs to our patch.
 fn boundary_vertices_of_region(
     boundary_loop: &BoundaryLoop,
     patch_set: &HashSet<VertID>,
@@ -481,11 +675,29 @@ fn boundary_vertices_of_region(
     result
 }
 
-/// Computes pairwise shortest geodesic distances between all boundary loops of a
-/// region on one mesh side.
-///
-/// Returns a map from canonically-ordered `(EdgeIndex, EdgeIndex)` pairs (smaller
-/// index first) to the minimum vertex-to-vertex distance through the region interior.
+/// Asserts that no two cut paths share any mesh vertex.
+fn verify_cuts_disjoint(cuts: &[CutPath]) {
+    let mut all_verts: HashSet<VertID> = HashSet::new();
+    for (i, cut) in cuts.iter().enumerate() {
+        for pt in &cut.path.points {
+            if let SurfacePoint::OnVertex { vertex } = pt {
+                assert!(
+                    all_verts.insert(*vertex),
+                    "Cut paths are not disjoint: vertex {:?} appears in cut {} and a previous cut",
+                    vertex,
+                    i
+                );
+            }
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+//  Pairwise boundary distances & MST
+// ---------------------------------------------------------------------------
+
+/// Computes pairwise shortest vertex-to-vertex distances between all boundary
+/// loops of a region on one mesh side.
 fn pairwise_boundary_distances(
     node_idx: NodeIndex,
     skeleton: &LabeledCurveSkeleton,
@@ -494,14 +706,12 @@ fn pairwise_boundary_distances(
     let patch_verts = &skeleton[node_idx].skeleton_node.patch_vertices;
     let patch_set: HashSet<VertID> = patch_verts.iter().copied().collect();
 
-    // Build a vertex-to-index map for the region (used by Dijkstra).
     let vert_to_idx: HashMap<VertID, usize> = patch_verts
         .iter()
         .enumerate()
         .map(|(i, &v)| (v, i))
         .collect();
 
-    // Collect each incident edge's boundary vertices.
     let mut boundary_info: Vec<(EdgeIndex, HashSet<VertID>)> = Vec::new();
     for edge_ref in skeleton.edges(node_idx) {
         let bverts =
@@ -509,13 +719,14 @@ fn pairwise_boundary_distances(
         boundary_info.push((edge_ref.id(), bverts));
     }
 
-    // Run one multi-source Dijkstra per boundary.
+    let no_forbidden = HashSet::new();
     let all_dists: Vec<Vec<f64>> = boundary_info
         .iter()
-        .map(|(_, bverts)| restricted_dijkstra(bverts, patch_verts, &vert_to_idx, mesh))
+        .map(|(_, bverts)| {
+            dijkstra_with_predecessors(bverts, patch_verts, &vert_to_idx, mesh, &no_forbidden).0
+        })
         .collect();
 
-    // Extract pairwise minimum distances.
     let mut result = HashMap::new();
     for i in 0..boundary_info.len() {
         for j in (i + 1)..boundary_info.len() {
@@ -527,7 +738,6 @@ fn pairwise_boundary_distances(
                 .filter_map(|v| vert_to_idx.get(v).map(|&idx| all_dists[i][idx]))
                 .fold(f64::INFINITY, f64::min);
 
-            // Store with canonical order (smaller EdgeIndex first).
             let key = if *eid_i < *eid_j {
                 (*eid_i, *eid_j)
             } else {
@@ -541,6 +751,7 @@ fn pairwise_boundary_distances(
 }
 
 /// Multi-source Dijkstra restricted to region vertices, with predecessor tracking.
+/// Vertices in `forbidden` are not traversed (but sources are always included).
 ///
 /// Returns `(distances, predecessors)` where each predecessor is an index into
 /// `region_verts`, or `None` for source vertices.
@@ -549,6 +760,7 @@ fn dijkstra_with_predecessors(
     region_verts: &[VertID],
     vert_to_idx: &HashMap<VertID, usize>,
     mesh: &Mesh<INPUT>,
+    forbidden: &HashSet<VertID>,
 ) -> (Vec<f64>, Vec<Option<usize>>) {
     let n = region_verts.len();
     let mut dist = vec![f64::INFINITY; n];
@@ -568,6 +780,9 @@ fn dijkstra_with_predecessors(
         }
         let u = region_verts[u_idx];
         for nbr in mesh.neighbors(u) {
+            if forbidden.contains(&nbr) {
+                continue;
+            }
             let Some(&nbr_idx) = vert_to_idx.get(&nbr) else {
                 continue;
             };
@@ -584,25 +799,11 @@ fn dijkstra_with_predecessors(
     (dist, pred)
 }
 
-/// Multi-source Dijkstra without predecessor tracking (distance-only).
-fn restricted_dijkstra(
-    sources: &HashSet<VertID>,
-    region_verts: &[VertID],
-    vert_to_idx: &HashMap<VertID, usize>,
-    mesh: &Mesh<INPUT>,
-) -> Vec<f64> {
-    dijkstra_with_predecessors(sources, region_verts, vert_to_idx, mesh).0
-}
-
 /// Kruskal's MST on a small complete graph of boundary loops.
-///
-/// Takes a list of `(node_a, node_b, cost)` triples (where "nodes" are skeleton
-/// `EdgeIndex` values identifying boundary loops) and returns the MST edges.
 fn kruskal_mst(weighted_edges: &[(EdgeIndex, EdgeIndex, f64)]) -> Vec<(EdgeIndex, EdgeIndex)> {
     let mut sorted: Vec<_> = weighted_edges.to_vec();
     sorted.sort_by(|a, b| a.2.partial_cmp(&b.2).unwrap_or(Ordering::Equal));
 
-    // Union-find with path compression.
     let mut parent: HashMap<EdgeIndex, EdgeIndex> = HashMap::new();
 
     fn find(parent: &mut HashMap<EdgeIndex, EdgeIndex>, x: EdgeIndex) -> EdgeIndex {
