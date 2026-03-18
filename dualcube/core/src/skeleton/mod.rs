@@ -254,17 +254,18 @@ fn compute_polycube_map(
         polycube.is_some()
     );
     match (input_skeleton, polycube_skeleton, polycube) {
-        (Some(input_skel), Some(poly_skel), Some(poly)) => {
-            let polycube_mesh: Mesh<INPUT> = Mesh::convert(&poly.structure);
-            let pmap = cross_parameterize::cross_parameterize(
-                input_skel,
-                poly_skel,
-                input_mesh,
-                &polycube_mesh,
-            );
-            log::info!("compute_polycube_map: success, {} regions", pmap.regions.len());
-            Some(pmap)
-        }
+        // COMMENTED FOR NOW WHILE TESTING VFG, TODO
+        // (Some(input_skel), Some(poly_skel), Some(poly)) => {
+        //     let polycube_mesh: Mesh<INPUT> = Mesh::convert(&poly.structure);
+        //     let pmap = cross_parameterize::cross_parameterize(
+        //         input_skel,
+        //         poly_skel,
+        //         input_mesh,
+        //         &polycube_mesh,
+        //     );
+        //     log::info!("compute_polycube_map: success, {} regions", pmap.regions.len());
+        //     Some(pmap)
+        // }
         _ => {
             log::warn!("compute_polycube_map: insufficient data");
             None

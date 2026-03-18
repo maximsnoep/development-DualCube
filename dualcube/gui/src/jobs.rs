@@ -10,10 +10,81 @@ use io::Export;
 use itertools::Itertools;
 use mehsh::prelude::{HasPosition, SetPosition, VertKey};
 use ordered_float::OrderedFloat;
-use std::collections::HashMap;
+use std::collections::{HashMap, VecDeque};
+use std::env;
 use std::fs::OpenOptions;
 use std::io::Write;
 use std::path::PathBuf;
+use std::str::FromStr;
+
+#[derive(Resource, Debug, Clone, Default)]
+pub struct CliFlags {
+    pub load: Option<PathBuf>,
+    pub quit_after: Option<JobType>,
+}
+
+impl CliFlags {
+    pub fn from_env_or_exit() -> Self {
+        let mut cli = CliFlags::default();
+        let mut args = env::args().skip(1);
+
+        while let Some(arg) = args.next() {
+            let (flag, inline_value) = match arg.split_once('=') {
+                Some((key, value)) => (key, Some(value)),
+                None => (arg.as_str(), None),
+            };
+
+            match flag {
+                "--help" | "-h" => print_usage_and_exit(0, None),
+                "--load" | "load" => {
+                    let value = inline_value
+                        .map(str::to_owned)
+                        .or_else(|| args.next())
+                        .unwrap_or_else(|| {
+                            print_usage_and_exit(2, Some("missing value for --load"))
+                        });
+                    cli.load = Some(PathBuf::from(value));
+                }
+                "--quit-after" | "quit-after" => {
+                    let value = inline_value
+                        .map(str::to_owned)
+                        .or_else(|| args.next())
+                        .unwrap_or_else(|| {
+                            print_usage_and_exit(2, Some("missing value for --quit-after"))
+                        });
+                    cli.quit_after = Some(JobType::from_str(&value).unwrap_or_else(|err| {
+                        print_usage_and_exit(2, Some(&err))
+                    }));
+                }
+                _ => {
+                    if arg.starts_with('-') {
+                        let message = format!("unknown argument: {arg}");
+                        print_usage_and_exit(2, Some(&message));
+                    }
+                }
+            }
+        }
+
+        cli
+    }
+}
+
+fn print_usage_and_exit(exit_code: i32, error: Option<&str>) -> ! {
+    if let Some(err) = error {
+        eprintln!("error: {err}");
+    }
+    eprintln!(
+        "Usage: cargo run -- [--load <path>] [--quit-after <job>]\n\n\
+         Flags:\n\
+           --load <path>                 Load a model immediately at startup\n\
+           --quit-after <job>            Exit once the specified job finishes\n\
+           --help                         Show this help\n\n\
+         Accepted job names for --quit-after:\n\
+           {}",
+        JobType::accepted_cli_values().join(", ")
+    );
+    std::process::exit(exit_code);
+}
 
 async fn run_job(job: Job) -> Option<JobResult> {
     match job {
@@ -405,6 +476,7 @@ fn poll_jobs(
     mut solution_resource: ResMut<SolutionResource>,
     mut render_object_store: ResMut<RenderObjectStore>,
     configuration: Res<Configuration>,
+    cli_flags: Res<CliFlags>,
 ) {
     if let (Some(request), Some(mut task)) = (job_state.request.take(), job_state.current.take()) {
         if let Some(result) = future::block_on(future::poll_once(&mut task)) {
@@ -543,6 +615,11 @@ fn poll_jobs(
                     info!("Job ended with no result (silently, cancelled or failed)");
                 }
             }
+
+            if cli_flags.quit_after.as_ref() == Some(&request) {
+                info!("Auto-quit requested after {:?}; shutting down.", request);
+                std::process::exit(0);
+            }
         } else {
             job_state.request = Some(request);
             job_state.current = Some(task);
@@ -550,13 +627,36 @@ fn poll_jobs(
     }
 }
 
+fn enqueue_startup_load(
+    mut cli_flags: ResMut<CliFlags>,
+    mut jobs: MessageWriter<JobRequest>,
+    configuration: Res<Configuration>,
+) {
+    if let Some(path) = cli_flags.load.take() {
+        info!("CLI --load: starting import from {:?}", path);
+        jobs.write(JobRequest::Run(Box::new(Job::Import {
+            path,
+            configuration: configuration.clone(),
+        })));
+    }
+}
+
+fn start_job(job_state: &mut JobState, job: Box<Job>) {
+    info!("Received new job: {}", job.to_type());
+
+    job_state.request = Some(job.to_type());
+    job_state.current = Some(AsyncComputeTaskPool::get().spawn(async { run_job(*job).await }));
+}
+
 /// Job stuff
 pub struct JobPlugin;
 
 impl Plugin for JobPlugin {
     fn build(&self, app: &mut App) {
-        app.init_resource::<JobState>()
+        app.init_resource::<CliFlags>()
+            .init_resource::<JobState>()
             .add_message::<JobRequest>()
+            .add_systems(Startup, enqueue_startup_load)
             .add_systems(
                 Update,
                 (
@@ -572,20 +672,19 @@ impl Plugin for JobPlugin {
 /// Submits jobs to the worker thread (only if idle).
 fn submit_jobs(mut ev_reader: MessageReader<JobRequest>, mut job_state: ResMut<JobState>) {
     for ev in ev_reader.read() {
-        match (ev, job_state.request.clone()) {
-            (JobRequest::Run(job), None) => {
-                info!("Received new job: {}", job.to_type());
-
-                let job = job.clone();
-                job_state.request = Some(job.to_type());
-
-                let task = AsyncComputeTaskPool::get().spawn(async { run_job(*job).await });
-                job_state.current = Some(task);
+        match ev {
+            JobRequest::Run(job) => {
+                job_state.pending.push_back(job.clone());
             }
-            (JobRequest::Cancel, Some(_)) => {
-                //
+            JobRequest::Cancel => {
+                job_state.pending.clear();
             }
-            _ => {}
+        }
+    }
+
+    if job_state.request.is_none() && job_state.current.is_none() {
+        if let Some(job) = job_state.pending.pop_front() {
+            start_job(&mut job_state, job);
         }
     }
 }
@@ -683,7 +782,7 @@ pub enum Job {
 }
 
 /// Job types
-#[derive(PartialEq, Clone)]
+#[derive(PartialEq, Eq, Clone, Debug)]
 pub enum JobType {
     Import,
     Export,
@@ -705,6 +804,72 @@ pub enum JobType {
     PlacePaths,
     ComputeQuad,
     PathStraightening,
+}
+
+impl JobType {
+    pub fn accepted_cli_values() -> &'static [&'static str] {
+        &[
+            "Import",
+            "Export",
+            "ExportNLR",
+            "ExportDotgraph",
+            "Hex",
+            "Evolve",
+            "ComputePolycube",
+            "CalculateSkeleton",
+            "InitializeLoops",
+            "AddLoop",
+            "RemoveLoop",
+            "Recompute",
+            "Refresh",
+            "SmoothenLayout",
+            "ComputeDual",
+            "PlaceCorners",
+            "MoveCorner",
+            "PlacePaths",
+            "ComputeQuad",
+            "PathStraightening",
+        ]
+    }
+}
+
+impl FromStr for JobType {
+    type Err = String;
+
+    fn from_str(value: &str) -> Result<Self, Self::Err> {
+        let normalized: String = value
+            .chars()
+            .filter(|c| *c != '-' && *c != '_')
+            .flat_map(|c| c.to_lowercase())
+            .collect();
+
+        match normalized.as_str() {
+            "import" => Ok(JobType::Import),
+            "export" => Ok(JobType::Export),
+            "exportnlr" => Ok(JobType::ExportNLR),
+            "exportdotgraph" => Ok(JobType::ExportDotgraph),
+            "hex" => Ok(JobType::Hex),
+            "evolve" => Ok(JobType::Evolve),
+            "computepolycube" => Ok(JobType::ComputePolycube),
+            "calculateskeleton" | "skeleton" => Ok(JobType::CalculateSkeleton),
+            "initializeloops" => Ok(JobType::InitializeLoops),
+            "addloop" => Ok(JobType::AddLoop),
+            "removeloop" => Ok(JobType::RemoveLoop),
+            "recompute" => Ok(JobType::Recompute),
+            "refresh" => Ok(JobType::Refresh),
+            "smoothenlayout" => Ok(JobType::SmoothenLayout),
+            "computedual" => Ok(JobType::ComputeDual),
+            "placecorners" => Ok(JobType::PlaceCorners),
+            "movecorner" => Ok(JobType::MoveCorner),
+            "placepaths" => Ok(JobType::PlacePaths),
+            "computequad" => Ok(JobType::ComputeQuad),
+            "pathstraightening" => Ok(JobType::PathStraightening),
+            _ => Err(format!(
+                "invalid job type '{value}'. expected one of: {}",
+                JobType::accepted_cli_values().join(", ")
+            )),
+        }
+    }
 }
 
 impl std::fmt::Display for JobType {
@@ -789,6 +954,7 @@ enum JobResult {
 pub struct JobState {
     pub request: Option<JobType>,
     current: Option<Task<Option<JobResult>>>,
+    pending: VecDeque<Box<Job>>,
 }
 
 #[derive(Message)]

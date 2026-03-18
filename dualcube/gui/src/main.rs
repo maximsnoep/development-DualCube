@@ -228,7 +228,10 @@ impl Default for SolutionResource {
 struct PerpetualGizmos {}
 
 fn main() {
+    let cli_flags = jobs::CliFlags::from_env_or_exit();
+
     App::new()
+        .insert_resource(cli_flags)
         .init_resource::<UiResource>()
         .init_resource::<InputResource>()
         .init_resource::<CacheResource>()
