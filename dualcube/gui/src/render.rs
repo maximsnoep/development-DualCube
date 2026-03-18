@@ -384,7 +384,7 @@ pub fn update_render_settings(
             (Objects::InputMesh, "wireframe")
                 | (Objects::InputMesh, "patches")
                 | (Objects::InputMesh, "cuts")
-                | (Objects::Polycube, "gray")
+                // | (Objects::Polycube, "gray")
                 | (Objects::Polycube, "patches")
                 | (Objects::Polycube, "cuts")
                 | (Objects::Polycube, "paths")
