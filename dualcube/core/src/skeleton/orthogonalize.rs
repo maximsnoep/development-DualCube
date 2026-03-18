@@ -1,4 +1,5 @@
 use log::{error, warn};
+use mehsh::prelude::{EPS, HasPosition, Mesh};
 use petgraph::graph::{EdgeIndex, NodeIndex, UnGraph};
 use petgraph::prelude::StableUnGraph;
 use petgraph::visit::EdgeRef;
@@ -8,7 +9,7 @@ use bimap::BiHashMap;
 use std::collections::{BinaryHeap, HashMap, HashSet, VecDeque};
 
 use crate::{
-    prelude::{CurveSkeleton, PrincipalDirection},
+    prelude::{CurveSkeleton, INPUT, PrincipalDirection, VertID},
     skeleton::{boundary_loop::BoundaryLoop, curve_skeleton::SkeletonNode},
 };
 
@@ -117,6 +118,62 @@ fn axis_sign_from_value(v: f64) -> AxisSign {
     } else {
         AxisSign::Negative
     }
+}
+
+/// Estimates a boundary-loop normal by fitting a least-squares plane
+/// to boundary vertices and taking the smallest-variance eigenvector.
+fn best_fit_boundary_plane_normal(
+    boundary_loop: &BoundaryLoop,
+    mesh: &Mesh<INPUT>,
+) -> Option<nalgebra::Vector3<f64>> {
+    let mut unique_vertices: HashSet<VertID> = HashSet::new();
+    for &edge in &boundary_loop.edge_midpoints {
+        unique_vertices.insert(mesh.root(edge));
+        unique_vertices.insert(mesh.toor(edge));
+    }
+
+    if unique_vertices.len() < 3 {
+        return None;
+    }
+
+    let count = unique_vertices.len() as f64;
+    let centroid = unique_vertices
+        .iter()
+        .fold(nalgebra::Vector3::zeros(), |acc, &v| acc + mesh.position(v))
+        / count;
+
+    let mut covariance = nalgebra::Matrix3::<f64>::zeros();
+    for &v in &unique_vertices {
+        let d = mesh.position(v) - centroid;
+        covariance += d * d.transpose();
+    }
+
+    let eig = nalgebra::SymmetricEigen::new(covariance);
+    let min_idx = if eig.eigenvalues[0] <= eig.eigenvalues[1] {
+        if eig.eigenvalues[0] <= eig.eigenvalues[2] {
+            0
+        } else {
+            2
+        }
+    } else if eig.eigenvalues[1] <= eig.eigenvalues[2] {
+        1
+    } else {
+        2
+    };
+
+    let normal = eig.eigenvectors.column(min_idx).into_owned();
+    let nrm = normal.norm();
+    if nrm <= EPS {
+        None
+    } else {
+        Some(normal / nrm)
+    }
+}
+
+fn directional_confidence(v: nalgebra::Vector3<f64>) -> f64 {
+    let mut mags = [v.x.abs(), v.y.abs(), v.z.abs()];
+    mags.sort_by(|a, b| b.partial_cmp(a).unwrap_or(std::cmp::Ordering::Equal));
+    mags[0] - mags[1]
 }
 
 fn sign_from_node_along_edge(node: NodeIndex, edge_source: NodeIndex, sign: AxisSign) -> AxisSign {
@@ -434,7 +491,10 @@ fn finalize_partial_to_realized(
 /// Global search for labelings that maximize preferred-axis matches.
 ///
 /// Edge priority is weighted by patch size and directional confidence.
-fn backtracking_orthogonalization(curve_skeleton: &CurveSkeleton) -> Option<LabeledCurveSkeleton> {
+fn backtracking_orthogonalization(
+    curve_skeleton: &CurveSkeleton,
+    mesh: &Mesh<INPUT>,
+) -> Option<LabeledCurveSkeleton> {
     let (mut partial, node_map, boundary_loops) = build_unlabeled_partial(curve_skeleton);
 
     warn!("Greedy orthogonalization failed, falling back to backtracking search.");
@@ -447,6 +507,16 @@ fn backtracking_orthogonalization(curve_skeleton: &CurveSkeleton) -> Option<Labe
         confidence: f64,
     }
 
+    let boundary_normals: HashMap<EdgeIndex, Option<nalgebra::Vector3<f64>>> = partial
+        .edge_indices()
+        .map(|edge| {
+            let normal = boundary_loops
+                .get(&edge)
+                .and_then(|bl| best_fit_boundary_plane_normal(bl, mesh));
+            (edge, normal)
+        })
+        .collect();
+
     let mut plans: Vec<EdgePlan> = partial
         .edge_indices()
         .map(|edge| {
@@ -458,16 +528,17 @@ fn backtracking_orthogonalization(curve_skeleton: &CurveSkeleton) -> Option<Labe
                 .get_by_right(&v)
                 .expect("Partial node not found in map");
             let disp = curve_skeleton[orig_v].position - curve_skeleton[orig_u].position;
-            let pref = preferred_axes_from_displacement(disp);
+            let pref_vector = boundary_normals
+                .get(&edge)
+                .copied()
+                .flatten()
+                .unwrap_or(disp);
+            let pref = preferred_axes_from_displacement(pref_vector);
             let preference_weight = std::cmp::max(
                 curve_skeleton[orig_u].patch_vertices.len(),
                 curve_skeleton[orig_v].patch_vertices.len(),
             ) as i64;
-            let confidence = {
-                let mut mags = [disp.x.abs(), disp.y.abs(), disp.z.abs()];
-                mags.sort_by(|a, b| b.partial_cmp(a).unwrap_or(std::cmp::Ordering::Equal));
-                mags[0] - mags[1]
-            };
+            let confidence = directional_confidence(pref_vector);
             EdgePlan {
                 edge,
                 primary: pref[0],
@@ -499,6 +570,7 @@ fn backtracking_orthogonalization(curve_skeleton: &CurveSkeleton) -> Option<Labe
         partial: &mut PartialEdgeLabeledCurveSkeleton,
         curve_skeleton: &CurveSkeleton,
         node_map: &BiHashMap<NodeIndex, NodeIndex>,
+        boundary_normals: &HashMap<EdgeIndex, Option<nalgebra::Vector3<f64>>>,
         current_score: i64,
         best_score: &mut i64,
         best_labels: &mut Option<HashMap<EdgeIndex, SignedAxis>>,
@@ -533,7 +605,12 @@ fn backtracking_orthogonalization(curve_skeleton: &CurveSkeleton) -> Option<Labe
             .get_by_right(&v)
             .expect("Partial node not found in map");
         let disp = curve_skeleton[orig_v].position - curve_skeleton[orig_u].position;
-        let candidate_axes = preferred_axes_from_displacement(disp);
+        let pref_vector = boundary_normals
+            .get(&plan.edge)
+            .copied()
+            .flatten()
+            .unwrap_or(disp);
+        let candidate_axes = preferred_axes_from_displacement(pref_vector);
 
         for cand in candidate_axes {
             // Determine edge endpoint order in the partial graph; sign is stored from a->b.
@@ -545,7 +622,12 @@ fn backtracking_orthogonalization(curve_skeleton: &CurveSkeleton) -> Option<Labe
                 .get_by_right(&b)
                 .expect("Partial node not found in map");
             let disp_ab = curve_skeleton[orig_b].position - curve_skeleton[orig_a].position;
-            let preferred_sign = axis_sign_from_value(axis_value(disp_ab, cand));
+            let sign_vector = boundary_normals
+                .get(&plan.edge)
+                .copied()
+                .flatten()
+                .unwrap_or(disp_ab);
+            let preferred_sign = axis_sign_from_value(axis_value(sign_vector, cand));
             let sign_candidates = [preferred_sign, preferred_sign.flipped()];
 
             for sign in sign_candidates {
@@ -570,6 +652,7 @@ fn backtracking_orthogonalization(curve_skeleton: &CurveSkeleton) -> Option<Labe
                         partial,
                         curve_skeleton,
                         node_map,
+                        boundary_normals,
                         next_score,
                         best_score,
                         best_labels,
@@ -587,6 +670,7 @@ fn backtracking_orthogonalization(curve_skeleton: &CurveSkeleton) -> Option<Labe
         &mut partial,
         curve_skeleton,
         &node_map,
+        &boundary_normals,
         0,
         &mut best_score,
         &mut best_labels,
@@ -811,13 +895,27 @@ pub fn realize(s: &EdgeLabeledCurveSkeleton) -> Option<LabeledCurveSkeleton> {
 /// Assigns axis labels to edges and realizes the orthogonal skeleton.
 ///
 /// BFS starts from the highest-degree node (secondarily largest patch).
-/// For each unlabeled edge, the axis most aligned with the geometric displacement
-/// is tried first; the other two axes are fallbacks. The first choice that keeps the partial
-/// labeling consistent is accepted.
+/// For each unlabeled edge, we estimate a boundary-loop plane and use its normal as the
+/// preferred direction; the axis most aligned with that normal is tried first and the other
+/// two axes are fallbacks. The first choice that keeps the partial labeling consistent is
+/// accepted.
 ///
 /// If greedy gets stuck, a global backtracking search is used.
-pub fn greedy_orthogonalization(curve_skeleton: &CurveSkeleton) -> Option<LabeledCurveSkeleton> {
+pub fn greedy_orthogonalization(
+    curve_skeleton: &CurveSkeleton,
+    mesh: &Mesh<INPUT>,
+) -> Option<LabeledCurveSkeleton> {
     let (mut partial, node_map, boundary_loops) = build_unlabeled_partial(curve_skeleton);
+
+    let boundary_normals: HashMap<EdgeIndex, Option<nalgebra::Vector3<f64>>> = partial
+        .edge_indices()
+        .map(|edge| {
+            let normal = boundary_loops
+                .get(&edge)
+                .and_then(|bl| best_fit_boundary_plane_normal(bl, mesh));
+            (edge, normal)
+        })
+        .collect();
 
     // Helper to pick the best (highest-degree, then largest patch) unvisited node.
     let pick_best_unvisited = |visited: &HashSet<NodeIndex>| {
@@ -869,13 +967,14 @@ pub fn greedy_orthogonalization(curve_skeleton: &CurveSkeleton) -> Option<Labele
                 let patch_v = curve_skeleton[v].patch_vertices.len();
                 let size = std::cmp::max(patch_u, patch_v);
                 let displacement = curve_skeleton[v].position - curve_skeleton[u].position;
-                let mut magnitudes = [
-                    displacement.x.abs(),
-                    displacement.y.abs(),
-                    displacement.z.abs(),
-                ];
-                magnitudes.sort_by(|a, b| b.partial_cmp(a).unwrap_or(std::cmp::Ordering::Equal));
-                let confidence = magnitudes[0] - magnitudes[1]; // How good the best is relative to second best
+                let pref_vector = partial
+                    .find_edge(
+                        *node_map.get_by_left(&u).expect("Original node missing in map"),
+                        *node_map.get_by_left(&v).expect("Original node missing in map"),
+                    )
+                    .and_then(|e| boundary_normals.get(&e).copied().flatten())
+                    .unwrap_or(displacement);
+                let confidence = directional_confidence(pref_vector); // How good the best is relative to second best
 
                 (
                     std::cmp::Reverse((size as f64 * confidence) as usize),
@@ -909,7 +1008,12 @@ pub fn greedy_orthogonalization(curve_skeleton: &CurveSkeleton) -> Option<Labele
 
                 // Try the geometrically closest axis first, then fall back to the other two.
                 let disp = curve_skeleton[v].position - curve_skeleton[u].position;
-                let candidates = preferred_axes_from_displacement(disp);
+                let pref_vector = boundary_normals
+                    .get(&eidx)
+                    .copied()
+                    .flatten()
+                    .unwrap_or(disp);
+                let candidates = preferred_axes_from_displacement(pref_vector);
 
                 // Accept the first candidate that keeps the partial labeling realizable.
                 let mut assigned = false;
@@ -923,7 +1027,12 @@ pub fn greedy_orthogonalization(curve_skeleton: &CurveSkeleton) -> Option<Labele
                         .get_by_right(&b)
                         .expect("Partial node not found in map");
                     let disp_ab = curve_skeleton[orig_b].position - curve_skeleton[orig_a].position;
-                    let preferred_sign = axis_sign_from_value(axis_value(disp_ab, cand));
+                    let sign_vector = boundary_normals
+                        .get(&eidx)
+                        .copied()
+                        .flatten()
+                        .unwrap_or(disp_ab);
+                    let preferred_sign = axis_sign_from_value(axis_value(sign_vector, cand));
                     let sign_candidates = [preferred_sign, preferred_sign.flipped()];
 
                     for sign in sign_candidates {
@@ -949,7 +1058,7 @@ pub fn greedy_orthogonalization(curve_skeleton: &CurveSkeleton) -> Option<Labele
 
                 if !assigned {
                     // Fall back to global search from scratch, maximizing preferred directions.
-                    return backtracking_orthogonalization(curve_skeleton);
+                    return backtracking_orthogonalization(curve_skeleton, mesh);
                 }
 
                 if visited.insert(v) {
