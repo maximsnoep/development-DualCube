@@ -1,7 +1,7 @@
 use crate::jobs::{Job, JobRequest};
 use crate::render::{view_to_world, world_to_view};
 use crate::{
-    colors, vec3_to_vector3d, vector3d_to_vec3, CacheResource, Configuration, InputResource,
+    colors, vector3d_to_vec3, CacheResource, Configuration, InputResource,
     MainMesh, PerpetualGizmos, SolutionResource,
 };
 use bevy::picking::backend::ray::RayMap;
@@ -23,12 +23,12 @@ pub fn segmentation_modification_system(
     keyboard: Res<ButtonInput<KeyCode>>,
     mesh_resmut: Res<InputResource>,
     mut solution: ResMut<SolutionResource>,
-    mut cache: ResMut<CacheResource>,
+    mut _cache: ResMut<CacheResource>,
     mut gizmos: Gizmos<PerpetualGizmos>,
-    mut configuration: ResMut<Configuration>,
+    configuration: ResMut<Configuration>,
     mut jobs: MessageWriter<JobRequest>,
     position: Vector3D,
-    nearest_face: FaceID,
+    _nearest_face: FaceID,
 ) -> Result<(), BevyError> {
     if mesh_resmut.mesh.nr_verts() == 0 {
         return Ok(());
@@ -369,7 +369,7 @@ pub fn loop_modification_system(
                 jobs.write(JobRequest::Run(Box::new(Job::RemoveLoop {
                     solution: solution.current_solution.clone(),
                     loop_id,
-                    force,
+                    _force: force,
                     configuration: configuration.clone(),
                 })));
             }
@@ -393,11 +393,11 @@ pub fn system(
     mouse: Res<ButtonInput<MouseButton>>,
     keyboard: Res<ButtonInput<KeyCode>>,
     mesh_resmut: Res<InputResource>,
-    mut solution: ResMut<SolutionResource>,
-    mut cache: ResMut<CacheResource>,
+    solution: ResMut<SolutionResource>,
+    cache: ResMut<CacheResource>,
     mut gizmos: Gizmos<PerpetualGizmos>,
     mut configuration: ResMut<Configuration>,
-    mut jobs: MessageWriter<JobRequest>,
+    jobs: MessageWriter<JobRequest>,
 ) -> Result<(), BevyError> {
     configuration.raycasted = None;
     configuration.selected = None;

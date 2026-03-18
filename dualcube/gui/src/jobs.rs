@@ -88,7 +88,7 @@ fn print_usage_and_exit(exit_code: i32, error: Option<&str>) -> ! {
 
 async fn run_job(job: Job) -> Option<JobResult> {
     match job {
-        Job::Hex { .. } => None,
+        Job::_Hex { .. } => None,
         Job::Import {
             path,
             configuration,
@@ -260,7 +260,7 @@ async fn run_job(job: Job) -> Option<JobResult> {
         Job::RemoveLoop {
             solution,
             loop_id,
-            force,
+            _force: _,
             configuration,
         } => {
             let mut candidate_solution = solution.clone();
@@ -372,7 +372,7 @@ async fn run_job(job: Job) -> Option<JobResult> {
                             .unwrap();
 
                         // let random = random_range(0. ..360.);
-                        for i in 0..n {
+                        for _ in 0..n {
                             if let Some(line) = lines.next() {
                                 // Lines are formatted either as:
                                 // - v INDEX_A
@@ -382,7 +382,7 @@ async fn run_job(job: Job) -> Option<JobResult> {
                                     ["v", index] => {
                                         let index: usize = index.parse::<usize>().unwrap() + 1;
                                         // get the position by using the vertex_map
-                                        if let Some(&vert_id) = vertex_map.key(index) {}
+                                        if let Some(&_) = vertex_map.key(index) {}
                                     }
                                     ["e", start, end, t_value] => {
                                         let start: usize = start.parse::<usize>().unwrap() + 1;
@@ -565,7 +565,7 @@ fn poll_jobs(
                     })));
                 }
 
-                Some(JobResult::Hexed(res)) => {
+                Some(JobResult::_Hexed(res)) => {
                     info!("Hexed completed: {:?}", res);
                     // TODO: insert into your resources
                 }
@@ -676,7 +676,7 @@ fn submit_jobs(mut ev_reader: MessageReader<JobRequest>, mut job_state: ResMut<J
             JobRequest::Run(job) => {
                 job_state.pending.push_back(job.clone());
             }
-            JobRequest::Cancel => {
+            JobRequest::_Cancel => {
                 job_state.pending.clear();
             }
         }
@@ -767,11 +767,11 @@ pub enum Job {
     RemoveLoop {
         solution: Solution,
         loop_id: LoopID,
-        force: bool,
+        _force: bool,
         configuration: Configuration,
     },
     // HEX MESHING
-    Hex {
+    _Hex {
         solution: Solution,
     },
     // PATH STRAIGTHENING
@@ -905,7 +905,7 @@ impl Job {
             Job::Import { .. } => JobType::Import,
             Job::Export { .. } => JobType::Export,
             Job::ExportNLR { .. } => JobType::ExportNLR,
-            Job::Hex { .. } => JobType::Hex,
+            Job::_Hex { .. } => JobType::Hex,
             Job::Evolve { .. } => JobType::Evolve,
             Job::Refresh { .. } => JobType::Refresh,
             Job::AddLoop { .. } => JobType::AddLoop,
@@ -942,7 +942,7 @@ enum JobResult {
     // For example after optimizing quad structure
     QuadChanged((Solution, Configuration)),
 
-    Hexed(PathBuf),
+    _Hexed(PathBuf),
     Refreshed(RenderObjectStore),
 
     AddedLoop((Vec<[EdgeID; 2]>, PrincipalDirection, Option<Solution>)),
@@ -960,5 +960,5 @@ pub struct JobState {
 #[derive(Message)]
 pub enum JobRequest {
     Run(Box<Job>),
-    Cancel,
+    _Cancel,
 }

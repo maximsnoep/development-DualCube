@@ -23,9 +23,9 @@ impl Export for Nlr {
         let path_xloops = path.with_extension("xloops.seg");
         let path_yloops = path.with_extension("yloops.seg");
         let path_zloops = path.with_extension("zloops.seg");
-        let path_xpatches = path.with_extension("xpatches.seg");
-        let path_ypatches = path.with_extension("ypatches.seg");
-        let path_zpatches = path.with_extension("zpatches.seg");
+        // let path_xpatches = path.with_extension("xpatches.seg");
+        // let path_ypatches = path.with_extension("ypatches.seg");
+        // let path_zpatches = path.with_extension("zpatches.seg");
 
         if let (Ok(dual), Some(layout), Some(polycube), Some(quad)) = (
             &solution.dual,

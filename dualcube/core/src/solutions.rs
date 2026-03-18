@@ -1061,7 +1061,7 @@ impl Solution {
         self.polycube = Some(polycube);
         self.dual = Ok(dual);
 
-        self.resize_polycube(unit);
+        let _ = self.resize_polycube(unit);
 
         log::info!(
             "The constructed solution has quality: {:?}",
