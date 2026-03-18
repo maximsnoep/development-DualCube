@@ -311,7 +311,9 @@ fn parameterize_side(
     let boundary_positions = map_boundary_to_polygon(&vfg, n_sides);
 
     // Solve the Dirichlet problem on the VFG graph.
-    let uv_map = solve_dirichlet(&vfg, &boundary_positions);
+    // TODO: reenable when this works
+    // let uv_map = solve_dirichlet(&vfg, &boundary_positions);
+    let uv_map = HashMap::new();
 
     (vfg, uv_map, cut_positions)
 }
