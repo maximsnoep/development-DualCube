@@ -390,7 +390,6 @@ pub fn update_render_settings(
                 | (Objects::Polycube, "flat paths")
                 | (Objects::PolycubeMap, "colored")
                 | (Objects::PolycubeMap, "triangles")
-                | (Objects::PolycubeMap, "cuts")
                 | (Objects::QuadMesh, "gray")
                 | (Objects::QuadMesh, "wireframe")
                 | (Objects::ContractedMesh, "gray")
@@ -883,7 +882,8 @@ pub fn refresh(solution: &Solution, configuration: &Configuration) -> RenderObje
                                 gizmos_cuts.linestrip(positions, cut_color);
                             }
                         }
-                        render_obj.gizmo(gizmos_cuts, 5.0, -0.001, "cuts");
+                        // Make cuts more visible by drawing them thicker and slightly above the surface.
+                        render_obj.gizmo(gizmos_cuts, 10.0, -0.01, "cuts");
                     }
 
                     render_object_store.add_object(object, render_obj);
@@ -917,22 +917,6 @@ pub fn refresh(solution: &Solution, configuration: &Configuration) -> RenderObje
                             -0.01,
                             "triangles",
                         );
-
-                    if let Some(pmap) = solution.skeleton.as_ref().and_then(|s| s.polycube_map()) {
-                        let mut gizmos_cuts = GizmoAsset::new();
-                        let cut_color = colors::to_bevy(colors::SNOEP_YELLOW);
-                        let (scale, translation) = quad.triangle_mesh_polycube.scale_translation();
-                        for region in pmap.regions.values() {
-                            for cut_path in &region.polycube_cuts {
-                                let positions: Vec<Vec3> = cut_path
-                                    .iter()
-                                    .map(|&p| world_to_view(p, translation, scale))
-                                    .collect();
-                                gizmos_cuts.linestrip(positions, cut_color);
-                            }
-                        }
-                        render_obj.gizmo(gizmos_cuts, 5.0, -0.001, "cuts");
-                    }
 
                     render_object_store.add_object(object, render_obj);
                 }
