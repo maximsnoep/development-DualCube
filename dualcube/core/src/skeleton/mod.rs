@@ -254,17 +254,17 @@ fn compute_polycube_map(
         polycube.is_some()
     );
     match (input_skeleton, polycube_skeleton, polycube) {
-        (Some(input_skel), Some(poly_skel), Some(poly)) => {
-            let polycube_mesh: Mesh<INPUT> = Mesh::convert(&poly.structure);
-            let pmap = cross_parameterize::cross_parameterize(
-                input_skel,
-                poly_skel,
-                input_mesh,
-                &polycube_mesh,
-            );
-            log::info!("compute_polycube_map: success, {} regions", pmap.regions.len());
-            Some(pmap)
-        }
+        // (Some(input_skel), Some(poly_skel), Some(poly)) => {
+        //     let polycube_mesh: Mesh<INPUT> = Mesh::convert(&poly.structure);
+        //     let pmap = cross_parameterize::cross_parameterize(
+        //         input_skel,
+        //         poly_skel,
+        //         input_mesh,
+        //         &polycube_mesh,
+        //     );
+        //     log::info!("compute_polycube_map: success, {} regions", pmap.regions.len());
+        //     Some(pmap)
+        // }
         _ => {
             log::warn!("compute_polycube_map: insufficient data");
             None
@@ -316,7 +316,7 @@ fn post_simplification_stage(
     cleaned_skeleton.refine_embeddings(&mesh);
 
     // Orthogonalize the curve skeleton
-    let labeled = greedy_orthogonalization(&*cleaned_skeleton);
+    let labeled = greedy_orthogonalization(&*cleaned_skeleton, &mesh);
     match &labeled {
         Some(_) => {
             info!("Orthogonalization successful.");
