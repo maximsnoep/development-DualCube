@@ -29,6 +29,7 @@ use dualcube::skeleton::cross_parameterize::virtual_mesh::VirtualNodeOrigin;
 use egui_dock::LeafNode;
 use enum_iterator::{all, Sequence};
 use itertools::Itertools;
+use mehsh::integrations::bevy::MeshBuilder;
 use mehsh::prelude::*;
 use std::collections::{HashMap, HashSet};
 use std::ops::Index;
@@ -385,6 +386,7 @@ pub fn update_render_settings(
                 | (Objects::InputMesh, "patches")
                 | (Objects::InputMesh, "cuts")
                 | (Objects::InputMesh, "virtual mesh debug")
+                | (Objects::InputMesh, "uv patches")
                 // | (Objects::Polycube, "gray")
                 | (Objects::Polycube, "patches")
                 | (Objects::Polycube, "cuts")
@@ -750,6 +752,254 @@ fn create_virtual_mesh_debug_gizmos(
     }
 
     (edge_gizmos, vertex_gizmos)
+}
+
+fn uv_to_color(uv: Vector2D, u_min: f64, u_range: f64, v_min: f64, v_range: f64) -> [f32; 3] {
+    let u = ((uv.x - u_min) / u_range).clamp(0.0, 1.0) as f32;
+    let v = ((uv.y - v_min) / v_range).clamp(0.0, 1.0) as f32;
+    [v, 0.0, u]
+}
+
+fn create_input_uv_patch_mesh(
+    solution: &Solution,
+    input: &mehsh::prelude::Mesh<INPUT>,
+) -> Option<bevy::mesh::Mesh> {
+    let pmap = solution.skeleton.as_ref().and_then(|s| s.polycube_map())?;
+    let cleaned = solution
+        .skeleton
+        .as_ref()
+        .and_then(|s| s.cleaned_skeleton())?;
+
+    let mut vertex_to_region: HashMap<VertID, usize> = HashMap::new();
+    for (compact_id, node_idx) in cleaned.node_indices().enumerate() {
+        for &vert_key in &cleaned[node_idx].patch_vertices {
+            vertex_to_region.insert(vert_key, compact_id);
+        }
+    }
+
+    let mut vert_uv_avg: HashMap<VertID, Vector2D> = HashMap::new();
+
+    for region in pmap.regions.values() {
+        for (&vert_id, vfg_nodes) in &region.input_vfg.vert_to_nodes {
+            let mut uv_sum = Vector2D::new(0.0, 0.0);
+            let mut uv_count = 0.0;
+            for &node in vfg_nodes {
+                if let Some(&uv) = region.input_uv.get(&node) {
+                    uv_sum += uv;
+                    uv_count += 1.0;
+                }
+            }
+            if uv_count > 0.0 {
+                vert_uv_avg.insert(vert_id, uv_sum / uv_count);
+            }
+        }
+    }
+
+    if vert_uv_avg.is_empty() {
+        return None;
+    }
+
+    let mut u_min = f64::INFINITY;
+    let mut u_max = f64::NEG_INFINITY;
+    let mut v_min = f64::INFINITY;
+    let mut v_max = f64::NEG_INFINITY;
+
+    for uv in vert_uv_avg.values() {
+        u_min = u_min.min(uv.x);
+        u_max = u_max.max(uv.x);
+        v_min = v_min.min(uv.y);
+        v_max = v_max.max(uv.y);
+    }
+
+    let u_range = (u_max - u_min).max(1e-12);
+    let v_range = (v_max - v_min).max(1e-12);
+
+    let (scale, translation) = input.scale_translation();
+
+    let mut builder = MeshBuilder::default();
+
+    let mut add_colored_triangle = |a: Vector3D,
+                                    b: Vector3D,
+                                    c: Vector3D,
+                                    normal: Vector3D,
+                                    uv_a: Vector2D,
+                                    uv_b: Vector2D,
+                                    uv_c: Vector2D,
+                                    a_is_real: bool,
+                                    b_is_real: bool,
+                                    c_is_real: bool| {
+        let mut uv_sum = Vector2D::new(0.0, 0.0);
+        let mut uv_count = 0.0;
+
+        if a_is_real {
+            uv_sum += uv_a;
+            uv_count += 1.0;
+        }
+        if b_is_real {
+            uv_sum += uv_b;
+            uv_count += 1.0;
+        }
+        if c_is_real {
+            uv_sum += uv_c;
+            uv_count += 1.0;
+        }
+
+        let color = if uv_count > 0.0 {
+            uv_to_color(uv_sum / uv_count, u_min, u_range, v_min, v_range)
+        } else {
+            colors::BLACK
+        };
+
+        for p in [a, b, c] {
+            let transformed_pos = p * scale + translation;
+            builder.add_vertex(&transformed_pos, &normal, &color);
+        }
+    };
+
+    let mut add_triangle_with_boundary_split = |a: (VertID, Vector3D),
+                                                b: (VertID, Vector3D),
+                                                c: (VertID, Vector3D),
+                                                normal: Vector3D| {
+        let (va, pa) = a;
+        let (vb, pb) = b;
+        let (vc, pc) = c;
+
+        let (Some(&ra), Some(&rb), Some(&rc)) = (
+            vertex_to_region.get(&va),
+            vertex_to_region.get(&vb),
+            vertex_to_region.get(&vc),
+        ) else {
+            return;
+        };
+
+        let (Some(&uv_a), Some(&uv_b), Some(&uv_c)) = (
+            vert_uv_avg.get(&va),
+            vert_uv_avg.get(&vb),
+            vert_uv_avg.get(&vc),
+        ) else {
+            return;
+        };
+
+        if ra == rb && rb == rc {
+            add_colored_triangle(
+                pa,
+                pb,
+                pc,
+                normal,
+                uv_a,
+                uv_b,
+                uv_c,
+                true,
+                true,
+                true,
+            );
+            return;
+        }
+
+        let mut split_two_plus_one = |pa: Vector3D,
+                                      pb: Vector3D,
+                                      pc: Vector3D,
+                                      uv_a: Vector2D,
+                                      uv_b: Vector2D,
+                                      uv_c: Vector2D| {
+            let p_ac = (pa + pc) * 0.5;
+            let p_bc = (pb + pc) * 0.5;
+            let uv_ac = (uv_a + uv_c) / 2.0;
+            let uv_bc = (uv_b + uv_c) / 2.0;
+
+            add_colored_triangle(
+                pa,
+                pb,
+                p_ac,
+                normal,
+                uv_a,
+                uv_b,
+                uv_ac,
+                true,
+                true,
+                false,
+            );
+            add_colored_triangle(
+                pb,
+                p_bc,
+                p_ac,
+                normal,
+                uv_b,
+                uv_bc,
+                uv_ac,
+                true,
+                false,
+                false,
+            );
+            add_colored_triangle(
+                p_ac,
+                p_bc,
+                pc,
+                normal,
+                uv_ac,
+                uv_bc,
+                uv_c,
+                false,
+                false,
+                true,
+            );
+        };
+
+        if ra == rb {
+            split_two_plus_one(pa, pb, pc, uv_a, uv_b, uv_c);
+        } else if rb == rc {
+            split_two_plus_one(pb, pc, pa, uv_b, uv_c, uv_a);
+        } else if ra == rc {
+            split_two_plus_one(pc, pa, pb, uv_c, uv_a, uv_b);
+        } else {
+            // Rare fallback: all three vertices assigned different regions.
+            add_colored_triangle(
+                pa,
+                pb,
+                pc,
+                normal,
+                uv_a,
+                uv_b,
+                uv_c,
+                true,
+                true,
+                true,
+            );
+        }
+    };
+
+    for face_id in input.face_ids() {
+        let normal = input.normal(face_id);
+        let verts: Vec<_> = input.vertices(face_id).collect();
+        match verts.as_slice() {
+            [v0, v1, v2] => {
+                add_triangle_with_boundary_split(
+                    (*v0, input.position(*v0)),
+                    (*v1, input.position(*v1)),
+                    (*v2, input.position(*v2)),
+                    normal,
+                );
+            }
+            [v0, v1, v2, v3] => {
+                // Triangulate quads and apply the same boundary-aware split logic.
+                add_triangle_with_boundary_split(
+                    (*v0, input.position(*v0)),
+                    (*v1, input.position(*v1)),
+                    (*v2, input.position(*v2)),
+                    normal,
+                );
+                add_triangle_with_boundary_split(
+                    (*v0, input.position(*v0)),
+                    (*v2, input.position(*v2)),
+                    (*v3, input.position(*v3)),
+                    normal,
+                );
+            }
+            _ => {}
+        }
+    }
+
+    Some(builder.build())
 }
 
 pub fn refresh(solution: &Solution, configuration: &Configuration) -> RenderObjectStore {
@@ -1589,6 +1839,10 @@ pub fn refresh(solution: &Solution, configuration: &Configuration) -> RenderObje
                             -0.0013,
                             "virtual mesh debug",
                         );
+                }
+
+                if let Some(uv_patch_mesh) = create_input_uv_patch_mesh(solution, input) {
+                    render_obj.bevy_mesh(uv_patch_mesh, "uv patches");
                 }
 
                 render_object_store.add_object(object, render_obj);
