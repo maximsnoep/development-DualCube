@@ -25,6 +25,7 @@ use bevy_orbit_camera::*;
 use bevy_toon::ToonMaterial;
 use core::f32;
 use dualcube::prelude::*;
+use dualcube::skeleton::cross_parameterize::virtual_mesh::VirtualNodeOrigin;
 use egui_dock::LeafNode;
 use enum_iterator::{all, Sequence};
 use itertools::Itertools;
@@ -383,13 +384,14 @@ pub fn update_render_settings(
             (Objects::InputMesh, "wireframe")
                 | (Objects::InputMesh, "patches")
                 | (Objects::InputMesh, "cuts")
+                | (Objects::InputMesh, "virtual mesh debug")
                 // | (Objects::Polycube, "gray")
                 | (Objects::Polycube, "patches")
                 | (Objects::Polycube, "cuts")
                 | (Objects::Polycube, "paths")
                 | (Objects::Polycube, "flat paths")
                 | (Objects::PolycubeMap, "colored")
-                | (Objects::PolycubeMap, "triangles")
+                | (Objects::PolycubeMap, "virtual mesh debug")
                 | (Objects::QuadMesh, "gray")
                 | (Objects::QuadMesh, "wireframe")
                 | (Objects::ContractedMesh, "gray")
@@ -620,6 +622,134 @@ pub fn update(
         )
         .normalize();
     }
+}
+
+fn create_virtual_mesh_debug_gizmos(
+    solution: &Solution,
+    translation: Vector3D,
+    scale: f64,
+    use_polycube_vfg: bool,
+) -> (GizmoAsset, GizmoAsset) {
+    let mut edge_gizmos = GizmoAsset::new();
+    let mut vertex_gizmos = GizmoAsset::new();
+
+    let Some(pmap) = solution.skeleton.as_ref().and_then(|s| s.polycube_map()) else {
+        return (edge_gizmos, vertex_gizmos);
+    };
+
+    let boundary_midpoint_color = bevy::prelude::Color::srgb(0.15, 0.85, 0.95);
+    let cut_vertex_color = bevy::prelude::Color::srgb(1.0, 0.45, 0.2);
+
+    let cut_cut_edge_color = bevy::prelude::Color::srgb(1.0, 0.2, 0.2);
+    let boundary_boundary_edge_color = bevy::prelude::Color::srgb(0.2, 0.8, 0.9);
+    let cut_boundary_edge_color = bevy::prelude::Color::srgb(1.0, 0.85, 0.2);
+
+    let duplicate_left_edge_color = bevy::prelude::Color::srgb(0.2, 1.0, 0.35);
+    let duplicate_right_edge_color = bevy::prelude::Color::srgb(0.9, 0.25, 1.0);
+
+    let vertex_radius = 0.12;
+
+    for region in pmap.regions.values() {
+        let vfg = if use_polycube_vfg {
+            &region.polycube_vfg
+        } else {
+            &region.input_vfg
+        };
+
+        let boundary_original_nodes: HashSet<_> = vfg
+            .graph
+            .node_indices()
+            .filter(|&node| {
+                matches!(vfg.graph[node].origin, VirtualNodeOrigin::MeshVertex(_))
+                    && vfg.graph.neighbors(node).any(|neighbor| {
+                        matches!(
+                            vfg.graph[neighbor].origin,
+                            VirtualNodeOrigin::BoundaryMidpoint { .. }
+                        )
+                    })
+            })
+            .collect();
+
+        for node in vfg.graph.node_indices() {
+            let pos = world_to_view(vfg.graph[node].position, translation, scale);
+            match vfg.graph[node].origin {
+                VirtualNodeOrigin::BoundaryMidpoint { .. } => {
+                    vertex_gizmos.sphere(
+                        Isometry3d::from_translation(pos),
+                        vertex_radius,
+                        boundary_midpoint_color,
+                    );
+                }
+                VirtualNodeOrigin::CutDuplicate { .. } => {
+                    vertex_gizmos.sphere(
+                        Isometry3d::from_translation(pos),
+                        vertex_radius,
+                        cut_vertex_color,
+                    );
+                }
+                _ => {}
+            }
+        }
+
+        for edge_idx in vfg.graph.edge_indices() {
+            let Some((a, b)) = vfg.graph.edge_endpoints(edge_idx) else {
+                continue;
+            };
+
+            let a_origin = &vfg.graph[a].origin;
+            let b_origin = &vfg.graph[b].origin;
+
+            let a_is_cut = matches!(a_origin, VirtualNodeOrigin::CutDuplicate { .. });
+            let b_is_cut = matches!(b_origin, VirtualNodeOrigin::CutDuplicate { .. });
+
+            let a_is_boundary_midpoint = matches!(a_origin, VirtualNodeOrigin::BoundaryMidpoint { .. });
+            let b_is_boundary_midpoint = matches!(b_origin, VirtualNodeOrigin::BoundaryMidpoint { .. });
+            let a_is_boundary_vertex = boundary_original_nodes.contains(&a);
+            let b_is_boundary_vertex = boundary_original_nodes.contains(&b);
+
+            let is_midpoint_neighbor_edge =
+                (a_is_boundary_midpoint && !b_is_boundary_midpoint)
+                    || (b_is_boundary_midpoint && !a_is_boundary_midpoint);
+
+            let edge_color = if a_is_cut && b_is_cut {
+                Some(cut_cut_edge_color)
+            } else if is_midpoint_neighbor_edge {
+                Some(boundary_boundary_edge_color)
+            } else if (a_is_cut && (b_is_boundary_midpoint || b_is_boundary_vertex))
+                || ((a_is_boundary_midpoint || a_is_boundary_vertex) && b_is_cut)
+            {
+                Some(cut_boundary_edge_color)
+            } else {
+                None
+            };
+
+            if let Some(color) = edge_color {
+                let pa = world_to_view(vfg.graph[a].position, translation, scale);
+                let pb = world_to_view(vfg.graph[b].position, translation, scale);
+                edge_gizmos.line(pa, pb, color);
+            }
+        }
+
+        for node in vfg.graph.node_indices() {
+            let VirtualNodeOrigin::CutDuplicate { side, .. } = vfg.graph[node].origin else {
+                continue;
+            };
+
+            let color = if side {
+                duplicate_right_edge_color
+            } else {
+                duplicate_left_edge_color
+            };
+
+            let from = world_to_view(vfg.graph[node].position, translation, scale);
+            for neighbor in vfg.graph.neighbors(node) {
+                let to = world_to_view(vfg.graph[neighbor].position, translation, scale);
+                edge_gizmos.line(from, to, color);
+            }
+        }
+    }
+
+    (edge_gizmos, vertex_gizmos)
 }
 
 pub fn refresh(solution: &Solution, configuration: &Configuration) -> RenderObjectStore {
@@ -897,12 +1027,15 @@ pub fn refresh(solution: &Solution, configuration: &Configuration) -> RenderObje
             Objects::PolycubeMap => {
                 if let Some(quad) = &solution.quad {
                     let mut color_map = HashMap::new();
+                    let (scale, translation) = quad.quad_mesh_polycube.scale_translation();
                     for face_id in quad.quad_mesh_polycube.face_ids() {
                         let color = colors::LIGHT_GRAY;
                         color_map.insert(face_id, color);
                     }
 
                     let mut render_obj = RenderObject::default();
+                    let (virtual_mesh_edge_gizmos, virtual_mesh_vertex_gizmos) =
+                        create_virtual_mesh_debug_gizmos(solution, translation, scale, true);
                     render_obj
                         .mesh(&quad.quad_mesh_polycube, &color_map, "colored")
                         .gizmo(
@@ -916,6 +1049,18 @@ pub fn refresh(solution: &Solution, configuration: &Configuration) -> RenderObje
                             2.,
                             -0.01,
                             "triangles",
+                        )
+                        .gizmo(
+                            virtual_mesh_edge_gizmos,
+                            3.,
+                            -0.0102,
+                            "virtual mesh debug",
+                        )
+                        .gizmo(
+                            virtual_mesh_vertex_gizmos,
+                            1.,
+                            -0.0103,
+                            "virtual mesh debug",
                         );
 
                     render_object_store.add_object(object, render_obj);
@@ -1428,6 +1573,22 @@ pub fn refresh(solution: &Solution, configuration: &Configuration) -> RenderObje
                         }
                     }
                     render_obj.gizmo(gizmos_cuts, 5.0, -0.001, "cuts");
+
+                    let (virtual_mesh_edge_gizmos, virtual_mesh_vertex_gizmos) =
+                        create_virtual_mesh_debug_gizmos(solution, translation, scale, false);
+                    render_obj
+                        .gizmo(
+                            virtual_mesh_edge_gizmos,
+                            2.0,
+                            -0.0012,
+                            "virtual mesh debug",
+                        )
+                        .gizmo(
+                            virtual_mesh_vertex_gizmos,
+                            1.0,
+                            -0.0013,
+                            "virtual mesh debug",
+                        );
                 }
 
                 render_object_store.add_object(object, render_obj);
