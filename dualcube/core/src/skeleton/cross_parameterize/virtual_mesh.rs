@@ -1031,5 +1031,67 @@ fn check_invariants(vfg: &VirtualFlatGeometry) {
         n_nodes,
     );
 
-    // TODO: duplicated nodes do not share neighbor vertices?
+    // 9. Cut duplicate pairs have disjoint VFG neighbor sets.
+    //    Exception: cut-endpoint boundary midpoints connect to BOTH copies by design.
+    for node in vfg.graph.node_indices() {
+        if let VirtualNodeOrigin::CutDuplicate {
+            peer: Some(peer),
+            side: false, // only check from the left copy to avoid double-checking
+            ..
+        } = vfg.graph[node].origin
+        {
+            let nbrs_left: HashSet<NodeIndex> = vfg.graph.neighbors(node).collect();
+            let nbrs_right: HashSet<NodeIndex> = vfg.graph.neighbors(peer).collect();
+            let shared: Vec<NodeIndex> = nbrs_left.intersection(&nbrs_right).copied().collect();
+            for &s in &shared {
+                // Shared neighbors are only allowed if they are cut-endpoint midpoints.
+                assert!(
+                    matches!(
+                        vfg.graph[s].origin,
+                        VirtualNodeOrigin::BoundaryMidpoint { .. }
+                    ),
+                    "Cut duplicates {:?} and {:?} share non-midpoint neighbor {:?} ({:?})",
+                    node,
+                    peer,
+                    s,
+                    vfg.graph[s].origin,
+                );
+            }
+        }
+    }
+
+    // 10. No parallel edges (multi-edges between the same pair of nodes).
+    {
+        let mut edge_set: HashSet<(usize, usize)> = HashSet::new();
+        for node in vfg.graph.node_indices() {
+            for edge in vfg.graph.edges(node) {
+                let a = edge.source().index();
+                let b = edge.target().index();
+                let key = if a < b { (a, b) } else { (b, a) };
+                // Each undirected edge appears twice (once from each endpoint),
+                // so we only insert from the smaller side.
+                if a <= b {
+                    assert!(
+                        edge_set.insert(key),
+                        "VFG has parallel edges between nodes {} and {}",
+                        key.0,
+                        key.1,
+                    );
+                }
+            }
+        }
+    }
+
+    // 11. Planarity necessary condition: E ≤ 3V − 6 for simple planar graphs (V ≥ 3).
+    let n_edges = vfg.graph.edge_count();
+    if n_nodes >= 3 {
+        assert!(
+            n_edges <= 3 * n_nodes - 6,
+            "VFG edge count {} exceeds planar bound 3V-6 = {} (V={}). \
+             The graph cannot be planar.",
+            n_edges,
+            3 * n_nodes - 6,
+            n_nodes,
+        );
+    }
 }
