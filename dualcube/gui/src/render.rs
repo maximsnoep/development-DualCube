@@ -393,7 +393,6 @@ pub fn update_render_settings(
                 | (Objects::Polycube, "paths")
                 | (Objects::Polycube, "flat paths")
                 | (Objects::PolycubeMap, "colored")
-                | (Objects::PolycubeMap, "virtual mesh debug")
                 | (Objects::QuadMesh, "gray")
                 | (Objects::QuadMesh, "wireframe")
                 | (Objects::ContractedMesh, "gray")
