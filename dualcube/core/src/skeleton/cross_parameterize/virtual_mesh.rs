@@ -42,6 +42,22 @@ pub enum VirtualNodeOrigin {
         /// to the left of the cut direction start→end), `true` = right.
         side: bool,
     },
+
+    /// A boundary midpoint that sits at the attachment point of a cut.
+    /// Like `CutDuplicate`, it is duplicated: each side of the cut gets its own
+    /// copy so that they can receive distinct UV positions.
+    CutEndpointMidpoint {
+        /// The boundary edge whose midpoint this is.
+        edge: EdgeID,
+        /// The skeleton edge (boundary loop) this belongs to.
+        boundary: EdgeIndex,
+        /// The other copy of this midpoint.
+        peer: Option<NodeIndex>,
+        /// Which cut this is an endpoint of.
+        cut_index: usize,
+        /// Which side of the cut: `false` = left, `true` = right.
+        side: bool,
+    },
 }
 
 /// Weight on virtual-mesh edges. Currently stores the Euclidean length so that
@@ -250,21 +266,65 @@ impl VirtualFlatGeometry {
         }
 
         // 3c. Boundary midpoint nodes.
+        // Regular midpoints get a single node. Cut-endpoint midpoints get duplicated
+        // (one per side of the cut), just like cut vertices, because the boundary loop
+        // visits them from both sides of the cut and they need distinct UV positions.
         let mut midpoint_nodes: HashMap<EdgeID, NodeIndex> = HashMap::new();
+        let mut cut_mid_duplicates: HashMap<EdgeID, (NodeIndex, NodeIndex)> = HashMap::new();
         for edge_ref in skeleton.edges(node_idx) {
             let skel_edge = edge_ref.id();
             for &be in &edge_ref.weight().boundary_loop.edge_midpoints {
                 let p0 = mesh.position(mesh.root(be));
                 let p1 = mesh.position(mesh.toor(be));
                 let pos = (p0 + p1) * 0.5;
-                let ni = graph.add_node(VirtualNode {
-                    position: pos,
-                    origin: VirtualNodeOrigin::BoundaryMidpoint {
-                        edge: be,
-                        boundary: skel_edge,
-                    },
-                });
-                midpoint_nodes.insert(be, ni);
+
+                if let Some(&(ci, _is_start)) = cut_endpoint_midpoints.get(&be) {
+                    // Cut-endpoint midpoint: create two copies.
+                    let left = graph.add_node(VirtualNode {
+                        position: pos,
+                        origin: VirtualNodeOrigin::CutEndpointMidpoint {
+                            edge: be,
+                            boundary: skel_edge,
+                            peer: None,
+                            cut_index: ci,
+                            side: false,
+                        },
+                    });
+                    let right = graph.add_node(VirtualNode {
+                        position: pos,
+                        origin: VirtualNodeOrigin::CutEndpointMidpoint {
+                            edge: be,
+                            boundary: skel_edge,
+                            peer: None,
+                            cut_index: ci,
+                            side: true,
+                        },
+                    });
+                    // Set peer pointers.
+                    if let VirtualNodeOrigin::CutEndpointMidpoint {
+                        ref mut peer, ..
+                    } = graph[left].origin
+                    {
+                        *peer = Some(right);
+                    }
+                    if let VirtualNodeOrigin::CutEndpointMidpoint {
+                        ref mut peer, ..
+                    } = graph[right].origin
+                    {
+                        *peer = Some(left);
+                    }
+                    cut_mid_duplicates.insert(be, (left, right));
+                } else {
+                    // Regular midpoint: single node.
+                    let ni = graph.add_node(VirtualNode {
+                        position: pos,
+                        origin: VirtualNodeOrigin::BoundaryMidpoint {
+                            edge: be,
+                            boundary: skel_edge,
+                        },
+                    });
+                    midpoint_nodes.insert(be, ni);
+                }
             }
         }
 
@@ -345,32 +405,41 @@ impl VirtualFlatGeometry {
 
         // 4b. Boundary midpoint edges.
         // Each boundary midpoint connects to the patch vertex(es) of its edge.
+        // Cut-endpoint midpoints connect each copy to only the matching side of
+        // the adjacent cut vertex.
         for edge_ref in skeleton.edges(node_idx) {
             let boundary = &edge_ref.weight().boundary_loop;
             for &be in &boundary.edge_midpoints {
-                let mid_node = midpoint_nodes[&be];
                 let root = mesh.root(be);
                 let toor = mesh.toor(be);
 
-                // Connect to whichever endpoint(s) are in the patch.
-                for &v in &[root, toor] {
-                    if !patch_set.contains(&v) {
-                        continue;
-                    }
-                    if cut_vertex_set.contains(&v) {
-                        // Is this midpoint the cut's own start/end midpoint?
-                        if let Some(&(ci, is_start)) = cut_endpoint_midpoints.get(&be) {
-                            // This midpoint IS where the cut attaches to the boundary.
-                            // It connects to BOTH copies of the cut endpoint vertex.
-                            let (left, right) = cut_duplicates[&v];
-                            add_edge(&mut graph, mid_node, left);
-                            add_edge(&mut graph, mid_node, right);
-                            let _ = (ci, is_start); // used only to identify
+                if let Some(&(mid_left, mid_right)) = cut_mid_duplicates.get(&be) {
+                    // Cut-endpoint midpoint: each copy connects to one side only.
+                    for &v in &[root, toor] {
+                        if !patch_set.contains(&v) {
+                            continue;
+                        }
+                        if cut_vertex_set.contains(&v) {
+                            let (v_left, v_right) = cut_duplicates[&v];
+                            add_edge(&mut graph, mid_left, v_left);
+                            add_edge(&mut graph, mid_right, v_right);
                         } else {
-                            // Regular boundary midpoint adjacent to a cut vertex.
-                            // Connect to the appropriate side based on fan assignment.
-                            // The half-edge from v toward the other endpoint of be
-                            // determines which side.
+                            // Non-cut patch vertex: both copies connect to it.
+                            // (This shouldn't normally happen — cut endpoints are
+                            // adjacent to the first/last cut vertex.)
+                            add_edge(&mut graph, mid_left, vert_to_nodes[&v][0]);
+                            add_edge(&mut graph, mid_right, vert_to_nodes[&v][0]);
+                        }
+                    }
+                } else {
+                    // Regular midpoint: single node.
+                    let mid_node = midpoint_nodes[&be];
+                    for &v in &[root, toor] {
+                        if !patch_set.contains(&v) {
+                            continue;
+                        }
+                        if cut_vertex_set.contains(&v) {
+                            // Regular midpoint adjacent to a cut vertex.
                             let other = if root == v { toor } else { root };
                             let side =
                                 side_of_non_patch_neighbor(v, other, &cut_side_assignments, mesh);
@@ -380,24 +449,32 @@ impl VirtualFlatGeometry {
                                 cut_duplicates[&v].0
                             };
                             add_edge(&mut graph, mid_node, node);
+                        } else {
+                            add_edge(&mut graph, mid_node, vert_to_nodes[&v][0]);
                         }
-                    } else {
-                        add_edge(&mut graph, mid_node, vert_to_nodes[&v][0]);
                     }
                 }
             }
         }
 
         // 4c. Direct edges between consecutive boundary midpoints.
-        // These ensure the boundary loop can always chain through midpoints
-        // without requiring a shared patch vertex between every pair.
+        // Skip pairs where either midpoint is a cut-endpoint (those will be
+        // connected via Phase 5b after the boundary loop is traced).
         for edge_ref in skeleton.edges(node_idx) {
             let boundary = &edge_ref.weight().boundary_loop;
             let edges = &boundary.edge_midpoints;
             let n = edges.len();
             for i in 0..n {
-                let a = midpoint_nodes[&edges[i]];
-                let b = midpoint_nodes[&edges[(i + 1) % n]];
+                let e_a = edges[i];
+                let e_b = edges[(i + 1) % n];
+                // Skip if either is a cut-endpoint midpoint.
+                if cut_mid_duplicates.contains_key(&e_a)
+                    || cut_mid_duplicates.contains_key(&e_b)
+                {
+                    continue;
+                }
+                let a = midpoint_nodes[&e_a];
+                let b = midpoint_nodes[&e_b];
                 add_edge(&mut graph, a, b);
             }
         }
@@ -411,8 +488,32 @@ impl VirtualFlatGeometry {
             &cut_vertex_paths,
             &cut_duplicates,
             &midpoint_nodes,
+            &cut_mid_duplicates,
             &cut_endpoint_midpoints,
         );
+
+        // 5b. Ensure consecutive boundary loop nodes have edges between them.
+        // This is essential for cut-endpoint midpoint duplicates, which were
+        // skipped by Phase 4c. It also catches any other missing boundary edges.
+        {
+            let bl = &boundary_loop;
+            let n = bl.len();
+            for i in 0..n {
+                let a = bl[i];
+                let b = bl[(i + 1) % n];
+                let already_connected = graph.edges(a).any(|e| {
+                    let other = if e.source() == a {
+                        e.target()
+                    } else {
+                        e.source()
+                    };
+                    other == b
+                });
+                if !already_connected {
+                    add_edge(&mut graph, a, b);
+                }
+            }
+        }
 
         let vfg = VirtualFlatGeometry {
             graph,
@@ -662,6 +763,7 @@ fn trace_boundary_loop(
     cut_vertex_paths: &[Vec<VertID>],
     cut_duplicates: &HashMap<VertID, (NodeIndex, NodeIndex)>,
     midpoint_nodes: &HashMap<EdgeID, NodeIndex>,
+    cut_mid_duplicates: &HashMap<EdgeID, (NodeIndex, NodeIndex)>,
     cut_endpoint_midpoints: &HashMap<EdgeID, (usize, bool)>,
 ) -> Vec<NodeIndex> {
     if cutting_plan.cuts.is_empty() {
@@ -707,6 +809,7 @@ fn trace_boundary_loop(
         cut_vertex_paths,
         cut_duplicates,
         midpoint_nodes,
+        cut_mid_duplicates,
         cut_endpoint_midpoints,
         &tree_adj,
         &mut visited,
@@ -716,9 +819,24 @@ fn trace_boundary_loop(
     result
 }
 
+/// An entry in the boundary chain: either a regular midpoint (single node) or
+/// a cut-endpoint midpoint (duplicated into left/right copies).
+enum ChainEntry {
+    /// A regular boundary midpoint — single VFG node.
+    Regular(NodeIndex),
+    /// A cut-endpoint midpoint — two VFG nodes (left, right) plus cut info.
+    CutEndpoint {
+        left: NodeIndex,
+        right: NodeIndex,
+        cut_index: usize,
+        is_start: bool,
+    },
+}
+
 /// DFS on cut spanning tree. At each boundary loop, walks the boundary chain,
 /// and at each cut endpoint midpoint that leads to an unvisited boundary,
-/// splices in: left cut path → recurse into other boundary → right cut path (reversed).
+/// splices in:
+///   M_left → left cut path → M2_left → [recurse] → M2_right → right cut path → M_right
 #[allow(clippy::too_many_arguments)]
 fn dfs_trace_boundary(
     boundary_idx: EdgeIndex,
@@ -728,6 +846,7 @@ fn dfs_trace_boundary(
     cut_vertex_paths: &[Vec<VertID>],
     cut_duplicates: &HashMap<VertID, (NodeIndex, NodeIndex)>,
     midpoint_nodes: &HashMap<EdgeID, NodeIndex>,
+    cut_mid_duplicates: &HashMap<EdgeID, (NodeIndex, NodeIndex)>,
     cut_endpoint_midpoints: &HashMap<EdgeID, (usize, bool)>,
     tree_adj: &HashMap<EdgeIndex, Vec<(usize, EdgeIndex)>>,
     visited: &mut HashSet<EdgeIndex>,
@@ -740,125 +859,163 @@ fn dfs_trace_boundary(
         .expect("skeleton edge missing")
         .boundary_loop;
 
-    // Build the boundary chain: ordered list of (VFG_node, Option<cut to splice>).
-    let chain = build_boundary_chain_with_cuts(boundary, midpoint_nodes, cut_endpoint_midpoints);
+    let chain = build_boundary_chain_with_cuts(
+        boundary,
+        midpoint_nodes,
+        cut_mid_duplicates,
+        cut_endpoint_midpoints,
+    );
 
-    // Determine where in the chain to start. If we entered via a cut, start
-    // right after that cut's midpoint on this boundary.
-    let start_pos = if let Some((entry_ci, entered_via_start)) = entry_cut {
-        let cut = &cutting_plan.cuts[entry_ci];
-        let entry_midpoint_edge = if entered_via_start {
-            // We entered via the start of the cut, so on this boundary the
-            // cut's start midpoint is where we arrived.
-            match cut.path.points[0] {
-                SurfacePoint::OnEdge { edge, .. } => edge,
-                _ => unreachable!(),
-            }
-        } else {
-            match *cut.path.points.last().unwrap() {
-                SurfacePoint::OnEdge { edge, .. } => edge,
-                _ => unreachable!(),
-            }
-        };
-        let entry_mid_node = midpoint_nodes[&entry_midpoint_edge];
-        // Find this node in the chain and start AFTER it.
-        chain
+    // Determine where in the chain to start and how many nodes to walk.
+    // If we entered via a cut, start AFTER the entry midpoint and walk n-1
+    // nodes (the entry midpoint is handled by the parent caller).
+    let (start_pos, walk_count) = if let Some((entry_ci, entered_via_start)) = entry_cut {
+        // Find the entry midpoint in the chain.
+        let entry_pos = chain
             .iter()
-            .position(|(n, _)| *n == entry_mid_node)
-            .map(|p| (p + 1) % chain.len())
-            .unwrap_or(0)
+            .position(|entry| match entry {
+                ChainEntry::CutEndpoint { cut_index, is_start, .. } => {
+                    *cut_index == entry_ci && *is_start == entered_via_start
+                }
+                _ => false,
+            })
+            .expect("entry cut-endpoint midpoint not found in chain");
+        // Start AFTER it, walk n-1 nodes (skip the entry midpoint itself).
+        ((entry_pos + 1) % chain.len(), chain.len() - 1)
     } else {
-        0
+        (0, chain.len())
     };
 
     let n = chain.len();
-    for step in 0..n {
+    for step in 0..walk_count {
         let idx = (start_pos + step) % n;
-        let (vfg_node, ref cut_info) = chain[idx];
+        let chain_entry = &chain[idx];
 
-        // Check if this node is a cut endpoint midpoint leading to an unvisited boundary.
-        if let Some(&(ci, is_start)) = cut_info.as_ref() {
-            let cut = &cutting_plan.cuts[ci];
-            let other_boundary = if is_start {
-                cut.end_boundary
-            } else {
-                cut.start_boundary
-            };
-
-            if !visited.contains(&other_boundary) {
-                // Splice: emit left-side cut nodes → recurse → emit right-side (reversed).
-                let vpath = &cut_vertex_paths[ci];
-
-                // Left side: from this boundary toward the other.
-                if is_start {
-                    // Cut goes start → end. Left side forward.
-                    result.push(vfg_node); // the midpoint
-                    for &cv in vpath {
-                        result.push(cut_duplicates[&cv].0); // left
-                    }
+        match chain_entry {
+            ChainEntry::Regular(vfg_node) => {
+                result.push(*vfg_node);
+            }
+            ChainEntry::CutEndpoint {
+                left,
+                right,
+                cut_index: ci,
+                is_start,
+            } => {
+                let cut = &cutting_plan.cuts[*ci];
+                let other_boundary = if *is_start {
+                    cut.end_boundary
                 } else {
-                    // Cut goes start → end, but we are at the end boundary.
-                    // Left side goes end → start (reversed direction).
-                    result.push(vfg_node); // the midpoint
-                    for &cv in vpath.iter().rev() {
-                        result.push(cut_duplicates[&cv].0); // left
-                    }
-                }
+                    cut.start_boundary
+                };
 
-                // Recurse into the other boundary.
-                let entered_via = (ci, !is_start);
-                dfs_trace_boundary(
-                    other_boundary,
-                    Some(entered_via),
-                    skeleton,
-                    cutting_plan,
-                    cut_vertex_paths,
-                    cut_duplicates,
-                    midpoint_nodes,
-                    cut_endpoint_midpoints,
-                    tree_adj,
-                    visited,
-                    result,
-                );
+                if !visited.contains(&other_boundary) {
+                    // Splice: M_left → left cut vertices → M2_left →
+                    //         [recurse boundary B] →
+                    //         M2_right → right cut vertices → M_right
+                    let vpath = &cut_vertex_paths[*ci];
 
-                // Right side: return from the other boundary (reversed).
-                if is_start {
-                    for &cv in vpath.iter().rev() {
-                        result.push(cut_duplicates[&cv].1); // right
+                    // Determine which midpoint is on the other boundary.
+                    let other_mid_edge = if *is_start {
+                        match *cut.path.points.last().unwrap() {
+                            SurfacePoint::OnEdge { edge, .. } => edge,
+                            _ => unreachable!(),
+                        }
+                    } else {
+                        match cut.path.points[0] {
+                            SurfacePoint::OnEdge { edge, .. } => edge,
+                            _ => unreachable!(),
+                        }
+                    };
+                    let (other_mid_left, other_mid_right) = cut_mid_duplicates[&other_mid_edge];
+
+                    // Emit M_left on this boundary.
+                    result.push(*left);
+
+                    // Left-side cut vertices.
+                    if *is_start {
+                        for &cv in vpath {
+                            result.push(cut_duplicates[&cv].0);
+                        }
+                    } else {
+                        for &cv in vpath.iter().rev() {
+                            result.push(cut_duplicates[&cv].0);
+                        }
                     }
+
+                    // Emit M2_left (arrival at other boundary).
+                    result.push(other_mid_left);
+
+                    // Recurse into the other boundary (walks n-1 of its nodes,
+                    // skipping the entry midpoint which we just emitted).
+                    let entered_via = (*ci, !*is_start);
+                    dfs_trace_boundary(
+                        other_boundary,
+                        Some(entered_via),
+                        skeleton,
+                        cutting_plan,
+                        cut_vertex_paths,
+                        cut_duplicates,
+                        midpoint_nodes,
+                        cut_mid_duplicates,
+                        cut_endpoint_midpoints,
+                        tree_adj,
+                        visited,
+                        result,
+                    );
+
+                    // Emit M2_right (departure from other boundary).
+                    result.push(other_mid_right);
+
+                    // Right-side cut vertices (reversed).
+                    if *is_start {
+                        for &cv in vpath.iter().rev() {
+                            result.push(cut_duplicates[&cv].1);
+                        }
+                    } else {
+                        for &cv in vpath {
+                            result.push(cut_duplicates[&cv].1);
+                        }
+                    }
+
+                    // Emit M_right on this boundary.
+                    result.push(*right);
                 } else {
-                    for &cv in vpath {
-                        result.push(cut_duplicates[&cv].1); // right
-                    }
+                    // Cut endpoint leading to an already-visited boundary.
+                    // Both copies sit on the boundary at the same spot — emit them
+                    // consecutively so they both appear in the loop.
+                    // (Topologically, both sides of the cut are exposed but the
+                    // other boundary has already been visited, so no splice.)
+                    result.push(*left);
+                    result.push(*right);
                 }
-                // Do NOT re-emit vfg_node (the midpoint) — it was already emitted above.
-                continue;
             }
         }
-
-        // Regular boundary node (or a cut endpoint leading to an already-visited boundary).
-        result.push(vfg_node);
     }
 }
 
-/// Builds an ordered chain of VFG nodes along a boundary loop, annotating
-/// each node with an optional cut splice point.
-///
-/// Returns Vec of (VFG NodeIndex, Option<(cut_index, is_start)>).
-/// Only the boundary midpoint at a cut endpoint gets the annotation.
-#[allow(clippy::too_many_arguments)]
+/// Builds an ordered chain of `ChainEntry` items along a boundary loop.
+/// Cut-endpoint midpoints carry both copies; regular midpoints carry one node.
 fn build_boundary_chain_with_cuts(
     boundary: &BoundaryLoop,
     midpoint_nodes: &HashMap<EdgeID, NodeIndex>,
+    cut_mid_duplicates: &HashMap<EdgeID, (NodeIndex, NodeIndex)>,
     cut_endpoint_midpoints: &HashMap<EdgeID, (usize, bool)>,
-) -> Vec<(NodeIndex, Option<(usize, bool)>)> {
+) -> Vec<ChainEntry> {
     boundary
         .edge_midpoints
         .iter()
         .map(|be| {
-            let mid_node = midpoint_nodes[be];
-            let cut_info = cut_endpoint_midpoints.get(be).copied();
-            (mid_node, cut_info)
+            if let Some(&(ci, is_start)) = cut_endpoint_midpoints.get(be) {
+                let (left, right) = cut_mid_duplicates[be];
+                ChainEntry::CutEndpoint {
+                    left,
+                    right,
+                    cut_index: ci,
+                    is_start,
+                }
+            } else {
+                ChainEntry::Regular(midpoint_nodes[be])
+            }
         })
         .collect()
 }
@@ -955,34 +1112,41 @@ fn check_invariants(vfg: &VirtualFlatGeometry) {
     // 5. Every node in the graph is either in the boundary or has degree >= 3.
     //    (Covered by check 4.)
 
-    // 6. Cut duplicate pairs have matching peers.
+    // 6. All duplicated pairs (CutDuplicate and CutEndpointMidpoint) have matching peers.
     for node in vfg.graph.node_indices() {
-        if let VirtualNodeOrigin::CutDuplicate {
-            peer: Some(peer), ..
-        } = vfg.graph[node].origin
-        {
+        let peer_opt = match vfg.graph[node].origin {
+            VirtualNodeOrigin::CutDuplicate {
+                peer: Some(peer), ..
+            } => Some(peer),
+            VirtualNodeOrigin::CutEndpointMidpoint {
+                peer: Some(peer), ..
+            } => Some(peer),
+            _ => None,
+        };
+        if let Some(peer) = peer_opt {
             assert!(
                 vfg.graph.node_weight(peer).is_some(),
-                "Cut duplicate {:?} has peer {:?} that doesn't exist",
+                "Duplicate {:?} has peer {:?} that doesn't exist",
                 node,
                 peer,
             );
-            if let VirtualNodeOrigin::CutDuplicate {
-                peer: Some(peer_of_peer),
-                ..
-            } = vfg.graph[peer].origin
-            {
-                assert_eq!(
-                    peer_of_peer, node,
-                    "Cut duplicate peer mismatch: {:?} -> {:?} -> {:?}",
-                    node, peer, peer_of_peer,
-                );
-            } else {
-                panic!(
-                    "Peer {:?} of cut duplicate {:?} is not a CutDuplicate",
-                    peer, node
-                );
-            }
+            let peer_of_peer = match vfg.graph[peer].origin {
+                VirtualNodeOrigin::CutDuplicate {
+                    peer: Some(p), ..
+                } => Some(p),
+                VirtualNodeOrigin::CutEndpointMidpoint {
+                    peer: Some(p), ..
+                } => Some(p),
+                _ => None,
+            };
+            assert_eq!(
+                peer_of_peer,
+                Some(node),
+                "Duplicate peer mismatch: {:?} -> {:?} -> {:?}",
+                node,
+                peer,
+                peer_of_peer,
+            );
         }
     }
 
@@ -1005,7 +1169,7 @@ fn check_invariants(vfg: &VirtualFlatGeometry) {
         }
     }
 
-    // 8. All graph nodes are accounted for in vert_to_nodes or midpoint_nodes.
+    // 8. All graph nodes are accounted for in vert_to_nodes, midpoints, or cut-endpoint midpoints.
     let tracked_nodes: HashSet<NodeIndex> = vfg
         .vert_to_nodes
         .values()
@@ -1021,43 +1185,68 @@ fn check_invariants(vfg: &VirtualFlatGeometry) {
             )
         })
         .count();
+    let cut_endpoint_mid_count = vfg
+        .graph
+        .node_indices()
+        .filter(|n| {
+            matches!(
+                vfg.graph[*n].origin,
+                VirtualNodeOrigin::CutEndpointMidpoint { .. }
+            )
+        })
+        .count();
     let vertex_node_count = tracked_nodes.len();
     assert_eq!(
-        vertex_node_count + midpoint_count,
+        vertex_node_count + midpoint_count + cut_endpoint_mid_count,
         n_nodes,
-        "Node accounting mismatch: {} vertex nodes + {} midpoint nodes != {} total",
+        "Node accounting mismatch: {} vertex + {} midpoint + {} cut-endpoint-midpoint != {} total",
         vertex_node_count,
         midpoint_count,
+        cut_endpoint_mid_count,
         n_nodes,
     );
 
-    // 9. Cut duplicate pairs have disjoint VFG neighbor sets.
-    //    Exception: cut-endpoint boundary midpoints connect to BOTH copies by design.
+    // 9. All duplicated pairs (CutDuplicate and CutEndpointMidpoint) have
+    //    fully disjoint VFG neighbor sets.
     for node in vfg.graph.node_indices() {
-        if let VirtualNodeOrigin::CutDuplicate {
-            peer: Some(peer),
-            side: false, // only check from the left copy to avoid double-checking
-            ..
-        } = vfg.graph[node].origin
-        {
-            let nbrs_left: HashSet<NodeIndex> = vfg.graph.neighbors(node).collect();
-            let nbrs_right: HashSet<NodeIndex> = vfg.graph.neighbors(peer).collect();
-            let shared: Vec<NodeIndex> = nbrs_left.intersection(&nbrs_right).copied().collect();
-            for &s in &shared {
-                // Shared neighbors are only allowed if they are cut-endpoint midpoints.
-                assert!(
-                    matches!(
-                        vfg.graph[s].origin,
-                        VirtualNodeOrigin::BoundaryMidpoint { .. }
-                    ),
-                    "Cut duplicates {:?} and {:?} share non-midpoint neighbor {:?} ({:?})",
-                    node,
-                    peer,
-                    s,
-                    vfg.graph[s].origin,
-                );
-            }
+        let is_left_copy = match vfg.graph[node].origin {
+            VirtualNodeOrigin::CutDuplicate {
+                side: false,
+                peer: Some(_),
+                ..
+            } => true,
+            VirtualNodeOrigin::CutEndpointMidpoint {
+                side: false,
+                peer: Some(_),
+                ..
+            } => true,
+            _ => false,
+        };
+        if !is_left_copy {
+            continue;
         }
+        let peer = match vfg.graph[node].origin {
+            VirtualNodeOrigin::CutDuplicate {
+                peer: Some(p), ..
+            } => p,
+            VirtualNodeOrigin::CutEndpointMidpoint {
+                peer: Some(p), ..
+            } => p,
+            _ => unreachable!(),
+        };
+        let nbrs_left: HashSet<NodeIndex> = vfg.graph.neighbors(node).collect();
+        let nbrs_right: HashSet<NodeIndex> = vfg.graph.neighbors(peer).collect();
+        let shared: Vec<NodeIndex> = nbrs_left.intersection(&nbrs_right).copied().collect();
+        assert!(
+            shared.is_empty(),
+            "Duplicated pair {:?} and {:?} share neighbors: {:?}",
+            node,
+            peer,
+            shared
+                .iter()
+                .map(|&s| format!("{:?} ({:?})", s, vfg.graph[s].origin))
+                .collect::<Vec<_>>(),
+        );
     }
 
     // 10. No parallel edges (multi-edges between the same pair of nodes).
