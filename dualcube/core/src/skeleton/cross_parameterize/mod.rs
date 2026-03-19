@@ -1,13 +1,15 @@
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::f64::consts::PI;
 
 use log::warn;
-use mehsh::prelude::{HasPosition, Mesh, Vector2D, Vector3D};
+use mehsh::prelude::{HasPosition, Mesh, SetPosition, Vector2D, Vector3D};
 
 use petgraph::graph::{EdgeIndex, NodeIndex};
+use petgraph::visit::IntoEdgeReferences;
 use serde::{Deserialize, Serialize};
 
 use crate::prelude::{EdgeID, VertID, INPUT};
+use crate::skeleton::cross_parameterize::harmonic::solve_dirichlet;
 use crate::skeleton::orthogonalize::LabeledCurveSkeleton;
 
 mod cutting_plan;
@@ -190,14 +192,252 @@ impl PolycubeMap {
     pub fn to_triangle_mesh_polycube(
         &self,
         input_mesh: &Mesh<INPUT>,
-        _input_skeleton: &LabeledCurveSkeleton, // TODO: use when needed
+        input_skeleton: &LabeledCurveSkeleton,
         _polycube_mesh: &Mesh<INPUT>,
     ) -> Mesh<INPUT> {
-        let result = input_mesh.clone();
+        let mut result = input_mesh.clone();
 
-        // TODO
+        // Build input vertex → region map.
+        let mut vert_to_region: HashMap<VertID, NodeIndex> = HashMap::new();
+        for node_idx in input_skeleton.node_indices() {
+            for &v in &input_skeleton[node_idx].skeleton_node.patch_vertices {
+                vert_to_region.insert(v, node_idx);
+            }
+        }
+
+        // For each region, extract UV triangles from the polycube VFG's planar embedding.
+        let mut region_uv_tris: HashMap<NodeIndex, Vec<UvTriangle>> = HashMap::new();
+        for (&node_idx, region) in &self.regions {
+            let tris = extract_uv_faces(&region.polycube_vfg, &region.polycube_uv);
+            region_uv_tris.insert(node_idx, tris);
+        }
+
+        // Map each input vertex to its polycube surface position.
+        let mut unmapped = 0usize;
+        for v in input_mesh.vert_ids() {
+            let Some(&region_idx) = vert_to_region.get(&v) else {
+                continue;
+            };
+            let Some(region) = self.regions.get(&region_idx) else {
+                continue;
+            };
+            let Some(vfg_nodes) = region.input_vfg.vert_to_nodes.get(&v) else {
+                continue;
+            };
+            // For cut vertices, both copies map to the same polycube position;
+            // pick the first.
+            let Some(&uv) = region.input_uv.get(&vfg_nodes[0]) else {
+                continue;
+            };
+            let Some(tris) = region_uv_tris.get(&region_idx) else {
+                continue;
+            };
+
+            if let Some(pos) = interpolate_in_uv_triangles(uv, tris) {
+                result.set_position(v, pos);
+            } else {
+                unmapped += 1;
+            }
+        }
+
+        if unmapped > 0 {
+            warn!(
+                "to_triangle_mesh_polycube: {} input vertices could not be mapped \
+                 (UV point not inside any polycube triangle)",
+                unmapped
+            );
+        }
+
         result
     }
+}
+
+/// A triangle in UV space with associated 3D positions at each vertex.
+struct UvTriangle {
+    uv: [Vector2D; 3],
+    pos: [Vector3D; 3],
+}
+
+/// Extracts faces from a VFG's planar embedding (using UV coordinates) and
+/// returns them as UV triangles suitable for interpolation.
+///
+/// Uses the standard planar-graph face extraction: for each directed edge,
+/// finds the face to its left by following the "next edge in clockwise order"
+/// at each vertex. Each face is then fan-triangulated.
+fn extract_uv_faces(
+    vfg: &VirtualFlatGeometry,
+    uv: &HashMap<NodeIndex, Vector2D>,
+) -> Vec<UvTriangle> {
+    use petgraph::visit::EdgeRef;
+
+    // For each vertex, sort neighbors by angle in CCW order.
+    let mut sorted_neighbors: HashMap<NodeIndex, Vec<NodeIndex>> = HashMap::new();
+    for node in vfg.graph.node_indices() {
+        let node_uv = uv[&node];
+        let mut nbrs: Vec<NodeIndex> = vfg.graph.neighbors(node).collect();
+        nbrs.sort_by(|&a, &b| {
+            let da = uv[&a] - node_uv;
+            let db = uv[&b] - node_uv;
+            let angle_a = da.y.atan2(da.x);
+            let angle_b = db.y.atan2(db.x);
+            angle_a.partial_cmp(&angle_b).unwrap_or(std::cmp::Ordering::Equal)
+        });
+        // Deduplicate neighbors (parallel edges in StableUnGraph).
+        nbrs.dedup();
+        sorted_neighbors.insert(node, nbrs);
+    }
+
+    // For each directed edge (u, v), trace the face to its left.
+    // "Next edge" at v after arriving from u: the neighbor of v that is
+    // immediately CW from u in v's sorted (CCW) neighbor list.
+    let mut seen_faces: HashSet<Vec<NodeIndex>> = HashSet::new();
+    let mut tris = Vec::new();
+
+    for edge_ref in vfg.graph.edge_references() {
+        let src: NodeIndex = edge_ref.source();
+        let tgt: NodeIndex = edge_ref.target();
+        for &(start, second) in &[
+            (src, tgt),
+            (tgt, src),
+        ] {
+            let face = trace_face_left(start, second, &sorted_neighbors);
+            if face.len() < 3 {
+                continue;
+            }
+
+            // Canonicalize: rotate to start with the minimum NodeIndex.
+            let min_idx = face
+                .iter()
+                .enumerate()
+                .min_by_key(|(_, n)| n.index())
+                .unwrap()
+                .0;
+            let mut canonical = face.clone();
+            canonical.rotate_left(min_idx);
+            if !seen_faces.insert(canonical) {
+                continue; // already processed
+            }
+
+            // Skip the outer (infinite) face — it winds CW (negative signed area).
+            let signed_area: f64 = (0..face.len())
+                .map(|i| {
+                    let a = uv[&face[i]];
+                    let b = uv[&face[(i + 1) % face.len()]];
+                    a.x * b.y - b.x * a.y
+                })
+                .sum();
+            if signed_area <= 0.0 {
+                continue;
+            }
+
+            // Fan-triangulate from the first vertex.
+            for i in 1..face.len() - 1 {
+                tris.push(UvTriangle {
+                    uv: [uv[&face[0]], uv[&face[i]], uv[&face[i + 1]]],
+                    pos: [
+                        vfg.graph[face[0]].position,
+                        vfg.graph[face[i]].position,
+                        vfg.graph[face[i + 1]].position,
+                    ],
+                });
+            }
+        }
+    }
+
+    tris
+}
+
+/// Traces the face to the left of directed edge (from → to) by following
+/// clockwise-next edges at each vertex.
+fn trace_face_left(
+    from: NodeIndex,
+    to: NodeIndex,
+    sorted_neighbors: &HashMap<NodeIndex, Vec<NodeIndex>>,
+) -> Vec<NodeIndex> {
+    let mut face = vec![from];
+    let mut prev = from;
+    let mut curr = to;
+
+    let max_iters = sorted_neighbors.len() + 2;
+    for _ in 0..max_iters {
+        if curr == from {
+            break;
+        }
+        face.push(curr);
+
+        // At curr, find the edge immediately CW from the edge (curr → prev).
+        // In our CCW-sorted neighbor list, "immediately CW" = the entry BEFORE
+        // prev in the sorted order.
+        let nbrs = &sorted_neighbors[&curr];
+        let pos = nbrs.iter().position(|&n| n == prev);
+        let Some(pos) = pos else {
+            break; // shouldn't happen
+        };
+        let next = if pos == 0 {
+            nbrs[nbrs.len() - 1]
+        } else {
+            nbrs[pos - 1]
+        };
+
+        prev = curr;
+        curr = next;
+    }
+
+    face
+}
+
+/// Finds which UV triangle contains `query` and returns the interpolated 3D position.
+/// Falls back to the nearest triangle if the point is slightly outside all of them.
+fn interpolate_in_uv_triangles(query: Vector2D, tris: &[UvTriangle]) -> Option<Vector3D> {
+    let mut best: Option<(f64, Vector3D)> = None; // (min_bary_coord, interpolated_pos)
+
+    for tri in tris {
+        if let Some((u, v, w)) = barycentric_2d(query, tri.uv[0], tri.uv[1], tri.uv[2]) {
+            let min_coord = u.min(v).min(w);
+            let pos = tri.pos[0] * u + tri.pos[1] * v + tri.pos[2] * w;
+            if min_coord >= -1e-6 {
+                return Some(pos);
+            }
+            // Track the triangle where the point is "least outside".
+            if best.as_ref().map_or(true, |(prev_min, _)| min_coord > *prev_min) {
+                best = Some((min_coord, pos));
+            }
+        }
+    }
+
+    // Accept if the point is only slightly outside (within tolerance).
+    best.filter(|(min_coord, _)| *min_coord >= -0.1)
+        .map(|(_, pos)| pos)
+}
+
+/// Computes barycentric coordinates of `p` with respect to triangle `(a, b, c)`.
+/// Returns `None` if the triangle is degenerate (zero area).
+fn barycentric_2d(
+    p: Vector2D,
+    a: Vector2D,
+    b: Vector2D,
+    c: Vector2D,
+) -> Option<(f64, f64, f64)> {
+    let v0 = b - a;
+    let v1 = c - a;
+    let v2 = p - a;
+
+    let d00 = v0.x * v0.x + v0.y * v0.y;
+    let d01 = v0.x * v1.x + v0.y * v1.y;
+    let d11 = v1.x * v1.x + v1.y * v1.y;
+    let d20 = v2.x * v0.x + v2.y * v0.y;
+    let d21 = v2.x * v1.x + v2.y * v1.y;
+
+    let denom = d00 * d11 - d01 * d01;
+    if denom.abs() < 1e-30 {
+        return None;
+    }
+
+    let v = (d11 * d20 - d01 * d21) / denom;
+    let w = (d00 * d21 - d01 * d20) / denom;
+    let u = 1.0 - v - w;
+
+    Some((u, v, w))
 }
 
 /// Performs cross-parameterization between the input and polycube labeled curve skeletons,
@@ -308,21 +548,17 @@ fn parameterize_side(
 
     // Build virtual geometry by cutting the mesh open along cut paths,
     // duplicating vertices so the result is a topological disk.
-    // TODO: use this once implemented
     let vfg = VirtualFlatGeometry::build(node_idx, skeleton, mesh, cutting_plan);
 
     // Assign 2D positions to every node on the disk boundary.
     // The canonical polygon has n_sides sides:
     //   - degree 1 -> square (4 sides)
     //   - degree d >= 2 -> regular 4(d-1)-gon
-    // TODO: use
-    // let n_sides = if degree == 1 { 4 } else { 4 * (degree - 1) };
-    // let boundary_positions = map_boundary_to_polygon(&vfg, n_sides);
+    let n_sides = if degree == 1 { 4 } else { 4 * (degree - 1) };
+    let boundary_positions = map_boundary_to_polygon(&vfg, n_sides);
 
     // Solve the Dirichlet problem on the VFG graph.
-    // let uv_map = solve_dirichlet(&vfg, &boundary_positions);
-    let uv_map = HashMap::new(); // TODO implement later
-
+    let uv_map = solve_dirichlet(&vfg, &boundary_positions);
     (vfg, uv_map)
 }
 
@@ -333,7 +569,7 @@ fn parameterize_side(
 /// while preserving the structural order produced by the VFG boundary trace.
 ///
 /// The polygon has circumradius 1 with vertices at angles `2πk/n_sides`.
-fn _map_boundary_to_polygon(vfg: &VirtualFlatGeometry, n_sides: usize) -> HashMap<NodeIndex, Vector2D> {
+fn map_boundary_to_polygon(vfg: &VirtualFlatGeometry, n_sides: usize) -> HashMap<NodeIndex, Vector2D> {
     let boundary = &vfg.boundary_loop;
     let n = boundary.len();
     if n == 0 {
