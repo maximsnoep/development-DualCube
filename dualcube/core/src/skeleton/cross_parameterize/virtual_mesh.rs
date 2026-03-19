@@ -1,5 +1,6 @@
 use std::collections::{HashMap, HashSet};
 
+use log;
 use mehsh::prelude::{HasEdges, HasNeighbors, HasPosition, HasVertices, Mesh, Vector3D};
 use petgraph::graph::{EdgeIndex, NodeIndex};
 use petgraph::stable_graph::StableUnGraph;
@@ -270,11 +271,12 @@ impl VirtualFlatGeometry {
         // ── Phase 4: Wire edges ───────────────────────────────────────────
 
         // Helper to add a weighted edge.
-        let add_edge =
-            |graph: &mut StableUnGraph<VirtualNode, VirtualEdgeWeight>, a: NodeIndex, b: NodeIndex| {
-                let len = (graph[a].position - graph[b].position).norm();
-                graph.add_edge(a, b, VirtualEdgeWeight { length: len });
-            };
+        let add_edge = |graph: &mut StableUnGraph<VirtualNode, VirtualEdgeWeight>,
+                        a: NodeIndex,
+                        b: NodeIndex| {
+            let len = (graph[a].position - graph[b].position).norm();
+            graph.add_edge(a, b, VirtualEdgeWeight { length: len });
+        };
 
         // 4a. Mesh edges between patch vertices.
         // Process each patch vertex's outgoing half-edges, deduplicate by ordering.
@@ -307,7 +309,11 @@ impl VirtualFlatGeometry {
                     // Each has a side assignment for the other.
                     let v_side = cut_side_assignments[&v][&nbr];
                     let nbr_side = cut_side_assignments[&nbr][&v];
-                    let v_node = if v_side { cut_duplicates[&v].1 } else { cut_duplicates[&v].0 };
+                    let v_node = if v_side {
+                        cut_duplicates[&v].1
+                    } else {
+                        cut_duplicates[&v].0
+                    };
                     let nbr_node = if nbr_side {
                         cut_duplicates[&nbr].1
                     } else {
@@ -366,7 +372,8 @@ impl VirtualFlatGeometry {
                             // The half-edge from v toward the other endpoint of be
                             // determines which side.
                             let other = if root == v { toor } else { root };
-                            let side = side_of_non_patch_neighbor(v, other, &cut_side_assignments, mesh);
+                            let side =
+                                side_of_non_patch_neighbor(v, other, &cut_side_assignments, mesh);
                             let node = if side {
                                 cut_duplicates[&v].1
                             } else {
@@ -381,21 +388,30 @@ impl VirtualFlatGeometry {
             }
         }
 
+        // 4c. Direct edges between consecutive boundary midpoints.
+        // These ensure the boundary loop can always chain through midpoints
+        // without requiring a shared patch vertex between every pair.
+        for edge_ref in skeleton.edges(node_idx) {
+            let boundary = &edge_ref.weight().boundary_loop;
+            let edges = &boundary.edge_midpoints;
+            let n = edges.len();
+            for i in 0..n {
+                let a = midpoint_nodes[&edges[i]];
+                let b = midpoint_nodes[&edges[(i + 1) % n]];
+                add_edge(&mut graph, a, b);
+            }
+        }
+
         // ── Phase 5: Trace boundary loop ──────────────────────────────────
 
         let boundary_loop = trace_boundary_loop(
             node_idx,
             skeleton,
-            mesh,
             cutting_plan,
-            &patch_set,
-            &cut_vertex_set,
             &cut_vertex_paths,
             &cut_duplicates,
             &midpoint_nodes,
-            &vert_to_nodes,
             &cut_endpoint_midpoints,
-            &cut_side_assignments,
         );
 
         let vfg = VirtualFlatGeometry {
@@ -642,16 +658,11 @@ fn side_of_non_patch_neighbor(
 fn trace_boundary_loop(
     node_idx: NodeIndex,
     skeleton: &LabeledCurveSkeleton,
-    mesh: &Mesh<INPUT>,
     cutting_plan: &CuttingPlan,
-    patch_set: &HashSet<VertID>,
-    cut_vertex_set: &HashSet<VertID>,
     cut_vertex_paths: &[Vec<VertID>],
     cut_duplicates: &HashMap<VertID, (NodeIndex, NodeIndex)>,
     midpoint_nodes: &HashMap<EdgeID, NodeIndex>,
-    vert_to_nodes: &HashMap<VertID, Vec<NodeIndex>>,
     cut_endpoint_midpoints: &HashMap<EdgeID, (usize, bool)>,
-    cut_side_assignments: &HashMap<VertID, HashMap<VertID, bool>>,
 ) -> Vec<NodeIndex> {
     if cutting_plan.cuts.is_empty() {
         // No cuts: just one boundary loop (degree 1).
@@ -661,15 +672,7 @@ fn trace_boundary_loop(
             .next()
             .expect("degree >= 1 but no edges");
         let boundary = &edge_ref.weight().boundary_loop;
-        return build_boundary_chain(
-            boundary,
-            mesh,
-            patch_set,
-            cut_vertex_set,
-            midpoint_nodes,
-            vert_to_nodes,
-            cut_endpoint_midpoints,
-        );
+        return build_boundary_chain(boundary, midpoint_nodes);
     }
 
     // Build adjacency for the cut spanning tree.
@@ -698,19 +701,13 @@ fn trace_boundary_loop(
 
     dfs_trace_boundary(
         start_boundary,
-        None, // no entry cut (we start here)
-        node_idx,
+        None,
         skeleton,
-        mesh,
         cutting_plan,
-        patch_set,
-        cut_vertex_set,
         cut_vertex_paths,
         cut_duplicates,
         midpoint_nodes,
-        vert_to_nodes,
         cut_endpoint_midpoints,
-        cut_side_assignments,
         &tree_adj,
         &mut visited,
         &mut result,
@@ -726,18 +723,12 @@ fn trace_boundary_loop(
 fn dfs_trace_boundary(
     boundary_idx: EdgeIndex,
     entry_cut: Option<(usize, bool)>, // (cut_index, entered_via_start_of_cut)
-    node_idx: NodeIndex,
     skeleton: &LabeledCurveSkeleton,
-    mesh: &Mesh<INPUT>,
     cutting_plan: &CuttingPlan,
-    patch_set: &HashSet<VertID>,
-    cut_vertex_set: &HashSet<VertID>,
     cut_vertex_paths: &[Vec<VertID>],
     cut_duplicates: &HashMap<VertID, (NodeIndex, NodeIndex)>,
     midpoint_nodes: &HashMap<EdgeID, NodeIndex>,
-    vert_to_nodes: &HashMap<VertID, Vec<NodeIndex>>,
     cut_endpoint_midpoints: &HashMap<EdgeID, (usize, bool)>,
-    cut_side_assignments: &HashMap<VertID, HashMap<VertID, bool>>,
     tree_adj: &HashMap<EdgeIndex, Vec<(usize, EdgeIndex)>>,
     visited: &mut HashSet<EdgeIndex>,
     result: &mut Vec<NodeIndex>,
@@ -750,15 +741,7 @@ fn dfs_trace_boundary(
         .boundary_loop;
 
     // Build the boundary chain: ordered list of (VFG_node, Option<cut to splice>).
-    let chain = build_boundary_chain_with_cuts(
-        boundary,
-        mesh,
-        patch_set,
-        cut_vertex_set,
-        midpoint_nodes,
-        vert_to_nodes,
-        cut_endpoint_midpoints,
-    );
+    let chain = build_boundary_chain_with_cuts(boundary, midpoint_nodes, cut_endpoint_midpoints);
 
     // Determine where in the chain to start. If we entered via a cut, start
     // right after that cut's midpoint on this boundary.
@@ -827,18 +810,12 @@ fn dfs_trace_boundary(
                 dfs_trace_boundary(
                     other_boundary,
                     Some(entered_via),
-                    node_idx,
                     skeleton,
-                    mesh,
                     cutting_plan,
-                    patch_set,
-                    cut_vertex_set,
                     cut_vertex_paths,
                     cut_duplicates,
                     midpoint_nodes,
-                    vert_to_nodes,
                     cut_endpoint_midpoints,
-                    cut_side_assignments,
                     tree_adj,
                     visited,
                     result,
@@ -872,81 +849,30 @@ fn dfs_trace_boundary(
 #[allow(clippy::too_many_arguments)]
 fn build_boundary_chain_with_cuts(
     boundary: &BoundaryLoop,
-    mesh: &Mesh<INPUT>,
-    patch_set: &HashSet<VertID>,
-    cut_vertex_set: &HashSet<VertID>,
     midpoint_nodes: &HashMap<EdgeID, NodeIndex>,
-    vert_to_nodes: &HashMap<VertID, Vec<NodeIndex>>,
     cut_endpoint_midpoints: &HashMap<EdgeID, (usize, bool)>,
 ) -> Vec<(NodeIndex, Option<(usize, bool)>)> {
-    let edges = &boundary.edge_midpoints;
-    let n = edges.len();
-    let mut chain = Vec::new();
-
-    for i in 0..n {
-        let be = edges[i];
-        let mid_node = midpoint_nodes[&be];
-        let cut_info = cut_endpoint_midpoints.get(&be).copied();
-        chain.push((mid_node, cut_info));
-
-        // Find the shared patch vertex between be and the next boundary edge.
-        let next_be = edges[(i + 1) % n];
-        if let Some(shared_v) = shared_patch_vertex(be, next_be, patch_set, mesh) {
-            if cut_vertex_set.contains(&shared_v) {
-                // This is a cut endpoint vertex on the boundary. It will be
-                // emitted as part of the cut traversal, so skip it here.
-                // (The DFS splice handles it.)
-            } else {
-                chain.push((vert_to_nodes[&shared_v][0], None));
-            }
-        }
-        // If no shared patch vertex, the two midpoints are directly adjacent
-        // (the shared vertex is in the other patch).
-    }
-
-    chain
+    boundary
+        .edge_midpoints
+        .iter()
+        .map(|be| {
+            let mid_node = midpoint_nodes[be];
+            let cut_info = cut_endpoint_midpoints.get(be).copied();
+            (mid_node, cut_info)
+        })
+        .collect()
 }
 
 /// Simplified version for degree-1 regions (no cuts to splice).
-#[allow(clippy::too_many_arguments)]
 fn build_boundary_chain(
     boundary: &BoundaryLoop,
-    mesh: &Mesh<INPUT>,
-    patch_set: &HashSet<VertID>,
-    cut_vertex_set: &HashSet<VertID>,
     midpoint_nodes: &HashMap<EdgeID, NodeIndex>,
-    vert_to_nodes: &HashMap<VertID, Vec<NodeIndex>>,
-    cut_endpoint_midpoints: &HashMap<EdgeID, (usize, bool)>,
 ) -> Vec<NodeIndex> {
-    let chain = build_boundary_chain_with_cuts(
-        boundary,
-        mesh,
-        patch_set,
-        cut_vertex_set,
-        midpoint_nodes,
-        vert_to_nodes,
-        cut_endpoint_midpoints,
-    );
-    chain.into_iter().map(|(node, _)| node).collect()
-}
-
-/// Finds the vertex shared between two consecutive boundary edges that is in the patch.
-fn shared_patch_vertex(
-    edge_a: EdgeID,
-    edge_b: EdgeID,
-    patch_set: &HashSet<VertID>,
-    mesh: &Mesh<INPUT>,
-) -> Option<VertID> {
-    let a_verts = [mesh.root(edge_a), mesh.toor(edge_a)];
-    let b_verts = [mesh.root(edge_b), mesh.toor(edge_b)];
-    for &va in &a_verts {
-        for &vb in &b_verts {
-            if va == vb && patch_set.contains(&va) {
-                return Some(va);
-            }
-        }
-    }
-    None
+    boundary
+        .edge_midpoints
+        .iter()
+        .map(|be| midpoint_nodes[be])
+        .collect()
 }
 
 // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
@@ -959,19 +885,40 @@ fn check_invariants(vfg: &VirtualFlatGeometry) {
     let n_nodes = vfg.graph.node_count();
 
     // 1. Boundary loop is non-empty.
-    assert!(
-        !vfg.boundary_loop.is_empty(),
-        "VFG boundary loop is empty"
-    );
+    assert!(!vfg.boundary_loop.is_empty(), "VFG boundary loop is empty");
 
     // 2. Boundary loop is a simple cycle (no repeated nodes).
-    assert_eq!(
-        boundary_set.len(),
-        vfg.boundary_loop.len(),
-        "VFG boundary loop has repeated nodes: {} unique out of {} total",
-        boundary_set.len(),
-        vfg.boundary_loop.len(),
-    );
+    if boundary_set.len() != vfg.boundary_loop.len() {
+        // Failure! Now find which nodes appear multiple times.
+        let mut counts: HashMap<NodeIndex, usize> = HashMap::new();
+        for &n in &vfg.boundary_loop {
+            *counts.entry(n).or_insert(0) += 1;
+        }
+        for (&node, &count) in &counts {
+            if count > 1 {
+                log::error!(
+                    "VFG boundary duplicate: node {:?} appears {} times, origin: {:?}",
+                    node,
+                    count,
+                    vfg.graph[node].origin,
+                );
+                // Show positions in the loop
+                let positions: Vec<usize> = vfg
+                    .boundary_loop
+                    .iter()
+                    .enumerate()
+                    .filter(|(_, &n)| n == node)
+                    .map(|(i, _)| i)
+                    .collect();
+                log::error!("  at loop positions: {:?}", positions);
+            }
+        }
+        panic!(
+            "VFG boundary loop has repeated nodes: {} unique out of {} total",
+            boundary_set.len(),
+            vfg.boundary_loop.len(),
+        );
+    }
 
     // 3. Every boundary node exists in the graph.
     for &node in &vfg.boundary_loop {
@@ -1041,11 +988,7 @@ fn check_invariants(vfg: &VirtualFlatGeometry) {
 
     // 7. vert_to_nodes consistency.
     for (vert, nodes) in &vfg.vert_to_nodes {
-        assert!(
-            !nodes.is_empty(),
-            "vert_to_nodes[{:?}] is empty",
-            vert
-        );
+        assert!(!nodes.is_empty(), "vert_to_nodes[{:?}] is empty", vert);
         assert!(
             nodes.len() <= 2,
             "vert_to_nodes[{:?}] has {} entries (expected 1 or 2)",
@@ -1071,7 +1014,12 @@ fn check_invariants(vfg: &VirtualFlatGeometry) {
     let midpoint_count = vfg
         .graph
         .node_indices()
-        .filter(|n| matches!(vfg.graph[*n].origin, VirtualNodeOrigin::BoundaryMidpoint { .. }))
+        .filter(|n| {
+            matches!(
+                vfg.graph[*n].origin,
+                VirtualNodeOrigin::BoundaryMidpoint { .. }
+            )
+        })
         .count();
     let vertex_node_count = tracked_nodes.len();
     assert_eq!(
