@@ -17,7 +17,9 @@ use crate::{
     prelude::{CurveSkeleton, VertID, INPUT},
     skeleton::{
         boundary_loop::BoundaryLoop,
-        curve_skeleton::{CurveSkeletonManipulation, MergeBehavior, SkeletonNode},
+        curve_skeleton::{
+            CurveSkeletonManipulation, CurveSkeletonSpatial, MergeBehavior, SkeletonNode,
+        },
         patch::patch_centroid,
     },
 };
@@ -89,10 +91,15 @@ impl CurveSkeletonManipulation for CurveSkeleton {
                 None => continue,
             };
 
-            // Snapshot current sizes to preserve vertex amounts // TODO: area/volume might be better?
+            // Snapshot current sizes for harmonic solve sizing checks.
             let size_a = self.node_weight(node_a).unwrap().patch_vertices.len();
             let size_b = self.node_weight(node_b).unwrap().patch_vertices.len();
             let target_total = size_a + size_b;
+
+            // Use patch-volume ratio for the split target so region sizes are preserved geometrically,
+            // not by raw vertex count.
+            let vol_a = self.patch_volume(node_a, mesh);
+            let vol_b = self.patch_volume(node_b, mesh);
 
             // If regions are tiny, skip
             if target_total < 4 {
@@ -191,11 +198,18 @@ impl CurveSkeletonManipulation for CurveSkeleton {
             valued_vertices
                 .sort_by(|a, b| a.0.partial_cmp(&b.0).unwrap_or(std::cmp::Ordering::Equal));
 
-            // Split at the index that restores the original size of Region A.
+            // Split at the index that preserves Region A's original volume proportion.
             // Clamp split index to ensure neither region becomes empty.
             let min_size = 1;
             let max_idx = valued_vertices.len().saturating_sub(min_size);
-            let split_idx = size_a.clamp(min_size, max_idx);
+            let split_idx = if vol_a + vol_b > f64::EPSILON {
+                let ratio_a = (vol_a / (vol_a + vol_b)).clamp(0.0, 1.0);
+                let target = (ratio_a * valued_vertices.len() as f64).round() as usize;
+                target.clamp(min_size, max_idx)
+            } else {
+                // Degenerate fallback: if both volumes are ~0, fall back to vertex ratio.
+                size_a.clamp(min_size, max_idx)
+            };
 
             let (new_a_slice, new_b_slice) = valued_vertices.split_at(split_idx);
 
