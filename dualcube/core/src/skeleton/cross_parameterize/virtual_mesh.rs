@@ -1030,4 +1030,6 @@ fn check_invariants(vfg: &VirtualFlatGeometry) {
         midpoint_count,
         n_nodes,
     );
+
+    // TODO: duplicated nodes do not share neighbor vertices?
 }
