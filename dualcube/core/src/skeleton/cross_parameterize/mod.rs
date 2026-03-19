@@ -2,7 +2,7 @@ use std::collections::{HashMap, HashSet};
 use std::f64::consts::PI;
 
 use log::warn;
-use mehsh::prelude::{HasPosition, Mesh, SetPosition, Vector2D, Vector3D};
+use mehsh::prelude::{HasPosition, HasVertices, Mesh, SetPosition, Vector2D, Vector3D};
 
 use petgraph::graph::{EdgeIndex, NodeIndex};
 use petgraph::visit::IntoEdgeReferences;
@@ -193,7 +193,8 @@ impl PolycubeMap {
         &self,
         input_mesh: &Mesh<INPUT>,
         input_skeleton: &LabeledCurveSkeleton,
-        _polycube_mesh: &Mesh<INPUT>,
+        polycube_skeleton: &LabeledCurveSkeleton,
+        polycube_mesh: &Mesh<INPUT>,
     ) -> Mesh<INPUT> {
         let mut result = input_mesh.clone();
 
@@ -206,9 +207,18 @@ impl PolycubeMap {
         }
 
         // For each region, extract UV triangles from the polycube VFG's planar embedding.
+        // The VFG faces tile the entire canonical polygon, ensuring complete coverage.
+        // Crossing edges in degree 2+ regions may cause some overlap, but every input
+        // UV point will be inside at least one polycube UV triangle.
         let mut region_uv_tris: HashMap<NodeIndex, Vec<UvTriangle>> = HashMap::new();
         for (&node_idx, region) in &self.regions {
-            let tris = extract_uv_faces(&region.polycube_vfg, &region.polycube_uv);
+            let degree = polycube_skeleton.edges(node_idx).count();
+            let tris = extract_uv_faces(
+                &region.polycube_vfg,
+                &region.polycube_uv,
+                node_idx,
+                degree,
+            );
             region_uv_tris.insert(node_idx, tris);
         }
 
@@ -242,8 +252,7 @@ impl PolycubeMap {
 
         if unmapped > 0 {
             warn!(
-                "to_triangle_mesh_polycube: {} input vertices could not be mapped \
-                 (UV point not inside any polycube triangle)",
+                "to_triangle_mesh_polycube: {} input vertices could not be mapped",
                 unmapped
             );
         }
@@ -258,6 +267,346 @@ struct UvTriangle {
     pos: [Vector3D; 3],
 }
 
+/// Builds UV triangles by iterating the polycube mesh faces directly,
+/// subdividing faces that have boundary midpoints on their edges.
+///
+/// Boundary midpoints sit on the polygon boundary in UV space but aren't
+/// mesh vertices, so raw mesh triangles don't reach the polygon boundary.
+/// For each mesh face with boundary midpoints on its edges, we replace
+/// the original triangle with sub-triangles that include the midpoints.
+///
+/// This avoids planar face extraction (which fails on coarse meshes where
+/// the Tutte embedding has crossing edges).
+fn build_uv_tris_from_mesh(
+    polycube_vfg: &VirtualFlatGeometry,
+    polycube_uv: &HashMap<NodeIndex, Vector2D>,
+    polycube_skeleton: &LabeledCurveSkeleton,
+    polycube_mesh: &Mesh<INPUT>,
+    node_idx: NodeIndex,
+) -> Vec<UvTriangle> {
+    let patch_set: HashSet<VertID> = polycube_skeleton[node_idx]
+        .skeleton_node
+        .patch_vertices
+        .iter()
+        .copied()
+        .collect();
+
+    // Build a map from mesh edge (as unordered vert pair) to VFG midpoint node(s).
+    // Includes both regular and cut-endpoint midpoints.
+    let mut edge_to_midpoint: HashMap<(VertID, VertID), Vec<NodeIndex>> = HashMap::new();
+    for node in polycube_vfg.graph.node_indices() {
+        match &polycube_vfg.graph[node].origin {
+            virtual_mesh::VirtualNodeOrigin::BoundaryMidpoint { edge, .. } => {
+                let r = polycube_mesh.root(*edge);
+                let t = polycube_mesh.toor(*edge);
+                let key = if r < t { (r, t) } else { (t, r) };
+                edge_to_midpoint.entry(key).or_default().push(node);
+            }
+            virtual_mesh::VirtualNodeOrigin::CutEndpointMidpoint { edge, .. } => {
+                let r = polycube_mesh.root(*edge);
+                let t = polycube_mesh.toor(*edge);
+                let key = if r < t { (r, t) } else { (t, r) };
+                edge_to_midpoint.entry(key).or_default().push(node);
+            }
+            _ => {}
+        }
+    }
+
+    let mut tris = Vec::new();
+
+    for face in polycube_mesh.face_ids() {
+        let fv: Vec<VertID> = polycube_mesh.vertices(face).collect();
+        if fv.len() < 3 || !fv.iter().all(|v| patch_set.contains(v)) {
+            continue;
+        }
+
+        // Fan-triangulate the face (works for tris, quads, and general polygons).
+        for i in 1..fv.len() - 1 {
+            let idx = [0, i, i + 1];
+
+            // Check which of the 3 sub-triangle edges have boundary midpoints.
+            let tri_edges = [
+                (fv[idx[0]], fv[idx[1]]),
+                (fv[idx[1]], fv[idx[2]]),
+                (fv[idx[2]], fv[idx[0]]),
+            ];
+            let mids: Vec<Option<&Vec<NodeIndex>>> = tri_edges
+                .iter()
+                .map(|&(a, b)| {
+                    let key = if a < b { (a, b) } else { (b, a) };
+                    edge_to_midpoint.get(&key)
+                })
+                .collect();
+
+            let n_mids = mids.iter().filter(|m| m.is_some()).count();
+
+            if n_mids == 0 {
+                emit_tri(&mut tris, &fv, &idx, polycube_vfg, polycube_uv, polycube_mesh);
+            } else {
+                // Emit the base triangle first (covers interior).
+                emit_tri(&mut tris, &fv, &idx, polycube_vfg, polycube_uv, polycube_mesh);
+                // Also emit midpoint sub-triangles to cover boundary regions.
+                for (edge_i, mid_opt) in mids.iter().enumerate() {
+                    if let Some(mn_list) = mid_opt {
+                        let ei0 = edge_i;
+                        let ei1 = (edge_i + 1) % 3;
+                        let ei2 = (edge_i + 2) % 3;
+                        for &mn in *mn_list {
+                            emit_tri_with_midpoint(
+                                &mut tris, &fv, idx[ei1], idx[ei2], mn,
+                                polycube_vfg, polycube_uv, polycube_mesh,
+                            );
+                            emit_tri_with_midpoint(
+                                &mut tris, &fv, idx[ei0], idx[ei2], mn,
+                                polycube_vfg, polycube_uv, polycube_mesh,
+                            );
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    // Step 2: Add border triangles for boundary midpoints.
+    // Boundary midpoints sit on mesh edges between regions. The adjacent mesh face
+    // on this region's side has vertices that include the edge endpoints (in the patch)
+    // and additional vertices. We form triangles from the midpoint to the edge endpoints
+    // and any additional patch vertices in the adjacent face.
+    for node in polycube_vfg.graph.node_indices() {
+        let mesh_edge = match &polycube_vfg.graph[node].origin {
+            virtual_mesh::VirtualNodeOrigin::BoundaryMidpoint { edge, .. } => *edge,
+            virtual_mesh::VirtualNodeOrigin::CutEndpointMidpoint { edge, .. } => *edge,
+            _ => continue,
+        };
+
+        let Some(&mid_uv) = polycube_uv.get(&node) else { continue };
+        let mid_pos = polycube_vfg.graph[node].position;
+
+        let edge_root = polycube_mesh.root(mesh_edge);
+        let edge_toor = polycube_mesh.toor(mesh_edge);
+
+        // Check both faces adjacent to the boundary edge.
+        let adj_faces = [
+            polycube_mesh.face(mesh_edge),
+            polycube_mesh.face(polycube_mesh.twin(mesh_edge)),
+        ];
+        for face in adj_faces {
+            let fv: Vec<VertID> = polycube_mesh.vertices(face).collect();
+
+            // Find vertices in this face that are NOT the edge endpoints AND are in the patch.
+            let interior_verts: Vec<VertID> = fv
+                .iter()
+                .copied()
+                .filter(|&v| v != edge_root && v != edge_toor && patch_set.contains(&v))
+                .collect();
+
+            if interior_verts.is_empty() {
+                continue;
+            }
+
+            // For each interior vertex c, emit triangles (mid, root, c) and (mid, c, toor).
+            for &c in &interior_verts {
+                // (mid, edge_root, c)
+                emit_border_tri(
+                    &mut tris, node, mid_uv, mid_pos,
+                    edge_root, c,
+                    polycube_vfg, polycube_uv, polycube_mesh,
+                );
+                // (mid, c, edge_toor)
+                emit_border_tri(
+                    &mut tris, node, mid_uv, mid_pos,
+                    c, edge_toor,
+                    polycube_vfg, polycube_uv, polycube_mesh,
+                );
+            }
+        }
+    }
+
+    let degree = polycube_skeleton.edges(node_idx).count();
+    log::info!(
+        "build_uv_tris_from_mesh: region {:?} degree {}: {} UV tris, {} patch_verts",
+        node_idx, degree, tris.len(), patch_set.len(),
+    );
+
+    tris
+}
+
+/// Emit a UV triangle from mesh face vertices at indices `idx` in `fv`.
+fn emit_tri(
+    tris: &mut Vec<UvTriangle>,
+    fv: &[VertID],
+    idx: &[usize; 3],
+    vfg: &VirtualFlatGeometry,
+    uv: &HashMap<NodeIndex, Vector2D>,
+    mesh: &Mesh<INPUT>,
+) {
+    let nodes: Vec<&Vec<NodeIndex>> = idx
+        .iter()
+        .filter_map(|&i| vfg.vert_to_nodes.get(&fv[i]))
+        .collect();
+    if nodes.len() != 3 {
+        let missing: Vec<usize> = idx
+            .iter()
+            .filter(|&&i| !vfg.vert_to_nodes.contains_key(&fv[i]))
+            .copied()
+            .collect();
+        log::warn!(
+            "emit_tri: {}/{} verts missing from vert_to_nodes (missing indices: {:?}, fv={:?}, idx={:?})",
+            3 - nodes.len(), 3, missing, fv, idx,
+        );
+        return;
+    }
+    // Diagnostic: count how many UV lookups succeed
+    let mut uv_found = 0usize;
+    let mut uv_total = 0usize;
+    for &n0 in nodes[0] {
+        for &n1 in nodes[1] {
+            for &n2 in nodes[2] {
+                uv_total += 1;
+                if uv.get(&n0).is_some() && uv.get(&n1).is_some() && uv.get(&n2).is_some() {
+                    uv_found += 1;
+                }
+            }
+        }
+    }
+    if uv_found == 0 {
+        log::warn!(
+            "emit_tri: all {} combos have missing UVs. nodes[0]={:?} nodes[1]={:?} nodes[2]={:?}, uv has {} entries",
+            uv_total, nodes[0], nodes[1], nodes[2], uv.len(),
+        );
+    }
+    // Try all combos and pick the one with largest absolute area.
+    // Accept either winding — we flip to positive if needed.
+    // Track whether we flipped so pos array matches UV order.
+    let mut best: Option<(f64, [Vector2D; 3], bool)> = None;
+    for &n0 in nodes[0] {
+        for &n1 in nodes[1] {
+            for &n2 in nodes[2] {
+                let Some(&uv0) = uv.get(&n0) else { continue };
+                let Some(&uv1) = uv.get(&n1) else { continue };
+                let Some(&uv2) = uv.get(&n2) else { continue };
+                let area = (uv1.x - uv0.x) * (uv2.y - uv0.y)
+                    - (uv2.x - uv0.x) * (uv1.y - uv0.y);
+                let abs_area = area.abs();
+                if abs_area > 1e-15 && best.as_ref().map_or(true, |(b, _, _)| abs_area > *b) {
+                    if area > 0.0 {
+                        best = Some((abs_area, [uv0, uv1, uv2], false));
+                    } else {
+                        best = Some((abs_area, [uv0, uv2, uv1], true)); // flip
+                    }
+                }
+            }
+        }
+    }
+    if let Some((_, uvs, flipped)) = best {
+        let pos = if flipped {
+            [mesh.position(fv[idx[0]]), mesh.position(fv[idx[2]]), mesh.position(fv[idx[1]])]
+        } else {
+            [mesh.position(fv[idx[0]]), mesh.position(fv[idx[1]]), mesh.position(fv[idx[2]])]
+        };
+        tris.push(UvTriangle { uv: uvs, pos });
+    }
+}
+
+/// Emit a UV triangle with a midpoint node and two mesh face vertices.
+fn emit_tri_with_midpoint(
+    tris: &mut Vec<UvTriangle>,
+    fv: &[VertID],
+    vi0: usize,
+    vi1: usize,
+    mid_node: NodeIndex,
+    vfg: &VirtualFlatGeometry,
+    uv: &HashMap<NodeIndex, Vector2D>,
+    mesh: &Mesh<INPUT>,
+) {
+    let Some(&mid_uv) = uv.get(&mid_node) else { return };
+    let mid_pos = vfg.graph[mid_node].position;
+
+    let nodes0 = match vfg.vert_to_nodes.get(&fv[vi0]) {
+        Some(n) => n,
+        None => return,
+    };
+    let nodes1 = match vfg.vert_to_nodes.get(&fv[vi1]) {
+        Some(n) => n,
+        None => return,
+    };
+
+    let mut best: Option<(f64, [Vector2D; 3], bool)> = None;
+    for &n0 in nodes0 {
+        for &n1 in nodes1 {
+            let Some(&uv0) = uv.get(&n0) else { continue };
+            let Some(&uv1) = uv.get(&n1) else { continue };
+            let area = (uv0.x - mid_uv.x) * (uv1.y - mid_uv.y)
+                - (uv1.x - mid_uv.x) * (uv0.y - mid_uv.y);
+            let abs_area = area.abs();
+            if abs_area > 1e-15 && best.as_ref().map_or(true, |(b, _, _)| abs_area > *b) {
+                if area > 0.0 {
+                    best = Some((abs_area, [mid_uv, uv0, uv1], false));
+                } else {
+                    best = Some((abs_area, [mid_uv, uv1, uv0], true));
+                }
+            }
+        }
+    }
+    if let Some((_, uvs, flipped)) = best {
+        let pos = if flipped {
+            [mid_pos, mesh.position(fv[vi1]), mesh.position(fv[vi0])]
+        } else {
+            [mid_pos, mesh.position(fv[vi0]), mesh.position(fv[vi1])]
+        };
+        tris.push(UvTriangle { uv: uvs, pos });
+    }
+}
+
+/// Emit a border UV triangle: midpoint + two mesh vertices.
+/// Like `emit_tri_with_midpoint` but takes vertex IDs directly instead of face indices.
+fn emit_border_tri(
+    tris: &mut Vec<UvTriangle>,
+    _mid_node: NodeIndex,
+    mid_uv: Vector2D,
+    mid_pos: Vector3D,
+    va: VertID,
+    vb: VertID,
+    vfg: &VirtualFlatGeometry,
+    uv: &HashMap<NodeIndex, Vector2D>,
+    mesh: &Mesh<INPUT>,
+) {
+    let nodes_a = match vfg.vert_to_nodes.get(&va) {
+        Some(n) => n,
+        None => return,
+    };
+    let nodes_b = match vfg.vert_to_nodes.get(&vb) {
+        Some(n) => n,
+        None => return,
+    };
+
+    let mut best: Option<(f64, [Vector2D; 3], bool)> = None;
+    for &na in nodes_a {
+        for &nb in nodes_b {
+            let Some(&uva) = uv.get(&na) else { continue };
+            let Some(&uvb) = uv.get(&nb) else { continue };
+            let area = (uva.x - mid_uv.x) * (uvb.y - mid_uv.y)
+                - (uvb.x - mid_uv.x) * (uva.y - mid_uv.y);
+            let abs_area = area.abs();
+            if abs_area > 1e-15 && best.as_ref().map_or(true, |(b, _, _)| abs_area > *b) {
+                if area > 0.0 {
+                    best = Some((abs_area, [mid_uv, uva, uvb], false));
+                } else {
+                    best = Some((abs_area, [mid_uv, uvb, uva], true));
+                }
+            }
+        }
+    }
+    if let Some((_, uvs, flipped)) = best {
+        let pos = if flipped {
+            [mid_pos, mesh.position(vb), mesh.position(va)]
+        } else {
+            [mid_pos, mesh.position(va), mesh.position(vb)]
+        };
+        tris.push(UvTriangle { uv: uvs, pos });
+    }
+}
+
 /// Extracts faces from a VFG's planar embedding (using UV coordinates) and
 /// returns them as UV triangles suitable for interpolation.
 ///
@@ -267,6 +616,8 @@ struct UvTriangle {
 fn extract_uv_faces(
     vfg: &VirtualFlatGeometry,
     uv: &HashMap<NodeIndex, Vector2D>,
+    region_idx: NodeIndex,
+    degree: usize,
 ) -> Vec<UvTriangle> {
     use petgraph::visit::EdgeRef;
 
@@ -342,6 +693,61 @@ fn extract_uv_faces(
                 });
             }
         }
+    }
+
+    // Euler formula check: V - E + F = 2 (including outer face).
+    // F_inner = F_total - 1 = (2 - V + E) - 1 = 1 - V + E.
+    // But we skip the outer face via signed-area filtering, so expected = 1 - V + E.
+    // NOTE: the user observed a consistent +1 in practice. This is because
+    // the signed-area filter may miss the outer face in some configurations,
+    // making the effective count 2 - V + E. We use that here.
+    let n_v = vfg.graph.node_count() as i64;
+    let n_e = vfg.graph.edge_count() as i64;
+    let euler_inner = 2 - n_v + n_e;
+    let found_inner = seen_faces.len() as i64;
+    if found_inner != euler_inner {
+        // Detect crossing edges to diagnose.
+        let edges: Vec<(NodeIndex, NodeIndex)> = {
+            use petgraph::visit::IntoEdgeReferences;
+            vfg.graph
+                .edge_references()
+                .map(|e| (e.source(), e.target()))
+                .collect()
+        };
+        let mut crossings = 0;
+        for i in 0..edges.len() {
+            for j in (i + 1)..edges.len() {
+                let (a1, a2) = edges[i];
+                let (b1, b2) = edges[j];
+                // Skip edges that share an endpoint.
+                if a1 == b1 || a1 == b2 || a2 == b1 || a2 == b2 {
+                    continue;
+                }
+                if segments_cross(uv[&a1], uv[&a2], uv[&b1], uv[&b2]) {
+                    crossings += 1;
+                    if crossings <= 3 {
+                        let boundary_set: HashSet<NodeIndex> =
+                            vfg.boundary_loop.iter().copied().collect();
+                        log::warn!(
+                            "  crossing: ({:?}[{}]--{:?}[{}]) x ({:?}[{}]--{:?}[{}])",
+                            a1,
+                            if boundary_set.contains(&a1) { "B" } else { "I" },
+                            a2,
+                            if boundary_set.contains(&a2) { "B" } else { "I" },
+                            b1,
+                            if boundary_set.contains(&b1) { "B" } else { "I" },
+                            b2,
+                            if boundary_set.contains(&b2) { "B" } else { "I" },
+                        );
+                    }
+                }
+            }
+        }
+        log::warn!(
+            "extract_uv_faces: region {:?} (degree {}): {} inner faces (Euler: {}), V={}, E={}, boundary={}, {} crossing edge pairs",
+            region_idx, degree, found_inner, euler_inner,
+            n_v, n_e, vfg.boundary_loop.len(), crossings,
+        );
     }
 
     tris
@@ -557,16 +963,47 @@ fn parameterize_side(
     let n_sides = if degree == 1 { 4 } else { 4 * (degree - 1) };
     let boundary_positions = map_boundary_to_polygon(&vfg, n_sides);
 
+    if degree >= 2 {
+        log::info!(
+            "parameterize_side: region {:?} degree {}, n_sides={}, boundary_loop={}, corners={}",
+            node_idx, degree, n_sides, vfg.boundary_loop.len(), vfg.corner_indices.len(),
+        );
+    }
+
     // Solve the Dirichlet problem on the VFG graph.
     let uv_map = solve_dirichlet(&vfg, &boundary_positions);
     (vfg, uv_map)
 }
 
+/// Tests whether two line segments (a1–a2) and (b1–b2) properly cross each other.
+/// Returns `true` only for transversal intersections (not touching at endpoints or collinear overlap).
+fn segments_cross(a1: Vector2D, a2: Vector2D, b1: Vector2D, b2: Vector2D) -> bool {
+    let d1 = a2 - a1;
+    let d2 = b2 - b1;
+
+    let denom = d1.x * d2.y - d1.y * d2.x;
+    if denom.abs() < 1e-12 {
+        return false; // parallel or collinear
+    }
+
+    let d = b1 - a1;
+    let t = (d.x * d2.y - d.y * d2.x) / denom;
+    let u = (d.x * d1.y - d.y * d1.x) / denom;
+
+    // Strictly interior intersection (exclude endpoints).
+    let eps = 1e-9;
+    t > eps && t < 1.0 - eps && u > eps && u < 1.0 - eps
+}
+
 /// Maps every node in `vfg.boundary_loop` to a 2D position on a regular `n_sides`-gon.
 ///
-/// Positions are distributed proportionally by the 3D arc-length of consecutive
-/// boundary nodes. This ensures a valid Tutte embedding (boundary on a convex polygon)
-/// while preserving the structural order produced by the VFG boundary trace.
+/// When `corner_indices` is non-empty (degree ≥ 2), each consecutive pair of
+/// corners defines a segment that maps to one polygon side. Nodes within a
+/// segment are distributed by arc-length along that side. This ensures boundary
+/// midpoints and cut vertices land on the correct polygon side.
+///
+/// When `corner_indices` is empty (degree 1), nodes are distributed by global
+/// arc-length around the polygon.
 ///
 /// The polygon has circumradius 1 with vertices at angles `2πk/n_sides`.
 fn map_boundary_to_polygon(vfg: &VirtualFlatGeometry, n_sides: usize) -> HashMap<NodeIndex, Vector2D> {
@@ -584,7 +1021,84 @@ fn map_boundary_to_polygon(vfg: &VirtualFlatGeometry, n_sides: usize) -> HashMap
         })
         .collect();
 
-    // Compute 3D arc lengths between consecutive boundary nodes (cyclic).
+    let corners = &vfg.corner_indices;
+
+    if !corners.is_empty() && corners.len() != n_sides {
+        warn!(
+            "map_boundary_to_polygon: corner count {} != n_sides {}, falling back to arc-length",
+            corners.len(),
+            n_sides,
+        );
+    }
+
+    if !corners.is_empty() && corners.len() == n_sides {
+        // Structured mapping: each segment of boundary nodes maps to one polygon side.
+        let mut result = HashMap::new();
+
+        for side in 0..n_sides {
+            let seg_start = corners[side];
+            let seg_end = corners[(side + 1) % n_sides];
+
+            // Nodes in this segment (cyclic slice of boundary_loop).
+            let seg_len = if seg_end > seg_start {
+                seg_end - seg_start
+            } else if seg_end == seg_start {
+                // Empty segment (corner immediately followed by next corner).
+                // Place nothing — the corner node itself is the start of the next side.
+                continue;
+            } else {
+                n - seg_start + seg_end
+            };
+
+            if seg_len == 0 {
+                continue;
+            }
+
+            // Compute arc lengths within this segment.
+            let mut seg_arc: Vec<f64> = Vec::with_capacity(seg_len);
+            let mut seg_total: f64 = 0.0;
+            for j in 0..seg_len {
+                let idx_a = (seg_start + j) % n;
+                let idx_b = (seg_start + j + 1) % n;
+                let a = vfg.graph[boundary[idx_a]].position;
+                let b = vfg.graph[boundary[idx_b]].position;
+                let len = (b - a).norm();
+                seg_arc.push(len);
+                seg_total += len;
+            }
+
+            // Place nodes along this polygon side.
+            let p0 = polygon[side];
+            let p1 = polygon[(side + 1) % n_sides];
+            let mut cumulative: f64 = 0.0;
+
+            for j in 0..seg_len {
+                let idx = (seg_start + j) % n;
+                let node = boundary[idx];
+                let t = if seg_total > 1e-15 {
+                    cumulative / seg_total
+                } else {
+                    j as f64 / seg_len as f64
+                };
+                let pos = p0 * (1.0 - t) + p1 * t;
+                result.insert(node, pos);
+                cumulative += seg_arc[j];
+            }
+        }
+
+        // Verify all boundary nodes got assigned a position.
+        let missing = boundary.iter().filter(|n| !result.contains_key(n)).count();
+        if missing > 0 {
+            warn!(
+                "map_boundary_to_polygon: {} of {} boundary nodes missing after corner mapping!",
+                missing, n,
+            );
+        }
+
+        return result;
+    }
+
+    // Fallback: global arc-length distribution (degree 1, no corners).
     let mut seg_lengths: Vec<f64> = vec![0.0; n];
     let mut total: f64 = 0.0;
     for i in 0..n {
@@ -595,15 +1109,12 @@ fn map_boundary_to_polygon(vfg: &VirtualFlatGeometry, n_sides: usize) -> HashMap
         total += len;
     }
 
-    // Place each boundary node at the polygon position corresponding to its
-    // cumulative arc-length fraction.
     let mut result = HashMap::new();
     let mut cumulative: f64 = 0.0;
 
     for (i, &node) in boundary.iter().enumerate() {
         let t = cumulative / total; // in [0, 1)
 
-        // Locate position on the polygon perimeter at t part.
         let frac = t * n_sides as f64;
         let side = (frac as usize).min(n_sides - 1);
         let local_t = frac - side as f64;

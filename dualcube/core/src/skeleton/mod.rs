@@ -154,15 +154,16 @@ impl SkeletonData {
         );
 
         // Use cross parameterization to map input vertices onto the polycube surface.
-        if let (Some(pmap), Some(input_skel), Some(poly), Some(quad)) = (
+        if let (Some(pmap), Some(input_skel), Some(poly_skel), Some(poly), Some(quad)) = (
             &polycube_map,
             labeled.as_ref(),
+            polycube_skeleton.as_ref(),
             polycube.as_ref(),
             quad.as_mut(),
         ) {
             let polycube_mesh: Mesh<INPUT> = Mesh::convert(&poly.structure);
             quad.triangle_mesh_polycube =
-                pmap.to_triangle_mesh_polycube(&mesh_ref, input_skel, &polycube_mesh);
+                pmap.to_triangle_mesh_polycube(&mesh_ref, input_skel, poly_skel, &polycube_mesh);
             quad.map_quad_to_input_surface(&mesh_ref);
         }
 
@@ -213,15 +214,16 @@ pub fn get_skeleton_based_mapping(
     );
 
     // Use cross-parameterization to map input vertices onto the polycube surface.
-    if let (Some(pmap), Some(input_skel), Some(poly), Some(quad)) = (
+    if let (Some(pmap), Some(input_skel), Some(poly_skel), Some(poly), Some(quad)) = (
         &polycube_map,
         labeled.as_ref(),
+        polycube_skeleton.as_ref(),
         polycube.as_ref(),
         quad.as_mut(),
     ) {
         let polycube_mesh: Mesh<INPUT> = Mesh::convert(&poly.structure);
         quad.triangle_mesh_polycube =
-            pmap.to_triangle_mesh_polycube(&mesh_ref, input_skel, &polycube_mesh);
+            pmap.to_triangle_mesh_polycube(&mesh_ref, input_skel, poly_skel, &polycube_mesh);
         quad.map_quad_to_input_surface(&mesh_ref);
     }
 

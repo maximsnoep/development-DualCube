@@ -89,6 +89,15 @@ pub struct VirtualFlatGeometry {
     /// node indices. After all cuts are applied the topology is a disk, so the
     /// boundary is one simple cycle. Every node appears at most once.
     pub boundary_loop: Vec<NodeIndex>,
+
+    /// Indices into `boundary_loop` where polygon corners should be placed.
+    /// For a `4(d−1)`-gon there are `4(d−1)` corners. Each corner marks the
+    /// start of a new polygon side. The boundary nodes between consecutive
+    /// corners map to one side of the polygon.
+    ///
+    /// For degree 1 (no cuts), this is empty and `map_boundary_to_polygon`
+    /// falls back to pure arc-length distribution.
+    pub corner_indices: Vec<usize>,
 }
 
 /// Per-node payload in the virtual graph.
@@ -112,6 +121,7 @@ impl VirtualFlatGeometry {
             graph: StableUnGraph::default(),
             vert_to_nodes: HashMap::new(),
             boundary_loop: Vec::new(),
+            corner_indices: Vec::new(),
         }
     }
 
@@ -457,31 +467,143 @@ impl VirtualFlatGeometry {
             }
         }
 
-        // 4c. Direct edges between consecutive boundary midpoints.
-        // Skip pairs where either midpoint is a cut-endpoint (those will be
-        // connected via Phase 5b after the boundary loop is traced).
+        // 4b½. Triangulation edges: connect each boundary midpoint to the
+        // opposite vertex of its adjacent interior triangle.
+        //
+        // Without this, inserting a midpoint m on boundary edge v1-v2 creates
+        // a quadrilateral (v1, m, v2, v3) instead of two triangles. On coarse
+        // meshes (like polycubes), these quads break Tutte's bijectivity
+        // guarantee, causing crossing edges in the harmonic embedding.
         for edge_ref in skeleton.edges(node_idx) {
             let boundary = &edge_ref.weight().boundary_loop;
-            let edges = &boundary.edge_midpoints;
-            let n = edges.len();
-            for i in 0..n {
-                let e_a = edges[i];
-                let e_b = edges[(i + 1) % n];
-                // Skip if either is a cut-endpoint midpoint.
-                if cut_mid_duplicates.contains_key(&e_a)
-                    || cut_mid_duplicates.contains_key(&e_b)
-                {
-                    continue;
+            for &be in &boundary.edge_midpoints {
+                // Find the face on the interior side of this boundary edge.
+                // One face has all 3 vertices in the patch; the other doesn't.
+                let opposite_vert = {
+                    let mut found = None;
+                    for &he in &[be, mesh.twin(be)] {
+                        let face = mesh.face(he);
+                        let face_verts: Vec<VertID> = mesh.vertices(face).collect();
+                        // Check if all face verts are in the patch.
+                        if face_verts.iter().all(|fv| patch_set.contains(fv)) {
+                            // The third vertex (not root/toor of be).
+                            let root = mesh.root(be);
+                            let toor = mesh.toor(be);
+                            for &fv in &face_verts {
+                                if fv != root && fv != toor {
+                                    found = Some(fv);
+                                    break;
+                                }
+                            }
+                            break;
+                        }
+                    }
+                    found
+                };
+
+                let Some(opp) = opposite_vert else {
+                    continue; // Both faces are outside the patch (shouldn't happen).
+                };
+
+                // Connect the midpoint to the opposite vertex.
+                if let Some(&(mid_left, mid_right)) = cut_mid_duplicates.get(&be) {
+                    // Cut-endpoint midpoint: connect each copy to the appropriate
+                    // side of the opposite vertex.
+                    if cut_vertex_set.contains(&opp) {
+                        // Determine which side opp is on relative to this cut.
+                        // Use the side assignment from the cut vertex at the endpoint.
+                        let root = mesh.root(be);
+                        let toor = mesh.toor(be);
+                        let adj_cut_vert = if cut_vertex_set.contains(&root) {
+                            root
+                        } else if cut_vertex_set.contains(&toor) {
+                            toor
+                        } else {
+                            // Shouldn't happen for cut-endpoint midpoints.
+                            continue;
+                        };
+                        let side = cut_side_assignments
+                            .get(&adj_cut_vert)
+                            .and_then(|s| s.get(&opp))
+                            .copied()
+                            .unwrap_or(false);
+                        if side {
+                            add_edge(&mut graph, mid_right, cut_duplicates[&opp].1);
+                        } else {
+                            add_edge(&mut graph, mid_left, cut_duplicates[&opp].0);
+                        }
+                    } else {
+                        // opp is a regular vertex. Both copies connect to it.
+                        add_edge(&mut graph, mid_left, vert_to_nodes[&opp][0]);
+                        add_edge(&mut graph, mid_right, vert_to_nodes[&opp][0]);
+                    }
+                } else {
+                    // Regular midpoint.
+                    let mid_node = midpoint_nodes[&be];
+                    if cut_vertex_set.contains(&opp) {
+                        // Need to pick the correct side of opp.
+                        let root = mesh.root(be);
+                        let toor = mesh.toor(be);
+                        let non_patch_endpoint = if !patch_set.contains(&root) {
+                            root
+                        } else if !patch_set.contains(&toor) {
+                            toor
+                        } else {
+                            // Both endpoints are in the patch. Use side assignment directly.
+                            let side = cut_side_assignments
+                                .get(&opp)
+                                .and_then(|s| s.get(&root).or(s.get(&toor)))
+                                .copied()
+                                .unwrap_or(false);
+                            let node = if side {
+                                cut_duplicates[&opp].1
+                            } else {
+                                cut_duplicates[&opp].0
+                            };
+                            add_edge(&mut graph, mid_node, node);
+                            continue;
+                        };
+                        let side = side_of_non_patch_neighbor(
+                            opp,
+                            non_patch_endpoint,
+                            &cut_side_assignments,
+                            mesh,
+                        );
+                        let node = if side {
+                            cut_duplicates[&opp].1
+                        } else {
+                            cut_duplicates[&opp].0
+                        };
+                        add_edge(&mut graph, mid_node, node);
+                    } else {
+                        add_edge(&mut graph, mid_node, vert_to_nodes[&opp][0]);
+                    }
                 }
-                let a = midpoint_nodes[&e_a];
-                let b = midpoint_nodes[&e_b];
-                add_edge(&mut graph, a, b);
+            }
+        }
+
+        // 4c. Direct edges between consecutive boundary midpoints.
+        // Only for degree ≤ 1 (no cuts). For regions with cuts, the boundary
+        // is split across polygon sides and consecutive midpoints in the
+        // original mesh boundary can end up on different sides — their
+        // straight-line edge in UV crosses the polygon interior, breaking
+        // planarity. Phase 5b provides all needed boundary connectivity.
+        if cutting_plan.cuts.is_empty() {
+            for edge_ref in skeleton.edges(node_idx) {
+                let boundary = &edge_ref.weight().boundary_loop;
+                let edges = &boundary.edge_midpoints;
+                let n = edges.len();
+                for i in 0..n {
+                    let a = midpoint_nodes[&edges[i]];
+                    let b = midpoint_nodes[&edges[(i + 1) % n]];
+                    add_edge(&mut graph, a, b);
+                }
             }
         }
 
         // ── Phase 5: Trace boundary loop ──────────────────────────────────
 
-        let boundary_loop = trace_boundary_loop(
+        let (boundary_loop, corner_indices) = trace_boundary_loop(
             node_idx,
             skeleton,
             cutting_plan,
@@ -519,6 +641,7 @@ impl VirtualFlatGeometry {
             graph,
             vert_to_nodes,
             boundary_loop,
+            corner_indices,
         };
 
         check_invariants(&vfg);
@@ -765,16 +888,17 @@ fn trace_boundary_loop(
     midpoint_nodes: &HashMap<EdgeID, NodeIndex>,
     cut_mid_duplicates: &HashMap<EdgeID, (NodeIndex, NodeIndex)>,
     cut_endpoint_midpoints: &HashMap<EdgeID, (usize, bool)>,
-) -> Vec<NodeIndex> {
+) -> (Vec<NodeIndex>, Vec<usize>) {
     if cutting_plan.cuts.is_empty() {
         // No cuts: just one boundary loop (degree 1).
         // Walk the single boundary loop and return its VFG node sequence.
+        // No corner indices — arc-length distribution is used for degree 1.
         let edge_ref = skeleton
             .edges(node_idx)
             .next()
             .expect("degree >= 1 but no edges");
         let boundary = &edge_ref.weight().boundary_loop;
-        return build_boundary_chain(boundary, midpoint_nodes);
+        return (build_boundary_chain(boundary, midpoint_nodes), Vec::new());
     }
 
     // Build adjacency for the cut spanning tree.
@@ -800,6 +924,7 @@ fn trace_boundary_loop(
 
     let mut visited: HashSet<EdgeIndex> = HashSet::new();
     let mut result: Vec<NodeIndex> = Vec::new();
+    let mut corners: Vec<usize> = Vec::new();
 
     dfs_trace_boundary(
         start_boundary,
@@ -814,9 +939,10 @@ fn trace_boundary_loop(
         &tree_adj,
         &mut visited,
         &mut result,
+        &mut corners,
     );
 
-    result
+    (result, corners)
 }
 
 /// An entry in the boundary chain: either a regular midpoint (single node) or
@@ -837,6 +963,10 @@ enum ChainEntry {
 /// and at each cut endpoint midpoint that leads to an unvisited boundary,
 /// splices in:
 ///   M_left → left cut path → M2_left → [recurse] → M2_right → right cut path → M_right
+///
+/// Also records polygon corner positions in `corners`. Each splice introduces
+/// 4 corners (start of left cut side, start of child boundary, start of right
+/// cut side, start of resumed parent boundary).
 #[allow(clippy::too_many_arguments)]
 fn dfs_trace_boundary(
     boundary_idx: EdgeIndex,
@@ -851,6 +981,7 @@ fn dfs_trace_boundary(
     tree_adj: &HashMap<EdgeIndex, Vec<(usize, EdgeIndex)>>,
     visited: &mut HashSet<EdgeIndex>,
     result: &mut Vec<NodeIndex>,
+    corners: &mut Vec<usize>,
 ) {
     visited.insert(boundary_idx);
 
@@ -886,6 +1017,13 @@ fn dfs_trace_boundary(
         (0, chain.len())
     };
 
+    // Do NOT push a corner for the root boundary's initial midpoints.
+    // The root boundary's midpoints form a single polygon side that wraps
+    // around: some before the first cut splice, and the rest after the last
+    // splice returns. The last splice's "resumed parent boundary" corner
+    // marks the start of this side, and it wraps cyclically to the first
+    // corner.
+
     let n = chain.len();
     for step in 0..walk_count {
         let idx = (start_pos + step) % n;
@@ -909,6 +1047,9 @@ fn dfs_trace_boundary(
                 };
 
                 if !visited.contains(&other_boundary) {
+                    // Corner: start of left cut side (M_left begins a cut-vertex segment).
+                    corners.push(result.len());
+
                     // Splice: M_left → left cut vertices → M2_left →
                     //         [recurse boundary B] →
                     //         M2_right → right cut vertices → M_right
@@ -942,11 +1083,16 @@ fn dfs_trace_boundary(
                         }
                     }
 
+                    // Corner: start of child boundary side (M2_left begins it).
+                    corners.push(result.len());
+
                     // Emit M2_left (arrival at other boundary).
                     result.push(other_mid_left);
 
                     // Recurse into the other boundary (walks n-1 of its nodes,
                     // skipping the entry midpoint which we just emitted).
+                    // The recursive call will push its own corners for any
+                    // sub-cuts it encounters.
                     let entered_via = (*ci, !*is_start);
                     dfs_trace_boundary(
                         other_boundary,
@@ -961,7 +1107,11 @@ fn dfs_trace_boundary(
                         tree_adj,
                         visited,
                         result,
+                        corners,
                     );
+
+                    // Corner: start of right cut side (M2_right begins it).
+                    corners.push(result.len());
 
                     // Emit M2_right (departure from other boundary).
                     result.push(other_mid_right);
@@ -979,6 +1129,9 @@ fn dfs_trace_boundary(
 
                     // Emit M_right on this boundary.
                     result.push(*right);
+
+                    // Corner: start of resumed parent boundary midpoints.
+                    corners.push(result.len());
                 } else {
                     // Cut endpoint leading to an already-visited boundary.
                     // Both copies sit on the boundary at the same spot — emit them
