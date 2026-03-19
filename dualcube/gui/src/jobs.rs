@@ -18,7 +18,16 @@ use std::path::PathBuf;
 
 async fn run_job(job: Job) -> Option<JobResult> {
     match job {
-        Job::Hex { .. } => None,
+        Job::Hex {
+        	solution,
+        	path,
+         } => {
+	         if let Err(err) = io::HEX::export(&solution, &path) {
+	             warn!("Failed to export HEX file: {err:?}");
+	         }
+         None
+
+         },
         Job::Import {
             path,
             configuration,
@@ -218,14 +227,11 @@ async fn run_job(job: Job) -> Option<JobResult> {
             if solution.mesh_ref.vert_ids().is_empty() {
                 return None;
             }
-            if let Err(err) = io::Dcube::export(&solution, &path) {
-                warn!("Failed to export Dcube file: {err:?}");
-            }
             if let Err(err) = io::Dsol::export(&solution, &path) {
                 warn!("Failed to export Dsol file: {err:?}");
             }
-            if let Err(err) = io::Obj::export(&solution, &path) {
-                warn!("Failed to export Obj file: {err:?}");
+            if let Err(err) = io::OBJ::export(&solution, &path) {
+                warn!("Failed to export OBJ file: {err:?}");
             }
             if let Err(err) = io::Flag::export(&solution, &path) {
                 warn!("Failed to export Flag file: {err:?}");
@@ -236,14 +242,14 @@ async fn run_job(job: Job) -> Option<JobResult> {
             if solution.mesh_ref.vert_ids().is_empty() {
                 return None;
             }
-            if let Err(err) = io::Nlr::export(&solution, &path) {
+            if let Err(err) = io::NLR::export(&solution, &path) {
                 warn!("Failed to export NLR file: {err:?}");
             }
             None
         }
         Job::ExportDotgraph { solution, path } => {
-            if let Err(err) = io::Dotgraph::export(&solution, &path) {
-                warn!("Failed to export Dotgraph file: {err:?}");
+            if let Err(err) = io::APG::export(&solution, &path) {
+                warn!("Failed to export APG file: {err:?}");
             }
             None
         }
@@ -489,10 +495,6 @@ fn poll_jobs(
                     })));
                 }
 
-                Some(JobResult::Hexed(res)) => {
-                    info!("Hexed completed: {:?}", res);
-                    // TODO: insert into your resources
-                }
 
                 Some(JobResult::Imported((solution, configuration))) => {
                     *input_resource = InputResource::new(solution.mesh_ref.clone());
@@ -662,6 +664,7 @@ pub enum Job {
     // HEX MESHING
     Hex {
         solution: Solution,
+        path: PathBuf,
     },
     // PATH STRAIGTHENING
     PathStraightening {
@@ -763,7 +766,6 @@ enum JobResult {
     // For example after optimizing quad structure
     QuadChanged((Solution, Configuration)),
 
-    Hexed(PathBuf),
     Refreshed(RenderObjectStore),
 
     AddedLoop((Vec<[EdgeID; 2]>, PrincipalDirection, Option<Solution>)),

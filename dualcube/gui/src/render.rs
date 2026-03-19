@@ -369,6 +369,8 @@ pub fn update_render_settings(
                 | (Objects::Polycube, "flat paths")
                 | (Objects::PolycubeMap, "colored")
                 | (Objects::PolycubeMap, "triangles")
+                | (Objects::PolycubeMap, "paths")
+                | (Objects::PolycubeMap, "flat paths")
                 | (Objects::QuadMesh, "gray")
                 | (Objects::QuadMesh, "wireframe")
         )
@@ -460,16 +462,29 @@ pub fn respawn_renders(
                             let mesh_handle = MeshBundle::new(meshes.add(mesh.clone())).0;
                             match object {
                                 Objects::InputMesh => {
-                                    commands.spawn((
-                                        mesh_handle,
-                                        MeshMaterial3d(toon_material.clone()),
-                                        Transform {
-                                            translation: Vec3::from(object),
-                                            ..Default::default()
-                                        },
-                                        Rendered,
-                                        MainMesh,
-                                    ));
+                                    if feature == "shaded" {
+                                        commands.spawn((
+                                            mesh_handle,
+                                            MeshMaterial3d(flat_material.clone()),
+                                            Transform {
+                                                translation: Vec3::from(object),
+                                                ..Default::default()
+                                            },
+                                            Rendered,
+                                            MainMesh,
+                                        ));
+                                    } else {
+                                        commands.spawn((
+                                            mesh_handle,
+                                            MeshMaterial3d(toon_material.clone()),
+                                            Transform {
+                                                translation: Vec3::from(object),
+                                                ..Default::default()
+                                            },
+                                            Rendered,
+                                            MainMesh,
+                                        ));
+                                    }
                                 }
                                 Objects::QuadMesh => {
                                     commands.spawn((
@@ -821,8 +836,8 @@ pub fn refresh(solution: &Solution) -> RenderObjectStore {
                             .gizmo(gizmos_xloops, 6., -0.001, "x-loops")
                             .gizmo(gizmos_yloops, 6., -0.0011, "y-loops")
                             .gizmo(gizmos_zloops, 6., -0.00111, "z-loops")
-                            .gizmo(gizmos_paths, 7., -0.001, "paths")
-                            .gizmo(gizmos_flat_paths, 5., -0.0011, "flat paths")
+                            .gizmo(gizmos_paths, 5., -0.001, "paths")
+                            .gizmo(gizmos_flat_paths, 3., -0.0011, "flat paths")
                             .to_owned(),
                     );
                 }
@@ -833,17 +848,92 @@ pub fn refresh(solution: &Solution) -> RenderObjectStore {
             // quads mapped on the polycube
             // triangles mapped on the polycube
             Objects::PolycubeMap => {
-                if let Some(quad) = &solution.quad {
+                if let (Some(quad), Some(layout), Some(polycube)) =
+                    (&solution.quad, &solution.layout, &solution.polycube)
+                {
+                    let mut black_color_map = HashMap::new();
+                    let mut gray_color_map = HashMap::new();
                     let mut color_map = HashMap::new();
-                    for face_id in quad.quad_mesh_polycube.face_ids() {
-                        let color = colors::LIGHT_GRAY;
-                        color_map.insert(face_id, color);
+                    for &patch_id in &polycube.structure.face_ids() {
+                        let normal = (polycube.structure.normal(patch_id) as Vector3D).normalize();
+                        let (dir, side) = to_principal_direction(normal);
+                        let color =
+                            colors::from_direction(dir, Some(Perspective::Primal), Some(side));
+                        for &triangle_id in &layout.face_to_patch[&patch_id].faces {
+                            color_map.insert(triangle_id, color);
+                            black_color_map.insert(triangle_id, colors::BLACK);
+                            gray_color_map.insert(triangle_id, colors::LIGHT_GRAY);
+                        }
+                    }
+
+                    let mut lambert_shading = HashMap::new();
+                    // Assumes triangle face ids correspond between input_mesh and triangle_mesh_polycube
+                    for face_id in layout.granulated_mesh.face_ids() {
+                        let normal = layout.granulated_mesh.normal(face_id);
+                        lambert_shading.insert(face_id, lambert_gray(normal));
+                    }
+
+                    let mut gizmos_paths = GizmoAsset::new();
+                    let mut gizmos_flat_paths = GizmoAsset::new();
+
+                    let (scale, translation) = quad.triangle_mesh_polycube.scale_translation();
+
+                    let color = colors::GRAY;
+                    let c = bevy::color::Color::srgb(color[0], color[1], color[2]);
+
+                    for (&pedge_id, path) in &layout.edge_to_path {
+                        let f1 = polycube.structure.normal(polycube.structure.face(pedge_id));
+                        let f2 = polycube
+                            .structure
+                            .normal(polycube.structure.face(polycube.structure.twin(pedge_id)));
+                        for vertexpair in path.windows(2) {
+                            if layout
+                                .granulated_mesh
+                                .edge_between_verts(vertexpair[0], vertexpair[1])
+                                .is_none()
+                            {
+                                println!(
+                                    "Edge between {:?} and {:?} does not exist",
+                                    vertexpair[0], vertexpair[1]
+                                );
+                                continue;
+                            }
+                            let edge_id = layout
+                                .granulated_mesh
+                                .edge_between_verts(vertexpair[0], vertexpair[1])
+                                .unwrap()
+                                .0;
+                            let Some([e1, e2]) = quad
+                                .triangle_mesh_polycube
+                                .vertices(edge_id)
+                                .collect_array::<2>()
+                            else {
+                                panic!("Expected two vertices for edge {edge_id:?}");
+                            };
+                            let u = quad.triangle_mesh_polycube.position(e1);
+                            let v = quad.triangle_mesh_polycube.position(e2);
+                            gizmos_flat_paths.line(
+                                to_bevy_vec(&(u * scale + translation)),
+                                to_bevy_vec(&(v * scale + translation)),
+                                c,
+                            );
+                            if f1 != f2 {
+                                gizmos_paths.line(
+                                    to_bevy_vec(&(u * scale + translation)),
+                                    to_bevy_vec(&(v * scale + translation)),
+                                    c,
+                                );
+                            }
+                        }
                     }
 
                     render_object_store.add_object(
                         object,
                         RenderObject::default()
-                            .mesh(&quad.quad_mesh_polycube, &color_map, "colored")
+                            .mesh(&quad.triangle_mesh_polycube, &black_color_map, "black")
+                            .mesh(&quad.triangle_mesh_polycube, &gray_color_map, "gray")
+                            .mesh(&quad.triangle_mesh_polycube, &color_map, "colored")
+                            .mesh(&quad.triangle_mesh_polycube, &lambert_shading, "lambert")
                             .gizmo(
                                 quad.quad_mesh_polycube.gizmos(colors::GRAY),
                                 2.,
@@ -856,6 +946,8 @@ pub fn refresh(solution: &Solution) -> RenderObjectStore {
                                 -0.01,
                                 "triangles",
                             )
+                            .gizmo(gizmos_paths, 5., -0.001, "paths")
+                            .gizmo(gizmos_flat_paths, 3., -0.0011, "flat paths")
                             .to_owned(),
                     );
                 }
@@ -1061,6 +1153,13 @@ pub fn refresh(solution: &Solution) -> RenderObjectStore {
                     }
                 }
 
+                let mut lambert_shading = HashMap::new();
+                // Assumes triangle face ids correspond between input_mesh and triangle_mesh_polycube
+                for face_id in solution.mesh_ref.face_ids() {
+                    let normal = solution.mesh_ref.normal(face_id);
+                    lambert_shading.insert(face_id, lambert_gray(normal));
+                }
+
                 // Visualize principal curvature (direction + resolution-robust magnitude)
                 let mut gizmos_curvature_max = GizmoAsset::new();
                 let mut gizmos_curvature_min = GizmoAsset::new();
@@ -1241,14 +1340,15 @@ pub fn refresh(solution: &Solution) -> RenderObjectStore {
                     RenderObject::default()
                         .mesh(input, &default_color_map, "gray")
                         .mesh(input, &black_color_map, "black")
+                        .mesh(input, &lambert_shading, "lambert")
                         .mesh(granulated_mesh, &color_map_segmentation, "segmentation")
                         .mesh(granulated_mesh, &color_map_alignment, "alignment")
                         .gizmo(input.gizmos(colors::GRAY), 0.5, -0.00001, "wireframe")
                         .gizmo(gizmos_xloops, 3., -0.0001, "x-loops")
                         .gizmo(gizmos_yloops, 3., -0.00011, "y-loops")
                         .gizmo(gizmos_zloops, 3., -0.000111, "z-loops")
-                        .gizmo(gizmos_paths, 4., -0.0001, "paths")
-                        .gizmo(gizmos_flat_paths, 2., -0.00011, "flat paths")
+                        .gizmo(gizmos_paths, 3., -0.0001, "paths")
+                        .gizmo(gizmos_flat_paths, 1., -0.00011, "flat paths")
                         // .mesh(input, &color_map_flag, "flag")
                         // .gizmo(gizmos_flag_paths, 2., -1e-4, "flag paths")
                         .gizmo(gizmos_features, 5., -0.00012, "features")
@@ -1285,4 +1385,27 @@ pub fn world_to_view(v: Vector3D, translation: Vector3D, scale: f64) -> Vec3 {
 pub fn view_to_world(v: Vec3, translation: Vector3D, scale: f64) -> Vector3D {
     let v_world = Vector3D::new(v.x as f64, v.y as f64, v.z as f64);
     invert_transform_coordinates(v_world, translation, scale)
+}
+
+fn lambert_gray(normal: Vector3D) -> colors::Color {
+    let light_dir = Vector3D::new(-25.0, 25.0, 25.0);
+
+    let n = normal.normalize();
+    let l = light_dir.normalize();
+
+    let ndl = n.dot(&l) as f32;
+
+    let wrap = 0.5;
+    let diffuse = ((ndl + wrap) / (1.0 + wrap)).clamp(0.0, 1.0);
+
+    let hemi = 0.2 + 0.15 * ((n.y as f32) * 0.5 + 0.5);
+
+    let shade = (0.75 * diffuse + 0.25 * hemi).clamp(0.0, 1.0);
+
+    [shade, shade, shade]
+}
+
+#[allow(clippy::cast_possible_truncation)]
+fn to_bevy_vec(vec: &Vector3D) -> Vec3 {
+    Vec3::new(vec.x as f32, vec.y as f32, vec.z as f32)
 }

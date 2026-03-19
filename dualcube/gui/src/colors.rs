@@ -430,8 +430,8 @@ pub const fn from_direction(
     match (direction, perspective, orientation) {
         // General
         (PrincipalDirection::X, _, _) => SNOEP_RED,
-        (PrincipalDirection::Y, _, _) => SNOEP_YELLOW,
-        (PrincipalDirection::Z, _, _) => SNOEP_BLUE,
+        (PrincipalDirection::Y, _, _) => SNOEP_BLUE,
+        (PrincipalDirection::Z, _, _) => SNOEP_YELLOW,
     }
 }
 

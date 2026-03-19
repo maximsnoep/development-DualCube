@@ -1,25 +1,23 @@
-use crate::{Export, Import};
 use bitcode::{Decode, Encode};
 use dualcube::{prelude::INPUT, solutions::Loop};
-use log::info;
 use mehsh::prelude::*;
 use serde::{Deserialize, Serialize};
 use std::{io::Write, sync::Arc};
 
-pub struct Dcube;
+pub struct Loops;
 
 #[derive(Encode, Decode, Serialize, Deserialize)]
-pub struct DcubeSerialization {
-    pub loops: Vec<(u8, Vec<(usize, usize)>)>, // list of loops, each loop is a list of edges, each edge is two vertex ids
-    pub faces: Vec<Vec<usize>>,                // list of faces, each face is a list of vertex ids
-    pub verts: Vec<(f64, f64, f64)>,           // list of vertex positions
+struct LoopsSerialization {
+    loops: Vec<(u8, Vec<(usize, usize)>)>, // list of loops, each loop is a list of edges, each edge is two vertex ids
+    faces: Vec<Vec<usize>>,                // list of faces, each face is a list of vertex ids
+    verts: Vec<(f64, f64, f64)>,           // list of vertex positions
 }
 
-impl Export for Dcube {
+impl crate::Export for Loops {
     fn export(
         solution: &dualcube::prelude::Solution,
         path: &std::path::Path,
-    ) -> Result<(), Box<dyn std::error::Error>> {
+    ) -> anyhow::Result<()> {
         // Mesh to a list of faces and vertices (positions)
         let mut positions = vec![];
         let mut vert_ids = ids::IdMap::<VERT, INPUT>::new();
@@ -34,10 +32,16 @@ impl Export for Dcube {
 
         let mut faces = vec![];
         for face_id in solution.mesh_ref.face_ids() {
-            let vertices = solution.mesh_ref.vertices(face_id);
-            let face_verts = vertices
-                .map(|vert_id| vert_ids.id(&vert_id).unwrap().to_owned())
-                .collect::<Vec<_>>();
+            let face_verts = solution
+                .mesh_ref
+                .vertices(face_id)
+                .map(|vert_id| {
+                    vert_ids
+                        .id(&vert_id)
+                        .copied()
+                        .ok_or_else(|| anyhow::anyhow!("missing vertex id mapping for {vert_id:?}"))
+                })
+                .collect::<Result<Vec<_>, _>>()?;
             faces.push(face_verts);
         }
 
@@ -49,56 +53,46 @@ impl Export for Dcube {
                 dualcube::prelude::PrincipalDirection::Y => 1,
                 dualcube::prelude::PrincipalDirection::Z => 2,
             };
-            let loop_edges = lewp
-                .edges
-                .clone()
-                .into_iter()
-                .map(|edge_id| {
-                    let Some([v0, v1]) = solution.mesh_ref.vertices(edge_id).collect_array::<2>()
-                    else {
-                        panic!("Expecting edge {edge_id:?} to have exactly two vertices");
-                    };
-                    (v0, v1)
-                })
-                .map(|(start, end)| {
-                    (
-                        vert_ids.id(&start).unwrap().to_owned(),
-                        vert_ids.id(&end).unwrap().to_owned(),
-                    )
-                })
-                .collect::<Vec<_>>();
+            let mut loop_edges = Vec::new();
+            for edge_id in lewp.edges.iter().copied() {
+                let Some([v0, v1]) = solution.mesh_ref.vertices(edge_id).collect_array::<2>()
+                else {
+                    anyhow::bail!("expecting edge {edge_id:?} to have exactly two vertices");
+                };
+
+                let a = vert_ids
+                    .id(&v0)
+                    .copied()
+                    .ok_or_else(|| anyhow::anyhow!("missing vertex id mapping for {v0:?}"))?;
+                let b = vert_ids
+                    .id(&v1)
+                    .copied()
+                    .ok_or_else(|| anyhow::anyhow!("missing vertex id mapping for {v1:?}"))?;
+
+                loop_edges.push((a, b));
+            }
             loops.push((d, loop_edges));
         }
 
-        let path_save = path.with_extension("dcube");
-        info!("Writing DCUBE to {path_save:?}");
-        let mut file = std::fs::File::create(path_save.clone())?;
-
-        let serialized = bitcode::encode(&DcubeSerialization {
+        let path_save = path.with_extension("loops");
+        let mut file = std::fs::File::create(&path_save)?;
+        let serialized = bitcode::encode(&LoopsSerialization {
             loops,
             faces,
             verts: positions,
         });
-        info!("Serialized size (bitcode): {} bytes", serialized.len());
-
-        let compressed = zstd::stream::encode_all(std::io::Cursor::new(&serialized), 3)?;
-        info!("Compressed size (zstd): {} bytes", compressed.len());
-
+        let compressed = zstd::stream::encode_all(std::io::Cursor::new(&serialized), 0)?;
         file.write_all(&compressed)?;
-        info!("Successfully written DCUBE to {path_save:?}");
-
         Ok(())
     }
 }
 
-impl Import for Dcube {
-    fn import(
-        path: &std::path::Path,
-    ) -> Result<dualcube::prelude::Solution, Box<dyn std::error::Error>> {
+impl crate::Import for Loops {
+    fn import(path: &std::path::Path) -> anyhow::Result<dualcube::prelude::Solution> {
         let file = std::fs::File::open(path)?;
         let reader = std::io::BufReader::new(file);
         let decompressed = zstd::decode_all(reader)?;
-        let serialized: DcubeSerialization = bitcode::decode(&decompressed)?;
+        let serialized: LoopsSerialization = bitcode::decode(&decompressed)?;
 
         let positions = serialized
             .verts
@@ -107,10 +101,11 @@ impl Import for Dcube {
             .collect::<Vec<_>>();
 
         // Create the mesh
-        let mesh_result = mehsh::prelude::Mesh::<INPUT>::from(&serialized.faces, &positions);
-        let Ok((mesh, vert_map, _)) = mesh_result else {
-            return Err(format!("Reading invalid mesh: {:?}", mesh_result).into());
-        };
+        let (mesh, vert_map, _face_map) =
+            match mehsh::prelude::Mesh::<INPUT>::from(&serialized.faces, &positions) {
+                Ok(ok) => ok,
+                Err(e) => anyhow::bail!("reading invalid mesh from {}: {:?}", path.display(), e),
+            };
 
         let mut solution = dualcube::prelude::Solution::new(Arc::new(mesh.clone()));
 
@@ -128,9 +123,10 @@ impl Import for Dcube {
                 0 => dualcube::prelude::PrincipalDirection::X,
                 1 => dualcube::prelude::PrincipalDirection::Y,
                 2 => dualcube::prelude::PrincipalDirection::Z,
-                _ => {
-                    return Err(format!("Reading invalid loop direction: {loop_dir}").into());
-                }
+                _ => anyhow::bail!(
+                    "reading invalid loop direction {loop_dir} from {}",
+                    path.display()
+                ),
             };
             solution.add_loop(Loop { edges, direction });
         }

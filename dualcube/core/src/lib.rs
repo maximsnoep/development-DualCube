@@ -2,6 +2,7 @@ pub mod dual;
 pub mod elastica;
 pub mod feature;
 pub mod field;
+pub mod hex;
 pub mod layout;
 pub mod polycube;
 pub mod quad;

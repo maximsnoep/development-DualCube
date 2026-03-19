@@ -16,6 +16,7 @@ use bevy_orbit_camera::automatic::AutomaticRotation;
 use egui_dock::tab_viewer::OnCloseResponse;
 use egui_dock::{DockArea, DockState, NodeIndex, Style};
 use std::collections::HashMap;
+use std::path::PathBuf;
 
 #[derive(Resource)]
 pub struct UiResource {
@@ -370,10 +371,7 @@ fn header(
 
                     if sleek_button(ui, "Load") {
                         if let Some(path) = rfd::FileDialog::new()
-                            .add_filter(
-                                "triangulated geometry",
-                                &["obj", "stl", "dcube", "dsol", "txt"],
-                            )
+                            .add_filter("triangulated geometry", &["obj", "stl", "loops", "dsol"])
                             .pick_file()
                         {
                             jobs.write(JobRequest::Run(Box::new(Job::Import {
@@ -500,7 +498,7 @@ fn header(
                         ui,
                         "sensitivity",
                         &mut automatic_rotation.sensitivity,
-                        0.1..=std::f32::consts::PI,
+                        -std::f32::consts::PI..=std::f32::consts::PI,
                     );
 
                     sep(ui);
@@ -655,6 +653,13 @@ fn header(
 
                     space(ui);
                 });
+
+                if sleek_button(ui, "Hex") {
+                    jobs.write(JobRequest::Run(Box::new(Job::Hex {
+                        solution: solution.current_solution.clone(),
+                        path: PathBuf::from("./out/temp2319701278924168937120"),
+                    })));
+                }
             });
         });
     });

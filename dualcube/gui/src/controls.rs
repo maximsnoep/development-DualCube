@@ -214,39 +214,39 @@ pub fn loop_modification_system(
         .edges_in_face_with_vert(nearest_face, nearest_vert)
         .unwrap();
 
-    // Calculate the minimum weight cycle from the currently hovered edge.
-    let cycle = solution
-        .current_solution
-        .elastica_graph
-        .compute_mwc_for_edge(edgepair[0]);
+    // // Calculate the minimum weight cycle from the currently hovered edge.
+    // let cycle = solution
+    //     .current_solution
+    //     .elastica_graph
+    //     .compute_mwc_for_edge(edgepair[0]);
 
-    println!("Cycle: {:?}", cycle);
+    // println!("Cycle: {:?}", cycle);
 
-    if let Some(cycle) = cycle {
-        for edge in cycle.1.windows(2) {
-            let u = mesh_resmut.mesh.position(edge[0]);
-            let v = mesh_resmut.mesh.position(edge[1]);
+    // if let Some(cycle) = cycle {
+    //     for edge in cycle.1.windows(2) {
+    //         let u = mesh_resmut.mesh.position(edge[0]);
+    //         let v = mesh_resmut.mesh.position(edge[1]);
 
-            let color = colors::from_direction(
-                configuration.direction,
-                Some(Perspective::Dual),
-                Some(Orientation::Backwards),
-            );
+    //         let color = colors::from_direction(
+    //             configuration.direction,
+    //             Some(Perspective::Dual),
+    //             Some(Orientation::Backwards),
+    //         );
 
-            let u_transformed = world_to_view(
-                u,
-                mesh_resmut.properties.translation,
-                mesh_resmut.properties.scale,
-            );
-            let v_transformed = world_to_view(
-                v,
-                mesh_resmut.properties.translation,
-                mesh_resmut.properties.scale,
-            );
+    //         let u_transformed = world_to_view(
+    //             u,
+    //             mesh_resmut.properties.translation,
+    //             mesh_resmut.properties.scale,
+    //         );
+    //         let v_transformed = world_to_view(
+    //             v,
+    //             mesh_resmut.properties.translation,
+    //             mesh_resmut.properties.scale,
+    //         );
 
-            gizmos.line(u_transformed, v_transformed, colors::to_bevy(color));
-        }
-    }
+    //         gizmos.line(u_transformed, v_transformed, colors::to_bevy(color));
+    //     }
+    // }
 
     return Ok(());
 

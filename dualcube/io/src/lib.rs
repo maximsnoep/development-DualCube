@@ -1,30 +1,23 @@
 pub mod formats {
-    pub mod backwards_compatability;
-    pub mod dcube;
-    pub mod dotgraph;
+    pub mod apg;
     pub mod dsol;
     pub mod flag;
+    pub mod loops;
     pub mod nlr;
     pub mod obj;
+    pub mod hex;
 }
 
 pub trait Export {
-    fn export(
-        solution: &dualcube::prelude::Solution,
-        path: &std::path::Path,
-    ) -> Result<(), Box<dyn std::error::Error>>;
+    fn export(solution: &dualcube::prelude::Solution, path: &std::path::Path)
+        -> anyhow::Result<()>;
 }
 
 pub trait Import {
-    fn import(
-        path: &std::path::Path,
-    ) -> Result<dualcube::prelude::Solution, Box<dyn std::error::Error>>;
+    fn import(path: &std::path::Path) -> anyhow::Result<dualcube::prelude::Solution>;
 }
 
-pub use crate::formats::{
-    backwards_compatability::BackwardsCompatibility, dcube::Dcube, dotgraph::Dotgraph, dsol::Dsol,
-    flag::Flag, nlr::Nlr, obj::Obj,
-};
+pub use crate::formats::{apg::APG, dsol::Dsol, flag::Flag, loops::Loops, nlr::NLR, obj::OBJ, hex::HEX};
 use dualcube::prelude::Solution;
 use std::{path::PathBuf, sync::Arc};
 
@@ -48,23 +41,15 @@ pub fn import_solution(path: PathBuf) -> Solution {
             };
             Solution::new(mesh.clone())
         }
-        Some("dcube") => {
-            if let Ok(sol) = Dcube::import(&path) {
-                sol
-            } else {
-                panic!("Error while parsing Dcube file {path:?}");
-            }
-        }
-        Some("save") => {
-            println!("Loading save file {path:?}");
-            if let Ok(sol) = BackwardsCompatibility::import(&path) {
-                sol
-            } else {
-                panic!("Error while parsing save file {path:?}");
-            }
-        }
         Some("dsol") => {
             if let Ok(sol) = Dsol::import(&path) {
+                sol
+            } else {
+                panic!("Error while parsing Dsol file {path:?}");
+            }
+        }
+        Some("loops") => {
+            if let Ok(sol) = Loops::import(&path) {
                 sol
             } else {
                 panic!("Error while parsing Dsol file {path:?}");

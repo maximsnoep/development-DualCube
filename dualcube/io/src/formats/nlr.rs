@@ -9,13 +9,10 @@ use std::io::Write;
 
 use crate::Export;
 
-pub struct Nlr;
+pub struct NLR;
 
-impl Export for Nlr {
-    fn export(
-        solution: &Solution,
-        path: &std::path::Path,
-    ) -> Result<(), Box<dyn std::error::Error>> {
+impl Export for NLR {
+    fn export(solution: &Solution, path: &std::path::Path) -> anyhow::Result<()> {
         let path_topol = path.with_extension("topol");
         let path_geom = path.with_extension("geom");
         let path_cdim = path.with_extension("cdim");
@@ -23,9 +20,6 @@ impl Export for Nlr {
         let path_xloops = path.with_extension("xloops.seg");
         let path_yloops = path.with_extension("yloops.seg");
         let path_zloops = path.with_extension("zloops.seg");
-        let path_xpatches = path.with_extension("xpatches.seg");
-        let path_ypatches = path.with_extension("ypatches.seg");
-        let path_zpatches = path.with_extension("zpatches.seg");
 
         if let (Ok(dual), Some(layout), Some(polycube), Some(quad)) = (
             &solution.dual,
@@ -137,24 +131,22 @@ impl Export for Nlr {
                     .iter()
                     .map(|face_id| {
                         let face_int = face_to_id.get_by_left(face_id).unwrap();
-                        let Some([e0, e1, e2, e3]) = polycube.structure.edges(*face_id).collect_array::<4>() else {
-                            panic!("Expecting face {face_id:?} to have exactly four edges");
-                        };
+                        let edges = polycube.structure.edges(*face_id).collect::<Vec<_>>();
                         let edge_int1 = edge_to_id
-                            .get_by_left(&e0)
-                            .or_else(|| edge_to_id.get_by_left(&polycube.structure.twin(e0)))
+                            .get_by_left(&edges[0])
+                            .or_else(|| edge_to_id.get_by_left(&polycube.structure.twin(edges[0])))
                             .unwrap();
                         let edge_int2 = edge_to_id
-                            .get_by_left(&e1)
-                            .or_else(|| edge_to_id.get_by_left(&polycube.structure.twin(e1)))
+                            .get_by_left(&edges[2])
+                            .or_else(|| edge_to_id.get_by_left(&polycube.structure.twin(edges[2])))
                             .unwrap();
                         let edge_int3 = edge_to_id
-                            .get_by_left(&e2)
-                            .or_else(|| edge_to_id.get_by_left(&polycube.structure.twin(e2)))
+                            .get_by_left(&edges[1])
+                            .or_else(|| edge_to_id.get_by_left(&polycube.structure.twin(edges[1])))
                             .unwrap();
                         let edge_int4 = edge_to_id
-                            .get_by_left(&e3)
-                            .or_else(|| edge_to_id.get_by_left(&polycube.structure.twin(e3)))
+                            .get_by_left(&edges[3])
+                            .or_else(|| edge_to_id.get_by_left(&polycube.structure.twin(edges[3])))
                             .unwrap();
                         format!("       {face_int}       {edge_int1}       {edge_int2}       {edge_int3}       {edge_int4}       'FACE'")
                     })
@@ -205,11 +197,9 @@ impl Export for Nlr {
                     .iter()
                     .filter_map(|edge_id| {
                         edge_to_id.get_by_left(edge_id).map(|edge_int| {
-                            let Some([v0, v1]) = polycube.structure.vertices(*edge_id).collect_array::<2>() else {
-                                panic!("Expecting edge {edge_id:?} to have exactly two vertices");
-                            };
-                            let vert_int1 = vert_to_id.get_by_left(&v0).unwrap();
-                            let vert_int2 = vert_to_id.get_by_left(&v1).unwrap();
+                            let verts = polycube.structure.vertices(*edge_id).collect::<Vec<_>>();
+                            let vert_int1 = vert_to_id.get_by_left(&verts[0]).unwrap();
+                            let vert_int2 = vert_to_id.get_by_left(&verts[1]).unwrap();
                             format!("       {edge_int}       {vert_int1}       {vert_int2}       'EDGE'")
                         })
                     })
@@ -470,17 +460,18 @@ impl Export for Nlr {
                         .find(|&segment_id| dual.segment_to_loop(segment_id) == loop_id)
                         .unwrap()
                 })
-                .flat_map(|segment_id| dual.loop_structure.faces(segment_id).collect_array::<2>())
-                .map(|[face1, face2]| {
+                .map(|segment_id| dual.loop_structure.faces(segment_id).collect::<Vec<_>>())
+                .map(|face| [face[0], face[1]])
+                .map(|[region1, region2]| {
                     (
                         polycube
                             .region_to_vertex
-                            .get_by_left(&face1)
+                            .get_by_left(&region1)
                             .unwrap()
                             .to_owned(),
                         polycube
                             .region_to_vertex
-                            .get_by_left(&face2)
+                            .get_by_left(&region2)
                             .unwrap()
                             .to_owned(),
                     )
