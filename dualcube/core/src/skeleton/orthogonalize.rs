@@ -821,6 +821,56 @@ pub fn realize(s: &EdgeLabeledCurveSkeleton) -> Option<LabeledCurveSkeleton> {
         coords.push(IVector3D::new(cx[i], cy[i], cz[i]));
     }
 
+    // Canonicalize global orientation: sign choices are otherwise ambiguous up to
+    // per-axis reflection, which can produce mirrored polycubes.
+    let mut mean_orig = nalgebra::Vector3::<f64>::zeros();
+    let mut mean_realized = nalgebra::Vector3::<f64>::zeros();
+    for (i, &orig) in nodes.iter().enumerate() {
+        mean_orig += s[orig].position;
+        mean_realized += nalgebra::Vector3::new(
+            coords[i].x as f64,
+            coords[i].y as f64,
+            coords[i].z as f64,
+        );
+    }
+    let n = nodes.len() as f64;
+    mean_orig /= n;
+    mean_realized /= n;
+
+    let mut corr_x = 0.0;
+    let mut corr_y = 0.0;
+    let mut corr_z = 0.0;
+    for (i, &orig) in nodes.iter().enumerate() {
+        let p = s[orig].position - mean_orig;
+        let q = nalgebra::Vector3::new(
+            coords[i].x as f64,
+            coords[i].y as f64,
+            coords[i].z as f64,
+        ) - mean_realized;
+        corr_x += p.x * q.x;
+        corr_y += p.y * q.y;
+        corr_z += p.z * q.z;
+    }
+
+    // If an axis correlation is negative, flip that realized axis.
+    let flip_x = corr_x < -EPS;
+    let flip_y = corr_y < -EPS;
+    let flip_z = corr_z < -EPS;
+
+    if flip_x || flip_y || flip_z {
+        for c in &mut coords {
+            if flip_x {
+                c.x = -c.x;
+            }
+            if flip_y {
+                c.y = -c.y;
+            }
+            if flip_z {
+                c.z = -c.z;
+            }
+        }
+    }
+
     // Build the output graph: copy nodes (with computed coordinates) and edges.
     let mut out: LabeledCurveSkeleton = Default::default();
     let mut out_index_map: HashMap<NodeIndex, NodeIndex> = HashMap::new();
@@ -838,12 +888,18 @@ pub fn realize(s: &EdgeLabeledCurveSkeleton) -> Option<LabeledCurveSkeleton> {
     for e in s.edge_indices() {
         if let Some(w) = s.edge_weight(e) {
             let (a, b) = s.edge_endpoints(e).unwrap();
+            let sign = match w.direction {
+                PrincipalDirection::X if flip_x => w.sign.flipped(),
+                PrincipalDirection::Y if flip_y => w.sign.flipped(),
+                PrincipalDirection::Z if flip_z => w.sign.flipped(),
+                _ => w.sign,
+            };
             out.add_edge(
                 out_index_map[&a],
                 out_index_map[&b],
                 OrthogonalSkeletonEdge {
                     direction: w.direction,
-                    sign: w.sign,
+                    sign,
                     length: w.length,
                     boundary_loop: w.boundary_loop.clone(),
                 },
