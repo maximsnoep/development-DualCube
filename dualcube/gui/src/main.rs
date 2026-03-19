@@ -248,15 +248,23 @@ fn main() {
             ..Default::default()
         })
         // Load default plugins
-        .add_plugins(DefaultPlugins.set(WindowPlugin {
-            primary_window: Some(Window {
-                title: "DualCube".to_string(),
-                mode: WindowMode::Windowed,
-                resolution: WindowResolution::default().with_scale_factor_override(1.),
-                ..Default::default()
-            }),
-            ..Default::default()
-        }))
+        .add_plugins(
+            DefaultPlugins
+                .set(WindowPlugin {
+                    primary_window: Some(Window {
+                        title: "DualCube".to_string(),
+                        mode: WindowMode::Windowed,
+                        resolution: WindowResolution::default().with_scale_factor_override(1.),
+                        ..Default::default()
+                    }),
+                    ..Default::default()
+                })
+                .set(bevy::log::LogPlugin {
+                    custom_layer: ui::custom_log_layer,
+                    fmt_layer: ui::log_fmt_layer,
+                    ..Default::default()
+                }),
+        )
         // Plugin for diagnostics
         .add_plugins((
             FrameTimeDiagnosticsPlugin::default(),

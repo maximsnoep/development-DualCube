@@ -8,6 +8,11 @@ use crate::{
 use bevy::diagnostic::{
     DiagnosticsStore, FrameTimeDiagnosticsPlugin, SystemInformationDiagnosticsPlugin,
 };
+use bevy::log::{
+    tracing::{self, Subscriber},
+    tracing_subscriber::{field::MakeExt, Layer},
+    BoxedFmtLayer, BoxedLayer, Level,
+};
 use bevy::prelude::*;
 use bevy_egui::egui::FontFamily::Proportional;
 use bevy_egui::egui::*;
@@ -18,11 +23,124 @@ use egui_dock::tab_viewer::OnCloseResponse;
 use egui_dock::{DockArea, DockState, NodeIndex, Style};
 use std::collections::HashMap;
 use std::path::PathBuf;
+use std::sync::mpsc;
 use std::sync::Mutex;
 
 // Static channels for async file dialog results
 static PENDING_FILE_LOAD: Mutex<Option<(PathBuf, Configuration)>> = Mutex::new(None);
 static PENDING_FILE_EXPORT: Mutex<Option<(Solution, PathBuf, ExportType)>> = Mutex::new(None);
+
+
+/// Internal ECS message used to forward tracing/log events into the UI layer.
+///
+/// This exists so the footer can show the most recent `info!/warn!/error!` line
+/// without parsing terminal output.
+#[derive(Debug, Message)]
+pub struct UiLogMessage {
+    pub message: String,
+    pub level: Level,
+}
+
+
+/// Stores the most recent log line for display in the footer/status bar.
+///
+/// Keeping this in a resource allows the UI code to stay simple and avoid
+/// querying log streams directly every frame.
+#[derive(Resource, Default)]
+pub struct LatestLogLine {
+    pub text: String,
+    pub level: Option<Level>,
+}
+
+#[derive(Deref, DerefMut)]
+struct CapturedLogMessages(mpsc::Receiver<UiLogMessage>);
+
+struct CaptureLayer {
+    sender: mpsc::Sender<UiLogMessage>,
+}
+
+impl<S: Subscriber> Layer<S> for CaptureLayer {
+    fn on_event(
+        &self,
+        event: &tracing::Event<'_>,
+        _ctx: bevy::log::tracing_subscriber::layer::Context<'_, S>,
+    ) {
+        let mut message = None;
+        event.record(&mut CaptureLayerVisitor(&mut message));
+        if let Some(message) = message {
+            let metadata = event.metadata();
+            let _ = self.sender.send(UiLogMessage {
+                message,
+                level: *metadata.level(),
+            });
+        }
+    }
+}
+
+struct CaptureLayerVisitor<'a>(&'a mut Option<String>);
+
+impl tracing::field::Visit for CaptureLayerVisitor<'_> {
+    fn record_str(&mut self, field: &tracing::field::Field, value: &str) {
+        if field.name() == "message" {
+            *self.0 = Some(value.to_owned());
+        }
+    }
+
+    fn record_debug(&mut self, field: &tracing::field::Field, value: &dyn std::fmt::Debug) {
+        if field.name() == "message" && self.0.is_none() {
+            *self.0 = Some(format!("{value:?}"));
+        }
+    }
+}
+
+/// Adds a tracing capture layer that forwards log events into ECS.
+///
+/// Why this is added:
+/// - We want the latest console message visible in the bottom UI bar.
+/// - Bevy logs are produced via tracing, not via a UI-owned channel.
+/// - This hook bridges tracing -> ECS message -> `LatestLogLine` resource.
+///
+/// The standard terminal logging remains active; this only adds an extra sink
+/// for UI status display.
+pub fn custom_log_layer(app: &mut App) -> Option<BoxedLayer> {
+    let (sender, receiver) = mpsc::channel();
+    app.insert_non_send_resource(CapturedLogMessages(receiver));
+    app.add_message::<UiLogMessage>();
+    app.init_resource::<LatestLogLine>();
+    app.add_systems(Update, (transfer_log_messages, update_latest_log_line));
+
+    Some(CaptureLayer { sender }.boxed())
+}
+
+/// Overrides Bevy's default formatter layer to remove timestamps from console output.
+///
+/// This keeps terminal logs cleaner and matches the UI footer display style,
+/// where we only care about level + message.
+pub fn log_fmt_layer(_app: &mut App) -> Option<BoxedFmtLayer> {
+    Some(Box::new(
+        bevy::log::tracing_subscriber::fmt::Layer::default()
+            .without_time()
+            .map_fmt_fields(MakeExt::debug_alt)
+            .with_writer(std::io::stderr),
+    ))
+}
+
+fn transfer_log_messages(
+    receiver: NonSend<CapturedLogMessages>,
+    mut message_writer: MessageWriter<UiLogMessage>,
+) {
+    message_writer.write_batch(receiver.try_iter());
+}
+
+fn update_latest_log_line(
+    mut log_reader: MessageReader<UiLogMessage>,
+    mut latest_log: ResMut<LatestLogLine>,
+) {
+    for log in log_reader.read() {
+        latest_log.text = log.message.trim_matches('"').to_owned();
+        latest_log.level = Some(log.level);
+    }
+}
 
 #[derive(Clone, Copy)]
 enum ExportType {
@@ -632,6 +750,7 @@ fn footer(
     _solution: &SolutionResource,
     diagnostics: &Res<DiagnosticsStore>,
     job_state: &Res<JobState>,
+    latest_log: &Res<LatestLogLine>,
     _jobs: &mut MessageWriter<JobRequest>,
     time: &Res<Time>,
     _axes_texture: TextureId,
@@ -825,6 +944,26 @@ fn footer(
                         job.append("idle", 0.0, text_format(size, Color32::LIGHT_GRAY));
                     }
 
+                    if !latest_log.text.is_empty() {
+                        job.append("  |  ", 0.0, text_format(9.0, Color32::GRAY));
+                        if let Some(level) = latest_log.level {
+                            let color = match level {
+                                Level::ERROR => RED,
+                                Level::WARN => LIGHT_RED,
+                                Level::INFO => Color32::LIGHT_GRAY,
+                                Level::DEBUG => Color32::GRAY,
+                                Level::TRACE => Color32::GRAY,
+                            };
+                            job.append(
+                                &format!("{}: {}", level, latest_log.text),
+                                0.0,
+                                text_format(size, color),
+                            );
+                        } else {
+                            job.append(&latest_log.text, 0.0, text_format(size, Color32::LIGHT_GRAY));
+                        }
+                    }
+
                     ui.label(job);
                 });
 
@@ -857,6 +996,7 @@ pub fn update(
     image_handle: Res<CameraHandles>,
     mut ui_resource: ResMut<UiResource>,
     diagnostics: Res<DiagnosticsStore>,
+    latest_log: Res<LatestLogLine>,
     mesh_ref: Res<InputResource>,
     axes_texture: Res<bevy_axes_gizmo::AxesGizmoTexture>,
     mut _gizmo_assets: ResMut<Assets<GizmoAsset>>,
@@ -1243,6 +1383,7 @@ pub fn update(
         &solution,
         &diagnostics,
         &job_state,
+        &latest_log,
         &mut jobs,
         &time,
         axes_texture,
