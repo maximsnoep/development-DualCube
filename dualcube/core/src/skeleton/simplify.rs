@@ -72,6 +72,38 @@ pub fn simplify_skeleton(skeleton: &mut CurveSkeleton, original_mesh: &Mesh<INPU
         }
     }
 
+    // Cleanup up any patches that are too small to have internal vertices.
+    let mut merged_empty_patch = true;
+    while merged_empty_patch {
+        merged_empty_patch = false;
+
+        let nodes: Vec<NodeIndex> = skeleton.node_indices().collect();
+        for node_index in nodes {
+            let Some(node) = skeleton.node_weight(node_index) else {
+                continue;
+            };
+
+            if !node.patch_vertices.is_empty() {
+                continue;
+            }
+
+            let Some(target_neighbor) = skeleton.neighbors(node_index).next() else {
+                continue;
+            };
+
+            let success = skeleton.merge_nodes(
+                node_index,
+                target_neighbor,
+                MergeBehavior::SourceIntoTarget,
+            );
+
+            if success {
+                merged_empty_patch = true;
+                break;
+            }
+        }
+    }
+
     // TODO: something like embedding refinement but that makes sure edges stay within the mesh.
     // Maybe something like moving along locked axes?
     // Maybe something that iteratively tries moving towards centroid until intersections happen?
