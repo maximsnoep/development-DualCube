@@ -188,7 +188,7 @@ impl Default for UiResource {
                         .split_right(right1, 0.5, vec![Objects::PolycubeMap])[1];
                 let _right2 =
                     tree.main_surface_mut()
-                        .split_below(right1, 0.4, vec![Objects::ContractedMesh, Objects::QuadMesh])[1];
+                        .split_below(right1, 0.4, vec![Objects::UvDomain, Objects::ContractedMesh, Objects::QuadMesh])[1];
 
                 tree
             },
@@ -295,9 +295,10 @@ impl egui_dock::TabViewer for TabViewer {
                     _ => {
                         let egui_handle = match tab {
                             Objects::PolycubeMap => self.egui_handles[0],
-                            Objects::QuadMesh => self.egui_handles[1],
-                            Objects::Polycube => self.egui_handles[2],
-                            Objects::ContractedMesh => self.egui_handles[3],
+                            Objects::UvDomain => self.egui_handles[1],
+                            Objects::QuadMesh => self.egui_handles[2],
+                            Objects::Polycube => self.egui_handles[3],
+                            Objects::ContractedMesh => self.egui_handles[4],
                             _ => unreachable!(),
                         };
                         let [w, h] = ui.available_size().into();
@@ -535,6 +536,7 @@ fn header(
                                 Objects::InputMesh => vec!["gray", "wireframe"],
                                 Objects::Polycube => vec!["gray", "paths", "flat paths"],
                                 Objects::PolycubeMap => vec!["colored", "triangles"],
+                                Objects::UvDomain => vec!["input edges", "polycube edges", "boundary", "uv background"],
                                 Objects::QuadMesh => vec!["gray", "wireframe"],
                                 Objects::ContractedMesh => vec!["gray", "wireframe"],
                             };
@@ -554,6 +556,7 @@ fn header(
                                 }
                                 Objects::Polycube => vec!["black", "x-loops", "y-loops", "z-loops"],
                                 Objects::PolycubeMap => vec!["colored", "triangles"],
+                                Objects::UvDomain => vec!["input edges", "polycube edges", "boundary", "uv background"],
                                 Objects::QuadMesh => vec!["gray", "paths", "flat paths"],
                                 Objects::ContractedMesh => vec!["gray", "wireframe"],
                             };
@@ -573,6 +576,7 @@ fn header(
                                 }
                                 Objects::Polycube => vec!["colored", "paths", "flat paths"],
                                 Objects::PolycubeMap => vec!["colored", "triangles"],
+                                Objects::UvDomain => vec!["input edges", "polycube edges", "boundary", "uv background"],
                                 Objects::QuadMesh => {
                                     vec!["colored", "wireframe", "paths", "flat paths"]
                                 },
