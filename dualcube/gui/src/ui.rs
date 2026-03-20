@@ -1,6 +1,7 @@
 use crate::controls::InteractiveMode;
 use crate::jobs::{Job, JobRequest, JobState};
-use crate::render::{CameraFor, Objects, RenderObjectSetting, RenderObjectSettingStore};
+use crate::render::{CameraFor, Objects, RenderObjectSetting, RenderObjectSettingStore, uv_domain_region_count};
+use crate::render_skeleton::get_region_color;
 use crate::{
     colors, CameraHandles, Configuration, InputResource, Perspective, Phase, PrincipalDirection,
     SolutionResource,
@@ -1134,6 +1135,43 @@ pub fn update(
                                     None => "(-)".to_string(),
                                 };
                                 label(ui, &status, text_size, Color32::GRAY);
+
+                                // UV domain region selector — inline so ComboBox popup
+                                // doesn't conflict with any menu popup.
+                                let n_regions = uv_domain_region_count(&solution.current_solution);
+                                if n_regions > 0 {
+                                    let prev_region = conf.uv_domain_region;
+                                    ComboBox::from_id_salt("uv_region_selector")
+                                        .width(120.0)
+                                        .selected_text({
+                                            let idx = conf.uv_domain_region.min(n_regions - 1);
+                                            let c = get_region_color(idx);
+                                            let rc = Color32::from_rgb(
+                                                (c[0] * 255.0) as u8,
+                                                (c[1] * 255.0) as u8,
+                                                (c[2] * 255.0) as u8,
+                                            );
+                                            RichText::new(format!("Region {}", idx)).color(rc).size(12.)
+                                        })
+                                        .show_ui(ui, |ui: &mut Ui| {
+                                            for i in 0..n_regions {
+                                                let c = get_region_color(i);
+                                                let rc = Color32::from_rgb(
+                                                    (c[0] * 255.0) as u8,
+                                                    (c[1] * 255.0) as u8,
+                                                    (c[2] * 255.0) as u8,
+                                                );
+                                                let text = RichText::new(format!("Region {}", i)).color(rc).size(12.);
+                                                ui.selectable_value(&mut conf.uv_domain_region, i, text);
+                                            }
+                                        });
+                                    if conf.uv_domain_region != prev_region {
+                                        jobs.write(JobRequest::Run(Box::new(Job::Refresh {
+                                            solution: solution.current_solution.clone(),
+                                            configuration: conf.clone(),
+                                        })));
+                                    }
+                                }
                             }
 
                             if conf.stop == Phase::Skeleton {
