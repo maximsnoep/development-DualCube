@@ -1046,23 +1046,17 @@ pub fn uv_domain_region_count(solution: &Solution) -> usize {
 }
 
 fn create_uv_domain_view(
-    solution: &Solution,
     pmap: &PolycubeMap,
     selected_region: usize,
 ) -> RenderObject {
     let mut render_obj = RenderObject::default();
-
-    let cleaned = match solution.skeleton.as_ref().and_then(|s| s.cleaned_skeleton()) {
-        Some(s) => s,
-        None => return render_obj,
-    };
 
     // Sort regions by node index for stable ordering (matches UI selector).
     let mut sorted_regions: Vec<_> = pmap.regions.iter().collect();
     sorted_regions.sort_by_key(|(idx, _)| idx.index());
 
     let region_i = selected_region.min(sorted_regions.len().saturating_sub(1));
-    let (&node_idx, region) = sorted_regions[region_i];
+    let (_node_idx, region) = sorted_regions[region_i];
 
     let mut input_edge_gizmos = GizmoAsset::new();
     let mut polycube_edge_gizmos = GizmoAsset::new();
@@ -1076,32 +1070,39 @@ fn create_uv_domain_view(
     let polycube_boundary_color = bevy::prelude::Color::srgb(1.0, 0.9, 0.0);
     let input_interior_color = bevy::prelude::Color::srgb(0.5, 0.5, 0.5);
 
-    let degree = cleaned.edges(node_idx).count();
-
     // UV to flat XY position (centered at origin).
     let uv_to_pos = |uv: &Vector2D| -> Vec3 {
         Vec3::new(uv.x as f32, uv.y as f32, 0.0)
     };
 
-    // Draw UV-colored background polygon.
-    let n_sides = if degree == 1 { 4 } else if degree >= 2 { 4 * (degree - 1) } else { 4 };
+    // Build the background polygon from the actual boundary UV positions of the
+    // input VFG — these are the vertices that were placed on the canonical polygon
+    // by map_boundary_to_polygon, so they define the exact shape used.
     {
-        let polygon: Vec<Vector2D> = (0..n_sides)
-            .map(|k| {
-                let angle = 2.0 * std::f64::consts::PI * k as f64 / n_sides as f64;
-                Vector2D::new(angle.cos(), angle.sin())
-            })
+        let polygon: Vec<Vector2D> = region
+            .input_vfg
+            .boundary_loop
+            .iter()
+            .filter_map(|n| region.input_uv.get(n).copied())
             .collect();
 
-        let normal = Vector3D::new(0.0, 0.0, 1.0);
-        for i in 1..polygon.len() - 1 {
-            let uvs = [&polygon[0], &polygon[i], &polygon[i + 1]];
-            for uv in uvs {
-                let pos = Vector3D::new(uv.x, uv.y, -0.01);
-                let u_norm = ((uv.x + 1.0) / 2.0).clamp(0.0, 1.0) as f32;
-                let v_norm = ((uv.y + 1.0) / 2.0).clamp(0.0, 1.0) as f32;
-                let color = [v_norm * 0.4, 0.0, u_norm * 0.4];
-                builder.add_vertex(&pos, &normal, &color);
+        if polygon.len() >= 3 {
+            let normal = Vector3D::new(0.0, 0.0, 1.0);
+            let centroid = polygon.iter().fold(Vector2D::new(0.0, 0.0), |acc, p| {
+                Vector2D::new(acc.x + p.x, acc.y + p.y)
+            }) / polygon.len() as f64;
+            // Fan-triangulate from centroid so we handle non-convex boundaries.
+            for i in 0..polygon.len() {
+                let a = &centroid;
+                let b = &polygon[i];
+                let c = &polygon[(i + 1) % polygon.len()];
+                for uv in [a, b, c] {
+                    let pos = Vector3D::new(uv.x, uv.y, -0.01);
+                    let u_norm = ((uv.x + 1.0) / 2.0).clamp(0.0, 1.0) as f32;
+                    let v_norm = ((uv.y + 1.0) / 2.0).clamp(0.0, 1.0) as f32;
+                    let color = [v_norm * 0.4, 0.0, u_norm * 0.4];
+                    builder.add_vertex(&pos, &normal, &color);
+                }
             }
         }
     }
@@ -1514,7 +1515,7 @@ pub fn refresh(solution: &Solution, configuration: &Configuration) -> RenderObje
             Objects::UvDomain => {
                 if let Some(pmap) = solution.skeleton.as_ref().and_then(|s| s.polycube_map()) {
                     let render_obj =
-                        create_uv_domain_view(solution, pmap, configuration.uv_domain_region);
+                        create_uv_domain_view(pmap, configuration.uv_domain_region);
                     render_object_store.add_object(object, render_obj);
                 }
             }
