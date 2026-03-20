@@ -1068,7 +1068,34 @@ fn create_uv_domain_view(
     let polycube_color = bevy::prelude::Color::srgb(1.0, 0.3, 0.3);
     let input_boundary_color = bevy::prelude::Color::srgb(0.0, 0.9, 0.9);
     let polycube_boundary_color = bevy::prelude::Color::srgb(1.0, 0.9, 0.0);
+    let cut_boundary_color = bevy::prelude::Color::srgb(1.0, 0.5, 0.0); // orange: cut boundary
     let input_interior_color = bevy::prelude::Color::srgb(0.5, 0.5, 0.5);
+
+    // Precompute cut node sets for both VFGs to avoid closure type-inference issues.
+    let input_cut_set: HashSet<_> = region
+        .input_vfg
+        .graph
+        .node_indices()
+        .filter(|&n| {
+            matches!(
+                region.input_vfg.graph[n].origin,
+                VirtualNodeOrigin::CutDuplicate { .. }
+                    | VirtualNodeOrigin::CutEndpointMidpoint { .. }
+            )
+        })
+        .collect();
+    let polycube_cut_set: HashSet<_> = region
+        .polycube_vfg
+        .graph
+        .node_indices()
+        .filter(|&n| {
+            matches!(
+                region.polycube_vfg.graph[n].origin,
+                VirtualNodeOrigin::CutDuplicate { .. }
+                    | VirtualNodeOrigin::CutEndpointMidpoint { .. }
+            )
+        })
+        .collect();
 
     // UV to flat XY position (centered at origin).
     let uv_to_pos = |uv: &Vector2D| -> Vec3 {
@@ -1116,7 +1143,11 @@ fn create_uv_domain_view(
         let (Some(uv_a), Some(uv_b)) = (region.input_uv.get(&a), region.input_uv.get(&b)) else {
             continue;
         };
-        let color = if input_boundary_set.contains(&a) && input_boundary_set.contains(&b) {
+        let on_boundary = input_boundary_set.contains(&a) && input_boundary_set.contains(&b);
+        let on_cut = input_cut_set.contains(&a) || input_cut_set.contains(&b);
+        let color = if on_boundary && on_cut {
+            cut_boundary_color
+        } else if on_boundary {
             input_boundary_color
         } else {
             input_color
@@ -1136,7 +1167,11 @@ fn create_uv_domain_view(
         else {
             continue;
         };
-        let color = if polycube_boundary_set.contains(&a) && polycube_boundary_set.contains(&b) {
+        let on_boundary = polycube_boundary_set.contains(&a) && polycube_boundary_set.contains(&b);
+        let on_cut = polycube_cut_set.contains(&a) || polycube_cut_set.contains(&b);
+        let color = if on_boundary && on_cut {
+            cut_boundary_color
+        } else if on_boundary {
             polycube_boundary_color
         } else {
             polycube_color
@@ -1144,18 +1179,19 @@ fn create_uv_domain_view(
         polycube_edge_gizmos.line(uv_to_pos(uv_a), uv_to_pos(uv_b), color);
     }
 
-    // Input vertices: white boundary (large), gray interior (small).
+    // Input vertices: cyan boundary (large), gray interior (small), orange if on cut.
     for node in region.input_vfg.graph.node_indices() {
         let Some(uv) = region.input_uv.get(&node) else {
             continue;
         };
         let pos = uv_to_pos(uv);
         if input_boundary_set.contains(&node) {
-            input_vertex_gizmos.sphere(
-                Isometry3d::from_translation(pos),
-                0.03,
-                input_boundary_color,
-            );
+            let color = if input_cut_set.contains(&node) {
+                cut_boundary_color
+            } else {
+                input_boundary_color
+            };
+            input_vertex_gizmos.sphere(Isometry3d::from_translation(pos), 0.03, color);
         } else {
             input_vertex_gizmos.sphere(
                 Isometry3d::from_translation(pos),
@@ -1165,7 +1201,7 @@ fn create_uv_domain_view(
         }
     }
 
-    // Polycube vertices: yellow boundary (large), red interior (small).
+    // Polycube vertices: yellow boundary (large), red interior (small), orange if on cut.
     // Higher Z so they draw on top of input vertices.
     for node in region.polycube_vfg.graph.node_indices() {
         let Some(uv) = region.polycube_uv.get(&node) else {
@@ -1174,11 +1210,12 @@ fn create_uv_domain_view(
         let mut pos = uv_to_pos(uv);
         pos.z += 0.002;
         if polycube_boundary_set.contains(&node) {
-            polycube_vertex_gizmos.sphere(
-                Isometry3d::from_translation(pos),
-                0.035,
-                polycube_boundary_color,
-            );
+            let color = if polycube_cut_set.contains(&node) {
+                cut_boundary_color
+            } else {
+                polycube_boundary_color
+            };
+            polycube_vertex_gizmos.sphere(Isometry3d::from_translation(pos), 0.035, color);
         } else {
             polycube_vertex_gizmos.sphere(
                 Isometry3d::from_translation(pos),
