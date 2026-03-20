@@ -203,7 +203,7 @@ const TAILWIND_500: [bevy::color::Srgba; 17] = [
 ];
 
 /// Gets a color for a region index using Tailwind colors with chroma reduction for cycling.
-fn get_region_color(region: usize) -> [f32; 3] {
+pub fn get_region_color(region: usize) -> [f32; 3] {
     let base_idx = region % TAILWIND_500.len();
     let cycle = region / TAILWIND_500.len();
 

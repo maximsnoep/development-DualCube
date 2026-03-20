@@ -390,16 +390,18 @@ pub fn update_render_settings(
                 | (Objects::InputMesh, "patches")
                 | (Objects::InputMesh, "cuts")
                 | (Objects::InputMesh, "virtual mesh debug")
-                | (Objects::InputMesh, "uv patches")
+                // | (Objects::InputMesh, "uv patches")
                 // | (Objects::Polycube, "gray")
                 | (Objects::Polycube, "patches")
                 | (Objects::Polycube, "cuts")
                 | (Objects::Polycube, "paths")
                 | (Objects::Polycube, "flat paths")
                 | (Objects::PolycubeMap, "colored")
+                | (Objects::PolycubeMap, "triangles")
                 | (Objects::UvDomain, "input edges")
                 | (Objects::UvDomain, "polycube edges")
-                | (Objects::UvDomain, "boundary")
+                | (Objects::UvDomain, "input vertices")
+                | (Objects::UvDomain, "polycube vertices")
                 | (Objects::UvDomain, "uv background")
                 | (Objects::QuadMesh, "gray")
                 | (Objects::QuadMesh, "wireframe")
@@ -614,14 +616,19 @@ pub fn update(
 
     for (mut sub_transform, mut sub_projection, _sub_camera, sub_object) in &mut other_cameras {
         if sub_object.0 == Objects::UvDomain {
-            // UV domain: fixed top-down view looking at XY plane.
+            // UV domain: top-down view coupled to main camera's distance (zoom)
+            // and XY translation (pan). Always looks down -Z.
             let uv_center = Vec3::from(Objects::UvDomain);
-            sub_transform.translation = uv_center + Vec3::new(0.0, 0.0, 50.0);
-            sub_transform.rotation = Quat::IDENTITY; // looking down -Z
+            // Use main camera's XY offset for panning, scaled down since UV domain is smaller.
+            let pan_x = normalized_translation.x / 25.0 * 2.0;
+            let pan_y = normalized_translation.y / 25.0 * 2.0;
+            sub_transform.translation =
+                uv_center + Vec3::new(pan_x, pan_y, 50.0);
+            sub_transform.rotation = Quat::IDENTITY;
             if let Projection::Orthographic(orthographic) = sub_projection.as_mut() {
-                orthographic.scaling_mode = ScalingMode::FixedVertical {
-                    viewport_height: 10.0,
-                };
+                // Zoom coupled to main camera distance: closer = more zoomed in.
+                let viewport_height = (distance / 25.0 * 4.0).clamp(0.5, 40.0);
+                orthographic.scaling_mode = ScalingMode::FixedVertical { viewport_height };
             }
         } else {
             sub_transform.translation = normalized_translation + Vec3::from(sub_object.0);
@@ -1028,7 +1035,21 @@ fn create_input_uv_patch_mesh(
 /// - Input mesh edges in blue (boundary in cyan)
 /// - Polycube mesh edges in red (boundary in yellow)
 /// - Boundary and interior vertices at different sizes
-fn create_uv_domain_view(solution: &Solution, pmap: &PolycubeMap) -> RenderObject {
+/// Returns the number of regions in the polycube map (for UI selectors).
+pub fn uv_domain_region_count(solution: &Solution) -> usize {
+    solution
+        .skeleton
+        .as_ref()
+        .and_then(|s| s.polycube_map())
+        .map(|pmap| pmap.regions.len())
+        .unwrap_or(0)
+}
+
+fn create_uv_domain_view(
+    solution: &Solution,
+    pmap: &PolycubeMap,
+    selected_region: usize,
+) -> RenderObject {
     let mut render_obj = RenderObject::default();
 
     let cleaned = match solution.skeleton.as_ref().and_then(|s| s.cleaned_skeleton()) {
@@ -1036,151 +1057,133 @@ fn create_uv_domain_view(solution: &Solution, pmap: &PolycubeMap) -> RenderObjec
         None => return render_obj,
     };
 
-    // Layout: arrange regions in a grid, each region gets a 3x3 cell
-    // (UV domain is roughly [-1,1] so 3 units wide with padding).
-    let n_regions = pmap.regions.len();
-    let cols = (n_regions as f64).sqrt().ceil() as usize;
-    let cell_size = 3.0f32;
-
-    // Sort regions by node index for stable layout.
+    // Sort regions by node index for stable ordering (matches UI selector).
     let mut sorted_regions: Vec<_> = pmap.regions.iter().collect();
     sorted_regions.sort_by_key(|(idx, _)| idx.index());
 
+    let region_i = selected_region.min(sorted_regions.len().saturating_sub(1));
+    let (&node_idx, region) = sorted_regions[region_i];
+
     let mut input_edge_gizmos = GizmoAsset::new();
     let mut polycube_edge_gizmos = GizmoAsset::new();
-    let mut boundary_gizmos = GizmoAsset::new();
-    let mut vertex_gizmos = GizmoAsset::new();
+    let mut input_vertex_gizmos = GizmoAsset::new();
+    let mut polycube_vertex_gizmos = GizmoAsset::new();
     let mut builder = MeshBuilder::default();
 
     let input_color = bevy::prelude::Color::srgb(0.3, 0.5, 1.0);
     let polycube_color = bevy::prelude::Color::srgb(1.0, 0.3, 0.3);
     let input_boundary_color = bevy::prelude::Color::srgb(0.0, 0.9, 0.9);
     let polycube_boundary_color = bevy::prelude::Color::srgb(1.0, 0.9, 0.0);
-    let boundary_vertex_color = bevy::prelude::Color::srgb(1.0, 1.0, 1.0);
-    let interior_vertex_color = bevy::prelude::Color::srgb(0.5, 0.5, 0.5);
+    let input_interior_color = bevy::prelude::Color::srgb(0.5, 0.5, 0.5);
 
-    for (region_i, (&node_idx, region)) in sorted_regions.iter().enumerate() {
-        let col = region_i % cols;
-        let row = region_i / cols;
-        let offset_x = col as f32 * cell_size;
-        let offset_y = -(row as f32) * cell_size; // negative Y so rows go downward
+    let degree = cleaned.edges(node_idx).count();
 
-        let degree = cleaned.edges(node_idx).count();
+    // UV to flat XY position (centered at origin).
+    let uv_to_pos = |uv: &Vector2D| -> Vec3 {
+        Vec3::new(uv.x as f32, uv.y as f32, 0.0)
+    };
 
-        // Helper: UV to 3D position in the view (flat XY plane).
-        let uv_to_pos = |uv: &Vector2D| -> Vec3 {
-            Vec3::new(uv.x as f32 + offset_x, uv.y as f32 + offset_y, 0.0)
+    // Draw UV-colored background polygon.
+    let n_sides = if degree == 1 { 4 } else if degree >= 2 { 4 * (degree - 1) } else { 4 };
+    {
+        let polygon: Vec<Vector2D> = (0..n_sides)
+            .map(|k| {
+                let angle = 2.0 * std::f64::consts::PI * k as f64 / n_sides as f64;
+                Vector2D::new(angle.cos(), angle.sin())
+            })
+            .collect();
+
+        let normal = Vector3D::new(0.0, 0.0, 1.0);
+        for i in 1..polygon.len() - 1 {
+            let uvs = [&polygon[0], &polygon[i], &polygon[i + 1]];
+            for uv in uvs {
+                let pos = Vector3D::new(uv.x, uv.y, -0.01);
+                let u_norm = ((uv.x + 1.0) / 2.0).clamp(0.0, 1.0) as f32;
+                let v_norm = ((uv.y + 1.0) / 2.0).clamp(0.0, 1.0) as f32;
+                let color = [v_norm * 0.4, 0.0, u_norm * 0.4];
+                builder.add_vertex(&pos, &normal, &color);
+            }
+        }
+    }
+
+    // Input VFG edges.
+    let input_boundary_set: HashSet<_> = region.input_vfg.boundary_loop.iter().copied().collect();
+    for edge_idx in region.input_vfg.graph.edge_indices() {
+        let Some((a, b)) = region.input_vfg.graph.edge_endpoints(edge_idx) else {
+            continue;
         };
+        let (Some(uv_a), Some(uv_b)) = (region.input_uv.get(&a), region.input_uv.get(&b)) else {
+            continue;
+        };
+        let color = if input_boundary_set.contains(&a) && input_boundary_set.contains(&b) {
+            input_boundary_color
+        } else {
+            input_color
+        };
+        input_edge_gizmos.line(uv_to_pos(uv_a), uv_to_pos(uv_b), color);
+    }
 
-        // Draw UV-colored background quad for this region's canonical polygon.
-        // Use the polygon shape (n_sides-gon).
-        let n_sides = if degree == 1 { 4 } else if degree >= 2 { 4 * (degree - 1) } else { 4 };
-        {
-            let polygon: Vec<Vector2D> = (0..n_sides)
-                .map(|k| {
-                    let angle = 2.0 * std::f64::consts::PI * k as f64 / n_sides as f64;
-                    Vector2D::new(angle.cos(), angle.sin())
-                })
-                .collect();
+    // Polycube VFG edges.
+    let polycube_boundary_set: HashSet<_> =
+        region.polycube_vfg.boundary_loop.iter().copied().collect();
+    for edge_idx in region.polycube_vfg.graph.edge_indices() {
+        let Some((a, b)) = region.polycube_vfg.graph.edge_endpoints(edge_idx) else {
+            continue;
+        };
+        let (Some(uv_a), Some(uv_b)) =
+            (region.polycube_uv.get(&a), region.polycube_uv.get(&b))
+        else {
+            continue;
+        };
+        let color = if polycube_boundary_set.contains(&a) && polycube_boundary_set.contains(&b) {
+            polycube_boundary_color
+        } else {
+            polycube_color
+        };
+        polycube_edge_gizmos.line(uv_to_pos(uv_a), uv_to_pos(uv_b), color);
+    }
 
-            // Fan-triangulate the polygon for the background mesh.
-            let normal = Vector3D::new(0.0, 0.0, 1.0);
-            for i in 1..polygon.len() - 1 {
-                let uvs = [&polygon[0], &polygon[i], &polygon[i + 1]];
-                for uv in uvs {
-                    let pos = Vector3D::new(uv.x + offset_x as f64, uv.y + offset_y as f64, -0.01);
-                    // UV color: u→blue, v→red (same as uv_to_color)
-                    let u_norm = ((uv.x + 1.0) / 2.0).clamp(0.0, 1.0) as f32;
-                    let v_norm = ((uv.y + 1.0) / 2.0).clamp(0.0, 1.0) as f32;
-                    let color = [v_norm * 0.4, 0.0, u_norm * 0.4]; // dimmed so edges are visible
-                    builder.add_vertex(&pos, &normal, &color);
-                }
-            }
+    // Input vertices: white boundary (large), gray interior (small).
+    for node in region.input_vfg.graph.node_indices() {
+        let Some(uv) = region.input_uv.get(&node) else {
+            continue;
+        };
+        let pos = uv_to_pos(uv);
+        if input_boundary_set.contains(&node) {
+            input_vertex_gizmos.sphere(
+                Isometry3d::from_translation(pos),
+                0.03,
+                input_boundary_color,
+            );
+        } else {
+            input_vertex_gizmos.sphere(
+                Isometry3d::from_translation(pos),
+                0.015,
+                input_interior_color,
+            );
         }
+    }
 
-        // Draw input VFG edges in UV space.
-        let input_boundary_set: HashSet<_> = region.input_vfg.boundary_loop.iter().copied().collect();
-        for edge_idx in region.input_vfg.graph.edge_indices() {
-            let Some((a, b)) = region.input_vfg.graph.edge_endpoints(edge_idx) else {
-                continue;
-            };
-            let (Some(uv_a), Some(uv_b)) = (region.input_uv.get(&a), region.input_uv.get(&b))
-            else {
-                continue;
-            };
-            let a_on_boundary = input_boundary_set.contains(&a);
-            let b_on_boundary = input_boundary_set.contains(&b);
-            let color = if a_on_boundary && b_on_boundary {
-                input_boundary_color
-            } else {
-                input_color
-            };
-            input_edge_gizmos.line(uv_to_pos(uv_a), uv_to_pos(uv_b), color);
-        }
-
-        // Draw polycube VFG edges in UV space.
-        let polycube_boundary_set: HashSet<_> =
-            region.polycube_vfg.boundary_loop.iter().copied().collect();
-        for edge_idx in region.polycube_vfg.graph.edge_indices() {
-            let Some((a, b)) = region.polycube_vfg.graph.edge_endpoints(edge_idx) else {
-                continue;
-            };
-            let (Some(uv_a), Some(uv_b)) =
-                (region.polycube_uv.get(&a), region.polycube_uv.get(&b))
-            else {
-                continue;
-            };
-            let a_on_boundary = polycube_boundary_set.contains(&a);
-            let b_on_boundary = polycube_boundary_set.contains(&b);
-            let color = if a_on_boundary && b_on_boundary {
-                polycube_boundary_color
-            } else {
-                polycube_color
-            };
-            polycube_edge_gizmos.line(uv_to_pos(uv_a), uv_to_pos(uv_b), color);
-        }
-
-        // Draw boundary vertices (larger) and interior vertices (smaller) for input.
-        for node in region.input_vfg.graph.node_indices() {
-            let Some(uv) = region.input_uv.get(&node) else {
-                continue;
-            };
-            let pos = uv_to_pos(uv);
-            if input_boundary_set.contains(&node) {
-                boundary_gizmos.sphere(
-                    Isometry3d::from_translation(pos),
-                    0.03,
-                    boundary_vertex_color,
-                );
-            } else {
-                vertex_gizmos.sphere(
-                    Isometry3d::from_translation(pos),
-                    0.015,
-                    interior_vertex_color,
-                );
-            }
-        }
-
-        // Draw boundary vertices for polycube (slightly offset in Z to avoid z-fight).
-        for node in region.polycube_vfg.graph.node_indices() {
-            let Some(uv) = region.polycube_uv.get(&node) else {
-                continue;
-            };
-            let mut pos = uv_to_pos(uv);
-            pos.z += 0.001;
-            if polycube_boundary_set.contains(&node) {
-                boundary_gizmos.sphere(
-                    Isometry3d::from_translation(pos),
-                    0.03,
-                    polycube_boundary_color,
-                );
-            } else {
-                vertex_gizmos.sphere(
-                    Isometry3d::from_translation(pos),
-                    0.015,
-                    polycube_color,
-                );
-            }
+    // Polycube vertices: yellow boundary (large), red interior (small).
+    // Higher Z so they draw on top of input vertices.
+    for node in region.polycube_vfg.graph.node_indices() {
+        let Some(uv) = region.polycube_uv.get(&node) else {
+            continue;
+        };
+        let mut pos = uv_to_pos(uv);
+        pos.z += 0.002;
+        if polycube_boundary_set.contains(&node) {
+            polycube_vertex_gizmos.sphere(
+                Isometry3d::from_translation(pos),
+                0.035,
+                polycube_boundary_color,
+            );
+        } else {
+            polycube_vertex_gizmos.sphere(
+                Isometry3d::from_translation(pos),
+                0.02,
+                polycube_color,
+            );
         }
     }
 
@@ -1188,8 +1191,8 @@ fn create_uv_domain_view(solution: &Solution, pmap: &PolycubeMap) -> RenderObjec
         .bevy_mesh(builder.build(), "uv background")
         .gizmo(input_edge_gizmos, 2.0, -0.001, "input edges")
         .gizmo(polycube_edge_gizmos, 2.0, -0.002, "polycube edges")
-        .gizmo(boundary_gizmos, 1.0, -0.003, "boundary")
-        .gizmo(vertex_gizmos, 1.0, -0.004, "vertices");
+        .gizmo(input_vertex_gizmos, 1.0, -0.003, "input vertices")
+        .gizmo(polycube_vertex_gizmos, 1.0, -0.004, "polycube vertices");
 
     render_obj
 }
@@ -1510,7 +1513,8 @@ pub fn refresh(solution: &Solution, configuration: &Configuration) -> RenderObje
             }
             Objects::UvDomain => {
                 if let Some(pmap) = solution.skeleton.as_ref().and_then(|s| s.polycube_map()) {
-                    let render_obj = create_uv_domain_view(solution, pmap);
+                    let render_obj =
+                        create_uv_domain_view(solution, pmap, configuration.uv_domain_region);
                     render_object_store.add_object(object, render_obj);
                 }
             }

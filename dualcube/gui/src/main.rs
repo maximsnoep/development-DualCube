@@ -74,6 +74,9 @@ pub struct Configuration {
     pub collapse_history_step: usize,
     pub convexity_threshold: f64,
     pub convexity_merge_slack: f64,
+
+    /// Which region to show in the UV domain view (index into sorted region list).
+    pub uv_domain_region: usize,
 }
 
 impl Default for Configuration {
@@ -113,6 +116,7 @@ impl Default for Configuration {
             collapse_history_step: 0,
             convexity_threshold: 0.9,
             convexity_merge_slack: 0.95,
+            uv_domain_region: 0,
         }
     }
 }
