@@ -244,7 +244,7 @@ impl PolycubeMap {
                 continue;
             };
 
-            if let Some(pos) = interpolate_in_uv_triangles(uv, tris) {
+            if let Some(pos) = interpolate_in_uv_triangles(uv, tris, polycube_mesh) {
                 result.set_position(v, pos);
                 mapped_vertices.push((v, region_idx));
             } else {
@@ -871,18 +871,29 @@ fn trace_face_left(
 
 /// Finds which UV triangle contains `query` and returns the interpolated 3D position.
 /// Returns `None` if the point is not inside any UV triangle (no fallback).
-fn interpolate_in_uv_triangles(query: Vector2D, tris: &[UvTriangle]) -> Option<Vector3D> {
+fn interpolate_in_uv_triangles(
+    query: Vector2D,
+    tris: &[UvTriangle],
+    polycube_mesh: &Mesh<INPUT>,
+) -> Option<Vector3D> {
+    let mut best: Option<(Vector3D, f64)> = None;
     for tri in tris {
         if let Some((u, v, w)) = barycentric_2d(query, tri.uv[0], tri.uv[1], tri.uv[2]) {
             let min_coord = u.min(v).min(w);
             if min_coord >= -1e-6 {
                 let pos = tri.pos[0] * u + tri.pos[1] * v + tri.pos[2] * w;
-                return Some(pos);
+                let dist = distance_to_mesh_surface(pos, polycube_mesh);
+                if best.is_none() || dist < best.as_ref().unwrap().1 {
+                    best = Some((pos, dist));
+                    // Early exit if already on the surface.
+                    if dist < 1e-10 {
+                        return Some(pos);
+                    }
+                }
             }
         }
     }
-
-    None
+    best.map(|(pos, _)| pos)
 }
 
 /// Computes barycentric coordinates of `p` with respect to triangle `(a, b, c)`.
@@ -1103,7 +1114,93 @@ fn parameterize_side(
 
     // Solve the Dirichlet problem on the VFG graph.
     let uv_map = solve_dirichlet(&vfg, &boundary_positions);
+
+    if degree >= 2 {
+        detect_crossing_edges(&vfg, &uv_map, node_idx, degree);
+    }
+
     (vfg, uv_map)
+}
+
+/// Detects VFG edges whose UV-space length is suspiciously large, indicating
+/// potential crossing edges in the Tutte embedding. Logs warnings with details
+/// about the offending edges and their node origins.
+fn detect_crossing_edges(
+    vfg: &VirtualFlatGeometry,
+    uv: &HashMap<NodeIndex, Vector2D>,
+    node_idx: NodeIndex,
+    degree: usize,
+) {
+    use petgraph::visit::EdgeRef;
+
+    let n_sides = if degree == 1 { 4 } else { 4 * (degree - 1) };
+    // Side length of regular n_sides-gon with circumradius 1.
+    let side_len = 2.0 * (PI / n_sides as f64).sin();
+    // Flag edges longer than 2× a polygon side — these almost certainly cross.
+    let threshold = side_len * 2.0;
+
+    let boundary_set: HashSet<NodeIndex> = vfg.boundary_loop.iter().copied().collect();
+
+    let mut long_edges: Vec<(NodeIndex, NodeIndex, f64)> = Vec::new();
+    for edge_ref in vfg.graph.edge_references() {
+        let a = edge_ref.source();
+        let b = edge_ref.target();
+        let Some(&uv_a) = uv.get(&a) else { continue };
+        let Some(&uv_b) = uv.get(&b) else { continue };
+        let dx = uv_a.x - uv_b.x;
+        let dy = uv_a.y - uv_b.y;
+        let dist = (dx * dx + dy * dy).sqrt();
+        if dist > threshold {
+            long_edges.push((a, b, dist));
+        }
+    }
+
+    if long_edges.is_empty() {
+        return;
+    }
+
+    warn!(
+        "Region {:?} (degree {}): {} edges exceed UV threshold {:.3} (side_len {:.3})",
+        node_idx, degree, long_edges.len(), threshold, side_len,
+    );
+
+    for &(a, b, dist) in long_edges.iter().take(10) {
+        let a_label = if boundary_set.contains(&a) { "B" } else { "I" };
+        let b_label = if boundary_set.contains(&b) { "B" } else { "I" };
+        let uv_a = uv[&a];
+        let uv_b = uv[&b];
+        warn!(
+            "  {:?}[{}]({:.3},{:.3}) -- {:?}[{}]({:.3},{:.3}): dist {:.4}, origins: {:?} / {:?}",
+            a, a_label, uv_a.x, uv_a.y, b, b_label, uv_b.x, uv_b.y, dist,
+            vfg.graph[a].origin, vfg.graph[b].origin,
+        );
+    }
+}
+
+/// Interpolates a position along the boundary of a regular polygon, from
+/// vertex `start` to vertex `end` (going forward through intermediate
+/// vertices). `t` in `[0, 1)` maps proportionally across the arc.
+///
+/// When `start == end` (zero-length arc), returns `polygon[start]`.
+/// When the arc spans one edge, this reduces to simple linear interpolation.
+fn polygon_arc_interpolate(
+    polygon: &[Vector2D],
+    start: usize,
+    end: usize,
+    t: f64,
+) -> Vector2D {
+    let n = polygon.len();
+    let n_edges = (end + n - start) % n;
+    if n_edges == 0 {
+        return polygon[start];
+    }
+    let total = n_edges as f64;
+    let pos = (t * total).clamp(0.0, total - 1e-12);
+    let edge = pos as usize;
+    let local_t = pos - edge as f64;
+    let a = polygon[(start + edge) % n];
+    let b = polygon[(start + edge + 1) % n];
+    a * (1.0 - local_t) + b * local_t
 }
 
 /// Tests whether two line segments (a1–a2) and (b1–b2) properly cross each other.
@@ -1164,26 +1261,45 @@ fn map_boundary_to_polygon(vfg: &VirtualFlatGeometry, n_sides: usize) -> HashMap
 
     if !corners.is_empty() && corners.len() == n_sides {
         // Structured mapping: each segment of boundary nodes maps to one polygon side.
+        // When adjacent cut endpoints produce empty segments (seg_len == 0), we
+        // absorb those empty polygon sides into the next non-empty segment so
+        // that its nodes span a wider polygon arc and no gap is left.
         let mut result = HashMap::new();
 
+        // Pre-compute segment lengths for all sides.
+        let seg_lens: Vec<usize> = (0..n_sides)
+            .map(|side| {
+                let seg_start = corners[side];
+                let seg_end = corners[(side + 1) % n_sides];
+                if seg_end > seg_start {
+                    seg_end - seg_start
+                } else if seg_end == seg_start {
+                    0
+                } else {
+                    n - seg_start + seg_end
+                }
+            })
+            .collect();
+
         for side in 0..n_sides {
-            let seg_start = corners[side];
-            let seg_end = corners[(side + 1) % n_sides];
-
-            // Nodes in this segment (cyclic slice of boundary_loop).
-            let seg_len = if seg_end > seg_start {
-                seg_end - seg_start
-            } else if seg_end == seg_start {
-                // Empty segment (corner immediately followed by next corner).
-                // Place nothing — the corner node itself is the start of the next side.
-                continue;
-            } else {
-                n - seg_start + seg_end
-            };
-
-            if seg_len == 0 {
-                continue;
+            if seg_lens[side] == 0 {
+                continue; // Empty side — absorbed by the next non-empty side.
             }
+
+            // Walk backward through preceding empty sides to find where the
+            // effective polygon arc starts.
+            let mut effective_start = side;
+            loop {
+                let prev = (effective_start + n_sides - 1) % n_sides;
+                if seg_lens[prev] != 0 || prev == side {
+                    break;
+                }
+                effective_start = prev;
+            }
+            let effective_end = (side + 1) % n_sides;
+
+            let seg_start = corners[side];
+            let seg_len = seg_lens[side];
 
             // Compute arc lengths within this segment.
             let mut seg_arc: Vec<f64> = Vec::with_capacity(seg_len);
@@ -1198,11 +1314,8 @@ fn map_boundary_to_polygon(vfg: &VirtualFlatGeometry, n_sides: usize) -> HashMap
                 seg_total += len;
             }
 
-            // Place nodes along this polygon side.
-            let p0 = polygon[side];
-            let p1 = polygon[(side + 1) % n_sides];
+            // Place nodes along the (possibly extended) polygon arc.
             let mut cumulative: f64 = 0.0;
-
             for j in 0..seg_len {
                 let idx = (seg_start + j) % n;
                 let node = boundary[idx];
@@ -1211,7 +1324,7 @@ fn map_boundary_to_polygon(vfg: &VirtualFlatGeometry, n_sides: usize) -> HashMap
                 } else {
                     j as f64 / seg_len as f64
                 };
-                let pos = p0 * (1.0 - t) + p1 * t;
+                let pos = polygon_arc_interpolate(&polygon, effective_start, effective_end, t);
                 result.insert(node, pos);
                 cumulative += seg_arc[j];
             }
