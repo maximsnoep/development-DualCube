@@ -1,7 +1,7 @@
 use std::cmp::{Ordering, Reverse};
 use std::collections::{BinaryHeap, HashMap, HashSet};
 
-use log::warn;
+use log::{info, warn};
 use mehsh::prelude::{HasNeighbors, HasPosition, Mesh, Vector3D};
 use ordered_float::OrderedFloat;
 use petgraph::graph::{EdgeIndex, NodeIndex};
@@ -69,6 +69,11 @@ pub fn compute_cutting_plans(
         compute_side_cut_paths(node_idx, &cut_topology, input_skeleton, input_mesh);
     let mut polycube_cuts =
         compute_side_cut_paths(node_idx, &cut_topology, polycube_skeleton, polycube_mesh);
+
+    // Ensure cut endpoints on the same boundary are not adjacent (≤1 midpoint
+    // index apart). Adjacent endpoints produce an empty polygon side in UV.
+    ensure_endpoint_separation(&mut input_cuts, input_skeleton, input_mesh, node_idx);
+    ensure_endpoint_separation(&mut polycube_cuts, polycube_skeleton, polycube_mesh, node_idx);
 
     // Assign shared t-values and build boundary parameterizations.
     let (input_boundary_params, polycube_boundary_params) = assign_shared_t_values_and_parameterize(
@@ -877,4 +882,198 @@ fn kruskal_mst(weighted_edges: &[(EdgeIndex, EdgeIndex, f64)]) -> Vec<(EdgeIndex
     }
 
     result
+}
+
+// ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+// Cut endpoint separation
+// ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+/// Ensures no two cut endpoints on the same boundary are adjacent (≤ 1
+/// midpoint index apart in the boundary loop). Adjacent endpoints leave
+/// an empty polygon side in the UV mapping because the boundary walk has
+/// zero regular midpoints between them.
+///
+/// For each offending pair, tries to swap one endpoint to its other
+/// incident boundary edge. If swapping would create a new adjacency,
+/// tries the other endpoint. A warning is emitted if neither works.
+fn ensure_endpoint_separation(
+    cuts: &mut [CutPath],
+    skeleton: &LabeledCurveSkeleton,
+    mesh: &Mesh<INPUT>,
+    node_idx: NodeIndex,
+) {
+    // Collect which cut endpoints land on each boundary: (cut_index, is_start).
+    let mut boundary_eps: HashMap<EdgeIndex, Vec<(usize, bool)>> = HashMap::new();
+    for (ci, cut) in cuts.iter().enumerate() {
+        boundary_eps
+            .entry(cut.start_boundary)
+            .or_default()
+            .push((ci, true));
+        boundary_eps
+            .entry(cut.end_boundary)
+            .or_default()
+            .push((ci, false));
+    }
+
+    for edge_ref in skeleton.edges(node_idx) {
+        let skel_edge = edge_ref.id();
+        let boundary = &edge_ref.weight().boundary_loop;
+        let n = boundary.edge_midpoints.len();
+
+        let Some(eps) = boundary_eps.get(&skel_edge) else {
+            continue;
+        };
+        if eps.len() < 2 {
+            continue;
+        }
+        let eps = eps.clone(); // avoid borrow conflict with cuts
+
+        // Iteratively fix adjacent pairs until none remain.
+        for _iter in 0..eps.len() * 2 {
+            // Find first adjacent pair.
+            let mut adjacent = None;
+            'search: for i in 0..eps.len() {
+                let idx_i = cut_ep_midpoint_idx(cuts, eps[i]);
+                for j in (i + 1)..eps.len() {
+                    let idx_j = cut_ep_midpoint_idx(cuts, eps[j]);
+                    if circular_gap(idx_i, idx_j, n) <= 1 {
+                        adjacent = Some((i, j));
+                        break 'search;
+                    }
+                }
+            }
+
+            let Some((i, j)) = adjacent else {
+                break; // All separated.
+            };
+
+            let fixed = try_swap_cut_endpoint(cuts, &eps, i, boundary, mesh, n)
+                || try_swap_cut_endpoint(cuts, &eps, j, boundary, mesh, n);
+
+            if !fixed {
+                warn!(
+                    "Cannot separate adjacent cut endpoints on boundary {:?}: \
+                     midpoint indices {} and {} (boundary len {})",
+                    skel_edge,
+                    cut_ep_midpoint_idx(cuts, eps[i]),
+                    cut_ep_midpoint_idx(cuts, eps[j]),
+                    n,
+                );
+                break;
+            }
+        }
+    }
+}
+
+/// Minimum directional gap between two indices on a cyclic sequence of
+/// length `n`. Returns 0 when `a == b`, 1 when they are adjacent, etc.
+fn circular_gap(a: usize, b: usize, n: usize) -> usize {
+    let fwd = (b + n - a) % n;
+    let bwd = (a + n - b) % n;
+    fwd.min(bwd)
+}
+
+/// Returns the current midpoint index for a cut endpoint.
+fn cut_ep_midpoint_idx(cuts: &[CutPath], (ci, is_start): (usize, bool)) -> usize {
+    if is_start {
+        cuts[ci].start_midpoint_idx
+    } else {
+        cuts[ci].end_midpoint_idx
+    }
+}
+
+/// Tries to move the cut endpoint at `eps[target]` to its other incident
+/// boundary edge. Returns `true` if the swap was applied.
+fn try_swap_cut_endpoint(
+    cuts: &mut [CutPath],
+    eps: &[(usize, bool)],
+    target: usize,
+    boundary: &BoundaryLoop,
+    mesh: &Mesh<INPUT>,
+    n: usize,
+) -> bool {
+    let (ci, is_start) = eps[target];
+    let current_idx = cut_ep_midpoint_idx(cuts, (ci, is_start));
+
+    let vertex = cut_endpoint_vertex(&cuts[ci], is_start);
+
+    let Some(alt_idx) = find_other_incident_boundary_edge(vertex, current_idx, boundary, mesh)
+    else {
+        return false;
+    };
+
+    // Reject if the alternative would be adjacent to any other endpoint.
+    for (k, &ep) in eps.iter().enumerate() {
+        if k == target {
+            continue;
+        }
+        let idx_k = cut_ep_midpoint_idx(cuts, ep);
+        if circular_gap(alt_idx, idx_k, n) <= 1 {
+            return false;
+        }
+    }
+
+    // Apply.
+    let new_edge = boundary.edge_midpoints[alt_idx];
+    if is_start {
+        cuts[ci].start_midpoint_idx = alt_idx;
+        cuts[ci].path.points[0] = SurfacePoint::OnEdge {
+            edge: new_edge,
+            t: 0.5,
+        };
+    } else {
+        cuts[ci].end_midpoint_idx = alt_idx;
+        let last = cuts[ci].path.points.len() - 1;
+        cuts[ci].path.points[last] = SurfacePoint::OnEdge {
+            edge: new_edge,
+            t: 0.5,
+        };
+    }
+
+    info!(
+        "Separated adjacent cut endpoints: swapped cut {} {} midpoint {} → {}",
+        ci,
+        if is_start { "start" } else { "end" },
+        current_idx,
+        alt_idx,
+    );
+    true
+}
+
+/// Returns the mesh vertex at the start or end of a cut path.
+/// For the start, this is the first `OnVertex` (index 1, since index 0 is
+/// the boundary `OnEdge` midpoint). For the end, it is the last `OnVertex`.
+fn cut_endpoint_vertex(cut: &CutPath, is_start: bool) -> VertID {
+    if is_start {
+        match cut.path.points[1] {
+            SurfacePoint::OnVertex { vertex } => vertex,
+            _ => panic!("Cut path point[1] is not OnVertex"),
+        }
+    } else {
+        let n = cut.path.points.len();
+        match cut.path.points[n - 2] {
+            SurfacePoint::OnVertex { vertex } => vertex,
+            _ => panic!("Cut path second-to-last point is not OnVertex"),
+        }
+    }
+}
+
+/// Finds the other boundary edge (not the one at `current_idx`) that is
+/// incident to `vertex`. On a simple-cycle boundary loop, every vertex is
+/// incident to exactly two edges, so exactly one alternative exists.
+fn find_other_incident_boundary_edge(
+    vertex: VertID,
+    current_idx: usize,
+    boundary: &BoundaryLoop,
+    mesh: &Mesh<INPUT>,
+) -> Option<usize> {
+    for (i, &e) in boundary.edge_midpoints.iter().enumerate() {
+        if i == current_idx {
+            continue;
+        }
+        if mesh.root(e) == vertex || mesh.toor(e) == vertex {
+            return Some(i);
+        }
+    }
+    None
 }
