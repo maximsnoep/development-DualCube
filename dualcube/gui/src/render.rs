@@ -26,6 +26,7 @@ use bevy_toon::ToonMaterial;
 use core::f32;
 use dualcube::prelude::*;
 use dualcube::skeleton::cross_parameterize::virtual_mesh::VirtualNodeOrigin;
+use dualcube::skeleton::cross_parameterize::PolycubeMap;
 use egui_dock::LeafNode;
 use enum_iterator::{all, Sequence};
 use itertools::Itertools;
@@ -61,6 +62,7 @@ pub enum Objects {
     #[default]
     Polycube,
     PolycubeMap,
+    UvDomain,
     QuadMesh,
     ContractedMesh,
 }
@@ -71,6 +73,7 @@ impl std::fmt::Display for Objects {
             Objects::InputMesh => "input mesh",
             Objects::Polycube => "polycube",
             Objects::PolycubeMap => "polycube-map",
+            Objects::UvDomain => "UV domain",
             Objects::QuadMesh => "quad mesh",
             Objects::ContractedMesh => "contracted mesh",
         };
@@ -209,6 +212,7 @@ impl From<Objects> for Vec3 {
             Objects::InputMesh => Self::new(0., 0., 0.),
             Objects::Polycube => Self::new(0., 0., 1_000.),
             Objects::PolycubeMap => Self::new(0., 1_000., 1_000.),
+            Objects::UvDomain => Self::new(0., 2_000., 1_000.),
             Objects::QuadMesh => Self::new(1_000., 0., 1_000.),
             Objects::ContractedMesh => Self::new(2_000., 0., 1_000.),
         }
@@ -321,7 +325,7 @@ pub fn reset(
     for object in all::<Objects>() {
         let handle = images.add(image.clone());
         handles.map.insert(CameraFor(object), handle.clone());
-        let projection = if object == Objects::PolycubeMap || object == Objects::Polycube {
+        let projection = if object == Objects::PolycubeMap || object == Objects::Polycube || object == Objects::UvDomain {
             let mut proj = OrthographicProjection::default_3d();
             proj.scaling_mode = ScalingMode::FixedVertical {
                 viewport_height: 30.,
@@ -393,6 +397,10 @@ pub fn update_render_settings(
                 | (Objects::Polycube, "paths")
                 | (Objects::Polycube, "flat paths")
                 | (Objects::PolycubeMap, "colored")
+                | (Objects::UvDomain, "input edges")
+                | (Objects::UvDomain, "polycube edges")
+                | (Objects::UvDomain, "boundary")
+                | (Objects::UvDomain, "uv background")
                 | (Objects::QuadMesh, "gray")
                 | (Objects::QuadMesh, "wireframe")
                 | (Objects::ContractedMesh, "gray")
@@ -510,7 +518,7 @@ pub fn respawn_renders(
                                             Rendered,
                                         ));
                                     }
-                                    Objects::PolycubeMap | Objects::Polycube => {
+                                    Objects::PolycubeMap | Objects::Polycube | Objects::UvDomain => {
                                         commands.spawn((
                                             mesh_handle,
                                             MeshMaterial3d(flat_material.clone()),
@@ -605,12 +613,24 @@ pub fn update(
     let distance = normalized_translation.length();
 
     for (mut sub_transform, mut sub_projection, _sub_camera, sub_object) in &mut other_cameras {
-        sub_transform.translation = normalized_translation + Vec3::from(sub_object.0);
-        sub_transform.rotation = normalized_rotation;
-        if let Projection::Orthographic(orthographic) = sub_projection.as_mut() {
-            orthographic.scaling_mode = ScalingMode::FixedVertical {
-                viewport_height: distance,
-            };
+        if sub_object.0 == Objects::UvDomain {
+            // UV domain: fixed top-down view looking at XY plane.
+            let uv_center = Vec3::from(Objects::UvDomain);
+            sub_transform.translation = uv_center + Vec3::new(0.0, 0.0, 50.0);
+            sub_transform.rotation = Quat::IDENTITY; // looking down -Z
+            if let Projection::Orthographic(orthographic) = sub_projection.as_mut() {
+                orthographic.scaling_mode = ScalingMode::FixedVertical {
+                    viewport_height: 10.0,
+                };
+            }
+        } else {
+            sub_transform.translation = normalized_translation + Vec3::from(sub_object.0);
+            sub_transform.rotation = normalized_rotation;
+            if let Projection::Orthographic(orthographic) = sub_projection.as_mut() {
+                orthographic.scaling_mode = ScalingMode::FixedVertical {
+                    viewport_height: distance,
+                };
+            }
         }
     }
 
@@ -1001,6 +1021,179 @@ fn create_input_uv_patch_mesh(
     Some(builder.build())
 }
 
+/// Creates a flat 2D UV-domain visualization showing both input and polycube
+/// VFG embeddings overlaid on the canonical domain, one region at a time.
+/// Regions are laid out in a grid. Each region shows:
+/// - A UV-colored background quad
+/// - Input mesh edges in blue (boundary in cyan)
+/// - Polycube mesh edges in red (boundary in yellow)
+/// - Boundary and interior vertices at different sizes
+fn create_uv_domain_view(solution: &Solution, pmap: &PolycubeMap) -> RenderObject {
+    let mut render_obj = RenderObject::default();
+
+    let cleaned = match solution.skeleton.as_ref().and_then(|s| s.cleaned_skeleton()) {
+        Some(s) => s,
+        None => return render_obj,
+    };
+
+    // Layout: arrange regions in a grid, each region gets a 3x3 cell
+    // (UV domain is roughly [-1,1] so 3 units wide with padding).
+    let n_regions = pmap.regions.len();
+    let cols = (n_regions as f64).sqrt().ceil() as usize;
+    let cell_size = 3.0f32;
+
+    // Sort regions by node index for stable layout.
+    let mut sorted_regions: Vec<_> = pmap.regions.iter().collect();
+    sorted_regions.sort_by_key(|(idx, _)| idx.index());
+
+    let mut input_edge_gizmos = GizmoAsset::new();
+    let mut polycube_edge_gizmos = GizmoAsset::new();
+    let mut boundary_gizmos = GizmoAsset::new();
+    let mut vertex_gizmos = GizmoAsset::new();
+    let mut builder = MeshBuilder::default();
+
+    let input_color = bevy::prelude::Color::srgb(0.3, 0.5, 1.0);
+    let polycube_color = bevy::prelude::Color::srgb(1.0, 0.3, 0.3);
+    let input_boundary_color = bevy::prelude::Color::srgb(0.0, 0.9, 0.9);
+    let polycube_boundary_color = bevy::prelude::Color::srgb(1.0, 0.9, 0.0);
+    let boundary_vertex_color = bevy::prelude::Color::srgb(1.0, 1.0, 1.0);
+    let interior_vertex_color = bevy::prelude::Color::srgb(0.5, 0.5, 0.5);
+
+    for (region_i, (&node_idx, region)) in sorted_regions.iter().enumerate() {
+        let col = region_i % cols;
+        let row = region_i / cols;
+        let offset_x = col as f32 * cell_size;
+        let offset_y = -(row as f32) * cell_size; // negative Y so rows go downward
+
+        let degree = cleaned.edges(node_idx).count();
+
+        // Helper: UV to 3D position in the view (flat XY plane).
+        let uv_to_pos = |uv: &Vector2D| -> Vec3 {
+            Vec3::new(uv.x as f32 + offset_x, uv.y as f32 + offset_y, 0.0)
+        };
+
+        // Draw UV-colored background quad for this region's canonical polygon.
+        // Use the polygon shape (n_sides-gon).
+        let n_sides = if degree == 1 { 4 } else if degree >= 2 { 4 * (degree - 1) } else { 4 };
+        {
+            let polygon: Vec<Vector2D> = (0..n_sides)
+                .map(|k| {
+                    let angle = 2.0 * std::f64::consts::PI * k as f64 / n_sides as f64;
+                    Vector2D::new(angle.cos(), angle.sin())
+                })
+                .collect();
+
+            // Fan-triangulate the polygon for the background mesh.
+            let normal = Vector3D::new(0.0, 0.0, 1.0);
+            for i in 1..polygon.len() - 1 {
+                let uvs = [&polygon[0], &polygon[i], &polygon[i + 1]];
+                for uv in uvs {
+                    let pos = Vector3D::new(uv.x + offset_x as f64, uv.y + offset_y as f64, -0.01);
+                    // UV color: u→blue, v→red (same as uv_to_color)
+                    let u_norm = ((uv.x + 1.0) / 2.0).clamp(0.0, 1.0) as f32;
+                    let v_norm = ((uv.y + 1.0) / 2.0).clamp(0.0, 1.0) as f32;
+                    let color = [v_norm * 0.4, 0.0, u_norm * 0.4]; // dimmed so edges are visible
+                    builder.add_vertex(&pos, &normal, &color);
+                }
+            }
+        }
+
+        // Draw input VFG edges in UV space.
+        let input_boundary_set: HashSet<_> = region.input_vfg.boundary_loop.iter().copied().collect();
+        for edge_idx in region.input_vfg.graph.edge_indices() {
+            let Some((a, b)) = region.input_vfg.graph.edge_endpoints(edge_idx) else {
+                continue;
+            };
+            let (Some(uv_a), Some(uv_b)) = (region.input_uv.get(&a), region.input_uv.get(&b))
+            else {
+                continue;
+            };
+            let a_on_boundary = input_boundary_set.contains(&a);
+            let b_on_boundary = input_boundary_set.contains(&b);
+            let color = if a_on_boundary && b_on_boundary {
+                input_boundary_color
+            } else {
+                input_color
+            };
+            input_edge_gizmos.line(uv_to_pos(uv_a), uv_to_pos(uv_b), color);
+        }
+
+        // Draw polycube VFG edges in UV space.
+        let polycube_boundary_set: HashSet<_> =
+            region.polycube_vfg.boundary_loop.iter().copied().collect();
+        for edge_idx in region.polycube_vfg.graph.edge_indices() {
+            let Some((a, b)) = region.polycube_vfg.graph.edge_endpoints(edge_idx) else {
+                continue;
+            };
+            let (Some(uv_a), Some(uv_b)) =
+                (region.polycube_uv.get(&a), region.polycube_uv.get(&b))
+            else {
+                continue;
+            };
+            let a_on_boundary = polycube_boundary_set.contains(&a);
+            let b_on_boundary = polycube_boundary_set.contains(&b);
+            let color = if a_on_boundary && b_on_boundary {
+                polycube_boundary_color
+            } else {
+                polycube_color
+            };
+            polycube_edge_gizmos.line(uv_to_pos(uv_a), uv_to_pos(uv_b), color);
+        }
+
+        // Draw boundary vertices (larger) and interior vertices (smaller) for input.
+        for node in region.input_vfg.graph.node_indices() {
+            let Some(uv) = region.input_uv.get(&node) else {
+                continue;
+            };
+            let pos = uv_to_pos(uv);
+            if input_boundary_set.contains(&node) {
+                boundary_gizmos.sphere(
+                    Isometry3d::from_translation(pos),
+                    0.03,
+                    boundary_vertex_color,
+                );
+            } else {
+                vertex_gizmos.sphere(
+                    Isometry3d::from_translation(pos),
+                    0.015,
+                    interior_vertex_color,
+                );
+            }
+        }
+
+        // Draw boundary vertices for polycube (slightly offset in Z to avoid z-fight).
+        for node in region.polycube_vfg.graph.node_indices() {
+            let Some(uv) = region.polycube_uv.get(&node) else {
+                continue;
+            };
+            let mut pos = uv_to_pos(uv);
+            pos.z += 0.001;
+            if polycube_boundary_set.contains(&node) {
+                boundary_gizmos.sphere(
+                    Isometry3d::from_translation(pos),
+                    0.03,
+                    polycube_boundary_color,
+                );
+            } else {
+                vertex_gizmos.sphere(
+                    Isometry3d::from_translation(pos),
+                    0.015,
+                    polycube_color,
+                );
+            }
+        }
+    }
+
+    render_obj
+        .bevy_mesh(builder.build(), "uv background")
+        .gizmo(input_edge_gizmos, 2.0, -0.001, "input edges")
+        .gizmo(polycube_edge_gizmos, 2.0, -0.002, "polycube edges")
+        .gizmo(boundary_gizmos, 1.0, -0.003, "boundary")
+        .gizmo(vertex_gizmos, 1.0, -0.004, "vertices");
+
+    render_obj
+}
+
 pub fn refresh(solution: &Solution, configuration: &Configuration) -> RenderObjectStore {
     let mut render_object_store = RenderObjectStore::default();
     for object in all::<Objects>() {
@@ -1312,6 +1505,12 @@ pub fn refresh(solution: &Solution, configuration: &Configuration) -> RenderObje
                             "virtual mesh debug",
                         );
 
+                    render_object_store.add_object(object, render_obj);
+                }
+            }
+            Objects::UvDomain => {
+                if let Some(pmap) = solution.skeleton.as_ref().and_then(|s| s.polycube_map()) {
+                    let render_obj = create_uv_domain_view(solution, pmap);
                     render_object_store.add_object(object, render_obj);
                 }
             }

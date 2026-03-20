@@ -224,6 +224,7 @@ impl PolycubeMap {
 
         // Map each input vertex to its polycube surface position.
         let mut unmapped = 0usize;
+        let mut mapped_vertices: Vec<(VertID, NodeIndex)> = Vec::new();
         for v in input_mesh.vert_ids() {
             let Some(&region_idx) = vert_to_region.get(&v) else {
                 continue;
@@ -245,6 +246,7 @@ impl PolycubeMap {
 
             if let Some(pos) = interpolate_in_uv_triangles(uv, tris) {
                 result.set_position(v, pos);
+                mapped_vertices.push((v, region_idx));
             } else {
                 unmapped += 1;
             }
@@ -254,6 +256,81 @@ impl PolycubeMap {
             warn!(
                 "to_triangle_mesh_polycube: {} input vertices could not be mapped",
                 unmapped
+            );
+        }
+
+        // ── Diagnostics: surface distance and edge-through metrics ──
+        {
+            // Polycube bounding box diameter for threshold.
+            let (mut bmin, mut bmax) = (
+                Vector3D::new(f64::MAX, f64::MAX, f64::MAX),
+                Vector3D::new(f64::MIN, f64::MIN, f64::MIN),
+            );
+            for pv in polycube_mesh.vert_ids() {
+                let p = polycube_mesh.position(pv);
+                bmin = Vector3D::new(bmin.x.min(p.x), bmin.y.min(p.y), bmin.z.min(p.z));
+                bmax = Vector3D::new(bmax.x.max(p.x), bmax.y.max(p.y), bmax.z.max(p.z));
+            }
+            let diameter = (bmax - bmin).norm();
+            let threshold = diameter * 0.01;
+
+            let mut region_stats: HashMap<NodeIndex, (usize, usize, f64)> = HashMap::new();
+            let mut global_max_dist = 0.0f64;
+            let mut global_far = 0usize;
+
+            for &(v, region_idx) in &mapped_vertices {
+                let pos = result.position(v);
+                let dist = distance_to_mesh_surface(pos, polycube_mesh);
+                let stats = region_stats.entry(region_idx).or_insert((0, 0, 0.0));
+                stats.0 += 1;
+                if dist > threshold {
+                    stats.1 += 1;
+                    global_far += 1;
+                }
+                if dist > stats.2 { stats.2 = dist; }
+                if dist > global_max_dist { global_max_dist = dist; }
+            }
+
+            let mut edge_through = 0usize;
+            let mut total_edges = 0usize;
+            let mut seen_edges: HashSet<(VertID, VertID)> = HashSet::new();
+            for face in input_mesh.face_ids() {
+                let fv: Vec<VertID> = input_mesh.vertices(face).collect();
+                for i in 0..fv.len() {
+                    let a = fv[i];
+                    let b = fv[(i + 1) % fv.len()];
+                    let key = if a < b { (a, b) } else { (b, a) };
+                    if !seen_edges.insert(key) { continue; }
+                    total_edges += 1;
+                    let mid = (result.position(a) + result.position(b)) * 0.5;
+                    let dist = distance_to_mesh_surface(mid, polycube_mesh);
+                    if dist > threshold { edge_through += 1; }
+                }
+            }
+
+            log::info!("=== Cross-parameterization diagnostics ===");
+            log::info!("  Polycube diameter: {:.4}, threshold (1%): {:.6}", diameter, threshold);
+            let mut region_list: Vec<_> = region_stats.iter().collect();
+            region_list.sort_by_key(|(idx, _)| idx.index());
+            for (&node_idx, &(mapped, far, max_d)) in &region_list {
+                let degree = polycube_skeleton.edges(node_idx).count();
+                log::info!(
+                    "  Region {:?} (deg {}): {} mapped, {} far ({:.1}%), max_dist={:.6} ({:.2}% diam)",
+                    node_idx, degree, mapped, far,
+                    if mapped > 0 { far as f64 / mapped as f64 * 100.0 } else { 0.0 },
+                    max_d, max_d / diameter * 100.0
+                );
+            }
+            log::info!(
+                "  Total: {} mapped, {} unmapped, {} far ({:.1}%), max_dist={:.6} ({:.2}% diam)",
+                mapped_vertices.len(), unmapped, global_far,
+                if !mapped_vertices.is_empty() { global_far as f64 / mapped_vertices.len() as f64 * 100.0 } else { 0.0 },
+                global_max_dist, global_max_dist / diameter * 100.0
+            );
+            log::info!(
+                "  Edges through surface: {} of {} ({:.1}%)",
+                edge_through, total_edges,
+                if total_edges > 0 { edge_through as f64 / total_edges as f64 * 100.0 } else { 0.0 }
             );
         }
 
@@ -793,27 +870,19 @@ fn trace_face_left(
 }
 
 /// Finds which UV triangle contains `query` and returns the interpolated 3D position.
-/// Falls back to the nearest triangle if the point is slightly outside all of them.
+/// Returns `None` if the point is not inside any UV triangle (no fallback).
 fn interpolate_in_uv_triangles(query: Vector2D, tris: &[UvTriangle]) -> Option<Vector3D> {
-    let mut best: Option<(f64, Vector3D)> = None; // (min_bary_coord, interpolated_pos)
-
     for tri in tris {
         if let Some((u, v, w)) = barycentric_2d(query, tri.uv[0], tri.uv[1], tri.uv[2]) {
             let min_coord = u.min(v).min(w);
-            let pos = tri.pos[0] * u + tri.pos[1] * v + tri.pos[2] * w;
             if min_coord >= -1e-6 {
+                let pos = tri.pos[0] * u + tri.pos[1] * v + tri.pos[2] * w;
                 return Some(pos);
-            }
-            // Track the triangle where the point is "least outside".
-            if best.as_ref().map_or(true, |(prev_min, _)| min_coord > *prev_min) {
-                best = Some((min_coord, pos));
             }
         }
     }
 
-    // Accept if the point is only slightly outside (within tolerance).
-    best.filter(|(min_coord, _)| *min_coord >= -0.1)
-        .map(|(_, pos)| pos)
+    None
 }
 
 /// Computes barycentric coordinates of `p` with respect to triangle `(a, b, c)`.
@@ -844,6 +913,68 @@ fn barycentric_2d(
     let u = 1.0 - v - w;
 
     Some((u, v, w))
+}
+
+/// Dot product of two 3D vectors.
+fn dot3(a: Vector3D, b: Vector3D) -> f64 {
+    a.x * b.x + a.y * b.y + a.z * b.z
+}
+
+/// Squared distance from point `p` to triangle `(a, b, c)` in 3D.
+/// Uses Voronoi-region based closest point (Ericson, "Real-Time Collision Detection").
+fn point_to_triangle_dist_sq(p: Vector3D, a: Vector3D, b: Vector3D, c: Vector3D) -> f64 {
+    let ab = b - a;
+    let ac = c - a;
+    let ap = p - a;
+    let d1 = dot3(ab, ap);
+    let d2 = dot3(ac, ap);
+    if d1 <= 0.0 && d2 <= 0.0 { return dot3(ap, ap); }
+    let bp = p - b;
+    let d3 = dot3(ab, bp);
+    let d4 = dot3(ac, bp);
+    if d3 >= 0.0 && d4 <= d3 { return dot3(bp, bp); }
+    let vc = d1 * d4 - d3 * d2;
+    if vc <= 0.0 && d1 >= 0.0 && d3 <= 0.0 {
+        let v = d1 / (d1 - d3);
+        let diff = p - (a + ab * v);
+        return dot3(diff, diff);
+    }
+    let cp = p - c;
+    let d5 = dot3(ab, cp);
+    let d6 = dot3(ac, cp);
+    if d6 >= 0.0 && d5 <= d6 { return dot3(cp, cp); }
+    let vb = d5 * d2 - d1 * d6;
+    if vb <= 0.0 && d2 >= 0.0 && d6 <= 0.0 {
+        let w = d2 / (d2 - d6);
+        let diff = p - (a + ac * w);
+        return dot3(diff, diff);
+    }
+    let va = d3 * d6 - d5 * d4;
+    if va <= 0.0 && (d4 - d3) >= 0.0 && (d5 - d6) >= 0.0 {
+        let w = (d4 - d3) / ((d4 - d3) + (d5 - d6));
+        let diff = p - (b + (c - b) * w);
+        return dot3(diff, diff);
+    }
+    let denom = 1.0 / (va + vb + vc);
+    let v = vb * denom;
+    let w = vc * denom;
+    let diff = p - (a + ab * v + ac * w);
+    dot3(diff, diff)
+}
+
+/// Minimum distance from `point` to the surface of `mesh`.
+fn distance_to_mesh_surface(point: Vector3D, mesh: &Mesh<INPUT>) -> f64 {
+    let mut min_dist_sq = f64::MAX;
+    for face in mesh.face_ids() {
+        let verts: Vec<VertID> = mesh.vertices(face).collect();
+        for i in 1..verts.len() - 1 {
+            let a = mesh.position(verts[0]);
+            let b = mesh.position(verts[i]);
+            let c = mesh.position(verts[i + 1]);
+            min_dist_sq = min_dist_sq.min(point_to_triangle_dist_sq(point, a, b, c));
+        }
+    }
+    min_dist_sq.sqrt()
 }
 
 /// Performs cross-parameterization between the input and polycube labeled curve skeletons,

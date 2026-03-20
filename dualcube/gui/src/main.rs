@@ -58,7 +58,7 @@ pub struct Configuration {
 
     pub interactive_mode: InteractiveMode,
 
-    pub window_shows_object: [Objects; 4],
+    pub window_shows_object: [Objects; 5],
 
     pub camera_rotate_sensitivity: f32,
     pub camera_translate_sensitivity: f32,
@@ -98,6 +98,7 @@ impl Default for Configuration {
             interactive_mode: InteractiveMode::None,
             window_shows_object: [
                 Objects::PolycubeMap,
+                Objects::UvDomain,
                 Objects::QuadMesh,
                 Objects::Polycube,
                 Objects::ContractedMesh,
