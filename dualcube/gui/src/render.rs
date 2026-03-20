@@ -585,11 +585,17 @@ pub fn update(
 
     let viewport_width = main_surface_viewport.max[0] - main_surface_viewport.min[0];
     let viewport_height = main_surface_viewport.max[1] - main_surface_viewport.min[1];
+    let scale_factor = window.scale_factor() as f32;
+
+    let physical_x = (main_surface_viewport.min[0] * scale_factor).round().max(0.0) as u32;
+    let physical_y = (main_surface_viewport.min[1] * scale_factor).round().max(0.0) as u32;
+    let physical_width = (viewport_width * scale_factor).round().max(0.0) as u32;
+    let physical_height = (viewport_height * scale_factor).round().max(0.0) as u32;
 
     if window.physical_size().x == 0
         || window.physical_size().y == 0
-        || viewport_width == 0.
-        || viewport_height == 0.
+        || physical_width == 0
+        || physical_height == 0
         || viewport_width.is_infinite()
         || viewport_height.is_infinite()
     {
@@ -598,16 +604,17 @@ pub fn update(
         main_camera.is_active = true;
         main_camera.viewport = Some(Viewport {
             physical_position: UVec2 {
-                x: main_surface_viewport.min[0] as u32,
-                y: main_surface_viewport.min[1] as u32,
+                x: physical_x,
+                y: physical_y,
             },
             physical_size: UVec2 {
-                x: viewport_width as u32,
-                y: viewport_height as u32,
+                x: physical_width,
+                y: physical_height,
             },
             ..Default::default()
         });
     }
+
 
     let normalized_translation = main_transform.translation - Vec3::from(Objects::InputMesh);
     let normalized_rotation = main_transform.rotation;
