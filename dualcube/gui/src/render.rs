@@ -390,6 +390,7 @@ pub fn update_render_settings(
                 | (Objects::InputMesh, "patches")
                 | (Objects::InputMesh, "cuts")
                 | (Objects::InputMesh, "virtual mesh debug")
+                | (Objects::InputMesh, "uv long edges")
                 // | (Objects::InputMesh, "uv patches")
                 // | (Objects::Polycube, "gray")
                 | (Objects::Polycube, "patches")
@@ -1033,6 +1034,66 @@ fn create_input_uv_patch_mesh(
     }
 
     Some(builder.build())
+}
+
+fn create_input_uv_long_edge_overlay(
+    solution: &Solution,
+    input: &mehsh::prelude::Mesh<INPUT>,
+    translation: Vector3D,
+    scale: f64,
+    threshold: f64,
+) -> Option<GizmoAsset> {
+    let pmap = solution.skeleton.as_ref().and_then(|s| s.polycube_map())?;
+
+    let mut vert_uv_avg: HashMap<VertID, Vector2D> = HashMap::new();
+    for region in pmap.regions.values() {
+        for (&vert_id, vfg_nodes) in &region.input_vfg.vert_to_nodes {
+            let mut uv_sum = Vector2D::new(0.0, 0.0);
+            let mut uv_count = 0.0;
+            for &node in vfg_nodes {
+                if let Some(&uv) = region.input_uv.get(&node) {
+                    uv_sum += uv;
+                    uv_count += 1.0;
+                }
+            }
+            if uv_count > 0.0 {
+                vert_uv_avg.insert(vert_id, uv_sum / uv_count);
+            }
+        }
+    }
+
+    if vert_uv_avg.is_empty() {
+        return None;
+    }
+
+    let mut gizmos = GizmoAsset::new();
+    let long_edge_color = bevy::prelude::Color::srgb(1.0, 0.1, 0.1);
+    let mut seen_edges: HashSet<(VertID, VertID)> = HashSet::new();
+
+    for face in input.face_ids() {
+        let verts: Vec<VertID> = input.vertices(face).collect();
+        for i in 0..verts.len() {
+            let a = verts[i];
+            let b = verts[(i + 1) % verts.len()];
+            let key = if a < b { (a, b) } else { (b, a) };
+            if !seen_edges.insert(key) {
+                continue;
+            }
+
+            let (Some(&uv_a), Some(&uv_b)) = (vert_uv_avg.get(&a), vert_uv_avg.get(&b)) else {
+                continue;
+            };
+
+            let uv_len = (uv_b - uv_a).norm();
+            if uv_len > threshold {
+                let pa = world_to_view(input.position(a), translation, scale);
+                let pb = world_to_view(input.position(b), translation, scale);
+                gizmos.line(pa, pb, long_edge_color);
+            }
+        }
+    }
+
+    Some(gizmos)
 }
 
 /// Creates a flat 2D UV-domain visualization showing both input and polycube
@@ -2086,6 +2147,16 @@ pub fn refresh(solution: &Solution, configuration: &Configuration) -> RenderObje
                             -0.0013,
                             "virtual mesh debug",
                         );
+
+                    if let Some(long_edge_overlay) = create_input_uv_long_edge_overlay(
+                        solution,
+                        input,
+                        translation,
+                        scale,
+                        1.0,
+                    ) {
+                        render_obj.gizmo(long_edge_overlay, 4.0, -0.00125, "uv long edges");
+                    }
                 }
 
                 if let Some(uv_patch_mesh) = create_input_uv_patch_mesh(solution, input) {
