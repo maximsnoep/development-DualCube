@@ -2,7 +2,7 @@ use std::collections::{HashMap, HashSet};
 use std::f64::consts::PI;
 
 use log::warn;
-use mehsh::prelude::{HasPosition, HasVertices, Mesh, SetPosition, Vector2D, Vector3D};
+use mehsh::prelude::{HasEdges, HasNeighbors, HasPosition, HasVertices, Mesh, SetPosition, Vector2D, Vector3D};
 
 use petgraph::graph::{EdgeIndex, NodeIndex};
 use petgraph::visit::IntoEdgeReferences;
@@ -1116,64 +1116,326 @@ fn parameterize_side(
     let uv_map = solve_dirichlet(&vfg, &boundary_positions);
 
     if degree >= 2 {
-        detect_crossing_edges(&vfg, &uv_map, node_idx, degree);
+        let signed_area = compute_uv_boundary_signed_area(&vfg, &uv_map);
+        let crossings = count_uv_crossings(&vfg, &uv_map);
+
+        // For small graphs (polycube side), dump full structure
+        if vfg.graph.node_count() <= 50 {
+            dump_polycube_vfg(&vfg, &uv_map, mesh, node_idx, degree);
+        }
+
+        log::warn!(
+            "Region {:?} (deg {}): signed_area={:.4} ({}) nodes={} edges={} boundary={} crossings={}",
+            node_idx, degree, signed_area,
+            if signed_area > 0.0 { "CCW" } else { "CW!" },
+            vfg.graph.node_count(), vfg.graph.edge_count(),
+            vfg.boundary_loop.len(), crossings,
+        );
     }
 
     (vfg, uv_map)
 }
 
-/// Detects VFG edges whose UV-space length is suspiciously large, indicating
-/// potential crossing edges in the Tutte embedding. Logs warnings with details
-/// about the offending edges and their node origins.
-fn detect_crossing_edges(
+/// Dumps the full VFG graph for a small region (polycube side).
+fn dump_polycube_vfg(
     vfg: &VirtualFlatGeometry,
     uv: &HashMap<NodeIndex, Vector2D>,
+    mesh: &Mesh<INPUT>,
     node_idx: NodeIndex,
     degree: usize,
 ) {
     use petgraph::visit::EdgeRef;
 
-    let n_sides = if degree == 1 { 4 } else { 4 * (degree - 1) };
-    // Side length of regular n_sides-gon with circumradius 1.
-    let side_len = 2.0 * (PI / n_sides as f64).sin();
-    // Flag edges longer than 2× a polygon side — these almost certainly cross.
-    let threshold = side_len * 2.0;
+    let boundary_set: HashSet<NodeIndex> = vfg.boundary_loop.iter().copied().collect();
+
+    log::warn!("=== POLYCUBE VFG DUMP region {:?} deg {} ===", node_idx, degree);
+
+    // Check: are there quad faces in the mesh?
+    let patch_verts: HashSet<VertID> = vfg.vert_to_nodes.keys().copied().collect();
+    let mut tri_count = 0;
+    let mut quad_count = 0;
+    let mut other_count = 0;
+    for face_id in mesh.face_ids() {
+        let verts: Vec<VertID> = mesh.vertices(face_id).collect();
+        // Check if face is in our patch (at least one vert in patch)
+        if verts.iter().any(|v| patch_verts.contains(v)) {
+            match verts.len() {
+                3 => tri_count += 1,
+                4 => quad_count += 1,
+                n => { other_count += 1; log::warn!("  face with {} verts!", n); }
+            }
+        }
+    }
+    log::warn!("  Mesh faces touching patch: {} tris, {} quads, {} other", tri_count, quad_count, other_count);
+
+    // Dump all nodes with UV positions
+    log::warn!("  Nodes ({}):", vfg.graph.node_count());
+    for ni in vfg.graph.node_indices() {
+        let on_boundary = if boundary_set.contains(&ni) { "B" } else { "I" };
+        let uv_pos = uv.get(&ni).map(|p| format!("({:.3},{:.3})", p.x, p.y)).unwrap_or("NONE".to_string());
+        let deg = vfg.graph.edges(ni).count();
+        let origin_short = match &vfg.graph[ni].origin {
+            virtual_mesh::VirtualNodeOrigin::MeshVertex(v) => format!("MeshVert({:?})", v),
+            virtual_mesh::VirtualNodeOrigin::BoundaryMidpoint { edge, boundary } =>
+                format!("BdryMid(e={:?},b={:?})", edge, boundary),
+            virtual_mesh::VirtualNodeOrigin::CutDuplicate { original, cut_index, side, .. } =>
+                format!("CutDup(orig={:?},ci={},s={})", original, cut_index, if *side {"R"} else {"L"}),
+            virtual_mesh::VirtualNodeOrigin::CutEndpointMidpoint { edge, cut_index, side, .. } =>
+                format!("CutEpMid(e={:?},ci={},s={})", edge, cut_index, if *side {"R"} else {"L"}),
+        };
+        log::warn!("    {:?}[{}] deg={} uv={} {}", ni, on_boundary, deg, uv_pos, origin_short);
+    }
+
+    // Find and log crossing edge pairs
+    let edges: Vec<(NodeIndex, NodeIndex)> = {
+        use petgraph::visit::IntoEdgeReferences;
+        vfg.graph
+            .edge_references()
+            .map(|e| (e.source(), e.target()))
+            .collect()
+    };
+    let fmt_node = |n: NodeIndex| -> String {
+        let b = if boundary_set.contains(&n) { "B" } else { "I" };
+        let p = uv.get(&n).map(|p| format!("({:.2},{:.2})", p.x, p.y)).unwrap_or("?".to_string());
+        format!("{:?}[{}]{}", n, b, p)
+    };
+    let mut crossing_count = 0;
+    for i in 0..edges.len() {
+        for j in (i + 1)..edges.len() {
+            let (a1, a2) = edges[i];
+            let (b1, b2) = edges[j];
+            if a1 == b1 || a1 == b2 || a2 == b1 || a2 == b2 { continue; }
+            let Some(&ua1) = uv.get(&a1) else { continue };
+            let Some(&ua2) = uv.get(&a2) else { continue };
+            let Some(&ub1) = uv.get(&b1) else { continue };
+            let Some(&ub2) = uv.get(&b2) else { continue };
+            if segments_cross(ua1, ua2, ub1, ub2) {
+                crossing_count += 1;
+                if crossing_count <= 10 {
+                    log::warn!(
+                        "  CROSSING: {} -- {} X {} -- {}",
+                        fmt_node(a1), fmt_node(a2), fmt_node(b1), fmt_node(b2),
+                    );
+                }
+            }
+        }
+    }
+    log::warn!("  Total crossings: {}", crossing_count);
+
+    // Dump boundary loop
+    log::warn!("  Boundary loop ({} nodes): {:?}", vfg.boundary_loop.len(), vfg.boundary_loop);
+    log::warn!("  Corner indices ({} corners): {:?}", vfg.corner_indices.len(), vfg.corner_indices);
+}
+
+/// Computes the signed area of the UV boundary polygon.
+/// Positive = CCW (correct for Tutte), negative = CW (wrong).
+fn compute_uv_boundary_signed_area(
+    vfg: &VirtualFlatGeometry,
+    uv: &HashMap<NodeIndex, Vector2D>,
+) -> f64 {
+    let bl = &vfg.boundary_loop;
+    let n = bl.len();
+    if n < 3 {
+        return 0.0;
+    }
+    let mut area = 0.0;
+    for i in 0..n {
+        let Some(&a) = uv.get(&bl[i]) else { continue };
+        let Some(&b) = uv.get(&bl[(i + 1) % n]) else { continue };
+        area += a.x * b.y - b.x * a.y;
+    }
+    area * 0.5
+}
+
+/// Counts the number of crossing edge pairs in the UV embedding.
+fn count_uv_crossings(
+    vfg: &VirtualFlatGeometry,
+    uv: &HashMap<NodeIndex, Vector2D>,
+) -> usize {
+    use petgraph::visit::EdgeRef;
+    let edges: Vec<(NodeIndex, NodeIndex)> = {
+        use petgraph::visit::IntoEdgeReferences;
+        vfg.graph
+            .edge_references()
+            .map(|e| (e.source(), e.target()))
+            .collect()
+    };
+    let mut crossings = 0;
+    for i in 0..edges.len() {
+        for j in (i + 1)..edges.len() {
+            let (a1, a2) = edges[i];
+            let (b1, b2) = edges[j];
+            if a1 == b1 || a1 == b2 || a2 == b1 || a2 == b2 {
+                continue;
+            }
+            let Some(&uv_a1) = uv.get(&a1) else { continue };
+            let Some(&uv_a2) = uv.get(&a2) else { continue };
+            let Some(&uv_b1) = uv.get(&b1) else { continue };
+            let Some(&uv_b2) = uv.get(&b2) else { continue };
+            if segments_cross(uv_a1, uv_a2, uv_b1, uv_b2) {
+                crossings += 1;
+            }
+        }
+    }
+    crossings
+}
+
+/// Diagnoses boundary-to-boundary connections in the VFG.
+///
+/// For each VFG edge where BOTH endpoints are on the boundary loop, checks:
+/// - Do the original mesh vertices share a mesh edge? (real vs synthetic)
+/// - Are they on the SAME skeleton boundary or DIFFERENT boundaries?
+/// - Are they consecutive in the boundary loop? (expected vs unexpected)
+///
+/// Also checks: for interior nodes that are very close to a boundary node in UV,
+/// could they cause visual "boundary crossing" artifacts?
+fn diagnose_boundary_connections(
+    vfg: &VirtualFlatGeometry,
+    skeleton: &LabeledCurveSkeleton,
+    mesh: &Mesh<INPUT>,
+    node_idx: NodeIndex,
+) {
+    use petgraph::visit::EdgeRef;
 
     let boundary_set: HashSet<NodeIndex> = vfg.boundary_loop.iter().copied().collect();
 
-    let mut long_edges: Vec<(NodeIndex, NodeIndex, f64)> = Vec::new();
-    for edge_ref in vfg.graph.edge_references() {
-        let a = edge_ref.source();
-        let b = edge_ref.target();
-        let Some(&uv_a) = uv.get(&a) else { continue };
-        let Some(&uv_b) = uv.get(&b) else { continue };
-        let dx = uv_a.x - uv_b.x;
-        let dy = uv_a.y - uv_b.y;
-        let dist = (dx * dx + dy * dy).sqrt();
-        if dist > threshold {
-            long_edges.push((a, b, dist));
+    // Build map: VFG boundary node -> which skeleton edge (boundary loop) it belongs to
+    let mut node_to_skel_edge: HashMap<NodeIndex, EdgeIndex> = HashMap::new();
+    for &ni in &vfg.boundary_loop {
+        match &vfg.graph[ni].origin {
+            virtual_mesh::VirtualNodeOrigin::BoundaryMidpoint { boundary, .. } => {
+                node_to_skel_edge.insert(ni, *boundary);
+            }
+            virtual_mesh::VirtualNodeOrigin::CutEndpointMidpoint { boundary, .. } => {
+                node_to_skel_edge.insert(ni, *boundary);
+            }
+            virtual_mesh::VirtualNodeOrigin::CutDuplicate { cut_index, .. } => {
+                // Cut duplicates are on the cut, not on a specific boundary
+                // Mark with a sentinel or skip
+            }
+            virtual_mesh::VirtualNodeOrigin::MeshVertex(_) => {
+                // Interior vertex that ended up on boundary? Shouldn't happen for degree>=2
+            }
         }
     }
 
-    if long_edges.is_empty() {
-        return;
+    // Build set of consecutive boundary pairs for quick lookup
+    let bl = &vfg.boundary_loop;
+    let n = bl.len();
+    let mut consecutive_pairs: HashSet<(NodeIndex, NodeIndex)> = HashSet::new();
+    for i in 0..n {
+        let a = bl[i];
+        let b = bl[(i + 1) % n];
+        consecutive_pairs.insert((a, b));
+        consecutive_pairs.insert((b, a));
     }
 
-    warn!(
-        "Region {:?} (degree {}): {} edges exceed UV threshold {:.3} (side_len {:.3})",
-        node_idx, degree, long_edges.len(), threshold, side_len,
+    let mut same_boundary = 0usize;
+    let mut cross_boundary = 0usize;
+    let mut cut_to_boundary = 0usize;
+    let mut consecutive_bb = 0usize;
+    let mut non_consecutive_bb = 0usize;
+    let mut bb_no_mesh_edge = 0usize;
+    let mut total_bb = 0usize;
+
+    for edge_ref in vfg.graph.edge_references() {
+        let a = edge_ref.source();
+        let b = edge_ref.target();
+        if !boundary_set.contains(&a) || !boundary_set.contains(&b) {
+            continue;
+        }
+        total_bb += 1;
+
+        let is_consec = consecutive_pairs.contains(&(a, b));
+        if is_consec {
+            consecutive_bb += 1;
+        } else {
+            non_consecutive_bb += 1;
+        }
+
+        // Check mesh adjacency
+        let va = origin_mesh_vertex(&vfg.graph[a].origin);
+        let vb = origin_mesh_vertex(&vfg.graph[b].origin);
+        let has_mesh_edge = match (va, vb) {
+            (Some(va), Some(vb)) if va != vb => mesh.neighbors(va).any(|n| n == vb),
+            (Some(_), Some(_)) => true, // same vertex (cut duplicates)
+            _ => true, // involves midpoint, synthetic by nature
+        };
+        if !has_mesh_edge {
+            bb_no_mesh_edge += 1;
+        }
+
+        // Classify by boundary membership
+        let skel_a = node_to_skel_edge.get(&a);
+        let skel_b = node_to_skel_edge.get(&b);
+        match (skel_a, skel_b) {
+            (Some(sa), Some(sb)) if sa == sb => same_boundary += 1,
+            (Some(_), Some(_)) => cross_boundary += 1,
+            _ => cut_to_boundary += 1, // one or both are cut duplicates
+        }
+    }
+
+    log::warn!(
+        "diagnose_boundary_connections: region {:?} (deg {}): {} total B-B edges",
+        node_idx,
+        skeleton.edges(node_idx).count(),
+        total_bb,
+    );
+    log::warn!(
+        "  consecutive: {}, non-consecutive: {}, no-mesh-edge: {}",
+        consecutive_bb, non_consecutive_bb, bb_no_mesh_edge,
+    );
+    log::warn!(
+        "  same-boundary: {}, cross-boundary: {}, cut-to-boundary: {}",
+        same_boundary, cross_boundary, cut_to_boundary,
     );
 
-    for &(a, b, dist) in long_edges.iter().take(10) {
-        let a_label = if boundary_set.contains(&a) { "B" } else { "I" };
-        let b_label = if boundary_set.contains(&b) { "B" } else { "I" };
-        let uv_a = uv[&a];
-        let uv_b = uv[&b];
-        warn!(
-            "  {:?}[{}]({:.3},{:.3}) -- {:?}[{}]({:.3},{:.3}): dist {:.4}, origins: {:?} / {:?}",
-            a, a_label, uv_a.x, uv_a.y, b, b_label, uv_b.x, uv_b.y, dist,
-            vfg.graph[a].origin, vfg.graph[b].origin,
-        );
+    // Log details of cross-boundary connections (these should NOT exist on input mesh)
+    if cross_boundary > 0 {
+        let mut count = 0;
+        for edge_ref in vfg.graph.edge_references() {
+            let a = edge_ref.source();
+            let b = edge_ref.target();
+            if !boundary_set.contains(&a) || !boundary_set.contains(&b) {
+                continue;
+            }
+            let skel_a = node_to_skel_edge.get(&a);
+            let skel_b = node_to_skel_edge.get(&b);
+            if let (Some(sa), Some(sb)) = (skel_a, skel_b) {
+                if sa != sb {
+                    count += 1;
+                    if count <= 5 {
+                        log::warn!(
+                            "  CROSS-BOUNDARY edge: {:?} (skel {:?}) -- {:?} (skel {:?}), origins: {:?} / {:?}",
+                            a, sa, b, sb,
+                            vfg.graph[a].origin, vfg.graph[b].origin,
+                        );
+                    }
+                }
+            }
+        }
+    }
+
+    // Log non-consecutive B-B edges that DO have mesh backing (these are the suspicious ones)
+    if non_consecutive_bb > 0 {
+        let mut count = 0;
+        for edge_ref in vfg.graph.edge_references() {
+            let a = edge_ref.source();
+            let b = edge_ref.target();
+            if !boundary_set.contains(&a) || !boundary_set.contains(&b) {
+                continue;
+            }
+            if consecutive_pairs.contains(&(a, b)) {
+                continue;
+            }
+            count += 1;
+            if count <= 5 {
+                log::warn!(
+                    "  NON-CONSECUTIVE B-B edge: {:?} -- {:?}, origins: {:?} / {:?}",
+                    a, b, vfg.graph[a].origin, vfg.graph[b].origin,
+                );
+            }
+        }
     }
 }
 
@@ -1201,6 +1463,270 @@ fn polygon_arc_interpolate(
     let a = polygon[(start + edge) % n];
     let b = polygon[(start + edge + 1) % n];
     a * (1.0 - local_t) + b * local_t
+}
+
+/// Checks whether the boundary loop is oriented correctly (CCW around the patch).
+///
+/// For each BoundaryMidpoint node on the VFG boundary, the underlying mesh half-edge
+/// has a face on its left side (`mesh.face(he)`). If this face's vertices are all in the
+/// patch, the boundary traversal has the patch interior on the LEFT, which is the correct
+/// CCW orientation for Tutte embedding.
+fn check_boundary_orientation(
+    vfg: &VirtualFlatGeometry,
+    skeleton: &LabeledCurveSkeleton,
+    mesh: &Mesh<INPUT>,
+    node_idx: NodeIndex,
+) {
+    let patch_set: HashSet<VertID> = skeleton[node_idx]
+        .skeleton_node
+        .patch_vertices
+        .iter()
+        .copied()
+        .collect();
+
+    let mut interior_left = 0usize; // face on LEFT of traversal is in the patch (CCW = correct)
+    let mut interior_right = 0usize; // face on LEFT is NOT in the patch (CW = wrong)
+
+    for &ni in &vfg.boundary_loop {
+        if let virtual_mesh::VirtualNodeOrigin::BoundaryMidpoint { edge, .. } =
+            &vfg.graph[ni].origin
+        {
+            // The stored edge is the half-edge as it was during boundary loop construction.
+            // mesh.face(edge) gives the face to the LEFT of this half-edge.
+            // For boundary faces (triangle mesh): 2 verts from one patch, 1 from other.
+            // If majority are in our patch → patch is on the LEFT → CCW (correct).
+            let face = mesh.face(*edge);
+            let face_verts: Vec<VertID> = mesh.vertices(face).collect();
+            let in_patch = face_verts.iter().filter(|v| patch_set.contains(v)).count();
+            let out_of_patch = face_verts.len() - in_patch;
+
+            if in_patch > out_of_patch {
+                interior_left += 1; // patch majority on LEFT → CCW
+            } else if out_of_patch > in_patch {
+                interior_right += 1; // other patch majority on LEFT → CW
+            }
+            // Equal split (ambiguous) → skip
+        }
+    }
+
+    let total = interior_left + interior_right;
+    if total > 0 {
+        log::warn!(
+            "check_boundary_orientation: region {:?}: {} midpoints with patch on LEFT (CCW), \
+             {} with patch on RIGHT (CW) — expect ALL on LEFT for correct Tutte embedding",
+            node_idx,
+            interior_left,
+            interior_right,
+        );
+        if interior_right > interior_left {
+            log::error!(
+                "BOUNDARY IS CW (WRONG)! Region {:?} has {} CW vs {} CCW midpoints. \
+                 The boundary loop is traversed in the wrong direction!",
+                node_idx,
+                interior_right,
+                interior_left,
+            );
+        }
+    }
+}
+
+/// Helper: extract the original mesh vertex from a VFG node origin, if it has one.
+fn origin_mesh_vertex(origin: &virtual_mesh::VirtualNodeOrigin) -> Option<VertID> {
+    match origin {
+        virtual_mesh::VirtualNodeOrigin::MeshVertex(v) => Some(*v),
+        virtual_mesh::VirtualNodeOrigin::CutDuplicate {
+            original: SurfacePoint::OnVertex { vertex },
+            ..
+        } => Some(*vertex),
+        _ => None, // boundary midpoints / cut-endpoint midpoints don't map to a single mesh vert
+    }
+}
+
+/// Comprehensive analysis of VFG crossings. For each crossing edge pair,
+/// determines WHY the crossing exists: wrong side assignment, synthetic edge,
+/// or unexpected boundary-to-boundary connectivity.
+fn analyze_vfg_crossings(
+    vfg: &VirtualFlatGeometry,
+    uv: &HashMap<NodeIndex, Vector2D>,
+    mesh: &Mesh<INPUT>,
+    node_idx: NodeIndex,
+    degree: usize,
+) {
+    use petgraph::visit::EdgeRef;
+    use virtual_mesh::VirtualNodeOrigin;
+
+    let boundary_set: HashSet<NodeIndex> = vfg.boundary_loop.iter().copied().collect();
+
+    // ── Check 1: Every VFG edge should correspond to a mesh adjacency ────
+    // (Except for synthetic edges: midpoint-to-opposite-vertex, boundary-consecutive)
+    let mut non_mesh_edges = 0usize;
+    let mut boundary_boundary_count = 0usize;
+    let mut bb_non_mesh = 0usize;
+
+    for edge_ref in vfg.graph.edge_references() {
+        let a = edge_ref.source();
+        let b = edge_ref.target();
+        let orig_a = &vfg.graph[a].origin;
+        let orig_b = &vfg.graph[b].origin;
+
+        let a_on_boundary = boundary_set.contains(&a);
+        let b_on_boundary = boundary_set.contains(&b);
+
+        // Check mesh adjacency.
+        let va = origin_mesh_vertex(orig_a);
+        let vb = origin_mesh_vertex(orig_b);
+        let has_mesh_edge = if let (Some(va), Some(vb)) = (va, vb) {
+            if va == vb {
+                true // cut edge between duplicates of the same vertex
+            } else {
+                mesh.neighbors(va).any(|n| n == vb)
+            }
+        } else {
+            // Involves a midpoint — synthetic by nature, skip mesh check
+            true
+        };
+
+        if !has_mesh_edge {
+            non_mesh_edges += 1;
+            log::warn!(
+                "  VFG edge {:?}--{:?} has NO mesh counterpart! origins: {:?} / {:?}",
+                a, b, orig_a, orig_b
+            );
+        }
+
+        if a_on_boundary && b_on_boundary {
+            boundary_boundary_count += 1;
+            if !has_mesh_edge {
+                bb_non_mesh += 1;
+            }
+        }
+    }
+
+    // ── Check 2: Full crossing detection with classification ─────────────
+    let edges: Vec<(NodeIndex, NodeIndex)> = vfg
+        .graph
+        .edge_references()
+        .map(|e| (e.source(), e.target()))
+        .collect();
+
+    let mut crossings = 0usize;
+    let mut crossing_involves_non_mesh = 0usize;
+    let mut crossing_involves_bb = 0usize;
+
+    // Classify crossing edges by the origin types involved
+    let mut crossing_type_counts: HashMap<String, usize> = HashMap::new();
+
+    for i in 0..edges.len() {
+        for j in (i + 1)..edges.len() {
+            let (a1, a2) = edges[i];
+            let (b1, b2) = edges[j];
+            if a1 == b1 || a1 == b2 || a2 == b1 || a2 == b2 {
+                continue;
+            }
+            let Some(&uv_a1) = uv.get(&a1) else { continue };
+            let Some(&uv_a2) = uv.get(&a2) else { continue };
+            let Some(&uv_b1) = uv.get(&b1) else { continue };
+            let Some(&uv_b2) = uv.get(&b2) else { continue };
+
+            if !segments_cross(uv_a1, uv_a2, uv_b1, uv_b2) {
+                continue;
+            }
+            crossings += 1;
+
+            // Classify each endpoint
+            let classify = |n: NodeIndex| -> &'static str {
+                let on_b = boundary_set.contains(&n);
+                match &vfg.graph[n].origin {
+                    VirtualNodeOrigin::MeshVertex(_) => {
+                        if on_b { "MeshVert[B]" } else { "MeshVert[I]" }
+                    }
+                    VirtualNodeOrigin::CutDuplicate { side, .. } => {
+                        if *side { "CutDup(R)[B]" } else { "CutDup(L)[B]" }
+                    }
+                    VirtualNodeOrigin::BoundaryMidpoint { .. } => "BdryMid[B]",
+                    VirtualNodeOrigin::CutEndpointMidpoint { side, .. } => {
+                        if *side { "CutEpMid(R)[B]" } else { "CutEpMid(L)[B]" }
+                    }
+                }
+            };
+
+            let types = format!(
+                "({}-{}) x ({}-{})",
+                classify(a1), classify(a2), classify(b1), classify(b2)
+            );
+            *crossing_type_counts.entry(types.clone()).or_insert(0) += 1;
+
+            // Check if any edge in this crossing pair is non-mesh
+            let edge_a_mesh = {
+                let va = origin_mesh_vertex(&vfg.graph[a1].origin);
+                let vb = origin_mesh_vertex(&vfg.graph[a2].origin);
+                if let (Some(va), Some(vb)) = (va, vb) {
+                    va == vb || mesh.neighbors(va).any(|n| n == vb)
+                } else {
+                    true
+                }
+            };
+            let edge_b_mesh = {
+                let va = origin_mesh_vertex(&vfg.graph[b1].origin);
+                let vb = origin_mesh_vertex(&vfg.graph[b2].origin);
+                if let (Some(va), Some(vb)) = (va, vb) {
+                    va == vb || mesh.neighbors(va).any(|n| n == vb)
+                } else {
+                    true
+                }
+            };
+            if !edge_a_mesh || !edge_b_mesh {
+                crossing_involves_non_mesh += 1;
+            }
+
+            let a1b = boundary_set.contains(&a1);
+            let a2b = boundary_set.contains(&a2);
+            let b1b = boundary_set.contains(&b1);
+            let b2b = boundary_set.contains(&b2);
+            if (a1b && a2b) || (b1b && b2b) {
+                crossing_involves_bb += 1;
+            }
+
+            // Log first few crossings in detail
+            if crossings <= 5 {
+                log::warn!(
+                    "  CROSSING #{}: {} | mesh_edges: ({}, {})",
+                    crossings, types, edge_a_mesh, edge_b_mesh
+                );
+                // For cut duplicate endpoints, show which side they're on
+                for &n in &[a1, a2, b1, b2] {
+                    if let VirtualNodeOrigin::CutDuplicate { side, peer, .. } = &vfg.graph[n].origin
+                    {
+                        let peer_uv = peer.and_then(|p| uv.get(&p));
+                        log::warn!(
+                            "    {:?} side={} uv={:?} peer_uv={:?}",
+                            n,
+                            if *side { "R" } else { "L" },
+                            uv.get(&n),
+                            peer_uv
+                        );
+                    }
+                }
+            }
+        }
+    }
+
+    // ── Summary ──────────────────────────────────────────────────────────
+    log::warn!(
+        "analyze_vfg_crossings: region {:?} (deg {}): {} crossings, {} non-mesh edges, \
+         {} B-B edges ({} non-mesh), {} crossings involve non-mesh, {} involve B-B",
+        node_idx,
+        degree,
+        crossings,
+        non_mesh_edges,
+        boundary_boundary_count,
+        bb_non_mesh,
+        crossing_involves_non_mesh,
+        crossing_involves_bb,
+    );
+    for (types, count) in &crossing_type_counts {
+        log::warn!("    crossing type: {} x{}", types, count);
+    }
 }
 
 /// Tests whether two line segments (a1–a2) and (b1–b2) properly cross each other.

@@ -477,25 +477,34 @@ impl VirtualFlatGeometry {
         for edge_ref in skeleton.edges(node_idx) {
             let boundary = &edge_ref.weight().boundary_loop;
             for &be in &boundary.edge_midpoints {
-                // Find the face on the interior side of this boundary edge.
-                // One face has all 3 vertices in the patch; the other doesn't.
+                // Find the in-patch vertex opposite the midpoint in the
+                // interior-side face.  For edges fully inside the patch both
+                // faces qualify (pick the one with all 3 in patch).  For
+                // boundary edges one endpoint is outside the patch, so the
+                // "interior" face has only 2 of 3 verts in our patch — we
+                // accept that and pick the in-patch non-endpoint vertex.
                 let opposite_vert = {
                     let mut found = None;
+                    let root = mesh.root(be);
+                    let toor = mesh.toor(be);
+                    let mut best_in_patch_count = 0usize;
                     for &he in &[be, mesh.twin(be)] {
                         let face = mesh.face(he);
                         let face_verts: Vec<VertID> = mesh.vertices(face).collect();
-                        // Check if all face verts are in the patch.
-                        if face_verts.iter().all(|fv| patch_set.contains(fv)) {
-                            // The third vertex (not root/toor of be).
-                            let root = mesh.root(be);
-                            let toor = mesh.toor(be);
-                            for &fv in &face_verts {
-                                if fv != root && fv != toor {
-                                    found = Some(fv);
-                                    break;
-                                }
+                        let in_patch_count = face_verts
+                            .iter()
+                            .filter(|fv| patch_set.contains(fv))
+                            .count();
+                        if in_patch_count <= best_in_patch_count {
+                            continue;
+                        }
+                        // Look for an in-patch vertex that is not root or toor.
+                        for &fv in &face_verts {
+                            if fv != root && fv != toor && patch_set.contains(&fv) {
+                                found = Some(fv);
+                                best_in_patch_count = in_patch_count;
+                                break;
                             }
-                            break;
                         }
                     }
                     found
@@ -533,42 +542,60 @@ impl VirtualFlatGeometry {
                             add_edge(&mut graph, mid_left, cut_duplicates[&opp].0);
                         }
                     } else {
-                        // opp is a regular vertex. Both copies connect to it.
-                        add_edge(&mut graph, mid_left, vert_to_nodes[&opp][0]);
-                        add_edge(&mut graph, mid_right, vert_to_nodes[&opp][0]);
+                        // opp is a regular (non-cut) vertex. It sits on one
+                        // side of the cut — connect only the matching copy.
+                        let root = mesh.root(be);
+                        let toor = mesh.toor(be);
+                        let adj_cut_vert = if cut_vertex_set.contains(&root) {
+                            root
+                        } else if cut_vertex_set.contains(&toor) {
+                            toor
+                        } else {
+                            continue;
+                        };
+                        let side = cut_side_assignments
+                            .get(&adj_cut_vert)
+                            .and_then(|s| s.get(&opp))
+                            .copied()
+                            .unwrap_or(false);
+                        let opp_node = vert_to_nodes[&opp][0];
+                        if side {
+                            add_edge(&mut graph, mid_right, opp_node);
+                        } else {
+                            add_edge(&mut graph, mid_left, opp_node);
+                        }
                     }
                 } else {
                     // Regular midpoint.
                     let mid_node = midpoint_nodes[&be];
                     if cut_vertex_set.contains(&opp) {
-                        // Need to pick the correct side of opp.
+                        // opp is a cut vertex — pick the correct side.
+                        // Use the in-patch endpoint of the boundary edge to
+                        // determine which side of the cut opp faces.
                         let root = mesh.root(be);
                         let toor = mesh.toor(be);
-                        let non_patch_endpoint = if !patch_set.contains(&root) {
-                            root
-                        } else if !patch_set.contains(&toor) {
-                            toor
+                        let in_patch_endpoint = if patch_set.contains(&root) {
+                            Some(root)
+                        } else if patch_set.contains(&toor) {
+                            Some(toor)
                         } else {
-                            // Both endpoints are in the patch. Use side assignment directly.
-                            let side = cut_side_assignments
+                            None
+                        };
+                        let side = if let Some(ep) = in_patch_endpoint {
+                            // Use side assignment: which side of opp faces ep?
+                            cut_side_assignments
+                                .get(&opp)
+                                .and_then(|s| s.get(&ep))
+                                .copied()
+                                .unwrap_or(false)
+                        } else {
+                            // Both endpoints in patch — use either
+                            cut_side_assignments
                                 .get(&opp)
                                 .and_then(|s| s.get(&root).or(s.get(&toor)))
                                 .copied()
-                                .unwrap_or(false);
-                            let node = if side {
-                                cut_duplicates[&opp].1
-                            } else {
-                                cut_duplicates[&opp].0
-                            };
-                            add_edge(&mut graph, mid_node, node);
-                            continue;
+                                .unwrap_or(false)
                         };
-                        let side = side_of_non_patch_neighbor(
-                            opp,
-                            non_patch_endpoint,
-                            &cut_side_assignments,
-                            mesh,
-                        );
                         let node = if side {
                             cut_duplicates[&opp].1
                         } else {
@@ -598,6 +625,65 @@ impl VirtualFlatGeometry {
                     let b = midpoint_nodes[&edges[(i + 1) % n]];
                     add_edge(&mut graph, a, b);
                 }
+            }
+        }
+
+        // 4d. Quad triangulation: for each quad face in the mesh whose
+        // vertices are all in the patch, add a diagonal edge to split it
+        // into two triangles.  Without this, quad faces can "fold" in the
+        // Tutte embedding because the 4-cycle has no interior constraint.
+        //
+        // We pick the diagonal between vertices 0 and 2 of each quad (the
+        // exact choice doesn't matter for correctness, only for quality).
+        for face_id in mesh.face_ids() {
+            let face_verts: Vec<VertID> = mesh.vertices(face_id).collect();
+            if face_verts.len() != 4 {
+                continue; // Only triangulate quads.
+            }
+            // Check that all 4 vertices are in our patch.
+            if !face_verts.iter().all(|v| patch_set.contains(v)) {
+                continue;
+            }
+            // Add diagonal between face_verts[0] and face_verts[2].
+            let v0 = face_verts[0];
+            let v1 = face_verts[1]; // adjacent to both v0 and v2
+            let v2 = face_verts[2];
+            // Already connected via mesh edges? Skip.
+            if mesh.neighbors(v0).any(|n| n == v2) {
+                continue;
+            }
+            // Resolve VFG node for a vertex in the context of this face.
+            // For cut vertices, the adjacent face-vertex `proxy` (which IS
+            // a mesh neighbor) determines which side of the cut we're on.
+            let resolve_via_proxy =
+                |v: VertID, proxy: VertID| -> Option<NodeIndex> {
+                    if cut_vertex_set.contains(&v) {
+                        let side = cut_side_assignments
+                            .get(&v)
+                            .and_then(|s| s.get(&proxy))
+                            .copied()?;
+                        let (left, right) = cut_duplicates[&v];
+                        Some(if side { right } else { left })
+                    } else {
+                        Some(vert_to_nodes[&v][0])
+                    }
+                };
+            // v1 is adjacent to both v0 and v2 in the mesh, so it's a valid
+            // proxy for both.  Both diagonal endpoints must be on the same
+            // side as v1 (they share this face).
+            let Some(n0) = resolve_via_proxy(v0, v1) else { continue };
+            let Some(n2) = resolve_via_proxy(v2, v1) else { continue };
+            // Check not already connected.
+            let already = graph.edges(n0).any(|e| {
+                let other = if e.source() == n0 {
+                    e.target()
+                } else {
+                    e.source()
+                };
+                other == n2
+            });
+            if !already {
+                add_edge(&mut graph, n0, n2);
             }
         }
 
@@ -634,6 +720,58 @@ impl VirtualFlatGeometry {
                 if !already_connected {
                     add_edge(&mut graph, a, b);
                 }
+            }
+        }
+
+        // 5c. Remove non-consecutive boundary-boundary edges (chord removal).
+        //
+        // After cutting, some quad faces straddle the cut boundary: their vertices
+        // end up as boundary nodes on distant parts of the boundary loop. The mesh
+        // edges between them become polygon-spanning chords that break Tutte's
+        // requirement that the boundary is a facial cycle of the planar embedding.
+        // Removing these chords restores the facial-cycle property.
+        {
+            let bl = &boundary_loop;
+            let boundary_set: HashSet<NodeIndex> = bl.iter().copied().collect();
+
+            // Build set of consecutive boundary pairs for O(1) lookup.
+            let n = bl.len();
+            let mut consecutive_pairs: HashSet<(NodeIndex, NodeIndex)> = HashSet::new();
+            for i in 0..n {
+                let a = bl[i];
+                let b = bl[(i + 1) % n];
+                consecutive_pairs.insert((a, b));
+                consecutive_pairs.insert((b, a));
+            }
+
+            // Collect edge indices to remove.
+            let edges_to_remove: Vec<EdgeIndex> = graph
+                .edge_indices()
+                .filter(|&eidx| {
+                    let (s, t) = graph.edge_endpoints(eidx).unwrap();
+                    // Both endpoints must be boundary nodes.
+                    if !boundary_set.contains(&s) || !boundary_set.contains(&t) {
+                        return false;
+                    }
+                    // Keep consecutive boundary edges.
+                    if consecutive_pairs.contains(&(s, t)) {
+                        return false;
+                    }
+                    // This is a non-consecutive B-B chord — mark for removal.
+                    true
+                })
+                .collect();
+
+            if !edges_to_remove.is_empty() {
+                log::info!(
+                    "Region {:?}: removing {} non-consecutive B-B chord edges",
+                    node_idx,
+                    edges_to_remove.len()
+                );
+            }
+
+            for eidx in edges_to_remove {
+                graph.remove_edge(eidx);
             }
         }
 
