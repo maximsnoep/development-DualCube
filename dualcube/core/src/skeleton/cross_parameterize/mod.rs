@@ -252,7 +252,7 @@ pub fn cross_parameterize(
 
 /// Parameterizes a single region (node) on both the input and polycube side onto a shared canonical domain.
 fn parameterize_region(
-    node_idx: NodeIndex,
+    patch_node_idx: NodeIndex,
     degree: usize,
     input_skeleton: &LabeledCurveSkeleton,
     polycube_skeleton: &LabeledCurveSkeleton,
@@ -262,7 +262,7 @@ fn parameterize_region(
     // Compute cutting plans for both sides. Cut paths are found independently on each side, then boundary
     // parameterizations are built so that cut endpoints share t-values.
     let (input_plan, polycube_plan) = compute_cutting_plans(
-        node_idx,
+        patch_node_idx,
         input_skeleton,
         polycube_skeleton,
         input_mesh,
@@ -283,9 +283,9 @@ fn parameterize_region(
 
     // Build VFG and parameterize each side using its cutting plan.
     let (input_vfg, input_uv) =
-        parameterize_side(node_idx, degree, input_skeleton, input_mesh, &input_plan);
+        parameterize_side(patch_node_idx, degree, input_skeleton, input_mesh, &input_plan);
     let (polycube_vfg, polycube_uv) = parameterize_side(
-        node_idx,
+        patch_node_idx,
         degree,
         polycube_skeleton,
         polycube_mesh,
@@ -309,7 +309,7 @@ fn parameterize_region(
 /// 2D canonical-domain position. Cut positions for visualisation are extracted
 /// by the caller before this function is called.
 fn parameterize_side(
-    node_idx: NodeIndex,
+    patch_node_idx: NodeIndex,
     degree: usize,
     skeleton: &LabeledCurveSkeleton,
     mesh: &Mesh<INPUT>,
@@ -318,14 +318,14 @@ fn parameterize_side(
     if degree == 0 {
         warn!(
             "TODO: Degree 0 node {:?}, skipping parameterization",
-            node_idx
+            patch_node_idx
         );
         return (VirtualFlatGeometry::empty(), HashMap::new());
     }
 
     // Build virtual geometry by cutting the mesh open along cut paths,
     // duplicating vertices so the result is a topological disk.
-    let vfg = VirtualFlatGeometry::build(node_idx, skeleton, mesh, cutting_plan);
+    let vfg = VirtualFlatGeometry::build(patch_node_idx, skeleton, mesh, cutting_plan);
 
     // Assign 2D positions to every node on the disk boundary.
     // The canonical polygon has n_sides sides:
@@ -338,7 +338,7 @@ fn parameterize_side(
     if degree >= 2 {
         log::info!(
             "parameterize_side: region {:?} degree {}, n_sides={}, boundary_loop={}",
-            node_idx,
+            patch_node_idx,
             degree,
             n_sides,
             vfg.boundary_loop.len(),

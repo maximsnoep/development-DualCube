@@ -1060,7 +1060,7 @@ fn create_input_uv_long_edge_overlay(
 
     let boundary_from_origin = |origin: &VirtualNodeOrigin| {
         match origin {
-            VirtualNodeOrigin::BoundaryMidpoint { boundary, .. }
+            VirtualNodeOrigin::BoundaryMidpoint { boundary_edge: boundary, .. }
             | VirtualNodeOrigin::CutEndpointMidpoint { boundary, .. } => Some(*boundary),
             _ => None,
         }
@@ -1184,7 +1184,7 @@ fn create_uv_domain_view(
 
     let boundary_from_origin = |origin: &VirtualNodeOrigin| {
         match origin {
-            VirtualNodeOrigin::BoundaryMidpoint { boundary, .. }
+            VirtualNodeOrigin::BoundaryMidpoint { boundary_edge: boundary, .. }
             | VirtualNodeOrigin::CutEndpointMidpoint { boundary, .. } => Some(*boundary),
             _ => None,
         }
