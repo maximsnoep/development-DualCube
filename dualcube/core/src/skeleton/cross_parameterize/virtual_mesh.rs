@@ -13,7 +13,7 @@ use crate::prelude::{EdgeID, VertID, INPUT};
 use crate::skeleton::cross_parameterize::edge_id_to_midpoint_pos;
 use crate::skeleton::orthogonalize::LabeledCurveSkeleton;
 
-use super::{CutPath, CuttingPlan};
+use super::CuttingPlan;
 
 /// Tracks where a virtual node came from, so that we can map results back to the
 /// original mesh and relate duplicated cut nodes to each other.
@@ -207,7 +207,7 @@ impl VirtualFlatGeometry {
                 &mut graph,
                 &mut edge_midpoint_ids_to_node_indices,
                 cut_index,
-                cut_path,
+                cut_path.start_boundary,
                 start_midpoint,
             );
 
@@ -223,7 +223,7 @@ impl VirtualFlatGeometry {
                 &mut graph,
                 &mut edge_midpoint_ids_to_node_indices,
                 cut_index,
-                cut_path,
+                cut_path.end_boundary,
                 end_midpoint,
             );
         }
@@ -236,6 +236,7 @@ impl VirtualFlatGeometry {
         let boundary_loop = calculate_boundary_loop(
             patch_node_idx,
             skeleton,
+            mesh,
             &mut graph,
             &vert_to_nodes,
             &edge_midpoint_ids_to_node_indices,
@@ -593,6 +594,7 @@ fn symbolic_face_coord(index: usize, n: usize) -> (f64, f64) {
 fn calculate_boundary_loop(
     patch_node_idx: NodeIndex,
     skeleton: &LabeledCurveSkeleton,
+    mesh: &Mesh<INPUT>,
     graph: &mut StableUnGraph<VirtualNode, VirtualEdgeWeight>,
     vert_to_nodes: &HashMap<VertID, VertexToVirtual>,
     edge_midpoint_ids_to_node_indices: &HashMap<EdgeID, EdgemidpointToVirtual>,
@@ -601,17 +603,35 @@ fn calculate_boundary_loop(
 ) -> Vec<NodeIndex> {
     let mut succ: HashMap<NodeIndex, NodeIndex> = HashMap::new();
 
+    let resolve_midpoint_edge_id = |edge_id: EdgeID| -> EdgeID {
+        if edge_midpoint_ids_to_node_indices.contains_key(&edge_id) {
+            edge_id
+        } else {
+            let twin = mesh.twin(edge_id);
+            if edge_midpoint_ids_to_node_indices.contains_key(&twin) {
+                twin
+            } else {
+                panic!(
+                    "Boundary edge {:?} not found in midpoint map, nor its twin {:?}",
+                    edge_id, twin
+                );
+            }
+        }
+    };
+
     // edge midpoint -> (cut_index, is_start)
     let mut cut_endpoint_role: HashMap<EdgeID, (usize, bool)> = HashMap::new();
     for (cut_index, cut) in cutting_plan.cuts.iter().enumerate() {
-        let old = cut_endpoint_role.insert(cut.path.start, (cut_index, true));
+        let start_key = resolve_midpoint_edge_id(cut.path.start);
+        let old = cut_endpoint_role.insert(start_key, (cut_index, true));
         if old.is_some() {
             panic!(
                 "Cut endpoint midpoint {:?} reused across cuts",
                 cut.path.start
             );
         }
-        let old = cut_endpoint_role.insert(cut.path.end, (cut_index, false));
+        let end_key = resolve_midpoint_edge_id(cut.path.end);
+        let old = cut_endpoint_role.insert(end_key, (cut_index, false));
         if old.is_some() {
             panic!(
                 "Cut endpoint midpoint {:?} reused across cuts",
@@ -621,10 +641,11 @@ fn calculate_boundary_loop(
     }
 
     let boundary_node_in = |edge_id: EdgeID| -> NodeIndex {
-        match edge_midpoint_ids_to_node_indices.get(&edge_id) {
+        let key = resolve_midpoint_edge_id(edge_id);
+        match edge_midpoint_ids_to_node_indices.get(&key) {
             Some(EdgemidpointToVirtual::Unique(n)) => *n,
             Some(EdgemidpointToVirtual::CutEndpointPair { left, right }) => {
-                let Some((_, is_start)) = cut_endpoint_role.get(&edge_id) else {
+                let Some((_, is_start)) = cut_endpoint_role.get(&key) else {
                     panic!(
                         "CutEndpointPair found without cut role for midpoint {:?}",
                         edge_id
@@ -644,10 +665,11 @@ fn calculate_boundary_loop(
     };
 
     let boundary_node_out = |edge_id: EdgeID| -> NodeIndex {
-        match edge_midpoint_ids_to_node_indices.get(&edge_id) {
+        let key = resolve_midpoint_edge_id(edge_id);
+        match edge_midpoint_ids_to_node_indices.get(&key) {
             Some(EdgemidpointToVirtual::Unique(n)) => *n,
             Some(EdgemidpointToVirtual::CutEndpointPair { left, right }) => {
-                let Some((_, is_start)) = cut_endpoint_role.get(&edge_id) else {
+                let Some((_, is_start)) = cut_endpoint_role.get(&key) else {
                     panic!(
                         "CutEndpointPair found without cut role for midpoint {:?}",
                         edge_id
@@ -676,7 +698,13 @@ fn calculate_boundary_loop(
 
         let reversed = *reverse_flags.get(&edge_id).unwrap_or(&false);
         let ordered: Vec<EdgeID> = if reversed {
-            boundary.edge_midpoints.iter().copied().rev().collect()
+            boundary
+                .edge_midpoints
+                .iter()
+                .copied()
+                .rev()
+                .map(|e| mesh.twin(e))
+                .collect()
         } else {
             boundary.edge_midpoints.clone()
         };
@@ -767,7 +795,8 @@ fn calculate_boundary_loop(
 
     // Start from an arbitrary cut endpoint left copy when possible.
     let start = if let Some(first_cut) = cutting_plan.cuts.first() {
-        match edge_midpoint_ids_to_node_indices.get(&first_cut.path.start) {
+        let start_key = resolve_midpoint_edge_id(first_cut.path.start);
+        match edge_midpoint_ids_to_node_indices.get(&start_key) {
             Some(EdgemidpointToVirtual::CutEndpointPair { left, .. }) => *left,
             _ => panic!("First cut start endpoint is not duplicated as expected"),
         }
@@ -833,7 +862,7 @@ fn duplicate_cut_endpoint(
     graph: &mut StableGraph<VirtualNode, VirtualEdgeWeight, petgraph::Undirected>,
     edge_midpoint_ids_to_node_indices: &mut HashMap<EdgeID, EdgemidpointToVirtual>,
     cut_index: usize,
-    cut_path: &CutPath,
+    boundary_edge: EdgeIndex,
     midpoint: EdgeID,
 ) {
     // Remove original from graph
@@ -861,7 +890,7 @@ fn duplicate_cut_endpoint(
         position: midpoint_pos,
         origin: VirtualNodeOrigin::CutEndpointMidpointDuplicate {
             edge: midpoint,
-            boundary: cut_path.start_boundary,
+            boundary: boundary_edge,
             peer: None, // to be filled in after both copies are created
             cut_index: cut_index,
             side: false,
@@ -871,7 +900,7 @@ fn duplicate_cut_endpoint(
         position: midpoint_pos,
         origin: VirtualNodeOrigin::CutEndpointMidpointDuplicate {
             edge: midpoint,
-            boundary: cut_path.start_boundary,
+            boundary: boundary_edge,
             peer: None, // to be filled in after both copies are created
             cut_index: cut_index,
             side: true,
@@ -1026,6 +1055,7 @@ fn check_invariants(vfg: &VirtualFlatGeometry) {
     for node in vfg.graph.node_indices() {
         let degree = vfg.graph.edges(node).count();
 
+        // TODO: switch back to strong invariant when actually working edge adding...
         if degree < 3 {
             log::error!(
                 "VFG degree invariant violated: node {:?} ({:?}) has degree {}, expected >= 3",
