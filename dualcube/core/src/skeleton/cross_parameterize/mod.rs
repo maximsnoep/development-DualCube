@@ -300,7 +300,7 @@ fn parameterize_side(
     //   - degree 1 -> square (4 sides)
     //   - degree d >= 2 -> regular 4(d-1)-gon
     let n_sides = if degree == 1 { 4 } else { 4 * (degree - 1) };
-    let boundary_positions = map_boundary_to_polygon(&vfg, n_sides);
+    // let boundary_positions = map_boundary_to_polygon(&vfg, n_sides);
 
     // TODO temp debug
     if degree >= 2 {
@@ -314,7 +314,8 @@ fn parameterize_side(
     }
 
     // Solve the Dirichlet problem on the VFG graph.
-    let uv_map = solve_dirichlet(&vfg, &boundary_positions);
+    // let uv_map = solve_dirichlet(&vfg, &boundary_positions);
+    let uv_map = HashMap::new(); // TODO
 
     (vfg, uv_map)
 }
