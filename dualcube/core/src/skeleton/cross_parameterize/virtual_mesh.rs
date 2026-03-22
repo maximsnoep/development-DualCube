@@ -1,8 +1,9 @@
 use std::collections::{HashMap, HashSet};
+use std::f64::consts::PI;
 
 use itertools::Itertools;
-use log::{self, error, warn};
-use mehsh::prelude::{HasEdges, HasNeighbors, HasPosition, HasVertices, Mesh, Vector3D};
+use log::{info, warn};
+use mehsh::prelude::{HasPosition, HasVertices, Mesh, Vector3D};
 use petgraph::graph::{EdgeIndex, NodeIndex};
 use petgraph::prelude::StableGraph;
 use petgraph::stable_graph::StableUnGraph;
@@ -10,7 +11,6 @@ use petgraph::visit::EdgeRef;
 use serde::{Deserialize, Serialize};
 
 use crate::prelude::{EdgeID, VertID, INPUT};
-use crate::skeleton::boundary_loop::{self, BoundaryLoop};
 use crate::skeleton::cross_parameterize::edge_id_to_midpoint_pos;
 use crate::skeleton::orthogonalize::LabeledCurveSkeleton;
 
@@ -45,7 +45,7 @@ pub enum VirtualNodeOrigin {
         /// Which cut this came from (index into `CuttingPlan::cuts`).
         cut_index: usize,
         /// Which side of the cut: `false` = left (the side containing the face
-        /// to the left of the cut direction start→end), `true` = right.
+        /// to the left of the cut direction start->end), `true` = right.
         side: bool,
     },
 
@@ -80,7 +80,7 @@ pub struct VirtualEdgeWeight {
 /// introduced as explicit vertices. The result is a topological disk with a
 /// single boundary loop.
 ///
-/// Cuts follow mesh edges exclusively — no face-interior crossing points exist.
+/// Cuts follow mesh edges exclusively - no face-interior crossing points exist.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct VirtualFlatGeometry {
     /// The mesh-like adjacency graph. Each node carries a 3D position plus its
@@ -95,6 +95,11 @@ pub struct VirtualFlatGeometry {
     /// node indices. After all cuts are applied the topology is a disk, so the
     /// boundary is one simple cycle. Every node appears at most once.
     pub boundary_loop: Vec<NodeIndex>,
+
+    /// For every skeleton boundary loop around this patch: whether its stored
+    /// midpoint order must be reversed so traversal keeps this patch on the left.
+    #[serde(default)]
+    pub boundary_loop_reverse: HashMap<EdgeIndex, bool>,
 }
 
 /// For a given original mesh vertex, which virtual node(s) correspond to it in the VFG.
@@ -131,6 +136,7 @@ impl VirtualFlatGeometry {
             graph: StableUnGraph::default(),
             vert_to_nodes: HashMap::new(),
             boundary_loop: Vec::new(),
+            boundary_loop_reverse: HashMap::new(),
         }
     }
 
@@ -223,21 +229,176 @@ impl VirtualFlatGeometry {
             );
         }
 
-        // Step 4:  trace boundary loop, add edges as we go
+        // Step 4: classify boundary-loop orientation for this patch.
+        let boundary_loop_reverse =
+            calculate_boundary_loop_reversal_flags(patch_node_idx, skeleton, mesh);
+
+        // Step 5:  trace boundary loop, add edges as we go
         let boundary_loop = calculate_boundary_loop(patch_node_idx, skeleton, mesh);
 
-        // Step 5:  add all other edges using original mesh connectivity (being careful about duplicates)
+        // Step 6:  add all other edges using original mesh connectivity (being careful about duplicates)
+        // TODO
 
         let vfg = VirtualFlatGeometry {
             graph,
             vert_to_nodes,
             boundary_loop,
+            boundary_loop_reverse,
         };
 
         // check_invariants(&vfg);
 
         vfg
     }
+}
+
+/// Returns, for each boundary-loop edge around this patch, whether its current
+/// midpoint order must be reversed so traversal keeps the patch on the left.
+fn calculate_boundary_loop_reversal_flags(
+    patch_node_idx: NodeIndex,
+    skeleton: &LabeledCurveSkeleton,
+    mesh: &Mesh<INPUT>,
+) -> HashMap<EdgeIndex, bool> {
+    let patch_vertices: HashSet<VertID> = skeleton
+        .node_weight(patch_node_idx)
+        .unwrap()
+        .skeleton_node
+        .patch_vertices
+        .iter()
+        .copied()
+        .collect();
+
+    let mut reverse_flags = HashMap::new();
+
+    for skeleton_edge in skeleton.edges(patch_node_idx) {
+        let edge_id = skeleton_edge.id();
+        let boundary = &skeleton_edge.weight().boundary_loop;
+
+        let mut left_votes = 0usize;
+        let mut right_votes = 0usize;
+
+        for &oriented_boundary_edge in &boundary.edge_midpoints {
+            let face_id = mesh.face(oriented_boundary_edge);
+            let face_vertices: Vec<VertID> = mesh.vertices(face_id).collect();
+            if face_vertices.len() < 3 {
+                panic!(
+                    "Face with fewer than 3 vertices encountered while classifying boundary orientation."
+                );
+            }
+
+            // Oriented symbolic embedding of this face cycle onto a regular n-gon.
+            // Works for triangles and quads (and any n >= 3).
+            let coord = |v: VertID| -> (f64, f64) {
+                let Some(i) = face_vertices.iter().position(|&x| x == v) else {
+                    unreachable!("Face coordinate lookup used vertex outside current face")
+                };
+                symbolic_face_coord(i, face_vertices.len())
+            };
+
+            let current_u = mesh.root(oriented_boundary_edge);
+            let current_v = mesh.toor(oriented_boundary_edge);
+            if !face_vertices.contains(&current_u) || !face_vertices.contains(&current_v) {
+                panic!("Boundary edge endpoints are not both vertices of its incident face.");
+            }
+
+            let current_key = if current_u < current_v {
+                (current_u, current_v)
+            } else {
+                (current_v, current_u)
+            };
+
+            let mut crossing_edges = Vec::new();
+            for i in 0..face_vertices.len() {
+                let a = face_vertices[i];
+                let b = face_vertices[(i + 1) % face_vertices.len()];
+                if patch_vertices.contains(&a) ^ patch_vertices.contains(&b) {
+                    let key = if a < b { (a, b) } else { (b, a) };
+                    crossing_edges.push(key);
+                }
+            }
+
+            if crossing_edges.len() != 2 {
+                panic!(
+                    "Boundary face has {} patch-crossing edges; expected exactly 2.",
+                    crossing_edges.len()
+                );
+            }
+
+            let other_key = if crossing_edges[0] == current_key {
+                crossing_edges[1]
+            } else if crossing_edges[1] == current_key {
+                crossing_edges[0]
+            } else {
+                panic!("Current boundary edge is not one of the two crossing edges in its face.");
+            };
+
+            let patch_face_vertices: Vec<VertID> = face_vertices
+                .iter()
+                .copied()
+                .filter(|v| patch_vertices.contains(v))
+                .collect();
+            if patch_face_vertices.is_empty() || patch_face_vertices.len() == face_vertices.len() {
+                panic!(
+                    "Boundary face has invalid patch membership for orientation classification."
+                );
+            }
+
+            // Representative point of the patch-side within this face.
+            let patch_point = {
+                let mut sx = 0.0;
+                let mut sy = 0.0;
+                for v in &patch_face_vertices {
+                    let c = coord(*v);
+                    sx += c.0;
+                    sy += c.1;
+                }
+                let denom = patch_face_vertices.len() as f64;
+                (sx / denom, sy / denom)
+            };
+
+            let current_mid = {
+                let a = coord(current_key.0);
+                let b = coord(current_key.1);
+                ((a.0 + b.0) * 0.5, (a.1 + b.1) * 0.5)
+            };
+            let other_mid = {
+                let a = coord(other_key.0);
+                let b = coord(other_key.1);
+                ((a.0 + b.0) * 0.5, (a.1 + b.1) * 0.5)
+            };
+
+            // Side-of-segment test: does patch representative lie left/right of
+            // the directed midpoint segment current -> other?
+            let dir = (other_mid.0 - current_mid.0, other_mid.1 - current_mid.1);
+            let rel = (patch_point.0 - current_mid.0, patch_point.1 - current_mid.1);
+            let orient = dir.0 * rel.1 - dir.1 * rel.0;
+
+            if orient > 0.0 {
+                left_votes += 1;
+            } else if orient < 0.0 {
+                right_votes += 1;
+            }
+        }
+
+        if left_votes > 0 && right_votes > 0 {
+            warn!("Conflicting votes for boundary loop orientation on skeleton edge {:?}: {} left vs {} right. This may indicate a non-manifold boundary or other irregularity. Defaulting to no reversal.", edge_id, left_votes, right_votes);
+        } else if left_votes == 0 && right_votes == 0 {
+            panic!(
+                "Could not classify orientation for boundary loop {:?}: no non-degenerate votes.",
+                edge_id
+            );
+        }
+
+        // Reverse if current order places the patch on the right overall.
+        reverse_flags.insert(edge_id, right_votes > left_votes);
+    }
+
+    reverse_flags
+}
+
+fn symbolic_face_coord(index: usize, n: usize) -> (f64, f64) {
+    let angle = 2.0 * PI * (index as f64) / (n as f64);
+    (angle.cos(), angle.sin())
 }
 
 /// Calculates the single boundary loop of the virtual mesh.
@@ -247,7 +408,7 @@ fn calculate_boundary_loop(
     skeleton: &LabeledCurveSkeleton,
     mesh: &Mesh<INPUT>,
 ) -> Vec<NodeIndex> {
-    let mut boundary_loop = Vec::new();
+    let boundary_loop = Vec::new();
 
     let patch_vertices: HashSet<VertID> = skeleton
         .node_weight(patch_node_idx)
@@ -277,9 +438,6 @@ fn calculate_boundary_loop(
             }
         }
     }
-
-    // TODO: calculate whether each boundaryloop is in CCW or CW order.
-
 
     // TODO: trace boundary using ccw info
     boundary_loop
@@ -643,7 +801,7 @@ fn duplicate_cut_vertex(
 //         }
 //     }
 
-//     // 11. Planarity necessary condition: E ≤ 3V − 6 for simple planar graphs (V ≥ 3).
+//     // 11. Planarity necessary condition: E <= 3V - 6 for simple planar graphs (V >= 3).
 //     let n_edges = vfg.graph.edge_count();
 //     if n_nodes >= 3 {
 //         assert!(
