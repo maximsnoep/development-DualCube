@@ -150,13 +150,13 @@ impl VirtualFlatGeometry {
 
 /// Checks structural invariants on the completed VFG.
 fn check_invariants(vfg: &VirtualFlatGeometry) {
-    let boundary_set: HashSet<NodeIndex> = vfg.boundary_loop.iter().copied().collect();
     let n_nodes = vfg.graph.node_count();
 
     // 1. Boundary loop is non-empty.
     assert!(!vfg.boundary_loop.is_empty(), "VFG boundary loop is empty");
 
     // 2. Boundary loop is a simple cycle (no repeated nodes).
+    let boundary_set: HashSet<NodeIndex> = vfg.boundary_loop.iter().copied().collect();
     if boundary_set.len() != vfg.boundary_loop.len() {
         // Failure! Now find which nodes appear multiple times.
         let mut counts: HashMap<NodeIndex, usize> = HashMap::new();
@@ -201,30 +201,17 @@ fn check_invariants(vfg: &VirtualFlatGeometry) {
     // 4. Degree checks.
     for node in vfg.graph.node_indices() {
         let degree = vfg.graph.edges(node).count();
-        let is_boundary = boundary_set.contains(&node);
 
-        if is_boundary {
-            assert!(
-                degree >= 1,
-                "VFG invariant violated: boundary node {:?} ({:?}) has 0 neighbours",
-                node,
-                vfg.graph[node].origin,
-            );
-        } else {
-            assert!(
-                degree >= 3,
-                "VFG invariant violated: interior node {:?} ({:?}) has {} neighbours, expected >= 3",
-                node,
-                vfg.graph[node].origin,
-                degree
-            );
-        }
+        assert!(
+            degree >= 3,
+            "VFG invariant violated: node {:?} ({:?}) has {} neighbours, expected >= 3",
+            node,
+            vfg.graph[node].origin,
+            degree
+        );
     }
 
-    // 5. Every node in the graph is either in the boundary or has degree >= 3.
-    //    (Covered by check 4.)
-
-    // 6. All duplicated pairs (CutDuplicate and CutEndpointMidpoint) have matching peers.
+    // 5. All duplicated pairs (CutDuplicate and CutEndpointMidpoint) have matching peers.
     for node in vfg.graph.node_indices() {
         let peer_opt = match vfg.graph[node].origin {
             VirtualNodeOrigin::CutDuplicate {
