@@ -1,6 +1,7 @@
 use crate::render_skeleton::{
     create_labeled_skeleton_gizmos, create_patch_boundary_gizmos, create_patch_convexity_mesh,
     create_patch_mesh, create_polycube_patch_boundary_gizmos, create_polycube_patch_mesh,
+    get_region_color,
     create_skeleton_gizmos,
 };
 use crate::ui::UiResource;
@@ -27,6 +28,7 @@ use core::f32;
 use dualcube::prelude::*;
 use dualcube::skeleton::cross_parameterize::virtual_mesh::VirtualNodeOrigin;
 use dualcube::skeleton::cross_parameterize::PolycubeMap;
+use dualcube::skeleton::orthogonalize::LabeledCurveSkeleton;
 use egui_dock::LeafNode;
 use enum_iterator::{all, Sequence};
 use itertools::Itertools;
@@ -382,6 +384,7 @@ pub fn update_render_settings(
     render_object_store: Res<RenderObjectStore>,
     mut render_settings_store: ResMut<RenderObjectSettingStore>,
 ) {
+    // default overlays
     let default = |object: &Objects, label: &str| {
         matches!(
             (object, label),
@@ -389,7 +392,7 @@ pub fn update_render_settings(
             (Objects::InputMesh, "wireframe")
                 | (Objects::InputMesh, "patches")
                 | (Objects::InputMesh, "cuts")
-                | (Objects::InputMesh, "virtual mesh debug")
+                // | (Objects::InputMesh, "virtual mesh debug")
                 | (Objects::InputMesh, "uv long edges")
                 // | (Objects::InputMesh, "uv patches")
                 // | (Objects::Polycube, "gray")
@@ -1038,43 +1041,83 @@ fn create_input_uv_patch_mesh(
 
 fn create_input_uv_long_edge_overlay(
     solution: &Solution,
+    skeleton: &LabeledCurveSkeleton,
+    selected_region: usize,
     translation: Vector3D,
     scale: f64,
     threshold: f64,
 ) -> Option<GizmoAsset> {
     let pmap = solution.skeleton.as_ref().and_then(|s| s.polycube_map())?;
 
+    let mut sorted_regions: Vec<_> = pmap.regions.iter().collect();
+    sorted_regions.sort_by_key(|(idx, _)| idx.index());
+    if sorted_regions.is_empty() {
+        return None;
+    }
+    let region_i = selected_region.min(sorted_regions.len().saturating_sub(1));
+    let (region_idx, region) = sorted_regions[region_i];
+
+    let boundary_from_origin = |origin: &VirtualNodeOrigin| {
+        match origin {
+            VirtualNodeOrigin::BoundaryMidpoint { boundary, .. }
+            | VirtualNodeOrigin::CutEndpointMidpoint { boundary, .. } => Some(*boundary),
+            _ => None,
+        }
+    };
+
+    let other_region_color = |boundary| -> Option<bevy::prelude::Color> {
+        let (a, b) = skeleton.edge_endpoints(boundary)?;
+        let other = if a == *region_idx {
+            b
+        } else if b == *region_idx {
+            a
+        } else {
+            return None;
+        };
+        let c = get_region_color(other.index());
+        Some(bevy::prelude::Color::srgb(c[0], c[1], c[2]))
+    };
+
     // Save exact edge endpoints in input-mesh space first; UV is only used
     // to classify whether an edge is unexpectedly long.
-    let mut bad_edges_mesh_space: Vec<(Vector3D, Vector3D)> = Vec::new();
+    let mut bad_edges_mesh_space: Vec<(Vector3D, Vector3D, bevy::prelude::Color)> = Vec::new();
 
-    let mut region_long_edges = HashMap::new();
-    for (region_idx, region) in pmap.regions.iter() {
-        let mut count = 0usize;
-        for edge_idx in region.input_vfg.graph.edge_indices() {
-            let Some((a, b)) = region.input_vfg.graph.edge_endpoints(edge_idx) else {
-                continue;
+    let mut count = 0usize;
+    for edge_idx in region.input_vfg.graph.edge_indices() {
+        let Some((a, b)) = region.input_vfg.graph.edge_endpoints(edge_idx) else {
+            continue;
+        };
+
+        let (Some(&uv_a), Some(&uv_b)) = (region.input_uv.get(&a), region.input_uv.get(&b)) else {
+            continue;
+        };
+
+        let uv_len = (uv_b - uv_a).norm();
+        if uv_len > threshold {
+            count += 1;
+
+            let ba = boundary_from_origin(&region.input_vfg.graph[a].origin);
+            let bb = boundary_from_origin(&region.input_vfg.graph[b].origin);
+            let boundary_count = usize::from(ba.is_some()) + usize::from(bb.is_some());
+
+            let color = match boundary_count {
+                2 => bevy::prelude::Color::BLACK,
+                1 => {
+                    let boundary = ba.or(bb).expect("boundary must exist when boundary_count=1");
+                    other_region_color(boundary).unwrap_or(bevy::prelude::Color::WHITE)
+                }
+                _ => bevy::prelude::Color::WHITE,
             };
 
-            let (Some(&uv_a), Some(&uv_b)) = (region.input_uv.get(&a), region.input_uv.get(&b)) else {
-                continue;
-            };
-
-            let uv_len = (uv_b - uv_a).norm();
-            if uv_len > threshold {
-                count += 1;
-                bad_edges_mesh_space.push((
-                    region.input_vfg.graph[a].position,
-                    region.input_vfg.graph[b].position,
-                ));
-            }
-        }
-        if count > 0 {
-            region_long_edges.insert(*region_idx, count);
+            bad_edges_mesh_space.push((
+                region.input_vfg.graph[a].position,
+                region.input_vfg.graph[b].position,
+                color,
+            ));
         }
     }
 
-    for (region_idx, count) in &region_long_edges {
+    if count > 0 {
         error!(
             "UV long-edge detector: region {:?} has {} long UV edges (threshold={:.3})",
             region_idx,
@@ -1084,12 +1127,11 @@ fn create_input_uv_long_edge_overlay(
     }
 
     let mut gizmos = GizmoAsset::new();
-    let long_edge_color = bevy::prelude::Color::srgb(1.0, 0.1, 0.1);
 
-    for (pa_mesh, pb_mesh) in bad_edges_mesh_space {
+    for (pa_mesh, pb_mesh, color) in bad_edges_mesh_space {
         let pa = world_to_view(pa_mesh, translation, scale);
         let pb = world_to_view(pb_mesh, translation, scale);
-        gizmos.line(pa, pb, long_edge_color);
+        gizmos.line(pa, pb, color);
     }
 
     Some(gizmos)
@@ -1114,6 +1156,7 @@ pub fn uv_domain_region_count(solution: &Solution) -> usize {
 
 fn create_uv_domain_view(
     pmap: &PolycubeMap,
+    skeleton: &LabeledCurveSkeleton,
     selected_region: usize,
 ) -> RenderObject {
     let mut render_obj = RenderObject::default();
@@ -1123,7 +1166,7 @@ fn create_uv_domain_view(
     sorted_regions.sort_by_key(|(idx, _)| idx.index());
 
     let region_i = selected_region.min(sorted_regions.len().saturating_sub(1));
-    let (_node_idx, region) = sorted_regions[region_i];
+    let (node_idx, region) = sorted_regions[region_i];
 
     let mut input_edge_gizmos = GizmoAsset::new();
     let mut polycube_edge_gizmos = GizmoAsset::new();
@@ -1137,6 +1180,27 @@ fn create_uv_domain_view(
     let polycube_boundary_color = bevy::prelude::Color::srgb(1.0, 0.9, 0.0);
     let cut_boundary_color = bevy::prelude::Color::srgb(1.0, 0.5, 0.0); // orange: cut boundary
     let input_interior_color = bevy::prelude::Color::srgb(0.5, 0.5, 0.5);
+
+    let boundary_from_origin = |origin: &VirtualNodeOrigin| {
+        match origin {
+            VirtualNodeOrigin::BoundaryMidpoint { boundary, .. }
+            | VirtualNodeOrigin::CutEndpointMidpoint { boundary, .. } => Some(*boundary),
+            _ => None,
+        }
+    };
+
+    let other_region_color = |boundary| -> Option<bevy::prelude::Color> {
+        let (a, b) = skeleton.edge_endpoints(boundary)?;
+        let other = if a == *node_idx {
+            b
+        } else if b == *node_idx {
+            a
+        } else {
+            return None;
+        };
+        let c = get_region_color(other.index());
+        Some(bevy::prelude::Color::srgb(c[0], c[1], c[2]))
+    };
 
     // Precompute cut node sets for both VFGs to avoid closure type-inference issues.
     let input_cut_set: HashSet<_> = region
@@ -1211,8 +1275,21 @@ fn create_uv_domain_view(
             continue;
         };
         let on_boundary = input_boundary_set.contains(&a) && input_boundary_set.contains(&b);
+        let side_segment_color = if on_boundary {
+            match (
+                boundary_from_origin(&region.input_vfg.graph[a].origin),
+                boundary_from_origin(&region.input_vfg.graph[b].origin),
+            ) {
+                (Some(ea), Some(eb)) if ea == eb => other_region_color(ea),
+                _ => None,
+            }
+        } else {
+            None
+        };
         let on_cut = input_cut_set.contains(&a) || input_cut_set.contains(&b);
-        let color = if on_boundary && on_cut {
+        let color = if let Some(c) = side_segment_color {
+            c
+        } else if on_boundary && on_cut {
             cut_boundary_color
         } else if on_boundary {
             input_boundary_color
@@ -1235,8 +1312,21 @@ fn create_uv_domain_view(
             continue;
         };
         let on_boundary = polycube_boundary_set.contains(&a) && polycube_boundary_set.contains(&b);
+        let side_segment_color = if on_boundary {
+            match (
+                boundary_from_origin(&region.polycube_vfg.graph[a].origin),
+                boundary_from_origin(&region.polycube_vfg.graph[b].origin),
+            ) {
+                (Some(ea), Some(eb)) if ea == eb => other_region_color(ea),
+                _ => None,
+            }
+        } else {
+            None
+        };
         let on_cut = polycube_cut_set.contains(&a) || polycube_cut_set.contains(&b);
-        let color = if on_boundary && on_cut {
+        let color = if let Some(c) = side_segment_color {
+            c
+        } else if on_boundary && on_cut {
             cut_boundary_color
         } else if on_boundary {
             polycube_boundary_color
@@ -1253,11 +1343,15 @@ fn create_uv_domain_view(
         };
         let pos = uv_to_pos(uv);
         if input_boundary_set.contains(&node) {
-            let color = if input_cut_set.contains(&node) {
-                cut_boundary_color
-            } else {
-                input_boundary_color
-            };
+            let color = boundary_from_origin(&region.input_vfg.graph[node].origin)
+                .and_then(other_region_color)
+                .unwrap_or_else(|| {
+                    if input_cut_set.contains(&node) {
+                        cut_boundary_color
+                    } else {
+                        input_boundary_color
+                    }
+                });
             input_vertex_gizmos.sphere(Isometry3d::from_translation(pos), 0.03, color);
         } else {
             input_vertex_gizmos.sphere(
@@ -1277,11 +1371,15 @@ fn create_uv_domain_view(
         let mut pos = uv_to_pos(uv);
         pos.z += 0.002;
         if polycube_boundary_set.contains(&node) {
-            let color = if polycube_cut_set.contains(&node) {
-                cut_boundary_color
-            } else {
-                polycube_boundary_color
-            };
+            let color = boundary_from_origin(&region.polycube_vfg.graph[node].origin)
+                .and_then(other_region_color)
+                .unwrap_or_else(|| {
+                    if polycube_cut_set.contains(&node) {
+                        cut_boundary_color
+                    } else {
+                        polycube_boundary_color
+                    }
+                });
             polycube_vertex_gizmos.sphere(Isometry3d::from_translation(pos), 0.035, color);
         } else {
             polycube_vertex_gizmos.sphere(
@@ -1617,9 +1715,12 @@ pub fn refresh(solution: &Solution, configuration: &Configuration) -> RenderObje
                 }
             }
             Objects::UvDomain => {
-                if let Some(pmap) = solution.skeleton.as_ref().and_then(|s| s.polycube_map()) {
+                if let (Some(pmap), Some(labeled)) = (
+                    solution.skeleton.as_ref().and_then(|s| s.polycube_map()),
+                    solution.skeleton.as_ref().and_then(|s| s.labeled_skeleton()),
+                ) {
                     let render_obj =
-                        create_uv_domain_view(pmap, configuration.uv_domain_region);
+                        create_uv_domain_view(pmap, labeled, configuration.uv_domain_region);
                     render_object_store.add_object(object, render_obj);
                 }
             }
@@ -2117,7 +2218,10 @@ pub fn refresh(solution: &Solution, configuration: &Configuration) -> RenderObje
                         "minimum principal curvature",
                     );
 
-                if let Some(pmap) = solution.skeleton.as_ref().and_then(|s| s.polycube_map()) {
+                if let (Some(pmap), Some(labeled)) = (
+                    solution.skeleton.as_ref().and_then(|s| s.polycube_map()),
+                    solution.skeleton.as_ref().and_then(|s| s.labeled_skeleton()),
+                ) {
                     let mut gizmos_cuts = GizmoAsset::new();
                     let cut_color = colors::to_bevy(colors::SNOEP_YELLOW);
                     for region in pmap.regions.values() {
@@ -2149,6 +2253,8 @@ pub fn refresh(solution: &Solution, configuration: &Configuration) -> RenderObje
 
                     if let Some(long_edge_overlay) = create_input_uv_long_edge_overlay(
                         solution,
+                        labeled,
+                        configuration.uv_domain_region,
                         translation,
                         scale,
                         1.0,
