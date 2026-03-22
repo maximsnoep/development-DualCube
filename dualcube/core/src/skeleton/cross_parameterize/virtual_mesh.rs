@@ -10,7 +10,7 @@ use petgraph::visit::EdgeRef;
 use serde::{Deserialize, Serialize};
 
 use crate::prelude::{EdgeID, VertID, INPUT};
-use crate::skeleton::boundary_loop::BoundaryLoop;
+use crate::skeleton::boundary_loop::{self, BoundaryLoop};
 use crate::skeleton::cross_parameterize::edge_id_to_midpoint_pos;
 use crate::skeleton::orthogonalize::LabeledCurveSkeleton;
 
@@ -145,7 +145,6 @@ impl VirtualFlatGeometry {
         // Initialize empty structures and fill at each step
         let mut graph: StableUnGraph<VirtualNode, VirtualEdgeWeight> = StableUnGraph::default();
         let mut vert_to_nodes: HashMap<VertID, VertexToVirtual> = HashMap::new();
-        let mut boundary_loop: Vec<NodeIndex> = Vec::new();
 
         // Step 1:  add all vertex nodes
         let patch_vertices = &skeleton
@@ -225,6 +224,7 @@ impl VirtualFlatGeometry {
         }
 
         // Step 4:  trace boundary loop, add edges as we go
+        let boundary_loop = calculate_boundary_loop(patch_node_idx, skeleton, mesh);
 
         // Step 5:  add all other edges using original mesh connectivity (being careful about duplicates)
 
@@ -238,6 +238,51 @@ impl VirtualFlatGeometry {
 
         vfg
     }
+}
+
+/// Calculates the single boundary loop of the virtual mesh.
+/// The resulting loop is a simple cycle of virtual node indices in CCW order.
+fn calculate_boundary_loop(
+    patch_node_idx: NodeIndex,
+    skeleton: &LabeledCurveSkeleton,
+    mesh: &Mesh<INPUT>,
+) -> Vec<NodeIndex> {
+    let mut boundary_loop = Vec::new();
+
+    let patch_vertices: HashSet<VertID> = skeleton
+        .node_weight(patch_node_idx)
+        .unwrap()
+        .skeleton_node
+        .patch_vertices
+        .iter()
+        .copied()
+        .collect();
+
+    // Collect all vertices that have an edge to another patch.
+    let mut boundary_vertices = HashSet::new();
+    for skeleton_edge in skeleton.edges(patch_node_idx) {
+        // Traverse boundary, get edges, add our side vertex to boundary_vertices
+        let edge_weight = skeleton_edge.weight();
+        let midpoint_loop = &edge_weight.boundary_loop;
+        for edge_idx in &midpoint_loop.edge_midpoints {
+            let Some([v1, v2]) = mesh.vertices(*edge_idx).collect_array::<2>() else {
+                panic!("Edge with not exactly 2 vertices found while calculating boundary loop.");
+            };
+            if patch_vertices.contains(&v1) && !patch_vertices.contains(&v2) {
+                boundary_vertices.insert(v1);
+            } else if patch_vertices.contains(&v2) && !patch_vertices.contains(&v1) {
+                boundary_vertices.insert(v2);
+            } else {
+                panic!("Boundary edge does not have exactly one vertex in the patch.");
+            }
+        }
+    }
+
+    // TODO: calculate whether each boundaryloop is in CCW or CW order.
+
+
+    // TODO: trace boundary using ccw info
+    boundary_loop
 }
 
 fn duplicate_cut_endpoint(
