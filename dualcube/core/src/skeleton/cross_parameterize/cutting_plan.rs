@@ -127,7 +127,7 @@ fn compute_side_cut_paths(
         );
 
         // Record used vertices for disjointness.
-        for pt in &cut.path.interior_points {
+        for pt in &cut.path.interior_verts {
             used_verts.insert(*pt);
         }
         cuts.push(cut);
@@ -291,7 +291,7 @@ fn build_vertex_surface_path(
 ) -> SurfacePath {
     SurfacePath {
         start: start_edge,
-        interior_points: vertex_path.to_vec(),
+        interior_verts: vertex_path.to_vec(),
         end: end_edge,
     }
 }
@@ -361,7 +361,7 @@ fn boundary_vertices_of_region(
 fn verify_cuts_disjoint(cuts: &[CutPath]) {
     let mut all_verts: HashSet<VertID> = HashSet::new();
     for (i, cut) in cuts.iter().enumerate() {
-        for vertex in &cut.path.interior_points {
+        for vertex in &cut.path.interior_verts {
             assert!(
                 all_verts.insert(*vertex),
                 "Cut paths are not disjoint: vertex {:?} appears in cut {} and a previous cut",
