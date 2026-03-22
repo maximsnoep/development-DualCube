@@ -2,7 +2,7 @@ use std::collections::{HashMap, HashSet};
 use std::f64::consts::PI;
 
 use log::warn;
-use mehsh::prelude::{HasPosition, HasVertices, Mesh, Vector3D};
+use mehsh::prelude::{HasEdges, HasPosition, HasVertices, Mesh, Vector3D};
 use petgraph::graph::{EdgeIndex, NodeIndex};
 use petgraph::prelude::StableGraph;
 use petgraph::stable_graph::StableUnGraph;
@@ -256,6 +256,165 @@ impl VirtualFlatGeometry {
         check_invariants(&vfg);
 
         vfg
+    }
+}
+
+/// Adds all edges to the VFG based on mesh connectivity.
+fn add_all_edges(
+    vfg: &mut VirtualFlatGeometry,
+    skeleton: &LabeledCurveSkeleton,
+    mesh: &Mesh<INPUT>,
+    patch_vertices: &[VertID],
+    vert_to_nodes: HashMap<VertID, VertexToVirtual>,
+    edge_midpoint_ids_to_node_indices: HashMap<EdgeID, EdgemidpointToVirtual>,
+) {
+    // Loop over all patch vertices, then their edges in the original mesh.
+    for vert in patch_vertices {
+        for edge in mesh.edges(*vert) {
+            let edge_vertices = mesh.vertices(edge).collect::<Vec<_>>();
+            if edge_vertices.len() != 2 {
+                unreachable!(
+                    "Mesh edge with {:?} vertices encountered while building VFG",
+                    edge_vertices.len()
+                );
+            }
+            let other_vert = if edge_vertices[0] == *vert {
+                edge_vertices[1]
+            } else if edge_vertices[1] == *vert {
+                edge_vertices[0]
+            } else {
+                unreachable!(
+                    "Current vertex {:?} not found among its own edge vertices",
+                    vert
+                );
+            };
+
+            let self_node_origin = vert_to_nodes
+                .get(vert)
+                .expect("Patch vertex missing from virtual node map");
+
+            if patch_vertices.contains(&other_vert) {
+                // Only do work for one direction (only necessary in this case, as we do not search from midpoints)
+                if other_vert < *vert {
+                    continue;
+                }
+
+                let other_node_origin = vert_to_nodes
+                    .get(&other_vert)
+                    .expect("Patch vertex missing from virtual node map");
+
+                match (self_node_origin, other_node_origin) {
+                    // Both unique
+                    (VertexToVirtual::Unique(self_node), VertexToVirtual::Unique(other_node)) => {
+                        // Both endpoints are regular vertices, just add edge
+                        let self_pos = vfg.graph[*self_node].position;
+                        let other_pos = vfg.graph[*other_node].position;
+                        let length = (self_pos - other_pos).norm();
+                        vfg.graph
+                            .add_edge(*self_node, *other_node, VirtualEdgeWeight { length });
+                    }
+                    // One cut, one unique
+                    (
+                        VertexToVirtual::CutPair {
+                            left: self_left,
+                            right: self_right,
+                        },
+                        VertexToVirtual::Unique(other_node),
+                    ) => {
+                        // Determine which of the cut duplicates to add edge to
+                        // TODO
+                    }
+                    (
+                        VertexToVirtual::Unique(self_node),
+                        VertexToVirtual::CutPair {
+                            left: other_left,
+                            right: other_right,
+                        },
+                    ) => {
+                        // Determine which of the cut duplicates to add edge to
+                        // TODO
+                    }
+                    // Both cuts
+                    (
+                        VertexToVirtual::CutPair {
+                            left: self_left,
+                            right: self_right,
+                        },
+                        VertexToVirtual::CutPair {
+                            left: other_left,
+                            right: other_right,
+                        },
+                    ) => {
+                        // Determine which of the cut duplicates to add edge to
+                        // TODO
+                    }
+
+                    _ => unreachable!("Unexpected origin pair encountered."),
+                }
+            } else {
+                // Other side of edge lies outside patch, so other vertex is not in VFG.
+                // Edge should go to the midpoint of this edge instead.
+
+                // Get midpoint for the edge
+                let midpoint_edge = edge;
+
+                // Get node origin
+                let midpoint_node_origin = edge_midpoint_ids_to_node_indices
+                    .get(&midpoint_edge)
+                    .expect("Boundary midpoint missing from virtual node map");
+
+                // Match based on duplicate/unique status of self and other
+                match (self_node_origin, midpoint_node_origin) {
+                    // Both unique
+                    (
+                        VertexToVirtual::Unique(self_node),
+                        EdgemidpointToVirtual::Unique(mid_node),
+                    ) => {
+                        let self_pos = vfg.graph[*self_node].position;
+                        let mid_pos = vfg.graph[*mid_node].position;
+                        let length = (self_pos - mid_pos).norm();
+                        vfg.graph
+                            .add_edge(*self_node, *mid_node, VirtualEdgeWeight { length });
+                    },
+                    // Vertex is duplicated, midpoint unique
+                    (
+                        VertexToVirtual::CutPair {
+                            left: self_left,
+                            right: self_right,
+                        },
+                        EdgemidpointToVirtual::Unique(mid_node),
+                    ) => {
+                        // Determine which of the cut duplicates to add edge to
+                        // TODO
+                    },
+                    // Vertex unique, midpoint duplicated
+                    (
+                        VertexToVirtual::Unique(self_node),
+                        EdgemidpointToVirtual::CutEndpointPair {
+                            left: mid_left,
+                            right: mid_right,
+                        },
+                    ) => {
+                        // Determine which of the cut duplicates to add edge to
+                        // TODO
+                    },
+                    // Both duplicated
+                    (
+                        VertexToVirtual::CutPair {
+                            left: self_left,
+                            right: self_right,
+                        },
+                        EdgemidpointToVirtual::CutEndpointPair {
+                            left: mid_left,
+                            right: mid_right,
+                        },
+                    ) => {
+                        // Determine which of the cut duplicates to add edge to
+                        // TODO
+                    }
+                }
+            }
+        }
     }
 }
 
