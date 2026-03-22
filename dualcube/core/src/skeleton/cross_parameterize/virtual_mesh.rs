@@ -246,7 +246,7 @@ impl VirtualFlatGeometry {
             boundary_loop_reverse,
         };
 
-        // check_invariants(&vfg);
+        check_invariants(&vfg);
 
         vfg
     }
@@ -402,7 +402,7 @@ fn symbolic_face_coord(index: usize, n: usize) -> (f64, f64) {
 }
 
 /// Calculates the single boundary loop of the virtual mesh.
-/// The resulting loop is a simple cycle of virtual node indices in CCW order.
+/// The resulting loop is a simple cycle of virtual node indices, following all boundaries in CCW.
 fn calculate_boundary_loop(
     patch_node_idx: NodeIndex,
     skeleton: &LabeledCurveSkeleton,
@@ -410,36 +410,11 @@ fn calculate_boundary_loop(
 ) -> Vec<NodeIndex> {
     let boundary_loop = Vec::new();
 
-    let patch_vertices: HashSet<VertID> = skeleton
-        .node_weight(patch_node_idx)
-        .unwrap()
-        .skeleton_node
-        .patch_vertices
-        .iter()
-        .copied()
-        .collect();
-
-    // Collect all vertices that have an edge to another patch.
-    let mut boundary_vertices = HashSet::new();
-    for skeleton_edge in skeleton.edges(patch_node_idx) {
-        // Traverse boundary, get edges, add our side vertex to boundary_vertices
-        let edge_weight = skeleton_edge.weight();
-        let midpoint_loop = &edge_weight.boundary_loop;
-        for edge_idx in &midpoint_loop.edge_midpoints {
-            let Some([v1, v2]) = mesh.vertices(*edge_idx).collect_array::<2>() else {
-                panic!("Edge with not exactly 2 vertices found while calculating boundary loop.");
-            };
-            if patch_vertices.contains(&v1) && !patch_vertices.contains(&v2) {
-                boundary_vertices.insert(v1);
-            } else if patch_vertices.contains(&v2) && !patch_vertices.contains(&v1) {
-                boundary_vertices.insert(v2);
-            } else {
-                panic!("Boundary edge does not have exactly one vertex in the patch.");
-            }
-        }
-    }
-
     // TODO: trace boundary using ccw info
+
+
+
+
     boundary_loop
 }
 
@@ -587,8 +562,10 @@ fn duplicate_cut_vertex(
         },
     );
 }
-// /// Checks structural invariants on the completed VFG.
-// fn check_invariants(vfg: &VirtualFlatGeometry) {
+
+
+/// Checks structural invariants on the completed VFG.
+fn check_invariants(vfg: &VirtualFlatGeometry) {
 //     let n_nodes = vfg.graph.node_count();
 
 //     // 1. Boundary loop is non-empty.
@@ -813,4 +790,4 @@ fn duplicate_cut_vertex(
 //             n_nodes,
 //         );
 //     }
-// }
+}
