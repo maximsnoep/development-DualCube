@@ -4,6 +4,7 @@ use itertools::Itertools;
 use log::{self, error, warn};
 use mehsh::prelude::{HasEdges, HasNeighbors, HasPosition, HasVertices, Mesh, Vector3D};
 use petgraph::graph::{EdgeIndex, NodeIndex};
+use petgraph::prelude::StableGraph;
 use petgraph::stable_graph::StableUnGraph;
 use petgraph::visit::EdgeRef;
 use serde::{Deserialize, Serialize};
@@ -103,6 +104,11 @@ pub enum VertexToVirtual {
     CutPair { left: NodeIndex, right: NodeIndex },
 }
 
+pub enum EdgemidpointToVirtual {
+    Unique(NodeIndex),
+    CutEndpointPair { left: NodeIndex, right: NodeIndex },
+}
+
 /// Per-node payload in the virtual graph.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct VirtualNode {
@@ -141,7 +147,7 @@ impl VirtualFlatGeometry {
         let mut vert_to_nodes: HashMap<VertID, VertexToVirtual> = HashMap::new();
         let mut boundary_loop: Vec<NodeIndex> = Vec::new();
 
-        // Step 1: add all vertex nodes
+        // Step 1:  add all vertex nodes
         let patch_vertices = &skeleton
             .node_weight(patch_node_idx)
             .unwrap()
@@ -156,9 +162,10 @@ impl VirtualFlatGeometry {
             vert_to_nodes.insert(*vert_id, VertexToVirtual::Unique(virtual_node_idx));
         }
 
-        // Step 2: add all boundary midpoints
+        // Step 2:  add all boundary midpoints
         let boundary_edges = skeleton.edges(patch_node_idx);
-        let mut edge_midpoint_ids_to_node_indices: HashMap<EdgeID, NodeIndex> = HashMap::new();
+        let mut edge_midpoint_ids_to_node_indices: HashMap<EdgeID, EdgemidpointToVirtual> =
+            HashMap::new();
         let mut skeleton_edge_to_boundary_midpoint: HashMap<EdgeIndex, Vec<EdgeID>> =
             HashMap::new();
         for boundary_edge in boundary_edges {
@@ -180,18 +187,46 @@ impl VirtualFlatGeometry {
                         boundary_edge: boundary_edge.id(),
                     },
                 });
-                edge_midpoint_ids_to_node_indices.insert(*edge_idx, midpoint_node_idx);
+                edge_midpoint_ids_to_node_indices
+                    .insert(*edge_idx, EdgemidpointToVirtual::Unique(midpoint_node_idx));
             }
         }
 
-        // Step 3: account for cut duplicates in both nodes and edges
-        for cut_path in &cutting_plan.cuts {
+        // Step 3:  account for cut duplicates in both nodes and edges.
+        //          Replace all previously added nodes with their duplcated versions
+        for (cut_index, cut_path) in cutting_plan.cuts.iter().enumerate() {
             let path = &cut_path.path;
+
+            // Start cut endpoint duplicate
+            let start_midpoint = path.start;
+            duplicate_cut_endpoint(
+                &mut graph,
+                &mut edge_midpoint_ids_to_node_indices,
+                cut_index,
+                cut_path,
+                start_midpoint,
+            );
+
+            // Interior vertex duplicates
+            let interior_verts = &path.interior_verts;
+            for vert in interior_verts {
+                duplicate_cut_vertex(&mut graph, &mut vert_to_nodes, cut_index, *vert);
+            }
+
+            // End cut endpoint duplicate
+            let end_midpoint = path.end;
+            duplicate_cut_endpoint(
+                &mut graph,
+                &mut edge_midpoint_ids_to_node_indices,
+                cut_index,
+                cut_path,
+                end_midpoint,
+            );
         }
 
-        // Step 4: trace boundary loop, add edges as we go
+        // Step 4:  trace boundary loop, add edges as we go
 
-        // Step 5: add all other edges using original mesh connectivity (being careful about duplicates)
+        // Step 5:  add all other edges using original mesh connectivity (being careful about duplicates)
 
         let vfg = VirtualFlatGeometry {
             graph,
@@ -205,6 +240,150 @@ impl VirtualFlatGeometry {
     }
 }
 
+fn duplicate_cut_endpoint(
+    graph: &mut StableGraph<VirtualNode, VirtualEdgeWeight, petgraph::Undirected>,
+    edge_midpoint_ids_to_node_indices: &mut HashMap<EdgeID, EdgemidpointToVirtual>,
+    cut_index: usize,
+    cut_path: &CutPath,
+    midpoint: EdgeID,
+) {
+    // Remove original from graph
+    let midpoint_node_idx = match edge_midpoint_ids_to_node_indices.get(&midpoint) {
+        Some(EdgemidpointToVirtual::Unique(idx)) => *idx,
+        Some(EdgemidpointToVirtual::CutEndpointPair { .. }) => panic!(
+            "Cut endpoint {:?} is shared by multiple cuts, which is not supported.",
+            midpoint
+        ),
+        None => unreachable!(
+            "Cut endpoint {:?} does not correspond to any known boundary midpoint",
+            midpoint
+        ),
+    };
+    let midpoint_pos = graph.node_weight(midpoint_node_idx).unwrap().position;
+    if graph.remove_node(midpoint_node_idx).is_none() {
+        panic!(
+            "Cut endpoint is reused for multiple cuts, leaving no space between to parameterize."
+        );
+    };
+    edge_midpoint_ids_to_node_indices.remove(&midpoint);
+
+    // Insert two duplicates, one for each side of the cut
+    let dup_virtual_1 = VirtualNode {
+        position: midpoint_pos,
+        origin: VirtualNodeOrigin::CutEndpointMidpointDuplicate {
+            edge: midpoint,
+            boundary: cut_path.start_boundary,
+            peer: None, // to be filled in after both copies are created
+            cut_index: cut_index,
+            side: false,
+        },
+    };
+    let dup_virtual_2 = VirtualNode {
+        position: midpoint_pos,
+        origin: VirtualNodeOrigin::CutEndpointMidpointDuplicate {
+            edge: midpoint,
+            boundary: cut_path.start_boundary,
+            peer: None, // to be filled in after both copies are created
+            cut_index: cut_index,
+            side: true,
+        },
+    };
+    let dup_node_idx_1 = graph.add_node(dup_virtual_1);
+    let dup_node_idx_2 = graph.add_node(dup_virtual_2);
+
+    // Update peer references
+    if let VirtualNodeOrigin::CutEndpointMidpointDuplicate { peer, .. } =
+        &mut graph[dup_node_idx_1].origin
+    {
+        *peer = Some(dup_node_idx_2);
+    } else {
+        unreachable!();
+    }
+    if let VirtualNodeOrigin::CutEndpointMidpointDuplicate { peer, .. } =
+        &mut graph[dup_node_idx_2].origin
+    {
+        *peer = Some(dup_node_idx_1);
+    } else {
+        unreachable!();
+    }
+
+    // Save as duplicate in map
+    edge_midpoint_ids_to_node_indices.insert(
+        midpoint,
+        EdgemidpointToVirtual::CutEndpointPair {
+            left: dup_node_idx_1,
+            right: dup_node_idx_2,
+        },
+    );
+}
+
+fn duplicate_cut_vertex(
+    graph: &mut StableGraph<VirtualNode, VirtualEdgeWeight, petgraph::Undirected>,
+    vert_to_nodes: &mut HashMap<VertID, VertexToVirtual>,
+    cut_index: usize,
+    vertex: VertID,
+) {
+    // Remove original from graph
+    let node_idx = match vert_to_nodes.get(&vertex) {
+        Some(VertexToVirtual::Unique(idx)) => *idx,
+        Some(VertexToVirtual::CutPair { .. }) => panic!(
+            "Cut vertex {:?} is shared by multiple cuts, which is not supported.",
+            vertex
+        ),
+        None => unreachable!(
+            "Cut vertex {:?} does not correspond to any known mesh vertex",
+            vertex
+        ),
+    };
+    let pos = graph.node_weight(node_idx).unwrap().position;
+    if graph.remove_node(node_idx).is_none() {
+        panic!("Cut vertex is reused for multiple cuts, leaving no space between to parameterize.");
+    };
+    vert_to_nodes.remove(&vertex);
+
+    // Insert two duplicates, one for each side of the cut
+    let dup_virtual_1 = VirtualNode {
+        position: pos,
+        origin: VirtualNodeOrigin::CutDuplicate {
+            original: vertex,
+            peer: None,
+            cut_index,
+            side: false,
+        },
+    };
+    let dup_virtual_2 = VirtualNode {
+        position: pos,
+        origin: VirtualNodeOrigin::CutDuplicate {
+            original: vertex,
+            peer: None,
+            cut_index,
+            side: true,
+        },
+    };
+    let dup_node_idx_1 = graph.add_node(dup_virtual_1);
+    let dup_node_idx_2 = graph.add_node(dup_virtual_2);
+
+    // Update peer references
+    if let VirtualNodeOrigin::CutDuplicate { peer, .. } = &mut graph[dup_node_idx_1].origin {
+        *peer = Some(dup_node_idx_2);
+    } else {
+        unreachable!();
+    }
+    if let VirtualNodeOrigin::CutDuplicate { peer, .. } = &mut graph[dup_node_idx_2].origin {
+        *peer = Some(dup_node_idx_1);
+    } else {
+        unreachable!();
+    }
+
+    // Save as duplicate in map
+    vert_to_nodes.insert(
+        vertex,
+        VertexToVirtual::CutPair {
+            left: dup_node_idx_1,
+            right: dup_node_idx_2,
+        },
+    );
+}
 // /// Checks structural invariants on the completed VFG.
 // fn check_invariants(vfg: &VirtualFlatGeometry) {
 //     let n_nodes = vfg.graph.node_count();

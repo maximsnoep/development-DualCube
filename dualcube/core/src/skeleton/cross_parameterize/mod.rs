@@ -35,7 +35,7 @@ const MIN_CUT_BOUNDARY_PROPORTION: f64 = 0.05;
 #[derive(Debug, Clone)]
 pub struct SurfacePath {
     pub start: EdgeID,
-    pub interior_points: Vec<VertID>,
+    pub interior_verts: Vec<VertID>,
     pub end: EdgeID,
 }
 
@@ -47,7 +47,7 @@ impl SurfacePath {
         positions.push(edge_id_to_midpoint_pos(self.start, mesh));
 
         // Then add all interior vertices.
-        for vert_id in &self.interior_points {
+        for vert_id in &self.interior_verts {
             positions.push(mesh.position(*vert_id));
         }
 
@@ -342,6 +342,9 @@ fn polygon_arc_interpolate(polygon: &[Vector2D], start: usize, end: usize, t: f6
 
 /// Maps every node in `vfg.boundary_loop` to a 2D position on a regular `n_sides`-gon.
 ///
+/// 
+/// TODO...
+/// 
 /// When `corner_indices` is non-empty (degree ≥ 2), each consecutive pair of
 /// corners defines a segment that maps to one polygon side. Nodes within a
 /// segment are distributed by arc-length along that side. This ensures boundary
