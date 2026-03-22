@@ -817,19 +817,20 @@ fn create_input_uv_patch_mesh(
     let mut vert_uv_avg: HashMap<VertID, Vector2D> = HashMap::new();
 
     for region in pmap.regions.values() {
-        for (&vert_id, vfg_nodes) in &region.input_vfg.vert_to_nodes {
-            let mut uv_sum = Vector2D::new(0.0, 0.0);
-            let mut uv_count = 0.0;
-            for &node in vfg_nodes {
-                if let Some(&uv) = region.input_uv.get(&node) {
-                    uv_sum += uv;
-                    uv_count += 1.0;
-                }
-            }
-            if uv_count > 0.0 {
-                vert_uv_avg.insert(vert_id, uv_sum / uv_count);
-            }
-        }
+        info_once!("TODO: redo UV calc after new VFG")
+        // for (&vert_id, vfg_nodes) in &region.input_vfg.vert_to_nodes {
+        //     let mut uv_sum = Vector2D::new(0.0, 0.0);
+        //     let mut uv_count = 0.0;
+        //     for &node in vfg_nodes {
+        //         if let Some(&uv) = region.input_uv.get(&node) {
+        //             uv_sum += uv;
+        //             uv_count += 1.0;
+        //         }
+        //     }
+        //     if uv_count > 0.0 {
+        //         vert_uv_avg.insert(vert_id, uv_sum / uv_count);
+        //     }
+        // }
     }
 
     if vert_uv_avg.is_empty() {
