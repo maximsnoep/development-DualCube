@@ -1,13 +1,10 @@
-use std::collections::{HashMap, HashSet};
-use std::f64::consts::PI;
+use std::collections::HashMap;
 
+use itertools::Itertools;
 use log::warn;
-use mehsh::prelude::{
-    HasEdges, HasNeighbors, HasPosition, HasVertices, Mesh, SetPosition, Vector2D, Vector3D,
-};
+use mehsh::prelude::{HasPosition, HasVertices, Mesh, Vector2D, Vector3D};
 
 use petgraph::graph::{EdgeIndex, NodeIndex};
-use petgraph::visit::IntoEdgeReferences;
 use serde::{Deserialize, Serialize};
 
 use crate::prelude::{EdgeID, VertID, INPUT};
@@ -29,48 +26,35 @@ use virtual_mesh::VirtualFlatGeometry;
 /// lower quality for parameterization).
 const MIN_CUT_BOUNDARY_PROPORTION: f64 = 0.05;
 
-/// A point on the mesh surface.
+/// A path across the mesh surface.
 ///
-/// Can represent an arbitrary position along a mesh edge (useful for boundary
-/// midpoints and generic surface traversal) or exactly at a mesh vertex.
-#[derive(Debug, Clone, Copy, Serialize, Deserialize)]
-pub enum SurfacePoint {
-    /// A point on a mesh edge at interpolation parameter `t in [0, 1]`.
-    /// Position = `(1 − t) · root_position + t · toor_position`.
-    OnEdge { edge: EdgeID, t: f64 },
-
-    /// Exactly at a mesh vertex.
-    OnVertex { vertex: VertID },
-}
-
-impl SurfacePoint {
-    /// Computes the 3D world-space position of this surface point.
-    pub fn position(&self, mesh: &Mesh<INPUT>) -> Vector3D {
-        match *self {
-            SurfacePoint::OnEdge { edge, t } => {
-                let p0 = mesh.position(mesh.root(edge));
-                let p1 = mesh.position(mesh.toor(edge));
-                p0 * (1.0 - t) + p1 * t
-            }
-            SurfacePoint::OnVertex { vertex } => mesh.position(vertex),
-        }
-    }
-}
-
-/// A path across the mesh surface, stored as a sequence of [`SurfacePoint`]s.
-///
-/// Consecutive points should share a triangle face (or be connected by a mesh
-/// edge). This representation allows paths to cross faces at arbitrary
-/// positions, not just along mesh edges.
+/// Consecutive points should share a triangle face.
+/// Path starts at an edge midpoint (on some boundary), then traverses using vertices,
+/// and ends at another edge midpoint (on another boundary).  The path is simple and does not
+/// self-intersect, but may touch the same vertex multiple times.
 #[derive(Debug, Clone)]
-pub struct SurfacePath {
-    pub points: Vec<SurfacePoint>,
+pub struct CutSurfacePath {
+    pub start: EdgeID,
+    pub interior_points: Vec<VertID>,
+    pub end: EdgeID,
 }
 
-impl SurfacePath {
+impl CutSurfacePath {
     /// Converts this surface path to a sequence of 3D positions (e.g. for visualisation).
     pub fn to_positions(&self, mesh: &Mesh<INPUT>) -> Vec<Vector3D> {
-        self.points.iter().map(|p| p.position(mesh)).collect()
+        let mut positions = Vec::new();
+        // Start with the start edge midpoint.
+        positions.push(edge_id_to_midpoint_pos(self.start, mesh));
+
+        // Then add all interior vertices.
+        for vert_id in &self.interior_points {
+            positions.push(mesh.position(*vert_id));
+        }
+
+        // End with the end edge midpoint.
+        positions.push(edge_id_to_midpoint_pos(self.end, mesh));
+
+        positions
     }
 }
 
@@ -98,9 +82,6 @@ pub struct CutPath {
     /// The boundary loop (skeleton edge) where this cut starts.
     pub start_boundary: EdgeIndex,
 
-    /// Index into the start boundary's `edge_midpoints` where this cut touches.
-    pub start_midpoint_idx: usize,
-
     /// The `t`-parameter on the start boundary where the cut begins.
     /// Assigned after cut paths are found, based on shared boundary parameterization.
     pub start_t: f64,
@@ -108,15 +89,12 @@ pub struct CutPath {
     /// The boundary loop (skeleton edge) where this cut ends.
     pub end_boundary: EdgeIndex,
 
-    /// Index into the end boundary's `edge_midpoints` where this cut touches.
-    pub end_midpoint_idx: usize,
-
     /// The `t`-parameter on the end boundary where the cut ends.
     /// Assigned after cut paths are found, based on shared boundary parameterization.
     pub end_t: f64,
 
     /// The actual path across the surface, from start boundary to end boundary.
-    pub path: SurfacePath,
+    pub path: CutSurfacePath,
 }
 
 /// Complete cutting plan for one side of a region, including boundary
@@ -170,6 +148,20 @@ pub struct RegionParameterization {
 
     /// The cut paths used to parameterize the polycube mesh side, stored only for visualisation.
     pub polycube_cuts: Vec<Vec<Vector3D>>,
+}
+
+/// Calculates the midpoint position of a boundary edge, given its `EdgeID` and the mesh.
+pub fn edge_id_to_midpoint_pos(edge_idx: EdgeID, mesh: &Mesh<INPUT>) -> Vector3D {
+    let (v1, v2) = mesh
+        .vertices(edge_idx)
+        .collect_tuple()
+        .expect("Expected boundary edge to have exactly two vertices");
+
+    // Compute the midpoint position
+    let pos1 = mesh.position(v1);
+    let pos2 = mesh.position(v2);
+    let midpoint_pos = (pos1 + pos2) / 2.0;
+    midpoint_pos
 }
 
 /// A bijection between the input mesh surface and the polycube surface,
@@ -282,8 +274,13 @@ fn parameterize_region(
         .collect();
 
     // Build VFG and parameterize each side using its cutting plan.
-    let (input_vfg, input_uv) =
-        parameterize_side(patch_node_idx, degree, input_skeleton, input_mesh, &input_plan);
+    let (input_vfg, input_uv) = parameterize_side(
+        patch_node_idx,
+        degree,
+        input_skeleton,
+        input_mesh,
+        &input_plan,
+    );
     let (polycube_vfg, polycube_uv) = parameterize_side(
         patch_node_idx,
         degree,

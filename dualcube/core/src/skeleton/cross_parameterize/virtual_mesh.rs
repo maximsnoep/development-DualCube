@@ -1,7 +1,7 @@
 use std::collections::{HashMap, HashSet};
 
 use itertools::Itertools;
-use log::{self, error};
+use log::{self, error, warn};
 use mehsh::prelude::{HasEdges, HasNeighbors, HasPosition, HasVertices, Mesh, Vector3D};
 use petgraph::graph::{EdgeIndex, NodeIndex};
 use petgraph::stable_graph::StableUnGraph;
@@ -10,9 +10,10 @@ use serde::{Deserialize, Serialize};
 
 use crate::prelude::{EdgeID, VertID, INPUT};
 use crate::skeleton::boundary_loop::BoundaryLoop;
+use crate::skeleton::cross_parameterize::edge_id_to_midpoint_pos;
 use crate::skeleton::orthogonalize::LabeledCurveSkeleton;
 
-use super::{CutPath, CuttingPlan, SurfacePoint};
+use super::{CutPath, CuttingPlan};
 
 /// Tracks where a virtual node came from, so that we can map results back to the
 /// original mesh and relate duplicated cut nodes to each other.
@@ -24,7 +25,10 @@ pub enum VirtualNodeOrigin {
     /// A boundary-loop midpoint introduced as a real vertex.
     /// Stores the boundary edge whose midpoint this is and the skeleton edge it
     /// belongs to.
-    BoundaryMidpoint { edge: EdgeID, boundary_edge: EdgeIndex },
+    BoundaryMidpoint {
+        edge: EdgeID,
+        boundary_edge: EdgeIndex,
+    },
 
     /// A vertex on a cut that has been duplicated. Each side of the cut gets its
     /// own copy. `peer` points to the node index of the other copy in the same
@@ -33,7 +37,7 @@ pub enum VirtualNodeOrigin {
     /// `original` is the underlying surface point (always a mesh vertex for
     /// edge-following cuts).
     CutDuplicate {
-        original: SurfacePoint,
+        original: VertID,
         /// The index of the other copy (the "peer" on the opposite side of the cut).
         /// Set to `None` during construction and filled in once both copies exist.
         peer: Option<NodeIndex>,
@@ -47,7 +51,7 @@ pub enum VirtualNodeOrigin {
     /// A boundary midpoint that sits at the attachment point of a cut.
     /// Like `CutDuplicate`, it is duplicated: each side of the cut gets its own
     /// copy so that they can receive distinct UV positions.
-    CutEndpointMidpoint {
+    CutEndpointMidpointDuplicate {
         /// The boundary edge whose midpoint this is.
         edge: EdgeID,
         /// The skeleton edge (boundary loop) this belongs to.
@@ -155,26 +159,22 @@ impl VirtualFlatGeometry {
         // Step 2: add all boundary midpoints
         let boundary_edges = skeleton.edges(patch_node_idx);
         let mut edge_midpoint_ids_to_node_indices: HashMap<EdgeID, NodeIndex> = HashMap::new();
+        let mut skeleton_edge_to_boundary_midpoint: HashMap<EdgeIndex, Vec<EdgeID>> =
+            HashMap::new();
         for boundary_edge in boundary_edges {
             let edge_weight = boundary_edge.weight();
             let midpoint_loop = &edge_weight.boundary_loop;
+            skeleton_edge_to_boundary_midpoint
+                .insert(boundary_edge.id(), midpoint_loop.edge_midpoints.clone());
 
             // Add a midpoint vertex for each midpoint in the boundary loop
             for edge_idx in &midpoint_loop.edge_midpoints {
                 // Get the two vertices of this boundary edge
-                let (v1, v2) = mesh
-                    .vertices(*edge_idx)
-                    .collect_tuple()
-                    .expect("Expected boundary edge to have exactly two vertices");
-
-                // Compute the midpoint position
-                let pos1 = mesh.position(v1);
-                let pos2 = mesh.position(v2);
-                let midpoint_pos = (pos1 + pos2) / 2.0;
+                let pos = edge_id_to_midpoint_pos(*edge_idx, mesh);
 
                 // Add the midpoint as a virtual node
                 let midpoint_node_idx = graph.add_node(VirtualNode {
-                    position: midpoint_pos,
+                    position: pos,
                     origin: VirtualNodeOrigin::BoundaryMidpoint {
                         edge: *edge_idx,
                         boundary_edge: boundary_edge.id(),
@@ -185,6 +185,9 @@ impl VirtualFlatGeometry {
         }
 
         // Step 3: account for cut duplicates in both nodes and edges
+        for cut_path in &cutting_plan.cuts {
+            let path = &cut_path.path;
+        }
 
         // Step 4: trace boundary loop, add edges as we go
 

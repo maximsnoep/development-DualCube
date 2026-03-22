@@ -12,8 +12,7 @@ use crate::skeleton::boundary_loop::BoundaryLoop;
 use crate::skeleton::orthogonalize::LabeledCurveSkeleton;
 
 use super::{
-    BoundaryParameterization, CutPath, CuttingPlan, SurfacePath, SurfacePoint,
-    MIN_CUT_BOUNDARY_PROPORTION,
+    BoundaryParameterization, CutPath, CutSurfacePath, CuttingPlan, MIN_CUT_BOUNDARY_PROPORTION,
 };
 
 /// Computes cutting plans for both the input and polycube sides of a region.
@@ -73,7 +72,12 @@ pub fn compute_cutting_plans(
     // Ensure cut endpoints on the same boundary are not adjacent (≤1 midpoint
     // index apart). Adjacent endpoints produce an empty polygon side in UV.
     ensure_endpoint_separation(&mut input_cuts, input_skeleton, input_mesh, node_idx);
-    ensure_endpoint_separation(&mut polycube_cuts, polycube_skeleton, polycube_mesh, node_idx);
+    ensure_endpoint_separation(
+        &mut polycube_cuts,
+        polycube_skeleton,
+        polycube_mesh,
+        node_idx,
+    );
 
     // Assign shared t-values and build boundary parameterizations.
     let (input_boundary_params, polycube_boundary_params) = assign_shared_t_values_and_parameterize(
@@ -110,6 +114,7 @@ fn compute_side_cut_paths(
     skeleton: &LabeledCurveSkeleton,
     mesh: &Mesh<INPUT>,
 ) -> Vec<CutPath> {
+    warn!("TODO: do we even wanna use this?!");
     let patch_verts = &skeleton[node_idx].skeleton_node.patch_vertices;
     let patch_set: HashSet<VertID> = patch_verts.iter().copied().collect();
     let vert_to_idx: HashMap<VertID, usize> = patch_verts
@@ -144,10 +149,8 @@ fn compute_side_cut_paths(
         );
 
         // Record used vertices for disjointness.
-        for pt in &cut.path.points {
-            if let SurfacePoint::OnVertex { vertex } = pt {
-                used_verts.insert(*vertex);
-            }
+        for pt in &cut.path.interior_points {
+            used_verts.insert(*pt);
         }
         cuts.push(cut);
     }
@@ -253,10 +256,8 @@ fn find_shortest_cut_path(
 
     CutPath {
         start_boundary: edge_a,
-        start_midpoint_idx,
         start_t: 0.0, // assigned later
         end_boundary: edge_b,
-        end_midpoint_idx,
         end_t: 0.0, // assigned later
         path,
     }
@@ -318,9 +319,10 @@ fn assign_shared_t_values_and_parameterize(
         for &(cut_idx, is_start) in endpoints {
             // Get the input-side midpoint index and its natural t-value.
             let input_midpoint_idx = if is_start {
-                input_cuts[cut_idx].start_midpoint_idx
+                // input_cuts[cut_idx].start_midpoint_idx
+                input_cuts[cut_idx].path.start
             } else {
-                input_cuts[cut_idx].end_midpoint_idx
+                input_cuts[cut_idx].path.end
             };
             let t = input_param.t_values[input_midpoint_idx];
 
@@ -335,9 +337,9 @@ fn assign_shared_t_values_and_parameterize(
 
             // Record the polycube-side constraint.
             let polycube_midpoint_idx = if is_start {
-                polycube_cuts[cut_idx].start_midpoint_idx
+                polycube_cuts[cut_idx].path.start
             } else {
-                polycube_cuts[cut_idx].end_midpoint_idx
+                polycube_cuts[cut_idx].path.end
             };
             polycube_constraints
                 .entry(edge_idx)
