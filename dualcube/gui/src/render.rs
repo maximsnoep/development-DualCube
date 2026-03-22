@@ -1038,59 +1038,53 @@ fn create_input_uv_patch_mesh(
 
 fn create_input_uv_long_edge_overlay(
     solution: &Solution,
-    input: &mehsh::prelude::Mesh<INPUT>,
     translation: Vector3D,
     scale: f64,
     threshold: f64,
 ) -> Option<GizmoAsset> {
     let pmap = solution.skeleton.as_ref().and_then(|s| s.polycube_map())?;
 
-    let mut vert_uv_avg: HashMap<VertID, Vector2D> = HashMap::new();
-    for region in pmap.regions.values() {
-        for (&vert_id, vfg_nodes) in &region.input_vfg.vert_to_nodes {
-            let mut uv_sum = Vector2D::new(0.0, 0.0);
-            let mut uv_count = 0.0;
-            for &node in vfg_nodes {
-                if let Some(&uv) = region.input_uv.get(&node) {
-                    uv_sum += uv;
-                    uv_count += 1.0;
-                }
-            }
-            if uv_count > 0.0 {
-                vert_uv_avg.insert(vert_id, uv_sum / uv_count);
-            }
-        }
-    }
+    // Save exact edge endpoints in input-mesh space first; UV is only used
+    // to classify whether an edge is unexpectedly long.
+    let mut bad_edges_mesh_space: Vec<(Vector3D, Vector3D)> = Vec::new();
 
-    if vert_uv_avg.is_empty() {
-        return None;
-    }
-
-    let mut gizmos = GizmoAsset::new();
-    let long_edge_color = bevy::prelude::Color::srgb(1.0, 0.1, 0.1);
-    let mut seen_edges: HashSet<(VertID, VertID)> = HashSet::new();
-
-    for face in input.face_ids() {
-        let verts: Vec<VertID> = input.vertices(face).collect();
-        for i in 0..verts.len() {
-            let a = verts[i];
-            let b = verts[(i + 1) % verts.len()];
-            let key = if a < b { (a, b) } else { (b, a) };
-            if !seen_edges.insert(key) {
+    for (region_idx, region) in pmap.regions.iter() {
+        let mut region_long_edges = 0;
+        for edge_idx in region.input_vfg.graph.edge_indices() {
+            let Some((a, b)) = region.input_vfg.graph.edge_endpoints(edge_idx) else {
                 continue;
-            }
-
-            let (Some(&uv_a), Some(&uv_b)) = (vert_uv_avg.get(&a), vert_uv_avg.get(&b)) else {
+            };
+            let (Some(&uv_a), Some(&uv_b)) = (region.input_uv.get(&a), region.input_uv.get(&b)) else {
                 continue;
             };
 
             let uv_len = (uv_b - uv_a).norm();
             if uv_len > threshold {
-                let pa = world_to_view(input.position(a), translation, scale);
-                let pb = world_to_view(input.position(b), translation, scale);
-                gizmos.line(pa, pb, long_edge_color);
+                region_long_edges += 1;
+                bad_edges_mesh_space.push((
+                    region.input_vfg.graph[a].position,
+                    region.input_vfg.graph[b].position,
+                ));
             }
         }
+
+        if region_long_edges > 0 {
+            error!(
+                "UV long-edge detector: region {:?} has {} long UV edges (threshold={:.3})",
+                region_idx,
+                region_long_edges,
+                threshold
+            );
+        }
+    }
+
+    let mut gizmos = GizmoAsset::new();
+    let long_edge_color = bevy::prelude::Color::srgb(1.0, 0.1, 0.1);
+
+    for (pa_mesh, pb_mesh) in bad_edges_mesh_space {
+        let pa = world_to_view(pa_mesh, translation, scale);
+        let pb = world_to_view(pb_mesh, translation, scale);
+        gizmos.line(pa, pb, long_edge_color);
     }
 
     Some(gizmos)
@@ -2150,7 +2144,6 @@ pub fn refresh(solution: &Solution, configuration: &Configuration) -> RenderObje
 
                     if let Some(long_edge_overlay) = create_input_uv_long_edge_overlay(
                         solution,
-                        input,
                         translation,
                         scale,
                         1.0,
