@@ -1048,34 +1048,39 @@ fn create_input_uv_long_edge_overlay(
     // to classify whether an edge is unexpectedly long.
     let mut bad_edges_mesh_space: Vec<(Vector3D, Vector3D)> = Vec::new();
 
+    let mut region_long_edges = HashMap::new();
     for (region_idx, region) in pmap.regions.iter() {
-        let mut region_long_edges = 0;
+        let mut count = 0usize;
         for edge_idx in region.input_vfg.graph.edge_indices() {
             let Some((a, b)) = region.input_vfg.graph.edge_endpoints(edge_idx) else {
                 continue;
             };
+
             let (Some(&uv_a), Some(&uv_b)) = (region.input_uv.get(&a), region.input_uv.get(&b)) else {
                 continue;
             };
 
             let uv_len = (uv_b - uv_a).norm();
             if uv_len > threshold {
-                region_long_edges += 1;
+                count += 1;
                 bad_edges_mesh_space.push((
                     region.input_vfg.graph[a].position,
                     region.input_vfg.graph[b].position,
                 ));
             }
         }
-
-        if region_long_edges > 0 {
-            error!(
-                "UV long-edge detector: region {:?} has {} long UV edges (threshold={:.3})",
-                region_idx,
-                region_long_edges,
-                threshold
-            );
+        if count > 0 {
+            region_long_edges.insert(*region_idx, count);
         }
+    }
+
+    for (region_idx, count) in &region_long_edges {
+        error!(
+            "UV long-edge detector: region {:?} has {} long UV edges (threshold={:.3})",
+            region_idx,
+            count,
+            threshold
+        );
     }
 
     let mut gizmos = GizmoAsset::new();
