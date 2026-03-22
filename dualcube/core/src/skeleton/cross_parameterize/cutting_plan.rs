@@ -1,7 +1,7 @@
 use std::cmp::{Ordering, Reverse};
 use std::collections::{BinaryHeap, HashMap, HashSet};
 
-use log::{info, warn};
+use log::{error, info, warn};
 use mehsh::prelude::{HasNeighbors, HasPosition, Mesh, Vector3D};
 use ordered_float::OrderedFloat;
 use petgraph::graph::{EdgeIndex, NodeIndex};
@@ -11,9 +11,7 @@ use crate::prelude::{EdgeID, VertID, INPUT};
 use crate::skeleton::boundary_loop::BoundaryLoop;
 use crate::skeleton::orthogonalize::LabeledCurveSkeleton;
 
-use super::{
-    BoundaryParameterization, CutPath, CutSurfacePath, CuttingPlan, MIN_CUT_BOUNDARY_PROPORTION,
-};
+use super::{CutPath, CuttingPlan, SurfacePath, MIN_CUT_BOUNDARY_PROPORTION};
 
 /// Computes cutting plans for both the input and polycube sides of a region.
 ///
@@ -42,14 +40,8 @@ pub fn compute_cutting_plans(
 
     if degree < 2 {
         return (
-            CuttingPlan {
-                cuts: Vec::new(),
-                boundary_params: HashMap::new(),
-            },
-            CuttingPlan {
-                cuts: Vec::new(),
-                boundary_params: HashMap::new(),
-            },
+            CuttingPlan { cuts: Vec::new() },
+            CuttingPlan { cuts: Vec::new() },
         );
     }
 
@@ -69,35 +61,21 @@ pub fn compute_cutting_plans(
     let mut polycube_cuts =
         compute_side_cut_paths(node_idx, &cut_topology, polycube_skeleton, polycube_mesh);
 
-    // Ensure cut endpoints on the same boundary are not adjacent (≤1 midpoint
+    // Ensure cut endpoints on the same boundary are not adjacent (<=1 midpoint
     // index apart). Adjacent endpoints produce an empty polygon side in UV.
-    ensure_endpoint_separation(&mut input_cuts, input_skeleton, input_mesh, node_idx);
-    ensure_endpoint_separation(
-        &mut polycube_cuts,
-        polycube_skeleton,
-        polycube_mesh,
-        node_idx,
-    );
-
-    // Assign shared t-values and build boundary parameterizations.
-    let (input_boundary_params, polycube_boundary_params) = assign_shared_t_values_and_parameterize(
-        node_idx,
-        &mut input_cuts,
-        &mut polycube_cuts,
-        input_skeleton,
-        polycube_skeleton,
-        input_mesh,
-        polycube_mesh,
-    );
+    // ensure_endpoint_separation(&mut input_cuts, input_skeleton, input_mesh, node_idx);
+    // ensure_endpoint_separation(
+    //     &mut polycube_cuts,
+    //     polycube_skeleton,
+    //     polycube_mesh,
+    //     node_idx,
+    // );
+    warn!("TODO: what to do with endpoints close to eachother?");
 
     (
-        CuttingPlan {
-            cuts: input_cuts,
-            boundary_params: input_boundary_params,
-        },
+        CuttingPlan { cuts: input_cuts },
         CuttingPlan {
             cuts: polycube_cuts,
-            boundary_params: polycube_boundary_params,
         },
     )
 }
@@ -256,292 +234,8 @@ fn find_shortest_cut_path(
 
     CutPath {
         start_boundary: edge_a,
-        start_t: 0.0, // assigned later
         end_boundary: edge_b,
-        end_t: 0.0, // assigned later
         path,
-    }
-}
-
-/// Assigns shared `t`-values to cut endpoints and builds boundary
-/// parameterizations for both sides.
-///
-/// The input side's arc-length parameterization is the authority: each cut
-/// endpoint's `t`-value is taken from the input boundary's natural
-/// arc-length proportion at the midpoint where the cut touches.
-///
-/// The polycube side's boundary parameterizations are then *constrained* so
-/// that the same `t`-values appear at the polycube's cut endpoint
-/// midpoints, with the remaining midpoints distributed by arc-length
-/// between constraints.
-///
-/// Panics if any two cut endpoints on the same boundary are closer than
-/// [`MIN_CUT_BOUNDARY_PROPORTION`].
-fn assign_shared_t_values_and_parameterize(
-    node_idx: NodeIndex,
-    input_cuts: &mut [CutPath],
-    polycube_cuts: &mut [CutPath],
-    input_skeleton: &LabeledCurveSkeleton,
-    polycube_skeleton: &LabeledCurveSkeleton,
-    input_mesh: &Mesh<INPUT>,
-    polycube_mesh: &Mesh<INPUT>,
-) -> (
-    HashMap<EdgeIndex, BoundaryParameterization>,
-    HashMap<EdgeIndex, BoundaryParameterization>,
-) {
-    // Collect which cut endpoints land on each boundary.
-    // Each entry is (cut_index, is_start_endpoint).
-    let mut boundary_cut_endpoints: HashMap<EdgeIndex, Vec<(usize, bool)>> = HashMap::new();
-    for (i, cut) in input_cuts.iter().enumerate() {
-        boundary_cut_endpoints
-            .entry(cut.start_boundary)
-            .or_default()
-            .push((i, true));
-        boundary_cut_endpoints
-            .entry(cut.end_boundary)
-            .or_default()
-            .push((i, false));
-    }
-
-    // Compute input-side natural arc-length parameterizations (used to determine
-    // the authoritative t-values for cut endpoints).
-    let input_natural_params = parameterize_all_boundaries(node_idx, input_skeleton, input_mesh);
-
-    // Assign t-values to cuts and collect constraints per boundary for polycube side.
-    // constraints maps EdgeIndex -> Vec<(polycube_midpoint_idx, required_t)>
-    let mut polycube_constraints: HashMap<EdgeIndex, Vec<(usize, f64)>> = HashMap::new();
-
-    for (&edge_idx, endpoints) in &boundary_cut_endpoints {
-        let input_param = &input_natural_params[&edge_idx];
-
-        let mut ts_on_boundary = Vec::new();
-
-        for &(cut_idx, is_start) in endpoints {
-            // Get the input-side midpoint index and its natural t-value.
-            let input_midpoint_idx = if is_start {
-                // input_cuts[cut_idx].start_midpoint_idx
-                input_cuts[cut_idx].path.start
-            } else {
-                input_cuts[cut_idx].path.end
-            };
-            let t = input_param.t_values[input_midpoint_idx];
-
-            // Assign to both sides.
-            if is_start {
-                input_cuts[cut_idx].start_t = t;
-                polycube_cuts[cut_idx].start_t = t;
-            } else {
-                input_cuts[cut_idx].end_t = t;
-                polycube_cuts[cut_idx].end_t = t;
-            }
-
-            // Record the polycube-side constraint.
-            let polycube_midpoint_idx = if is_start {
-                polycube_cuts[cut_idx].path.start
-            } else {
-                polycube_cuts[cut_idx].path.end
-            };
-            polycube_constraints
-                .entry(edge_idx)
-                .or_default()
-                .push((polycube_midpoint_idx, t));
-
-            ts_on_boundary.push(t);
-        }
-
-        // Check minimum separation between endpoints on this boundary.
-        for i in 0..ts_on_boundary.len() {
-            for j in (i + 1)..ts_on_boundary.len() {
-                let sep = circular_dist(ts_on_boundary[i], ts_on_boundary[j]);
-                if sep < MIN_CUT_BOUNDARY_PROPORTION {
-                    warn!(
-                        "Cut endpoints on boundary {:?} are close: \
-                         t={:.4} and t={:.4} (separation {:.4} < {:.4}). \
-                         Parameterization quality may be reduced.",
-                        edge_idx,
-                        ts_on_boundary[i],
-                        ts_on_boundary[j],
-                        sep,
-                        MIN_CUT_BOUNDARY_PROPORTION,
-                    );
-                }
-            }
-        }
-    }
-
-    // Build boundary parameterizations for both sides.
-    let mut input_boundary_params = HashMap::new();
-    let mut polycube_boundary_params = HashMap::new();
-
-    for edge_ref in input_skeleton.edges(node_idx) {
-        let edge_idx = edge_ref.id();
-
-        // Input side: natural arc-length parameterization (already computed).
-        input_boundary_params.insert(edge_idx, input_natural_params[&edge_idx].clone());
-
-        // Polycube side: constrained parameterization.
-        let polycube_boundary = &polycube_skeleton
-            .edge_weight(edge_idx)
-            .expect("polycube skeleton edge missing")
-            .boundary_loop;
-        let constraints = polycube_constraints.get(&edge_idx);
-        let polycube_param = match constraints {
-            Some(c) if !c.is_empty() => {
-                parameterize_boundary_constrained(polycube_boundary, polycube_mesh, c)
-            }
-            _ => {
-                // No cuts touch this boundary — use natural arc-length.
-                parameterize_boundary(polycube_boundary, polycube_mesh)
-            }
-        };
-        polycube_boundary_params.insert(edge_idx, polycube_param);
-    }
-
-    (input_boundary_params, polycube_boundary_params)
-}
-
-/// Computes arc-length parameterizations for every boundary loop incident to
-/// a region node.
-fn parameterize_all_boundaries(
-    node_idx: NodeIndex,
-    skeleton: &LabeledCurveSkeleton,
-    mesh: &Mesh<INPUT>,
-) -> HashMap<EdgeIndex, BoundaryParameterization> {
-    let mut params = HashMap::new();
-    for edge_ref in skeleton.edges(node_idx) {
-        let boundary = &edge_ref.weight().boundary_loop;
-        let param = parameterize_boundary(boundary, mesh);
-        params.insert(edge_ref.id(), param);
-    }
-    params
-}
-
-/// Computes the arc-length parameterization of a single boundary loop.
-///
-/// Sets a basis point (`t = 0`) at the midpoint with the greatest x
-/// coordinate (breaking ties with y, then z). Parameters are assigned by
-/// cumulative arc length along the loop, normalised to `[0, 1)`.
-fn parameterize_boundary(boundary: &BoundaryLoop, mesh: &Mesh<INPUT>) -> BoundaryParameterization {
-    let n = boundary.edge_midpoints.len();
-    assert!(n > 0, "Boundary loop must have at least one edge");
-
-    let midpoints = compute_midpoint_positions(boundary, mesh);
-
-    // Find basis index: midpoint with greatest x, then y, then z.
-    let basis_index = find_basis_index(&midpoints);
-
-    let segment_lengths = compute_segment_lengths(&midpoints);
-    let total_length: f64 = segment_lengths.iter().sum();
-
-    // Assign t-values starting from the basis index.
-    let mut t_values = vec![0.0; n];
-    if total_length > 0.0 {
-        let mut cumulative = 0.0;
-        for k in 0..n {
-            let idx = (basis_index + k) % n;
-            t_values[idx] = cumulative / total_length;
-            cumulative += segment_lengths[idx];
-        }
-    }
-
-    BoundaryParameterization {
-        t_values,
-        total_length,
-        basis_index,
-    }
-}
-
-/// Builds a boundary parameterization where certain midpoints are
-/// constrained to specific `t`-values, and the remaining midpoints are
-/// distributed by arc-length proportionally between consecutive
-/// constraints.
-///
-/// This is used for the polycube side so that cut endpoint `t`-values
-/// match the input side's values exactly.
-///
-/// `constraints` is a slice of `(midpoint_idx, required_t)`.
-fn parameterize_boundary_constrained(
-    boundary: &BoundaryLoop,
-    mesh: &Mesh<INPUT>,
-    constraints: &[(usize, f64)],
-) -> BoundaryParameterization {
-    let n = boundary.edge_midpoints.len();
-    assert!(n > 0, "Boundary loop must have at least one edge");
-    assert!(
-        !constraints.is_empty(),
-        "parameterize_boundary_constrained called with no constraints"
-    );
-
-    let midpoints = compute_midpoint_positions(boundary, mesh);
-    let segment_lengths = compute_segment_lengths(&midpoints);
-    let total_length: f64 = segment_lengths.iter().sum();
-
-    // Compute cumulative arc-length from index 0 for ordering purposes.
-    let mut cumul_from_0 = vec![0.0; n];
-    for i in 1..n {
-        cumul_from_0[i] = cumul_from_0[i - 1] + segment_lengths[i - 1];
-    }
-
-    // Sort constraints by their position around the loop (arc-length from index 0).
-    let mut sorted: Vec<(usize, f64, f64)> = constraints
-        .iter()
-        .map(|&(idx, t)| (idx, t, cumul_from_0[idx]))
-        .collect();
-    sorted.sort_by(|a, b| a.2.partial_cmp(&b.2).unwrap_or(Ordering::Equal));
-
-    let nc = sorted.len();
-    let mut t_values = vec![0.0; n];
-
-    // Assign constrained midpoints.
-    for &(idx, t, _) in &sorted {
-        t_values[idx] = t;
-    }
-
-    // For each segment between consecutive constraints, distribute the
-    // midpoints in between by arc-length proportion.
-    for c in 0..nc {
-        let (idx_start, t_start, _) = sorted[c];
-        let (idx_end, t_end, _) = sorted[(c + 1) % nc];
-
-        // Walk forward from idx_start to idx_end, collecting intermediate
-        // midpoint indices and their cumulative arc-lengths from idx_start.
-        let mut intermediates: Vec<(usize, f64)> = Vec::new(); // (midpoint_idx, arc_from_start)
-        let mut arc_from_start = 0.0;
-        let mut i = idx_start;
-        loop {
-            arc_from_start += segment_lengths[i];
-            let next = (i + 1) % n;
-            if next == idx_end {
-                break;
-            }
-            intermediates.push((next, arc_from_start));
-            i = next;
-        }
-        let total_arc = arc_from_start;
-
-        if total_arc > 0.0 && !intermediates.is_empty() {
-            // Compute the t-range for this segment (circular).
-            let t_range = if t_end > t_start {
-                t_end - t_start
-            } else {
-                t_end + 1.0 - t_start
-            };
-
-            for &(idx, arc) in &intermediates {
-                let frac = arc / total_arc;
-                let t = t_start + frac * t_range;
-                t_values[idx] = if t >= 1.0 { t - 1.0 } else { t };
-            }
-        }
-    }
-
-    // Use the first constraint's midpoint as the nominal basis.
-    let basis_index = sorted[0].0;
-
-    BoundaryParameterization {
-        t_values,
-        total_length,
-        basis_index,
     }
 }
 
@@ -587,29 +281,19 @@ fn find_basis_index(midpoints: &[Vector3D]) -> usize {
                         .unwrap_or(Ordering::Equal),
                 )
         })
-        .unwrap_or(0)
+        .expect("Boundary loop has no midpoints")
 }
 
-/// Builds a [`SurfacePath`] from a boundary midpoint, a vertex path, and an
-/// ending boundary midpoint. Interior points are all `OnVertex`.
 fn build_vertex_surface_path(
     start_edge: EdgeID,
     vertex_path: &[VertID],
     end_edge: EdgeID,
 ) -> SurfacePath {
-    let mut points = Vec::with_capacity(vertex_path.len() + 2);
-    points.push(SurfacePoint::OnEdge {
-        edge: start_edge,
-        t: 0.5,
-    });
-    for &v in vertex_path {
-        points.push(SurfacePoint::OnVertex { vertex: v });
+    SurfacePath {
+        start: start_edge,
+        interior_points: vertex_path.to_vec(),
+        end: end_edge,
     }
-    points.push(SurfacePoint::OnEdge {
-        edge: end_edge,
-        t: 0.5,
-    });
-    SurfacePath { points }
 }
 
 /// Circular distance on [0, 1).
@@ -677,15 +361,13 @@ fn boundary_vertices_of_region(
 fn verify_cuts_disjoint(cuts: &[CutPath]) {
     let mut all_verts: HashSet<VertID> = HashSet::new();
     for (i, cut) in cuts.iter().enumerate() {
-        for pt in &cut.path.points {
-            if let SurfacePoint::OnVertex { vertex } = pt {
-                assert!(
-                    all_verts.insert(*vertex),
-                    "Cut paths are not disjoint: vertex {:?} appears in cut {} and a previous cut",
-                    vertex,
-                    i
-                );
-            }
+        for vertex in &cut.path.interior_points {
+            assert!(
+                all_verts.insert(*vertex),
+                "Cut paths are not disjoint: vertex {:?} appears in cut {} and a previous cut",
+                vertex,
+                i
+            );
         }
     }
 }
@@ -884,198 +566,4 @@ fn kruskal_mst(weighted_edges: &[(EdgeIndex, EdgeIndex, f64)]) -> Vec<(EdgeIndex
     }
 
     result
-}
-
-// ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-// Cut endpoint separation
-// ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-
-/// Ensures no two cut endpoints on the same boundary are adjacent (≤ 1
-/// midpoint index apart in the boundary loop). Adjacent endpoints leave
-/// an empty polygon side in the UV mapping because the boundary walk has
-/// zero regular midpoints between them.
-///
-/// For each offending pair, tries to swap one endpoint to its other
-/// incident boundary edge. If swapping would create a new adjacency,
-/// tries the other endpoint. A warning is emitted if neither works.
-fn ensure_endpoint_separation(
-    cuts: &mut [CutPath],
-    skeleton: &LabeledCurveSkeleton,
-    mesh: &Mesh<INPUT>,
-    node_idx: NodeIndex,
-) {
-    // Collect which cut endpoints land on each boundary: (cut_index, is_start).
-    let mut boundary_eps: HashMap<EdgeIndex, Vec<(usize, bool)>> = HashMap::new();
-    for (ci, cut) in cuts.iter().enumerate() {
-        boundary_eps
-            .entry(cut.start_boundary)
-            .or_default()
-            .push((ci, true));
-        boundary_eps
-            .entry(cut.end_boundary)
-            .or_default()
-            .push((ci, false));
-    }
-
-    for edge_ref in skeleton.edges(node_idx) {
-        let skel_edge = edge_ref.id();
-        let boundary = &edge_ref.weight().boundary_loop;
-        let n = boundary.edge_midpoints.len();
-
-        let Some(eps) = boundary_eps.get(&skel_edge) else {
-            continue;
-        };
-        if eps.len() < 2 {
-            continue;
-        }
-        let eps = eps.clone(); // avoid borrow conflict with cuts
-
-        // Iteratively fix adjacent pairs until none remain.
-        for _iter in 0..eps.len() * 2 {
-            // Find first adjacent pair.
-            let mut adjacent = None;
-            'search: for i in 0..eps.len() {
-                let idx_i = cut_ep_midpoint_idx(cuts, eps[i]);
-                for j in (i + 1)..eps.len() {
-                    let idx_j = cut_ep_midpoint_idx(cuts, eps[j]);
-                    if circular_gap(idx_i, idx_j, n) <= 1 {
-                        adjacent = Some((i, j));
-                        break 'search;
-                    }
-                }
-            }
-
-            let Some((i, j)) = adjacent else {
-                break; // All separated.
-            };
-
-            let fixed = try_swap_cut_endpoint(cuts, &eps, i, boundary, mesh, n)
-                || try_swap_cut_endpoint(cuts, &eps, j, boundary, mesh, n);
-
-            if !fixed {
-                warn!(
-                    "Cannot separate adjacent cut endpoints on boundary {:?}: \
-                     midpoint indices {} and {} (boundary len {})",
-                    skel_edge,
-                    cut_ep_midpoint_idx(cuts, eps[i]),
-                    cut_ep_midpoint_idx(cuts, eps[j]),
-                    n,
-                );
-                break;
-            }
-        }
-    }
-}
-
-/// Minimum directional gap between two indices on a cyclic sequence of
-/// length `n`. Returns 0 when `a == b`, 1 when they are adjacent, etc.
-fn circular_gap(a: usize, b: usize, n: usize) -> usize {
-    let fwd = (b + n - a) % n;
-    let bwd = (a + n - b) % n;
-    fwd.min(bwd)
-}
-
-/// Returns the current midpoint index for a cut endpoint.
-fn cut_ep_midpoint_idx(cuts: &[CutPath], (ci, is_start): (usize, bool)) -> usize {
-    if is_start {
-        cuts[ci].start_midpoint_idx
-    } else {
-        cuts[ci].end_midpoint_idx
-    }
-}
-
-/// Tries to move the cut endpoint at `eps[target]` to its other incident
-/// boundary edge. Returns `true` if the swap was applied.
-fn try_swap_cut_endpoint(
-    cuts: &mut [CutPath],
-    eps: &[(usize, bool)],
-    target: usize,
-    boundary: &BoundaryLoop,
-    mesh: &Mesh<INPUT>,
-    n: usize,
-) -> bool {
-    let (ci, is_start) = eps[target];
-    let current_idx = cut_ep_midpoint_idx(cuts, (ci, is_start));
-
-    let vertex = cut_endpoint_vertex(&cuts[ci], is_start);
-
-    let Some(alt_idx) = find_other_incident_boundary_edge(vertex, current_idx, boundary, mesh)
-    else {
-        return false;
-    };
-
-    // Reject if the alternative would be adjacent to any other endpoint.
-    for (k, &ep) in eps.iter().enumerate() {
-        if k == target {
-            continue;
-        }
-        let idx_k = cut_ep_midpoint_idx(cuts, ep);
-        if circular_gap(alt_idx, idx_k, n) <= 1 {
-            return false;
-        }
-    }
-
-    // Apply.
-    let new_edge = boundary.edge_midpoints[alt_idx];
-    if is_start {
-        cuts[ci].start_midpoint_idx = alt_idx;
-        cuts[ci].path.points[0] = SurfacePoint::OnEdge {
-            edge: new_edge,
-            t: 0.5,
-        };
-    } else {
-        cuts[ci].end_midpoint_idx = alt_idx;
-        let last = cuts[ci].path.points.len() - 1;
-        cuts[ci].path.points[last] = SurfacePoint::OnEdge {
-            edge: new_edge,
-            t: 0.5,
-        };
-    }
-
-    info!(
-        "Separated adjacent cut endpoints: swapped cut {} {} midpoint {} → {}",
-        ci,
-        if is_start { "start" } else { "end" },
-        current_idx,
-        alt_idx,
-    );
-    true
-}
-
-/// Returns the mesh vertex at the start or end of a cut path.
-/// For the start, this is the first `OnVertex` (index 1, since index 0 is
-/// the boundary `OnEdge` midpoint). For the end, it is the last `OnVertex`.
-fn cut_endpoint_vertex(cut: &CutPath, is_start: bool) -> VertID {
-    if is_start {
-        match cut.path.points[1] {
-            SurfacePoint::OnVertex { vertex } => vertex,
-            _ => panic!("Cut path point[1] is not OnVertex"),
-        }
-    } else {
-        let n = cut.path.points.len();
-        match cut.path.points[n - 2] {
-            SurfacePoint::OnVertex { vertex } => vertex,
-            _ => panic!("Cut path second-to-last point is not OnVertex"),
-        }
-    }
-}
-
-/// Finds the other boundary edge (not the one at `current_idx`) that is
-/// incident to `vertex`. On a simple-cycle boundary loop, every vertex is
-/// incident to exactly two edges, so exactly one alternative exists.
-fn find_other_incident_boundary_edge(
-    vertex: VertID,
-    current_idx: usize,
-    boundary: &BoundaryLoop,
-    mesh: &Mesh<INPUT>,
-) -> Option<usize> {
-    for (i, &e) in boundary.edge_midpoints.iter().enumerate() {
-        if i == current_idx {
-            continue;
-        }
-        if mesh.root(e) == vertex || mesh.toor(e) == vertex {
-            return Some(i);
-        }
-    }
-    None
 }

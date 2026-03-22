@@ -33,13 +33,13 @@ const MIN_CUT_BOUNDARY_PROPORTION: f64 = 0.05;
 /// and ends at another edge midpoint (on another boundary).  The path is simple and does not
 /// self-intersect, but may touch the same vertex multiple times.
 #[derive(Debug, Clone)]
-pub struct CutSurfacePath {
+pub struct SurfacePath {
     pub start: EdgeID,
     pub interior_points: Vec<VertID>,
     pub end: EdgeID,
 }
 
-impl CutSurfacePath {
+impl SurfacePath {
     /// Converts this surface path to a sequence of 3D positions (e.g. for visualisation).
     pub fn to_positions(&self, mesh: &Mesh<INPUT>) -> Vec<Vector3D> {
         let mut positions = Vec::new();
@@ -58,23 +58,7 @@ impl CutSurfacePath {
     }
 }
 
-/// Arc-length parameterization of a boundary loop into `[0, 1)`.
-///
-/// Each midpoint of the boundary loop's edges is assigned a `t` value based on
-/// cumulative arc length.  The basis point (`t = 0`) is the midpoint with the
-/// greatest x coordinate (breaking ties with y, then z).
-#[derive(Debug, Clone)]
-pub struct BoundaryParameterization {
-    /// For each edge midpoint in the boundary loop, its `t` value in `[0, 1)`.
-    /// Indices correspond to `BoundaryLoop::edge_midpoints`.
-    pub t_values: Vec<f64>,
 
-    /// Total arc length of the boundary loop.
-    pub total_length: f64,
-
-    /// Index into `edge_midpoints` that was chosen as the basis (`t = 0`).
-    pub basis_index: usize,
-}
 
 /// A single cut connecting two boundary loops, with the exact surface path.
 #[derive(Debug, Clone)]
@@ -82,19 +66,11 @@ pub struct CutPath {
     /// The boundary loop (skeleton edge) where this cut starts.
     pub start_boundary: EdgeIndex,
 
-    /// The `t`-parameter on the start boundary where the cut begins.
-    /// Assigned after cut paths are found, based on shared boundary parameterization.
-    pub start_t: f64,
-
     /// The boundary loop (skeleton edge) where this cut ends.
     pub end_boundary: EdgeIndex,
 
-    /// The `t`-parameter on the end boundary where the cut ends.
-    /// Assigned after cut paths are found, based on shared boundary parameterization.
-    pub end_t: f64,
-
     /// The actual path across the surface, from start boundary to end boundary.
-    pub path: CutSurfacePath,
+    pub path: SurfacePath,
 }
 
 /// Complete cutting plan for one side of a region, including boundary
@@ -106,11 +82,6 @@ pub struct CutPath {
 pub struct CuttingPlan {
     /// The `d − 1` cut paths connecting boundary loops.
     pub cuts: Vec<CutPath>,
-
-    /// Arc-length parameterization for each boundary loop of this region.
-    /// On the input side these are natural arc-length; on the polycube side
-    /// they are warped so that cut endpoint `t`-values match the input side.
-    pub boundary_params: HashMap<EdgeIndex, BoundaryParameterization>,
 }
 
 /// The parameterization of a single region (skeleton node) onto a canonical 2D domain.
