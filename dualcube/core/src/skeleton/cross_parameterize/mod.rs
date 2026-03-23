@@ -8,11 +8,14 @@ use petgraph::graph::{EdgeIndex, NodeIndex};
 use serde::{Deserialize, Serialize};
 
 use crate::prelude::{EdgeID, VertID, INPUT};
-use crate::skeleton::cross_parameterize::harmonic::solve_dirichlet;
+// use crate::skeleton::cross_parameterize::harmonic::solve_dirichlet;
 use crate::skeleton::orthogonalize::LabeledCurveSkeleton;
 
 mod cutting_plan;
 mod harmonic;
+mod duplicate_cut_vertices;
+mod boundary_walk;
+mod internal_edges;
 pub mod virtual_mesh;
 
 use cutting_plan::compute_cutting_plans;
@@ -157,11 +160,11 @@ impl PolycubeMap {
     pub fn to_triangle_mesh_polycube(
         &self,
         input_mesh: &Mesh<INPUT>,
-        input_skeleton: &LabeledCurveSkeleton,
-        polycube_skeleton: &LabeledCurveSkeleton,
-        polycube_mesh: &Mesh<INPUT>,
+        _input_skeleton: &LabeledCurveSkeleton,
+        _polycube_skeleton: &LabeledCurveSkeleton,
+        _polycube_mesh: &Mesh<INPUT>,
     ) -> Mesh<INPUT> {
-        let mut result = input_mesh.clone();
+        let result = input_mesh.clone();
 
         // TODO
 
@@ -251,6 +254,7 @@ fn parameterize_region(
         input_skeleton,
         input_mesh,
         &input_plan,
+        true, // input mesh is a triangle mesh
     );
     let (polycube_vfg, polycube_uv) = parameterize_side(
         patch_node_idx,
@@ -258,6 +262,7 @@ fn parameterize_region(
         polycube_skeleton,
         polycube_mesh,
         &polycube_plan,
+        false, // polycube mesh is a quad mesh
     );
 
     RegionParameterization {
@@ -282,6 +287,7 @@ fn parameterize_side(
     skeleton: &LabeledCurveSkeleton,
     mesh: &Mesh<INPUT>,
     cutting_plan: &CuttingPlan,
+    is_tri_mesh: bool,
 ) -> (VirtualFlatGeometry, HashMap<NodeIndex, Vector2D>) {
     if degree == 0 {
         warn!(
@@ -293,7 +299,7 @@ fn parameterize_side(
 
     // Build virtual geometry by cutting the mesh open along cut paths,
     // duplicating vertices so the result is a topological disk.
-    let vfg = VirtualFlatGeometry::build(patch_node_idx, skeleton, mesh, cutting_plan);
+    let vfg = VirtualFlatGeometry::build(patch_node_idx, skeleton, mesh, cutting_plan, is_tri_mesh);
 
     // Assign 2D positions to every node on the disk boundary.
     // The canonical polygon has n_sides sides:
@@ -357,7 +363,7 @@ fn polygon_arc_interpolate(polygon: &[Vector2D], start: usize, end: usize, t: f6
 /// The polygon has circumradius 1 with vertices at angles `2πk/n_sides`.
 fn map_boundary_to_polygon(
     vfg: &VirtualFlatGeometry,
-    n_sides: usize,
+    _n_sides: usize,
 ) -> HashMap<NodeIndex, Vector2D> {
     let boundary = &vfg.boundary_loop;
     let n = boundary.len();
