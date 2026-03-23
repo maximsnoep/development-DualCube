@@ -1,3 +1,4 @@
+use core::panic;
 use std::{
     collections::{HashMap, HashSet},
     f64::consts::PI,
@@ -7,7 +8,8 @@ use log::warn;
 use mehsh::prelude::{HasVertices, Mesh};
 use petgraph::{
     graph::{EdgeIndex, NodeIndex},
-    prelude::StableUnGraph, visit::EdgeRef,
+    prelude::StableUnGraph,
+    visit::EdgeRef,
 };
 
 use crate::{
@@ -176,6 +178,8 @@ fn symbolic_face_coord(index: usize, n: usize) -> (f64, f64) {
 /// Calculates the single boundary loop of the virtual mesh.
 /// The resulting loop is a simple cycle of virtual node indices, following all boundaries in CCW.
 /// Adds all edges for nodes along the boundary (properly dealing with duplicates and cuts.)
+/// 
+/// Note that for the tri-mesh, quads are accepted around boundaries.
 pub fn calculate_boundary_loop(
     patch_node_idx: NodeIndex,
     skeleton: &LabeledCurveSkeleton,
@@ -428,9 +432,14 @@ pub fn calculate_boundary_loop(
             )
         }
 
-        // TODO: add edges based on the triangle spanned by current and next.
+        // TODO: wrap adding edge to account for cut-cut edges (being filled on the second go) and
+
+        // Add edges based on the triangle spanned by current and next.
+
         if is_tri_mesh {
-            // What we do matters on tri vs quad mesh!
+            tri_mesh_boundary_edges(graph, current, next);
+        } else {
+            quad_mesh_boundary_edges(graph, current, next);
         }
 
         // Add the traced disk boundary as actual VFG edges.
@@ -450,4 +459,150 @@ pub fn calculate_boundary_loop(
     }
 
     boundary_loop
+}
+
+// For mostly tri-meshes, only quads accepted around boundaries.
+fn tri_mesh_boundary_edges(
+    graph: &mut StableUnGraph<VirtualNode, VirtualEdgeWeight>,
+    current: NodeIndex,
+    next: NodeIndex,
+) {
+    let current_type = &graph[current].origin;
+    let next_type = &graph[next].origin;
+    match (current_type, next_type) {
+        (
+            VirtualNodeOrigin::BoundaryMidpoint {
+                edge: current_edge,
+                boundary_edge: current_boundary_edge,
+            },
+            VirtualNodeOrigin::BoundaryMidpoint {
+                edge: next_edge,
+                boundary_edge: next_boundary_edge,
+            },
+        ) => {
+            // Simplest case: for both edges, add edge from patch vertex to its connecting boundary midpoint
+            // TODO
+        }
+        (
+            VirtualNodeOrigin::BoundaryMidpoint { .. },
+            VirtualNodeOrigin::CutEndpointMidpointDuplicate { .. },
+        )
+        | (
+            VirtualNodeOrigin::CutEndpointMidpointDuplicate { .. },
+            VirtualNodeOrigin::BoundaryMidpoint { .. },
+        ) => {
+            // Get triangle spanned by the edges that host the midpoints. (likely not explicitly necessary)
+            // Get opposite node of cut endpoint in this triangle, i.e. next_nodes - current_nodes (they always share 1 node to be a triangle)
+            // TODO..
+            // Add edge from cut endpoint to the opposite node.
+        }
+
+        (VirtualNodeOrigin::CutDuplicate { .. }, VirtualNodeOrigin::CutDuplicate { .. }) => {
+            // TODO, something with sides?! Main difficult case.
+        }
+
+        (
+            VirtualNodeOrigin::CutEndpointMidpointDuplicate { .. },
+            VirtualNodeOrigin::CutDuplicate { .. },
+        )
+        | (
+            VirtualNodeOrigin::CutDuplicate { .. },
+            VirtualNodeOrigin::CutEndpointMidpointDuplicate { .. },
+        ) => {
+            // TODO: something...
+            // The corner edge is already taken care of in Midpoint-Endpoint cases.
+            // TODO: something with adding edges from the right side...
+        }
+
+        (
+            VirtualNodeOrigin::CutEndpointMidpointDuplicate { .. },
+            VirtualNodeOrigin::CutEndpointMidpointDuplicate { .. },
+        ) => {
+            // Impossible to resolve in tri-mesh by just adding edges..
+            // The two edges necessarily go out on the two-legged side of the triangle.
+            // We want to connect another edge to the corner to make it degree 3 but we cannot do this for both at the same time...
+            panic!("Boundary traversal encountered adjacent cut endpoints at nodes {:?} and {:?}. TODO: filter this out earlier!.",
+                        current, next);
+            // ... could be resolved actually by adding a vertex in the middle of the quad resulting from the midpoints
+        }
+
+        //
+        _ => {
+            panic!(
+                        "Boundary traversal found unexpected pair: from node {:?} to {:?} of types {:?} to {:?}.",
+                        current, next, current_type, next_type
+                    );
+        }
+    }
+}
+
+// Strict quad mesh.
+fn quad_mesh_boundary_edges(
+    graph: &mut StableUnGraph<VirtualNode, VirtualEdgeWeight>,
+    current: NodeIndex,
+    next: NodeIndex,
+) {
+    let current_type = &graph[current].origin;
+    let next_type = &graph[next].origin;
+    match (current_type, next_type) {
+        (
+            VirtualNodeOrigin::BoundaryMidpoint {
+                edge: current_edge,
+                boundary_edge: current_boundary_edge,
+            },
+            VirtualNodeOrigin::BoundaryMidpoint {
+                edge: next_edge,
+                boundary_edge: next_boundary_edge,
+            },
+        ) => {
+            // Simplest case: for both edges, add edge from patch vertex to its connecting boundary midpoint
+            // TODO: check
+        }
+        (
+            VirtualNodeOrigin::BoundaryMidpoint { .. },
+            VirtualNodeOrigin::CutEndpointMidpointDuplicate { .. },
+        )
+        | (
+            VirtualNodeOrigin::CutEndpointMidpointDuplicate { .. },
+            VirtualNodeOrigin::BoundaryMidpoint { .. },
+        ) => {
+            // ???
+        }
+
+        (VirtualNodeOrigin::CutDuplicate { .. }, VirtualNodeOrigin::CutDuplicate { .. }) => {
+            // TODO, something with sides?! Main difficult case.
+        }
+
+        (
+            VirtualNodeOrigin::CutEndpointMidpointDuplicate { .. },
+            VirtualNodeOrigin::CutDuplicate { .. },
+        )
+        | (
+            VirtualNodeOrigin::CutDuplicate { .. },
+            VirtualNodeOrigin::CutEndpointMidpointDuplicate { .. },
+        ) => {
+            // TODO: something...
+            // The corner edge is already taken care of in Midpoint-Endpoint cases.
+            // TODO: something with adding edges from the right side...
+        }
+
+        (
+            VirtualNodeOrigin::CutEndpointMidpointDuplicate { .. },
+            VirtualNodeOrigin::CutEndpointMidpointDuplicate { .. },
+        ) => {
+            // Can be solved in quad mesh...?
+            // How do we make the corner degree 3? Degree 2 is free from boundary edges but there is no obvious third edge to add...
+
+            // If we are okay with the strict quad mesh no longer being strict,
+            // we can just add a vertex in the middle of the quad an connect it to all. No crossings, easy third edge. No sides worry.
+        }
+
+        //
+        _ => {
+            panic!(
+                        "Boundary traversal found unexpected pair: from node {:?} to {:?} of types {:?} to {:?}.",
+                        current, next, current_type, next_type
+                    );
+        }
+    }
 }
