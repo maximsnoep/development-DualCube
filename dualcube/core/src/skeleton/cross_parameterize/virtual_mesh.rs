@@ -251,10 +251,13 @@ impl VirtualFlatGeometry {
             boundary_loop_reverse,
         };
 
-        // Step 6:  add all other edges using original mesh connectivity (being careful about duplicates)
+        // Step 6:  traverse the boundary faces, keeping the patch on the left, adding all duplicates along the way
+        //          The double duplicate case can be handled cleanly, as this case would be hit twice, the first time we
+        //          just save which of the two duplicates to connect to next time. All other cases can be wired immediately.
+
+        // Step 7:  add all internal edges using original mesh connectivity (being careful about duplicates)
         add_all_edges(
             &mut vfg,
-            skeleton,
             mesh,
             patch_vertices,
             vert_to_nodes,
@@ -270,7 +273,6 @@ impl VirtualFlatGeometry {
 /// Adds all edges to the VFG based on mesh connectivity.
 fn add_all_edges(
     vfg: &mut VirtualFlatGeometry,
-    skeleton: &LabeledCurveSkeleton,
     mesh: &Mesh<INPUT>,
     patch_vertices: &[VertID],
     vert_to_nodes: HashMap<VertID, VertexToVirtual>,
@@ -329,7 +331,7 @@ fn add_all_edges(
                         },
                         VertexToVirtual::Unique(other_node),
                     ) => {
-                        // Determine which of the cut duplicates to add edge to
+                        // Only check whether connection was covered to one of the duplicates before.
                         // TODO
                     }
                     (
@@ -339,7 +341,7 @@ fn add_all_edges(
                             right: other_right,
                         },
                     ) => {
-                        // Determine which of the cut duplicates to add edge to
+                        // Only check whether connection was covered to one of the duplicates before.
                         // TODO
                     }
                     // Both cuts
@@ -353,7 +355,7 @@ fn add_all_edges(
                             right: other_right,
                         },
                     ) => {
-                        // Determine which of the cut duplicates to add edge to
+                        // Only check whether connection was covered to one of the duplicates before.
                         // TODO
                     }
 
@@ -406,7 +408,7 @@ fn add_all_edges(
                         },
                         EdgemidpointToVirtual::Unique(mid_node),
                     ) => {
-                        // Determine which of the cut duplicates to add edge to
+                        // Only check whether connection was covered to one of the duplicates before.
                         // TODO
                     }
                     // Vertex unique, midpoint duplicated
@@ -417,7 +419,7 @@ fn add_all_edges(
                             right: mid_right,
                         },
                     ) => {
-                        // Determine which of the cut duplicates to add edge to
+                        // Only check whether connection was covered to one of the duplicates before.
                         // TODO
                     }
                     // Both duplicated
@@ -431,7 +433,7 @@ fn add_all_edges(
                             right: mid_right,
                         },
                     ) => {
-                        // Determine which of the cut duplicates to add edge to
+                        // Only check whether connection was covered to one of the duplicates before.
                         // TODO
                     }
                 }
