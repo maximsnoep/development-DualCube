@@ -1056,14 +1056,14 @@ fn check_invariants(vfg: &VirtualFlatGeometry) {
         let degree = vfg.graph.edges(node).count();
 
         // TODO: switch back to strong invariant when actually working edge adding...
-        if degree < 3 {
-            log::error!(
-                "VFG degree invariant violated: node {:?} ({:?}) has degree {}, expected >= 3",
-                node,
-                vfg.graph[node].origin,
-                degree
-            );
-        }
+        // if degree < 3 {
+        //     log::error!(
+        //         "VFG degree invariant violated: node {:?} ({:?}) has degree {}, expected >= 3",
+        //         node,
+        //         vfg.graph[node].origin,
+        //         degree
+        //     );
+        // }
 
         // assert!(
         //     degree >= 3,
@@ -1074,167 +1074,168 @@ fn check_invariants(vfg: &VirtualFlatGeometry) {
         // );
     }
 
-    //     // 5. All duplicated pairs (CutDuplicate and CutEndpointMidpoint) have matching peers.
-    //     for node in vfg.graph.node_indices() {
-    //         let peer_opt = match vfg.graph[node].origin {
-    //             VirtualNodeOrigin::CutDuplicate {
-    //                 peer: Some(peer), ..
-    //             } => Some(peer),
-    //             VirtualNodeOrigin::CutEndpointMidpoint {
-    //                 peer: Some(peer), ..
-    //             } => Some(peer),
-    //             _ => None,
-    //         };
-    //         if let Some(peer) = peer_opt {
-    //             assert!(
-    //                 vfg.graph.node_weight(peer).is_some(),
-    //                 "Duplicate {:?} has peer {:?} that doesn't exist",
-    //                 node,
-    //                 peer,
-    //             );
-    //             let peer_of_peer = match vfg.graph[peer].origin {
-    //                 VirtualNodeOrigin::CutDuplicate { peer: Some(p), .. } => Some(p),
-    //                 VirtualNodeOrigin::CutEndpointMidpoint { peer: Some(p), .. } => Some(p),
-    //                 _ => None,
-    //             };
-    //             assert_eq!(
-    //                 peer_of_peer,
-    //                 Some(node),
-    //                 "Duplicate peer mismatch: {:?} -> {:?} -> {:?}",
-    //                 node,
-    //                 peer,
-    //                 peer_of_peer,
-    //             );
-    //         }
+    // 5. All duplicated pairs (CutDuplicate and CutEndpointMidpoint) have matching peers.
+    for node in vfg.graph.node_indices() {
+        let peer_opt = match vfg.graph[node].origin {
+            VirtualNodeOrigin::CutDuplicate {
+                peer: Some(peer), ..
+            } => Some(peer),
+            VirtualNodeOrigin::CutEndpointMidpointDuplicate {
+                peer: Some(peer), ..
+            } => Some(peer),
+            _ => None,
+        };
+        if let Some(peer) = peer_opt {
+            assert!(
+                vfg.graph.node_weight(peer).is_some(),
+                "Duplicate {:?} has peer {:?} that doesn't exist",
+                node,
+                peer,
+            );
+            let peer_of_peer = match vfg.graph[peer].origin {
+                VirtualNodeOrigin::CutDuplicate { peer: Some(p), .. } => Some(p),
+                VirtualNodeOrigin::CutEndpointMidpointDuplicate { peer: Some(p), .. } => Some(p),
+                _ => None,
+            };
+            assert_eq!(
+                peer_of_peer,
+                Some(node),
+                "Duplicate peer mismatch: {:?} -> {:?} -> {:?}",
+                node,
+                peer,
+                peer_of_peer,
+            );
+        }
+    }
+
+    // 6. All duplicated vertices are part of the boundary.
+    let boundary_set = vfg.boundary_loop.iter().copied().collect::<HashSet<_>>();
+    for node in vfg.graph.node_indices() {
+        if let VirtualNodeOrigin::CutDuplicate { original, .. } = vfg.graph[node].origin {
+            if !boundary_set.contains(&node) {
+                panic!(
+                    "Cut duplicate node {:?} (original vertex {:?}) is not part of the boundary loop",
+                    node, original
+                );
+            }
+        } else if let VirtualNodeOrigin::CutEndpointMidpointDuplicate { edge, .. } =
+            vfg.graph[node].origin
+        {
+            if !boundary_set.contains(&node) {
+                panic!(
+                    "Cut endpoint midpoint duplicate node {:?} (original edge {:?}) is not part of the boundary loop",
+                    node, edge
+                );
+            }
+        }
+    }
+
+
+    // 7. For each cut endpoint, when traversing the boundary we see left first.
+    // TODO
+
+
+
+
+    // // 9. All graph nodes are accounted for in vert_to_nodes, midpoints, or cut-endpoint midpoints.
+    // // TODO: double check this
+    // let tracked_nodes: HashSet<NodeIndex> = vfg
+    //     .vert_to_nodes
+    //     .values()
+    //     .flat_map(|v| v.iter().copied())
+    //     .collect();
+    // let midpoint_count = vfg
+    //     .graph
+    //     .node_indices()
+    //     .filter(|n| {
+    //         matches!(
+    //             vfg.graph[*n].origin,
+    //             VirtualNodeOrigin::BoundaryMidpoint { .. }
+    //         )
+    //     })
+    //     .count();
+    // let cut_endpoint_mid_count = vfg
+    //     .graph
+    //     .node_indices()
+    //     .filter(|n| {
+    //         matches!(
+    //             vfg.graph[*n].origin,
+    //             VirtualNodeOrigin::CutEndpointMidpoint { .. }
+    //         )
+    //     })
+    //     .count();
+    // let vertex_node_count = tracked_nodes.len();
+    // assert_eq!(
+    //     vertex_node_count + midpoint_count + cut_endpoint_mid_count,
+    //     n_nodes,
+    //     "Node accounting mismatch: {} vertex + {} midpoint + {} cut-endpoint-midpoint != {} total",
+    //     vertex_node_count,
+    //     midpoint_count,
+    //     cut_endpoint_mid_count,
+    //     n_nodes,
+    // );
+
+    // // 10. All duplicated pairs (CutDuplicate and CutEndpointMidpoint) have
+    // //    fully disjoint VFG neighbor sets.
+    // // TODO: this might not necessarily hold for really small boundary loops.. (if there is only one vertex between cut endpoints, special case though that is detectable)
+    // for node in vfg.graph.node_indices() {
+    //     let is_left_copy = match vfg.graph[node].origin {
+    //         VirtualNodeOrigin::CutDuplicate {
+    //             side: false,
+    //             peer: Some(_),
+    //             ..
+    //         } => true,
+    //         VirtualNodeOrigin::CutEndpointMidpoint {
+    //             side: false,
+    //             peer: Some(_),
+    //             ..
+    //         } => true,
+    //         _ => false,
+    //     };
+    //     if !is_left_copy {
+    //         continue;
     //     }
+    //     let peer = match vfg.graph[node].origin {
+    //         VirtualNodeOrigin::CutDuplicate { peer: Some(p), .. } => p,
+    //         VirtualNodeOrigin::CutEndpointMidpoint { peer: Some(p), .. } => p,
+    //         _ => unreachable!(),
+    //     };
+    //     let nbrs_left: HashSet<NodeIndex> = vfg.graph.neighbors(node).collect();
+    //     let nbrs_right: HashSet<NodeIndex> = vfg.graph.neighbors(peer).collect();
+    //     let shared: Vec<NodeIndex> = nbrs_left.intersection(&nbrs_right).copied().collect();
+    //     assert!(
+    //         shared.is_empty(),
+    //         "Duplicated pair {:?} and {:?} share neighbors: {:?}",
+    //         node,
+    //         peer,
+    //         shared
+    //             .iter()
+    //             .map(|&s| format!("{:?} ({:?})", s, vfg.graph[s].origin))
+    //             .collect::<Vec<_>>(),
+    //     );
+    // }
 
-    //     // 7. vert_to_nodes consistency.
-    //     // for (vert, nodes) in &vfg.vert_to_nodes {
-    //     //     assert!(!nodes.is_empty(), "vert_to_nodes[{:?}] is empty", vert);
-    //     //     assert!(
-    //     //         nodes.len() <= 2,
-    //     //         "vert_to_nodes[{:?}] has {} entries (expected 1 or 2)",
-    //     //         vert,
-    //     //         nodes.len()
-    //     //     );
-    //     //     for &ni in nodes {
-    //     //         assert!(
-    //     //             vfg.graph.node_weight(ni).is_some(),
-    //     //             "vert_to_nodes[{:?}] references non-existent node {:?}",
-    //     //             vert,
-    //     //             ni,
-    //     //         );
-    //     //     }
-    //     // }
-
-    //     // 8. All graph nodes are accounted for in vert_to_nodes, midpoints, or cut-endpoint midpoints.
-    //     // let tracked_nodes: HashSet<NodeIndex> = vfg
-    //     //     .vert_to_nodes
-    //     //     .values()
-    //     //     .flat_map(|v| v.iter().copied())
-    //     //     .collect();
-    //     // let midpoint_count = vfg
-    //     //     .graph
-    //     //     .node_indices()
-    //     //     .filter(|n| {
-    //     //         matches!(
-    //     //             vfg.graph[*n].origin,
-    //     //             VirtualNodeOrigin::BoundaryMidpoint { .. }
-    //     //         )
-    //     //     })
-    //     //     .count();
-    //     // let cut_endpoint_mid_count = vfg
-    //     //     .graph
-    //     //     .node_indices()
-    //     //     .filter(|n| {
-    //     //         matches!(
-    //     //             vfg.graph[*n].origin,
-    //     //             VirtualNodeOrigin::CutEndpointMidpoint { .. }
-    //     //         )
-    //     //     })
-    //     //     .count();
-    //     // let vertex_node_count = tracked_nodes.len();
-    //     // assert_eq!(
-    //     //     vertex_node_count + midpoint_count + cut_endpoint_mid_count,
-    //     //     n_nodes,
-    //     //     "Node accounting mismatch: {} vertex + {} midpoint + {} cut-endpoint-midpoint != {} total",
-    //     //     vertex_node_count,
-    //     //     midpoint_count,
-    //     //     cut_endpoint_mid_count,
-    //     //     n_nodes,
-    //     // );
-
-    //     // 9. All duplicated pairs (CutDuplicate and CutEndpointMidpoint) have
-    //     //    fully disjoint VFG neighbor sets.
+    // // 11. No parallel edges (multi-edges between the same pair of nodes).
+    // {
+    //     let mut edge_set: HashSet<(usize, usize)> = HashSet::new();
     //     for node in vfg.graph.node_indices() {
-    //         let is_left_copy = match vfg.graph[node].origin {
-    //             VirtualNodeOrigin::CutDuplicate {
-    //                 side: false,
-    //                 peer: Some(_),
-    //                 ..
-    //             } => true,
-    //             VirtualNodeOrigin::CutEndpointMidpoint {
-    //                 side: false,
-    //                 peer: Some(_),
-    //                 ..
-    //             } => true,
-    //             _ => false,
-    //         };
-    //         if !is_left_copy {
-    //             continue;
-    //         }
-    //         let peer = match vfg.graph[node].origin {
-    //             VirtualNodeOrigin::CutDuplicate { peer: Some(p), .. } => p,
-    //             VirtualNodeOrigin::CutEndpointMidpoint { peer: Some(p), .. } => p,
-    //             _ => unreachable!(),
-    //         };
-    //         let nbrs_left: HashSet<NodeIndex> = vfg.graph.neighbors(node).collect();
-    //         let nbrs_right: HashSet<NodeIndex> = vfg.graph.neighbors(peer).collect();
-    //         let shared: Vec<NodeIndex> = nbrs_left.intersection(&nbrs_right).copied().collect();
-    //         assert!(
-    //             shared.is_empty(),
-    //             "Duplicated pair {:?} and {:?} share neighbors: {:?}",
-    //             node,
-    //             peer,
-    //             shared
-    //                 .iter()
-    //                 .map(|&s| format!("{:?} ({:?})", s, vfg.graph[s].origin))
-    //                 .collect::<Vec<_>>(),
-    //         );
-    //     }
-
-    //     // 10. No parallel edges (multi-edges between the same pair of nodes).
-    //     {
-    //         let mut edge_set: HashSet<(usize, usize)> = HashSet::new();
-    //         for node in vfg.graph.node_indices() {
-    //             for edge in vfg.graph.edges(node) {
-    //                 let a = edge.source().index();
-    //                 let b = edge.target().index();
-    //                 let key = if a < b { (a, b) } else { (b, a) };
-    //                 // Each undirected edge appears twice (once from each endpoint),
-    //                 // so we only insert from the smaller side.
-    //                 if a <= b {
-    //                     assert!(
-    //                         edge_set.insert(key),
-    //                         "VFG has parallel edges between nodes {} and {}",
-    //                         key.0,
-    //                         key.1,
-    //                     );
-    //                 }
+    //         for edge in vfg.graph.edges(node) {
+    //             let a = edge.source().index();
+    //             let b = edge.target().index();
+    //             let key = if a < b { (a, b) } else { (b, a) };
+    //             // Each undirected edge appears twice (once from each endpoint),
+    //             // so we only insert from the smaller side.
+    //             if a <= b {
+    //                 assert!(
+    //                     edge_set.insert(key),
+    //                     "VFG has parallel edges between nodes {} and {}",
+    //                     key.0,
+    //                     key.1,
+    //                 );
     //             }
     //         }
     //     }
+    // }
 
-    //     // 11. Planarity necessary condition: E <= 3V - 6 for simple planar graphs (V >= 3).
-    //     let n_edges = vfg.graph.edge_count();
-    //     if n_nodes >= 3 {
-    //         assert!(
-    //             n_edges <= 3 * n_nodes - 6,
-    //             "VFG edge count {} exceeds planar bound 3V-6 = {} (V={}). \
-    //              The graph cannot be planar.",
-    //             n_edges,
-    //             3 * n_nodes - 6,
-    //             n_nodes,
-    //         );
-    //     }
+    
 }
