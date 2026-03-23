@@ -415,6 +415,10 @@ pub fn calculate_boundary_loop(
     let mut seen: HashSet<NodeIndex> = HashSet::new();
     let mut current = start;
 
+    // When adding boundary edges, the target to connect to might be a duplicated one, making it unclear always which to connect to.
+    // Then, the first time we see this edge, we add what the correct other side is, so the next time we can add the edge properly.
+    let mut boundary_lookback: HashMap<EdgeID, NodeIndex> = HashMap::new();
+
     for _ in 0..(succ.len() + 2) {
         if !seen.insert(current) {
             break;
@@ -436,18 +440,11 @@ pub fn calculate_boundary_loop(
             )
         }
 
-        // When adding boundary edges, the target to connect to might be a duplicated one, making it unclear always which to connect to.
-        // Then, the first time we see this edge, we add what the correct other side is, so the next time we can add the edge properly.
-        let mut boundary_lookback: HashMap<EdgeID, NodeIndex> = HashMap::new();
         // Add edges around boundaries.
         if is_tri_mesh {
             tri_mesh_boundary_edges(graph, current, next, &mut boundary_lookback);
         } else {
             quad_mesh_boundary_edges(graph, current, next, &mut boundary_lookback);
-        }
-        if !boundary_lookback.is_empty() {
-            // TODO SHOULD PANIC WHEN EVERYTHING IS FULLY WORKING, NOW JUST ERROR
-            error!("Boundary edge lookback produced non-empty result, indicating some boundary edge cases are not fully handled yet. Lookback: {:?}", boundary_lookback);
         }
 
         // Add the traced disk boundary as actual VFG edges.
@@ -460,6 +457,11 @@ pub fn calculate_boundary_loop(
         if current == start {
             break;
         }
+    }
+
+    if !boundary_lookback.is_empty() {
+        // TODO SHOULD PANIC WHEN EVERYTHING IS FULLY WORKING, NOW JUST ERROR
+        error!("Boundary edge lookback produced non-empty result, indicating some boundary edge cases are not fully handled yet. Lookback: {:?}", boundary_lookback);
     }
 
     if boundary_loop.is_empty() {
@@ -553,8 +555,12 @@ fn add_edge(
             } else {
                 // This happens when the edge is not crossed by a BoundaryLoop, i.e. we did not go into the first if after the if let.
                 // We check if any side is links to source, then pick the other side.
-                let type_v1 = vert_to_nodes.get(&v1).expect("Vertex missing from virtual map");
-                let type_v2 = vert_to_nodes.get(&v2).expect("Vertex missing from virtual map");
+                let type_v1 = vert_to_nodes
+                    .get(&v1)
+                    .expect("Vertex missing from virtual map");
+                let type_v2 = vert_to_nodes
+                    .get(&v2)
+                    .expect("Vertex missing from virtual map");
 
                 match (type_v1, type_v2) {
                     (VertexToVirtual::Unique(vfg_v1), VertexToVirtual::Unique(vfg_v2)) => {
@@ -565,7 +571,7 @@ fn add_edge(
                         } else {
                             unreachable!("Edge does not have input vertex on either end.");
                         }
-                    },
+                    }
                     (VertexToVirtual::Unique(vfg_v1), VertexToVirtual::CutPair { left, right }) => {
                         if *vfg_v1 == source {
                             v2
@@ -574,7 +580,7 @@ fn add_edge(
                         } else {
                             unreachable!("Edge does not have input vertex on either end.");
                         }
-                    },
+                    }
                     (VertexToVirtual::CutPair { left, right }, VertexToVirtual::Unique(vfg_v2)) => {
                         if *vfg_v2 == source {
                             v1
@@ -583,8 +589,17 @@ fn add_edge(
                         } else {
                             unreachable!("Edge does not have input vertex on either end.");
                         }
-                    },
-                    (VertexToVirtual::CutPair { left: left1, right: right1 }, VertexToVirtual::CutPair { left: left2, right: right2 }) => {
+                    }
+                    (
+                        VertexToVirtual::CutPair {
+                            left: left1,
+                            right: right1,
+                        },
+                        VertexToVirtual::CutPair {
+                            left: left2,
+                            right: right2,
+                        },
+                    ) => {
                         if *left1 == source || *right1 == source {
                             v2
                         } else if *left2 == source || *right2 == source {
