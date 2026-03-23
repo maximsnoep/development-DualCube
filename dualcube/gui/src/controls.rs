@@ -248,7 +248,7 @@ pub fn loop_modification_system(
     //     }
     // }
 
-    return Ok(());
+    // return Ok(());
 
     // Render all current solutions  (for currently selected direction)
     for (&edgepair, sol) in &solution.next[configuration.direction as usize] {
