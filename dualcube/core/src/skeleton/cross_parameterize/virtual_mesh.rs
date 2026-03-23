@@ -253,7 +253,13 @@ impl VirtualFlatGeometry {
         };
 
         // Step 6:  add all internal edges using original mesh connectivity
-        add_internal_edges(&mut vfg, mesh, patch_vertices, vert_to_nodes);
+        add_internal_edges(
+            &mut vfg,
+            mesh,
+            patch_vertices,
+            vert_to_nodes,
+            edge_midpoint_ids_to_node_indices,
+        );
 
         check_invariants(&vfg);
 
@@ -267,6 +273,7 @@ fn add_internal_edges(
     mesh: &Mesh<INPUT>,
     patch_vertices: &[VertID],
     vert_to_nodes: HashMap<VertID, VertexToVirtual>,
+    edge_midpoint_ids_to_node_indices: HashMap<EdgeID, EdgemidpointToVirtual>,
 ) {
     // Loop over all patch vertices, then their edges in the original mesh.
     for vert in patch_vertices {
@@ -313,7 +320,121 @@ fn add_internal_edges(
                         vfg.graph
                             .add_edge(*self_node, *other_node, VirtualEdgeWeight { length });
                     }
-                    _ => { // In any other case, (1 or 2 duplicate nodes), we already treat this when tracing the boundary
+                    // All other cases are handled in wiring the boundary. These are just correctness checks.
+                    // One cut, one unique
+                    (
+                        VertexToVirtual::CutPair {
+                            left: self_left,
+                            right: self_right,
+                        },
+                        VertexToVirtual::Unique(other_node),
+                    ) => {
+                        // Only check whether connection was covered to one of the duplicates before.
+                        // TODO : correctness check: edge exists to one of the duplicates
+                    }
+                    (
+                        VertexToVirtual::Unique(self_node),
+                        VertexToVirtual::CutPair {
+                            left: other_left,
+                            right: other_right,
+                        },
+                    ) => {
+                        // Only check whether connection was covered to one of the duplicates before.
+                        // TODO : correctness check: edge exists to one of the duplicates before.
+                    }
+                    // Both cuts
+                    (
+                        VertexToVirtual::CutPair {
+                            left: self_left,
+                            right: self_right,
+                        },
+                        VertexToVirtual::CutPair {
+                            left: other_left,
+                            right: other_right,
+                        },
+                    ) => {
+                        // Only check whether connection was covered to one of the duplicates before.
+                        // TODO : edge exist between any of the duplicates of other sides
+                    }
+
+                    _ => unreachable!("Unexpected origin pair encountered."),
+                }
+            } else {
+                // Other side of edge lies outside patch, so other vertex is not in VFG.
+                // Edge should go to the midpoint of this edge instead.
+
+                // Resolve the boundary edge ID against the orientation used by
+                // stored boundary loops (either half-edge can appear in mesh.edges()).
+                let (edge_ab, edge_ba) = mesh
+                    .edge_between_verts(*vert, other_vert)
+                    .expect("Expected edge between neighboring vertices to exist");
+                let midpoint_edge = if edge_midpoint_ids_to_node_indices.contains_key(&edge_ab) {
+                    edge_ab
+                } else if edge_midpoint_ids_to_node_indices.contains_key(&edge_ba) {
+                    edge_ba
+                } else {
+                    panic!(
+                        "Boundary midpoint missing for edge between {:?} and {:?}. \
+                         Neither orientation ({:?}, {:?}) exists in midpoint map.",
+                        vert, other_vert, edge_ab, edge_ba
+                    );
+                };
+
+                // Get node origin
+                let midpoint_node_origin = edge_midpoint_ids_to_node_indices
+                    .get(&midpoint_edge)
+                    .expect("Boundary midpoint missing from virtual node map. Edge goes from inside patch to outside, boundary loop must cross this to be a cycle.");
+
+                // Match based on duplicate/unique status of self and other
+                // All cases are handled in wiring the boundary. These are just correctness checks.
+                match (self_node_origin, midpoint_node_origin) {
+                    // Both unique
+                    (
+                        VertexToVirtual::Unique(self_node),
+                        EdgemidpointToVirtual::Unique(mid_node),
+                    ) => {
+                        // let self_pos = vfg.graph[*self_node].position;
+                        // let mid_pos = vfg.graph[*mid_node].position;
+                        // let length = (self_pos - mid_pos).norm();
+                        // vfg.graph
+                        //     .add_edge(*self_node, *mid_node, VirtualEdgeWeight { length });
+                        // TODO: correctness check: edge exists
+                    }
+                    // Vertex is duplicated, midpoint unique
+                    (
+                        VertexToVirtual::CutPair {
+                            left: self_left,
+                            right: self_right,
+                        },
+                        EdgemidpointToVirtual::Unique(mid_node),
+                    ) => {
+                        // Only check whether connection was covered to one of the duplicates before.
+                        // TODO: correctness check: edge exists to one of the duplicates
+                    }
+                    // Vertex unique, midpoint duplicated
+                    (
+                        VertexToVirtual::Unique(self_node),
+                        EdgemidpointToVirtual::CutEndpointPair {
+                            left: mid_left,
+                            right: mid_right,
+                        },
+                    ) => {
+                        // Only check whether connection was covered to one of the duplicates before.
+                        // TODO : correctness check: edge exists to one of the duplicates
+                    }
+                    // Both duplicated
+                    (
+                        VertexToVirtual::CutPair {
+                            left: self_left,
+                            right: self_right,
+                        },
+                        EdgemidpointToVirtual::CutEndpointPair {
+                            left: mid_left,
+                            right: mid_right,
+                        },
+                    ) => {
+                        // Only check whether connection was covered to one of the duplicates before.
+                        // TODO : correctness check: edge exist between any of the duplicates of other sides
                     }
                 }
             }
@@ -693,7 +814,9 @@ fn calculate_boundary_loop(
             .map(|e| e.weight().boundary_loop.edge_midpoints.first().copied())
             .flatten()
         else {
-            unreachable!("Degree-1 patch with no boundary midpoints found.")
+            unreachable!(
+                "Degree-1 patch with no boundary midpoints found."
+            )
         };
         boundary_node_in(any_boundary_edge)
     };
