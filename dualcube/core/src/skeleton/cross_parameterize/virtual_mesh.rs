@@ -1,7 +1,7 @@
 use std::collections::{HashMap, HashSet};
 use std::f64::consts::PI;
 
-use log::warn;
+use log::{info, warn};
 use mehsh::prelude::{HasEdges, HasPosition, HasVertices, Mesh, Vector3D};
 use petgraph::graph::{EdgeIndex, NodeIndex};
 use petgraph::prelude::StableGraph;
@@ -1130,12 +1130,42 @@ fn check_invariants(vfg: &VirtualFlatGeometry) {
         }
     }
 
-
     // 7. For each cut endpoint, when traversing the boundary we see left first.
-    // TODO
-
-
-
+    let mut seen_left: HashSet<NodeIndex> = HashSet::new();
+    for &node in &vfg.boundary_loop {
+        if let VirtualNodeOrigin::CutEndpointMidpointDuplicate {
+            edge,
+            cut_index,
+            side,
+            peer,
+            ..
+        } = vfg.graph[node].origin
+        {
+            let peer = peer.expect("cut endpoint midpoint duplicate peer should be set by invariant 5");
+            info!(
+                "Checking cut endpoint {:?} (edge {:?}, cut {}) on side {} with peer {:?}",
+                node,
+                edge,
+                cut_index,
+                if side { "right" } else { "left" },
+                peer
+            );
+            if side {
+                // Right copy should not be seen until after left copy.
+                assert!(
+                    seen_left.contains(&peer),
+                    "Boundary traversal sees right copy of cut endpoint {:?} (edge {:?}, cut {}) before left copy {:?}",
+                    node,
+                    edge,
+                    cut_index,
+                    peer
+                );
+            } else {
+                // Track left copy as seen.
+                seen_left.insert(node);
+            }
+        }
+    }
 
     // // 9. All graph nodes are accounted for in vert_to_nodes, midpoints, or cut-endpoint midpoints.
     // // TODO: double check this
@@ -1236,6 +1266,4 @@ fn check_invariants(vfg: &VirtualFlatGeometry) {
     //         }
     //     }
     // }
-
-    
 }
