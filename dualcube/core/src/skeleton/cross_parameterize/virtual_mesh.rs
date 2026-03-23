@@ -727,24 +727,27 @@ fn calculate_boundary_loop(
 
     // Cut-side successor edges.
     for cut in &cutting_plan.cuts {
+        let start_key = resolve_midpoint_edge_id(cut.path.start);
+        let end_key = resolve_midpoint_edge_id(cut.path.end);
+
         let Some(EdgemidpointToVirtual::CutEndpointPair {
             left: start_left,
             right: start_right,
-        }) = edge_midpoint_ids_to_node_indices.get(&cut.path.start)
+        }) = edge_midpoint_ids_to_node_indices.get(&start_key)
         else {
             panic!(
-                "Cut start midpoint {:?} does not map to a duplicated endpoint",
-                cut.path.start
+                "Cut start midpoint {:?} (resolved {:?}) does not map to a duplicated endpoint",
+                cut.path.start, start_key
             );
         };
         let Some(EdgemidpointToVirtual::CutEndpointPair {
             left: end_left,
             right: end_right,
-        }) = edge_midpoint_ids_to_node_indices.get(&cut.path.end)
+        }) = edge_midpoint_ids_to_node_indices.get(&end_key)
         else {
             panic!(
-                "Cut end midpoint {:?} does not map to a duplicated endpoint",
-                cut.path.end
+                "Cut end midpoint {:?} (resolved {:?}) does not map to a duplicated endpoint",
+                cut.path.end, end_key
             );
         };
 
@@ -1130,9 +1133,21 @@ fn check_invariants(vfg: &VirtualFlatGeometry) {
         }
     }
 
-    // 7. For each cut endpoint, when traversing the boundary we see left first.
-    let mut seen_left: HashSet<NodeIndex> = HashSet::new();
-    for &node in &vfg.boundary_loop {
+    // 7. Local cut-endpoint topology on the boundary cycle. For each duplicated cut endpoint, exactly one
+    // of its two boundary neighbors must continue along the same cut side.
+    let n = vfg.boundary_loop.len();
+    let cut_side_of = |idx: NodeIndex| -> Option<(usize, bool)> {
+        match vfg.graph[idx].origin {
+            VirtualNodeOrigin::CutDuplicate {
+                cut_index, side, ..
+            }
+            | VirtualNodeOrigin::CutEndpointMidpointDuplicate {
+                cut_index, side, ..
+            } => Some((cut_index, side)),
+            _ => None,
+        }
+    };
+    for (i, &node) in vfg.boundary_loop.iter().enumerate() {
         if let VirtualNodeOrigin::CutEndpointMidpointDuplicate {
             edge,
             cut_index,
@@ -1141,29 +1156,36 @@ fn check_invariants(vfg: &VirtualFlatGeometry) {
             ..
         } = vfg.graph[node].origin
         {
-            let peer = peer.expect("cut endpoint midpoint duplicate peer should be set by invariant 5");
+            let peer =
+                peer.expect("cut endpoint midpoint duplicate peer should be set by invariant 5");
+            let prev = vfg.boundary_loop[(i + n - 1) % n];
+            let next = vfg.boundary_loop[(i + 1) % n];
+
+            let prev_same_side = cut_side_of(prev) == Some((cut_index, side));
+            let next_same_side = cut_side_of(next) == Some((cut_index, side));
+            let same_side_count = usize::from(prev_same_side) + usize::from(next_same_side);
+
             info!(
-                "Checking cut endpoint {:?} (edge {:?}, cut {}) on side {} with peer {:?}",
+                "Checking cut endpoint {:?} (edge {:?}, cut {}, side {}, peer {:?}) prev {:?} next {:?}",
                 node,
                 edge,
                 cut_index,
                 if side { "right" } else { "left" },
-                peer
+                peer,
+                prev,
+                next,
             );
-            if side {
-                // Right copy should not be seen until after left copy.
-                assert!(
-                    seen_left.contains(&peer),
-                    "Boundary traversal sees right copy of cut endpoint {:?} (edge {:?}, cut {}) before left copy {:?}",
-                    node,
-                    edge,
-                    cut_index,
-                    peer
-                );
-            } else {
-                // Track left copy as seen.
-                seen_left.insert(node);
-            }
+
+            assert!(
+                same_side_count == 1,
+                "Cut endpoint {:?} (edge {:?}, cut {}, side {}) has invalid boundary neighborhood: prev={:?} next={:?}; expected exactly one same-side cut neighbor",
+                node,
+                edge,
+                cut_index,
+                if side { "right" } else { "left" },
+                prev,
+                next,
+            );
         }
     }
 
