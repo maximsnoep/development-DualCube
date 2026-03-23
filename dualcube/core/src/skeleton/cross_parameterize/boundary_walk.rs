@@ -4,7 +4,7 @@ use std::{
     f64::consts::PI,
 };
 
-use log::warn;
+use log::{error, warn};
 use mehsh::prelude::{HasVertices, Mesh};
 use petgraph::{
     graph::{EdgeIndex, NodeIndex},
@@ -178,7 +178,7 @@ fn symbolic_face_coord(index: usize, n: usize) -> (f64, f64) {
 /// Calculates the single boundary loop of the virtual mesh.
 /// The resulting loop is a simple cycle of virtual node indices, following all boundaries in CCW.
 /// Adds all edges for nodes along the boundary (properly dealing with duplicates and cuts.)
-/// 
+///
 /// Note that for the tri-mesh, quads are accepted around boundaries.
 pub fn calculate_boundary_loop(
     patch_node_idx: NodeIndex,
@@ -432,14 +432,18 @@ pub fn calculate_boundary_loop(
             )
         }
 
-        // TODO: wrap adding edge to account for cut-cut edges (being filled on the second go) and
-
-        // Add edges based on the triangle spanned by current and next.
-
+        // When adding boundary edges, the target to connect to might be a duplicated one, making it unclear always which to connect to.
+        // Then, the first time we see this edge, we add what the correct other side is, so the next time we can add the edge properly.
+        let mut boundary_lookback: HashMap<EdgeID, NodeIndex> = HashMap::new();
+        // Add edges around boundaries.
         if is_tri_mesh {
-            tri_mesh_boundary_edges(graph, current, next);
+            tri_mesh_boundary_edges(graph, current, next, &mut boundary_lookback);
         } else {
-            quad_mesh_boundary_edges(graph, current, next);
+            quad_mesh_boundary_edges(graph, current, next, &mut boundary_lookback);
+        }
+        if !boundary_lookback.is_empty() {
+            // TODO SHOULD PANIC WHEN EVERYTHING IS FULLY WORKING, NOW JUST ERROR
+            error!("Boundary edge lookback produced non-empty result, indicating some boundary edge cases are not fully handled yet. Lookback: {:?}", boundary_lookback);
         }
 
         // Add the traced disk boundary as actual VFG edges.
@@ -461,11 +465,60 @@ pub fn calculate_boundary_loop(
     boundary_loop
 }
 
+enum AddingEdgeInput {
+    // Simple // Not done in this part of the code... All these are added in add_internal_edges after the boundary loop is fully calculated.
+    //
+    /// The direction is clear from the current vertex. There is no other side that will check back so no need to worry about lookback or duplicates.
+    DuplicateToSingular {
+        source: NodeIndex, // Side of duplicate is clear!
+        target: NodeIndex, // Other side has no choice!
+    },
+
+    /// Any type of duplicate to any other type of duplicate.
+    DuplicateToDuplicate {
+        source: NodeIndex, 
+        edge: EdgeID, // for lookback
+    },
+}
+
+/// Smartly adds an edge to the VFG. Accounts for looking back for duplicates and not adding multiple parallel edges.
+fn add_edge(
+    graph: &mut StableUnGraph<VirtualNode, VirtualEdgeWeight>,
+    lookback: &mut HashMap<EdgeID, NodeIndex>,
+    input: AddingEdgeInput,
+) {
+    if let AddingEdgeInput::DuplicateToSingular { source, target } = input {
+        // Only add if not already present, to avoid parallel edges.
+        if graph.find_edge(source, target).is_none() { 
+            let length = (graph[source].position - graph[target].position).norm();
+            graph.add_edge(source, target, VirtualEdgeWeight { length });
+        }
+    } else if let AddingEdgeInput::DuplicateToDuplicate { source, edge } = input {
+        if let Some(prev_target) = lookback.get(&edge) {
+            // Add edge
+            if graph.find_edge(source, *prev_target).is_none() { 
+                let length = (graph[source].position - graph[*prev_target].position).norm();
+                graph.add_edge(source, *prev_target, VirtualEdgeWeight { length });
+            } else {
+                unreachable!("Duplicate to duplicate case cannot cause parallel edges.");
+            }
+
+            // Clear lookback
+            lookback.remove(&edge);
+        } else {
+            lookback.insert(edge, source);
+            // Edge will be added when we encounter the other duplicate.
+        }
+    } else {
+        unreachable!();
+    }
+}
 // For mostly tri-meshes, only quads accepted around boundaries.
 fn tri_mesh_boundary_edges(
     graph: &mut StableUnGraph<VirtualNode, VirtualEdgeWeight>,
     current: NodeIndex,
     next: NodeIndex,
+    boundary_lookback: &mut HashMap<EdgeID, NodeIndex>,
 ) {
     let current_type = &graph[current].origin;
     let next_type = &graph[next].origin;
@@ -495,6 +548,7 @@ fn tri_mesh_boundary_edges(
             // Get opposite node of cut endpoint in this triangle, i.e. next_nodes - current_nodes (they always share 1 node to be a triangle)
             // TODO..
             // Add edge from cut endpoint to the opposite node.
+            // Add edge from opposite node to boundary midpoint.
         }
 
         (VirtualNodeOrigin::CutDuplicate { .. }, VirtualNodeOrigin::CutDuplicate { .. }) => {
@@ -541,6 +595,7 @@ fn quad_mesh_boundary_edges(
     graph: &mut StableUnGraph<VirtualNode, VirtualEdgeWeight>,
     current: NodeIndex,
     next: NodeIndex,
+    boundary_lookback: &mut HashMap<EdgeID, NodeIndex>,
 ) {
     let current_type = &graph[current].origin;
     let next_type = &graph[next].origin;
