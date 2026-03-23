@@ -4,8 +4,12 @@ use std::{
     f64::consts::PI,
 };
 
+use itertools::Itertools;
 use log::{error, warn};
-use mehsh::prelude::{HasVertices, Mesh};
+use mehsh::{
+    mesh::{self, algo::location::vert},
+    prelude::{HasVertices, Mesh},
+};
 use petgraph::{
     graph::{EdgeIndex, NodeIndex},
     prelude::StableUnGraph,
@@ -466,18 +470,18 @@ pub fn calculate_boundary_loop(
 }
 
 enum AddingEdgeInput {
-    // Simple // Not done in this part of the code... All these are added in add_internal_edges after the boundary loop is fully calculated.
-    //
-    /// The direction is clear from the current vertex. There is no other side that will check back so no need to worry about lookback or duplicates.
-    DuplicateToSingular {
+    /// Add an edge along an existing mesh edge.
+    AlongEdge {
         source: NodeIndex, // Side of duplicate is clear!
-        target: NodeIndex, // Other side has no choice!
+        edge: EdgeID,      // Other side is determined by lookback and duplicate status.
     },
 
-    /// Any type of duplicate to any other type of duplicate.
-    DuplicateToDuplicate {
-        source: NodeIndex, 
-        edge: EdgeID, // for lookback
+    /// Add an edge to the VFG which does not correspond to any original mesh edge.
+    /// Assumes this is only used in context where it is guaranteed adding this edge will not lead to problems with crossings.
+    /// Useful for adding a third edge to midpoint cut duplicates.
+    NewEdge {
+        source: NodeIndex,
+        target: NodeIndex,
     },
 }
 
@@ -485,33 +489,181 @@ enum AddingEdgeInput {
 fn add_edge(
     graph: &mut StableUnGraph<VirtualNode, VirtualEdgeWeight>,
     lookback: &mut HashMap<EdgeID, NodeIndex>,
+    vert_to_nodes: &HashMap<VertID, VertexToVirtual>,
+    edge_midpoint_ids_to_node_indices: &HashMap<EdgeID, EdgemidpointToVirtual>,
     input: AddingEdgeInput,
+    mesh: &Mesh<INPUT>,
+    patch_vertices: &HashSet<VertID>,
 ) {
-    if let AddingEdgeInput::DuplicateToSingular { source, target } = input {
-        // Only add if not already present, to avoid parallel edges.
-        if graph.find_edge(source, target).is_none() { 
+    if let AddingEdgeInput::AlongEdge { source, edge } = input {
+        // First check if edge corresponds to a midpoint
+        if edge_midpoint_ids_to_node_indices.contains_key(&edge) {
+            match edge_midpoint_ids_to_node_indices.get(&edge).unwrap() {
+                EdgemidpointToVirtual::Unique(target) => {
+                    if *target == source {
+                        // We care about the vertex side, look in vertex side.
+                    } else {
+                        // Simple case, just check for parallel edge.
+                        if graph.find_edge(source, *target).is_none() {
+                            let length = (graph[source].position - graph[*target].position).norm();
+                            graph.add_edge(source, *target, VirtualEdgeWeight { length });
+                        }
+                        lookback.remove(&edge); // Clear lookback in case it was set from a previous duplicate.
+                        return;
+                    }
+                }
+                EdgemidpointToVirtual::CutEndpointPair { left, right } => {
+                    // Check if source is either
+                    if *left == source || *right == source {
+                        // If this is the case, we care about the other side.
+                    } else {
+                        // The target is actually a duplicated pair. We need to use lookback
+                        if lookback.contains_key(&edge) {
+                            let target = lookback.get(&edge).unwrap();
+                            if graph.find_edge(source, *target).is_none() {
+                                let length =
+                                    (graph[source].position - graph[*target].position).norm();
+                                graph.add_edge(source, *target, VirtualEdgeWeight { length });
+                            } else {
+                                unreachable!("Lookback case should not be able to cause parallel edges under current assumptions?");
+                            }
+                            lookback.remove(&edge); // Clear lookback after using.
+                            return;
+                        } else {
+                            // Lookback not set yet, set it and wait for the other duplicate to be processed.
+                            lookback.insert(edge, source);
+                            return;
+                        }
+                    }
+                }
+            };
+        }
+
+        // Only reach here when if fails (edge has no midpoint), or source is actually a midpoint (so we want to find vertex).
+        {
+            // Get vertices of this edge
+            let Some([v1, v2]) = mesh.vertices(edge).collect_array::<2>() else {
+                unreachable!("Edge always has 2 vertices");
+            };
+
+            let other_vert = if patch_vertices.contains(&v1) && !patch_vertices.contains(&v2) {
+                v2
+            } else if patch_vertices.contains(&v2) && !patch_vertices.contains(&v1) {
+                v1
+            } else {
+                // This happens when the edge is not crossed by a BoundaryLoop, i.e. we did not go into the first if after the if let.
+                // We check if any side is links to source, then pick the other side.
+                let type_v1 = vert_to_nodes.get(&v1).expect("Vertex missing from virtual map");
+                let type_v2 = vert_to_nodes.get(&v2).expect("Vertex missing from virtual map");
+
+                match (type_v1, type_v2) {
+                    (VertexToVirtual::Unique(vfg_v1), VertexToVirtual::Unique(vfg_v2)) => {
+                        if *vfg_v1 == source {
+                            v2
+                        } else if *vfg_v2 == source {
+                            v1
+                        } else {
+                            unreachable!("Edge does not have input vertex on either end.");
+                        }
+                    },
+                    (VertexToVirtual::Unique(vfg_v1), VertexToVirtual::CutPair { left, right }) => {
+                        if *vfg_v1 == source {
+                            v2
+                        } else if *left == source || *right == source {
+                            v1
+                        } else {
+                            unreachable!("Edge does not have input vertex on either end.");
+                        }
+                    },
+                    (VertexToVirtual::CutPair { left, right }, VertexToVirtual::Unique(vfg_v2)) => {
+                        if *vfg_v2 == source {
+                            v1
+                        } else if *left == source || *right == source {
+                            v2
+                        } else {
+                            unreachable!("Edge does not have input vertex on either end.");
+                        }
+                    },
+                    (VertexToVirtual::CutPair { left: left1, right: right1 }, VertexToVirtual::CutPair { left: left2, right: right2 }) => {
+                        if *left1 == source || *right1 == source {
+                            v2
+                        } else if *left2 == source || *right2 == source {
+                            v1
+                        } else {
+                            unreachable!("Edge does not have input vertex on either end.");
+                        }
+                    }
+                }
+            };
+
+            // Check if other_vert is duplicated, if so we need to use lookback to find the correct duplicate to connect to.
+            match vert_to_nodes.get(&other_vert) {
+                Some(VertexToVirtual::CutPair { .. }) => {
+                    // This vertex is duplicated, we need to use lookback to find the correct duplicate to connect to.
+                    if lookback.contains_key(&edge) {
+                        let target = lookback.get(&edge).unwrap();
+                        if graph.find_edge(source, *target).is_none() {
+                            let length = (graph[source].position - graph[*target].position).norm();
+                            graph.add_edge(source, *target, VirtualEdgeWeight { length });
+                        } else {
+                            unreachable!("Lookback case should not be able to cause parallel edges under current assumptions?");
+                        }
+                        lookback.remove(&edge); // Clear lookback after using.
+                    } else {
+                        // Lookback not set yet, set it and wait for the other duplicate to be processed.
+                        lookback.insert(edge, source);
+                    }
+                }
+                Some(VertexToVirtual::Unique(target)) => {
+                    // This vertex is not duplicated, we can directly connect to the unique node. Just check for parallel edge.
+                    if graph.find_edge(source, *target).is_none() {
+                        let length = (graph[source].position - graph[*target].position).norm();
+                        graph.add_edge(source, *target, VirtualEdgeWeight { length });
+                    }
+                    lookback.remove(&edge); // Clear lookback in case it was set from a previous duplicate.
+                }
+                None => unreachable!(
+                    "Other vertex of boundary edge missing from virtual map: {:?}",
+                    other_vert
+                ),
+            }
+        }
+    } else if let AddingEdgeInput::NewEdge { source, target } = input {
+        if graph.find_edge(source, target).is_none() {
             let length = (graph[source].position - graph[target].position).norm();
             graph.add_edge(source, target, VirtualEdgeWeight { length });
-        }
-    } else if let AddingEdgeInput::DuplicateToDuplicate { source, edge } = input {
-        if let Some(prev_target) = lookback.get(&edge) {
-            // Add edge
-            if graph.find_edge(source, *prev_target).is_none() { 
-                let length = (graph[source].position - graph[*prev_target].position).norm();
-                graph.add_edge(source, *prev_target, VirtualEdgeWeight { length });
-            } else {
-                unreachable!("Duplicate to duplicate case cannot cause parallel edges.");
-            }
-
-            // Clear lookback
-            lookback.remove(&edge);
         } else {
-            lookback.insert(edge, source);
-            // Edge will be added when we encounter the other duplicate.
+            warn!("New-edge case should not be able to cause parallel edges under current assumptions?");
         }
     } else {
         unreachable!();
     }
+
+    // if let AddingEdgeInput::DuplicateToSingular { source, target } = input {
+    //     // Only add if not already present, to avoid parallel edges.
+    //     if graph.find_edge(source, target).is_none() {
+    //         let length = (graph[source].position - graph[target].position).norm();
+    //         graph.add_edge(source, target, VirtualEdgeWeight { length });
+    //     }
+    // } else if let AddingEdgeInput::DuplicateToDuplicate { source, edge } = input {
+    //     if let Some(prev_target) = lookback.get(&edge) {
+    //         // Add edge
+    //         if graph.find_edge(source, *prev_target).is_none() {
+    //             let length = (graph[source].position - graph[*prev_target].position).norm();
+    //             graph.add_edge(source, *prev_target, VirtualEdgeWeight { length });
+    //         } else {
+    //             unreachable!("Duplicate to duplicate case cannot cause parallel edges.");
+    //         }
+
+    //         // Clear lookback
+    //         lookback.remove(&edge);
+    //     } else {
+    //         lookback.insert(edge, source);
+    //         // Edge will be added when we encounter the other duplicate.
+    //     }
+    // } else {
+    //     unreachable!();
+    // }
 }
 // For mostly tri-meshes, only quads accepted around boundaries.
 fn tri_mesh_boundary_edges(
