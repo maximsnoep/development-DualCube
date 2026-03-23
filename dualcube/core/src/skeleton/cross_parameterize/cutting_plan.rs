@@ -1,7 +1,7 @@
 use std::cmp::{Ordering, Reverse};
 use std::collections::{BinaryHeap, HashMap, HashSet};
 
-use log::{error, info, warn};
+use log::warn;
 use mehsh::prelude::{HasNeighbors, HasPosition, Mesh, Vector3D};
 use ordered_float::OrderedFloat;
 use petgraph::graph::{EdgeIndex, NodeIndex};
@@ -258,30 +258,6 @@ fn compute_segment_lengths(midpoints: &[Vector3D]) -> Vec<f64> {
     (0..n)
         .map(|i| (midpoints[(i + 1) % n] - midpoints[i]).norm())
         .collect()
-}
-
-/// Finds the basis index: midpoint with greatest x, then y, then z.
-fn find_basis_index(midpoints: &[Vector3D]) -> usize {
-    (0..midpoints.len())
-        .max_by(|&a, &b| {
-            midpoints[a]
-                .x
-                .partial_cmp(&midpoints[b].x)
-                .unwrap_or(Ordering::Equal)
-                .then(
-                    midpoints[a]
-                        .y
-                        .partial_cmp(&midpoints[b].y)
-                        .unwrap_or(Ordering::Equal),
-                )
-                .then(
-                    midpoints[a]
-                        .z
-                        .partial_cmp(&midpoints[b].z)
-                        .unwrap_or(Ordering::Equal),
-                )
-        })
-        .expect("Boundary loop has no midpoints")
 }
 
 fn build_vertex_surface_path(
