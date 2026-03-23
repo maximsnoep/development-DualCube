@@ -447,6 +447,27 @@ fn check_invariants(vfg: &VirtualFlatGeometry) {
         }
     }
 
+    // 8. Cut-side consistency along the boundary. When moving between two adjacent boundary nodes
+    // that both belong to the same cut, they must be on the same side of that cut.
+    for i in 0..n {
+        let u = vfg.boundary_loop[i];
+        let v = vfg.boundary_loop[(i + 1) % n];
+
+        if let (Some((cut_u, side_u)), Some((cut_v, side_v))) = (cut_side_of(u), cut_side_of(v)) {
+            if cut_u == cut_v {
+                assert_eq!(
+                    side_u, side_v,
+                    "Boundary edge between nodes {:?} and {:?} switches sides of cut {} ({} to {})",
+                    u,
+                    v,
+                    cut_u,
+                    if side_u { "right" } else { "left" },
+                    if side_v { "right" } else { "left" }
+                );
+            }
+        }
+    }
+
     // // 9. All graph nodes are accounted for in vert_to_nodes, midpoints, or cut-endpoint midpoints.
     // // TODO: double check this
     // let tracked_nodes: HashSet<NodeIndex> = vfg
