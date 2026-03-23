@@ -548,66 +548,34 @@ fn add_edge(
                 unreachable!("Edge always has 2 vertices");
             };
 
-            let other_vert = if patch_vertices.contains(&v1) && !patch_vertices.contains(&v2) {
+            // Check if either vertex corresponds to the source node
+            let is_v1_source = match vert_to_nodes.get(&v1) {
+                Some(VertexToVirtual::Unique(n)) => *n == source,
+                Some(VertexToVirtual::CutPair { left, right }) => {
+                    *left == source || *right == source
+                }
+                _ => false,
+            };
+            let is_v2_source = match vert_to_nodes.get(&v2) {
+                Some(VertexToVirtual::Unique(n)) => *n == source,
+                Some(VertexToVirtual::CutPair { left, right }) => {
+                    *left == source || *right == source
+                }
+                _ => false,
+            };
+
+            let other_vert = if is_v1_source {
                 v2
-            } else if patch_vertices.contains(&v2) && !patch_vertices.contains(&v1) {
+            } else if is_v2_source {
                 v1
             } else {
-                // This happens when the edge is not crossed by a BoundaryLoop, i.e. we did not go into the first if after the if let.
-                // We check if any side is links to source, then pick the other side.
-                let type_v1 = vert_to_nodes
-                    .get(&v1)
-                    .expect("Vertex missing from virtual map");
-                let type_v2 = vert_to_nodes
-                    .get(&v2)
-                    .expect("Vertex missing from virtual map");
-
-                match (type_v1, type_v2) {
-                    (VertexToVirtual::Unique(vfg_v1), VertexToVirtual::Unique(vfg_v2)) => {
-                        if *vfg_v1 == source {
-                            v2
-                        } else if *vfg_v2 == source {
-                            v1
-                        } else {
-                            unreachable!("Edge does not have input vertex on either end.");
-                        }
-                    }
-                    (VertexToVirtual::Unique(vfg_v1), VertexToVirtual::CutPair { left, right }) => {
-                        if *vfg_v1 == source {
-                            v2
-                        } else if *left == source || *right == source {
-                            v1
-                        } else {
-                            unreachable!("Edge does not have input vertex on either end.");
-                        }
-                    }
-                    (VertexToVirtual::CutPair { left, right }, VertexToVirtual::Unique(vfg_v2)) => {
-                        if *vfg_v2 == source {
-                            v1
-                        } else if *left == source || *right == source {
-                            v2
-                        } else {
-                            unreachable!("Edge does not have input vertex on either end.");
-                        }
-                    }
-                    (
-                        VertexToVirtual::CutPair {
-                            left: left1,
-                            right: right1,
-                        },
-                        VertexToVirtual::CutPair {
-                            left: left2,
-                            right: right2,
-                        },
-                    ) => {
-                        if *left1 == source || *right1 == source {
-                            v2
-                        } else if *left2 == source || *right2 == source {
-                            v1
-                        } else {
-                            unreachable!("Edge does not have input vertex on either end.");
-                        }
-                    }
+                // This happens when the source is a midpoint. We pick the vertex that is part of the patch.
+                if patch_vertices.contains(&v1) && !patch_vertices.contains(&v2) {
+                    v1
+                } else if patch_vertices.contains(&v2) && !patch_vertices.contains(&v1) {
+                    v2
+                } else {
+                    unreachable!("Source node {:?} does not correspond to either vertex of edge {:?}.", source, edge);
                 }
             };
 
