@@ -995,13 +995,12 @@ fn mesh_boundary_edges(
                 |face_id: FaceID,
                  queue: &mut VecDeque<FaceID>,
                  seen: &mut HashSet<FaceID>,
-                 forbidden_edges: &HashSet<EdgeID>,
                  edges_to_add: &mut HashSet<(NodeIndex, (EdgeID, EdgeID))>| {
                     // Every edge is part of exactly 2 faces, one of which will be the one we are looking at.
                     // Edges of the face will act as 'edges' to other faces in the face 'graph'.
                     for edge in mesh.edges(face_id) {
                         // Do not traverse over cut edges
-                        if forbidden_edges.contains(&edge) {
+                        if cut_edges.contains(&edge) {
                             continue;
                         }
 
@@ -1023,6 +1022,7 @@ fn mesh_boundary_edges(
                         if seen.contains(&other_face) {
                             continue;
                         }
+                        seen.insert(other_face);
 
                         // Check if other_face has at least 1 of {left_id, right_id}
                         let vertices = mesh.vertices(other_face).collect_vec();
@@ -1030,17 +1030,23 @@ fn mesh_boundary_edges(
                             continue;
                         }
 
-                        // Face is now valid. Do BFS bookkeeping.
-                        seen.insert(other_face);
-                        queue.push_back(other_face);
+                        // Only add to queue if face is not cut by a boundary. We check if all vertices are in the patch.
+                        if vertices.iter().all(|v| patch_vertices.contains(v)) {
+                            // queue.push_back(other_face);
+                        }
 
-                        // Add all edges to current and next
+                        // Add all edges to current and next, except along cuts
                         for vertex in vertices {
                             if vertex != *left_id && vertex != *right_id {
                                 continue;
                             }
 
                             if let Some(edges) = mesh.edge_between_verts(*left_id, vertex) {
+                                // Do not add along cut
+                                if cut_edges.contains(&edges.0) || cut_edges.contains(&edges.1) {
+                                    continue;
+                                }
+
                                 edges_to_add.insert((current, edges));
                             }
                         }
@@ -1052,7 +1058,6 @@ fn mesh_boundary_edges(
                     queue.pop_front().unwrap(),
                     &mut queue,
                     seen_faces,
-                    cut_edges,
                     &mut edges_to_add,
                 );
             }
