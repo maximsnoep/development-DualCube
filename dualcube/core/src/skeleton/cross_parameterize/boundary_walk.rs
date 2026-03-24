@@ -14,7 +14,7 @@ use petgraph::{
 };
 
 use crate::{
-    prelude::{EdgeID, VertID, INPUT},
+    prelude::{EdgeID, FaceID, VertID, INPUT},
     skeleton::{
         cross_parameterize::{
             virtual_mesh::{
@@ -177,6 +177,123 @@ fn symbolic_face_coord(index: usize, n: usize) -> (f64, f64) {
     (angle.cos(), angle.sin())
 }
 
+fn ordered_vert_pair(a: VertID, b: VertID) -> (VertID, VertID) {
+    if a < b {
+        (a, b)
+    } else {
+        (b, a)
+    }
+}
+
+/// Collects all mesh-vertex edges traversed by cut interior paths.
+fn collect_cut_edges(
+    cutting_plan: &CuttingPlan,
+) -> (
+    HashSet<(VertID, VertID)>,
+    HashMap<(VertID, VertID), (VertID, VertID)>,
+) {
+    let mut cut_edges = HashSet::new();
+    let mut cut_edge_canonical_direction: HashMap<(VertID, VertID), (VertID, VertID)> =
+        HashMap::new();
+
+    for cut in &cutting_plan.cuts {
+        for pair in cut.path.interior_verts.windows(2) {
+            if let [a, b] = pair {
+                let key = ordered_vert_pair(*a, *b);
+                cut_edges.insert(key);
+
+                if let Some(prev) = cut_edge_canonical_direction.insert(key, (*a, *b)) {
+                    if prev != (*a, *b) {
+                        panic!(
+                            "Conflicting canonical direction for cut edge {:?}: {:?} vs {:?}",
+                            key, prev, (*a, *b)
+                        );
+                    }
+                }
+            }
+        }
+    }
+
+    (cut_edges, cut_edge_canonical_direction)
+}
+
+enum CutSideFaceVertices {
+    Tri {
+        face: FaceID,
+        other: VertID,
+    },
+    Quad {
+        face: FaceID,
+        other_a: VertID,
+        other_b: VertID,
+    },
+}
+
+/// Returns the face on the chosen side of directed cut segment `u -> v`, plus
+/// the non-cut face vertices (1 for tri, 2 for quad).
+/// Can only be called for u,v not endpoints.
+///
+/// Note that endpoints could be outside of the patch in case face is cut.
+fn find_cut_side_face_and_vertex(
+    mesh: &Mesh<INPUT>,
+    cut_edge_canonical_direction: &HashMap<(VertID, VertID), (VertID, VertID)>,
+    u: VertID,
+    v: VertID,
+    side: bool,
+) -> CutSideFaceVertices {
+    let undirected = ordered_vert_pair(u, v);
+    let (from, to) = *cut_edge_canonical_direction.get(&undirected).unwrap_or_else(|| {
+        panic!(
+            "No canonical cut direction stored for interior edge {:?}",
+            undirected
+        )
+    });
+
+    let (e0, e1) = mesh
+        .edge_between_verts(from, to)
+        .expect("Expected cut interior vertices to be connected by an edge");
+    let edge_uv = if mesh.root(e0) == from && mesh.toor(e0) == to {
+        e0
+    } else if mesh.root(e1) == from && mesh.toor(e1) == to {
+        e1
+    } else {
+        panic!(
+            "Expected to find oriented edge {:?}->{:?}, but neither halfedge matched.",
+            from, to
+        );
+    };
+
+    let side_face = if side {
+        mesh.face(mesh.twin(edge_uv))
+    } else {
+        mesh.face(edge_uv)
+    };
+
+    let face_vertices: Vec<VertID> = mesh.vertices(side_face).collect();
+    let others: Vec<VertID> = face_vertices
+        .iter()
+        .copied()
+        .filter(|w| *w != u && *w != v)
+        .collect();
+
+    if others.is_empty() {
+        panic!("Face only consists of two cut vertices. This is not possible.")
+    }
+
+    match others.len() {
+        1 => CutSideFaceVertices::Tri {
+            face: side_face,
+            other: others[0],
+        },
+        2 => CutSideFaceVertices::Quad {
+            face: side_face,
+            other_a: others[0],
+            other_b: others[1],
+        },
+        _ => panic!("Unexpected number of non-cut vertices found."),
+    }
+}
+
 /// Calculates the single boundary loop of the virtual mesh.
 /// The resulting loop is a simple cycle of virtual node indices, following all boundaries in CCW.
 /// Adds all edges for nodes along the boundary (properly dealing with duplicates and cuts.)
@@ -194,6 +311,7 @@ pub fn calculate_boundary_loop(
     patch_vertices: &HashSet<VertID>,
 ) -> Vec<NodeIndex> {
     let mut succ: HashMap<NodeIndex, NodeIndex> = HashMap::new();
+    let (cut_edges, cut_edge_canonical_direction) = collect_cut_edges(cutting_plan);
 
     let resolve_midpoint_edge_id = |edge_id: EdgeID| -> EdgeID {
         if edge_midpoint_ids_to_node_indices.contains_key(&edge_id) {
@@ -444,6 +562,8 @@ pub fn calculate_boundary_loop(
             current,
             next,
             &mut boundary_lookback,
+            &cut_edges,
+            &cut_edge_canonical_direction,
             vert_to_nodes,
             edge_midpoint_ids_to_node_indices,
             mesh,
@@ -732,6 +852,8 @@ fn mesh_boundary_edges(
     current: NodeIndex,
     next: NodeIndex,
     boundary_lookback: &mut HashMap<EdgeID, NodeIndex>,
+    cut_edges: &HashSet<(VertID, VertID)>,
+    cut_edge_canonical_direction: &HashMap<(VertID, VertID), (VertID, VertID)>,
     vert_to_nodes: &HashMap<VertID, VertexToVirtual>,
     edge_midpoint_ids_to_node_indices: &HashMap<EdgeID, EdgemidpointToVirtual>,
     mesh: &Mesh<INPUT>,
@@ -795,9 +917,32 @@ fn mesh_boundary_edges(
             // We do this in a second pass, after all CutDuplicates have their edges so we can reliably walk faces using only the VFG (no longer using mesh).
         }
 
-        (VirtualNodeOrigin::CutDuplicate { original: left_id, .. }, VirtualNodeOrigin::CutDuplicate { original: right_id, .. }) => {
-            // Find face (tri or quad) on right side of the cut   (though I think this case is considerably easier with quad mesh? for now we just keep it general)
-            // TODO
+        (
+            VirtualNodeOrigin::CutDuplicate {
+                original: left_id,
+                side,
+                ..
+            },
+            VirtualNodeOrigin::CutDuplicate {
+                original: right_id, ..
+            },
+        ) => {
+            let cut_pair = ordered_vert_pair(*left_id, *right_id);
+            if !cut_edges.contains(&cut_pair) {
+                panic!(
+                    "CutDuplicate-CutDuplicate boundary step is not on a known cut edge: {:?}",
+                    cut_pair
+                );
+            }
+
+            // Find vertices of face on our side. Note that this could be cut, so then the other vertices should not be used.
+            let _our_side_face_vertices = find_cut_side_face_and_vertex(
+                mesh,
+                cut_edge_canonical_direction,
+                *left_id,
+                *right_id,
+                *side,
+            );
 
             // Do BFS over faces, starting with the face on the correct side we found.
             // Disallow traversing over cut edges (can just look at cuts which edges are cut edges, maybe preprocess this into a set for lookups)
