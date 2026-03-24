@@ -880,6 +880,7 @@ fn add_edge(
 }
 
 pub fn fill_faces_for_cut_endpoint(graph: &mut StableUnGraph<VirtualNode, VirtualEdgeWeight>) {
+    return ;
     // To make sure we do not add vertices twice for faces with 2 cut endpoints
     let mut done: HashSet<NodeIndex> = HashSet::new();
 
@@ -1040,10 +1041,6 @@ fn mesh_boundary_edges(
         | (
             VirtualNodeOrigin::CutEndpointMidpointDuplicate { .. },
             VirtualNodeOrigin::BoundaryMidpoint { .. },
-        )
-        | (
-            VirtualNodeOrigin::CutEndpointMidpointDuplicate { .. },
-            VirtualNodeOrigin::CutEndpointMidpointDuplicate { .. },
         ) => {
             // Walk face (quad or tri), add vertex in the middle and connect to all nodes.
             // This fixes degrees in both current side majority triangle and minority triangle case (1 or 2 nodes inside patch).
@@ -1052,6 +1049,16 @@ fn mesh_boundary_edges(
             // Note that walking the face is difficult. The VFG might be partial if we came from the boundary side, but purely relying on original mesh is difficult as well because of the midpoints...
 
             // We do this in a second pass, after all CutDuplicates have their edges so we can reliably walk faces using only the VFG (no longer using mesh).
+        }
+
+        (
+            VirtualNodeOrigin::CutEndpointMidpointDuplicate { .. },
+            VirtualNodeOrigin::CutEndpointMidpointDuplicate { .. }, 
+        ) => {
+            // This is kinda 2 cases:
+            // - Different cut, then actually there are no other edges to connect. Necessarily, the face is only this edge, the two different cuts going out and then an edge connecting those (quad).
+                // We could connect those non-endpoint vertices together but I think the other cases should cover this..
+            // - Same cut, then the cut has no internal vertices, there may or may not be edges to add? This is unclear to me now. TODO...
         }
 
         (
