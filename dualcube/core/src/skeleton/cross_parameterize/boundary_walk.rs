@@ -684,20 +684,28 @@ fn fill_faces_for_cut_endpoint(graph: &mut StableUnGraph<VirtualNode, VirtualEdg
             // If they share an edge, we are in the tri case
             if graph.find_edge(neighbors[0], neighbors[1]).is_some() {
                 // Tri case
-                // TODO    
-
+                // TODO
 
                 // Mark all 3 nodes as done
                 done.insert(node_idx);
                 done.insert(neighbors[0]);
                 done.insert(neighbors[1]);
-
             } else {
                 // Face should be a quad now, we need to find the 4th vertex and connect to it.
 
-                let neighbors_0 = graph.neighbors(neighbors[0]).filter(|n| *n != node_idx).collect_vec();
-                let neighbors_1 = graph.neighbors(neighbors[1]).filter(|n| *n != node_idx).collect_vec();
-                let shared = neighbors_0.iter().filter(|n| neighbors_1.contains(n)).copied().collect_vec();
+                let neighbors_0 = graph
+                    .neighbors(neighbors[0])
+                    .filter(|n| *n != node_idx)
+                    .collect_vec();
+                let neighbors_1 = graph
+                    .neighbors(neighbors[1])
+                    .filter(|n| *n != node_idx)
+                    .collect_vec();
+                let shared = neighbors_0
+                    .iter()
+                    .filter(|n| neighbors_1.contains(n))
+                    .copied()
+                    .collect_vec();
                 if shared.len() != 1 {
                     panic!(
                         "Cut endpoint midpoint duplicate node {:?} neighbors do not share exactly one other neighbor as expected for quad face: {:?} and {:?} with shared {:?}",
@@ -787,9 +795,15 @@ fn mesh_boundary_edges(
             // We do this in a second pass, after all CutDuplicates have their edges so we can reliably walk faces using only the VFG (no longer using mesh).
         }
 
-        (VirtualNodeOrigin::CutDuplicate { .. }, VirtualNodeOrigin::CutDuplicate { .. }) => {
-            // TODO, something with sides?! Main difficult case.
-            // Add all edges to both nodes
+        (VirtualNodeOrigin::CutDuplicate { original: left_id, .. }, VirtualNodeOrigin::CutDuplicate { original: right_id, .. }) => {
+            // Find face (tri or quad) on right side of the cut   (though I think this case is considerably easier with quad mesh? for now we just keep it general)
+            // TODO
+
+            // Do BFS over faces, starting with the face on the correct side we found.
+            // Disallow traversing over cut edges (can just look at cuts which edges are cut edges, maybe preprocess this into a set for lookups)
+            // Only add faces if they have at least 1 of {left_id, right_id} (note that there is only one face on this side with both!)
+            // For all faces, for all its edges that connect to {left_id, right_id}, add edge to the corresponding node, add_edge it.
+            // TODO
         }
 
         (
@@ -806,10 +820,8 @@ fn mesh_boundary_edges(
 
         //
         _ => {
-            panic!(
-                        "Boundary traversal found unexpected pair: from node {:?} to {:?} of types {:?} to {:?}.",
-                        current, next, current_type, next_type
-                    );
+            panic!("Boundary traversal found unexpected pair: from node {:?} to {:?} of types {:?} to {:?}.",
+                        current, next, current_type, next_type);
         }
     }
 }
