@@ -244,6 +244,7 @@ impl VirtualFlatGeometry {
             calculate_boundary_loop_reversal_flags(patch_node_idx, skeleton, mesh);
 
         // Step 5:  trace boundary loop, add edges as we go, both between boundary nodes and to other mesh vertices.
+        let patch_vertex_set: HashSet<VertID> = patch_vertices.iter().copied().collect();
         let boundary_loop = calculate_boundary_loop(
             patch_node_idx,
             skeleton,
@@ -254,6 +255,7 @@ impl VirtualFlatGeometry {
             cutting_plan,
             &boundary_loop_reverse,
             is_tri_mesh,
+            &patch_vertex_set,
         );
 
         let mut vfg = VirtualFlatGeometry {

@@ -6,9 +6,7 @@ use std::{
 
 use itertools::Itertools;
 use log::{error, warn};
-use mehsh::{
-    prelude::{HasVertices, Mesh},
-};
+use mehsh::prelude::{HasVertices, Mesh};
 use petgraph::{
     graph::{EdgeIndex, NodeIndex},
     prelude::StableUnGraph,
@@ -16,16 +14,15 @@ use petgraph::{
 };
 
 use crate::{
-    prelude::{EdgeID, VertID, INPUT},
+    prelude::{EdgeID, INPUT, VertID},
     skeleton::{
         cross_parameterize::{
-            virtual_mesh::{
+            CuttingPlan, virtual_mesh::{
                 EdgemidpointToVirtual, VertexToVirtual, VirtualEdgeWeight, VirtualNode,
                 VirtualNodeOrigin,
-            },
-            CuttingPlan,
+            }
         },
-        orthogonalize::LabeledCurveSkeleton,
+        orthogonalize::LabeledCurveSkeleton, patch,
     },
 };
 
@@ -193,6 +190,7 @@ pub fn calculate_boundary_loop(
     cutting_plan: &CuttingPlan,
     reverse_flags: &HashMap<EdgeIndex, bool>,
     is_tri_mesh: bool,
+    patch_vertices: &HashSet<VertID>,
 ) -> Vec<NodeIndex> {
     let mut succ: HashMap<NodeIndex, NodeIndex> = HashMap::new();
 
@@ -441,9 +439,9 @@ pub fn calculate_boundary_loop(
 
         // Add edges around boundaries.
         if is_tri_mesh {
-            tri_mesh_boundary_edges(graph, current, next, &mut boundary_lookback);
+            tri_mesh_boundary_edges(graph, current, next, &mut boundary_lookback, vert_to_nodes, edge_midpoint_ids_to_node_indices, mesh, patch_vertices);
         } else {
-            quad_mesh_boundary_edges(graph, current, next, &mut boundary_lookback);
+            quad_mesh_boundary_edges(graph, current, next, &mut boundary_lookback, vert_to_nodes, edge_midpoint_ids_to_node_indices, mesh, patch_vertices);
         }
 
         // Add the traced disk boundary as actual VFG edges.
@@ -487,7 +485,7 @@ enum AddingEdgeInput {
 }
 
 /// Smartly adds an edge to the VFG. Accounts for looking back for duplicates and not adding multiple parallel edges.
-/// 
+///
 /// TODO maybe: assert that source is endpoint of edge of midpoint of it.
 fn add_edge(
     graph: &mut StableUnGraph<VirtualNode, VirtualEdgeWeight>,
@@ -590,7 +588,10 @@ fn add_edge(
                 } else if patch_vertices.contains(&v2) && !patch_vertices.contains(&v1) {
                     v2
                 } else {
-                    unreachable!("Source node {:?} does not correspond to either vertex of edge {:?}.", source, edge);
+                    unreachable!(
+                        "Source node {:?} does not correspond to either vertex of edge {:?}.",
+                        source, edge
+                    );
                 }
             };
 
@@ -670,22 +671,49 @@ fn tri_mesh_boundary_edges(
     current: NodeIndex,
     next: NodeIndex,
     boundary_lookback: &mut HashMap<EdgeID, NodeIndex>,
+    vert_to_nodes: &HashMap<VertID, VertexToVirtual>,
+    edge_midpoint_ids_to_node_indices: &HashMap<EdgeID, EdgemidpointToVirtual>,
+    mesh: &Mesh<INPUT>,
+    patch_vertices: &HashSet<VertID>,
 ) {
-    let current_type = &graph[current].origin;
-    let next_type = &graph[next].origin;
+    let current_type = &graph[current].origin.clone();
+    let next_type = &graph[next].origin.clone();
     match (current_type, next_type) {
         (
             VirtualNodeOrigin::BoundaryMidpoint {
                 edge: current_edge,
-                boundary_edge: current_boundary_edge,
+                ..
             },
             VirtualNodeOrigin::BoundaryMidpoint {
                 edge: next_edge,
-                boundary_edge: next_boundary_edge,
+                ..
             },
         ) => {
             // Simplest case: for both edges, add edge from patch vertex to its connecting boundary midpoint
-            // TODO
+            add_edge(
+                graph,
+                boundary_lookback,
+                vert_to_nodes,
+                edge_midpoint_ids_to_node_indices,
+                AddingEdgeInput::AlongEdge {
+                    source: current,
+                    edge: *current_edge,
+                },
+                mesh,
+                patch_vertices,
+            );
+            add_edge(
+                graph,
+                boundary_lookback,
+                vert_to_nodes,
+                edge_midpoint_ids_to_node_indices,
+                AddingEdgeInput::AlongEdge {
+                    source: next,
+                    edge: *next_edge,
+                },
+                mesh,
+                patch_vertices,
+            );
         }
         (
             VirtualNodeOrigin::BoundaryMidpoint { .. },
@@ -747,6 +775,10 @@ fn quad_mesh_boundary_edges(
     current: NodeIndex,
     next: NodeIndex,
     boundary_lookback: &mut HashMap<EdgeID, NodeIndex>,
+    vert_to_nodes: &HashMap<VertID, VertexToVirtual>,
+    edge_midpoint_ids_to_node_indices: &HashMap<EdgeID, EdgemidpointToVirtual>,
+    mesh: &Mesh<INPUT>,
+    patch_vertices: &HashSet<VertID>,
 ) {
     let current_type = &graph[current].origin;
     let next_type = &graph[next].origin;
