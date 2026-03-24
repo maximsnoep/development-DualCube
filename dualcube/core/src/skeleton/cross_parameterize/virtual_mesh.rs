@@ -156,7 +156,6 @@ impl VirtualFlatGeometry {
         skeleton: &LabeledCurveSkeleton,
         mesh: &Mesh<INPUT>,
         cutting_plan: &CuttingPlan,
-        is_tri_mesh: bool,
     ) -> Self {
         // Initialize empty structures and fill at each step
         let mut graph: StableUnGraph<VirtualNode, VirtualEdgeWeight> = StableUnGraph::default();
@@ -254,7 +253,6 @@ impl VirtualFlatGeometry {
             &edge_midpoint_ids_to_node_indices,
             cutting_plan,
             &boundary_loop_reverse,
-            is_tri_mesh,
             &patch_vertex_set,
         );
 
@@ -523,45 +521,45 @@ fn check_invariants(vfg: &VirtualFlatGeometry) {
     //     n_nodes,
     // );
 
-    // // 10. All duplicated pairs (CutDuplicate and CutEndpointMidpoint) have
-    // //    fully disjoint VFG neighbor sets.
-    // // TODO: this might not necessarily hold for really small boundary loops.. (if there is only one vertex between cut endpoints, special case though that is detectable)
-    // for node in vfg.graph.node_indices() {
-    //     let is_left_copy = match vfg.graph[node].origin {
-    //         VirtualNodeOrigin::CutDuplicate {
-    //             side: false,
-    //             peer: Some(_),
-    //             ..
-    //         } => true,
-    //         VirtualNodeOrigin::CutEndpointMidpoint {
-    //             side: false,
-    //             peer: Some(_),
-    //             ..
-    //         } => true,
-    //         _ => false,
-    //     };
-    //     if !is_left_copy {
-    //         continue;
-    //     }
-    //     let peer = match vfg.graph[node].origin {
-    //         VirtualNodeOrigin::CutDuplicate { peer: Some(p), .. } => p,
-    //         VirtualNodeOrigin::CutEndpointMidpoint { peer: Some(p), .. } => p,
-    //         _ => unreachable!(),
-    //     };
-    //     let nbrs_left: HashSet<NodeIndex> = vfg.graph.neighbors(node).collect();
-    //     let nbrs_right: HashSet<NodeIndex> = vfg.graph.neighbors(peer).collect();
-    //     let shared: Vec<NodeIndex> = nbrs_left.intersection(&nbrs_right).copied().collect();
-    //     assert!(
-    //         shared.is_empty(),
-    //         "Duplicated pair {:?} and {:?} share neighbors: {:?}",
-    //         node,
-    //         peer,
-    //         shared
-    //             .iter()
-    //             .map(|&s| format!("{:?} ({:?})", s, vfg.graph[s].origin))
-    //             .collect::<Vec<_>>(),
-    //     );
-    // }
+    // 10. All duplicated pairs (CutDuplicate and CutEndpointMidpoint) have
+    //    fully disjoint VFG neighbor sets.
+    // TODO: this might not necessarily hold for really small boundary loops.. (if there is only one vertex between cut endpoints, special case though that is detectable)
+    for node in vfg.graph.node_indices() {
+        let is_left_copy = match vfg.graph[node].origin {
+            VirtualNodeOrigin::CutDuplicate {
+                side: false,
+                peer: Some(_),
+                ..
+            } => true,
+            VirtualNodeOrigin::CutEndpointMidpointDuplicate {
+                side: false,
+                peer: Some(_),
+                ..
+            } => true,
+            _ => false,
+        };
+        if !is_left_copy {
+            continue;
+        }
+        let peer = match vfg.graph[node].origin {
+            VirtualNodeOrigin::CutDuplicate { peer: Some(p), .. } => p,
+            VirtualNodeOrigin::CutEndpointMidpointDuplicate { peer: Some(p), .. } => p,
+            _ => unreachable!(),
+        };
+        let nbrs_left: HashSet<NodeIndex> = vfg.graph.neighbors(node).collect();
+        let nbrs_right: HashSet<NodeIndex> = vfg.graph.neighbors(peer).collect();
+        let shared: Vec<NodeIndex> = nbrs_left.intersection(&nbrs_right).copied().collect();
+        assert!(
+            shared.is_empty(),
+            "Duplicated pair {:?} and {:?} share neighbors: {:?}",
+            node,
+            peer,
+            shared
+                .iter()
+                .map(|&s| format!("{:?} ({:?})", s, vfg.graph[s].origin))
+                .collect::<Vec<_>>(),
+        );
+    }
 
     // 11. No parallel edges (multi-edges between the same pair of nodes).
     let mut edge_set: HashSet<(usize, usize)> = HashSet::new();
