@@ -327,6 +327,7 @@ fn check_invariants(vfg: &VirtualFlatGeometry) {
     }
 
     // 4. Degree checks.
+    let mut low_degree_counts = [0; 3]; // Index 0 for degree 0, 1 for degree 1, 2 for degree 2
     for node in vfg.graph.node_indices() {
         let degree = vfg.graph.edges(node).count();
 
@@ -339,6 +340,9 @@ fn check_invariants(vfg: &VirtualFlatGeometry) {
         //         degree
         //     );
         // }
+        if degree < 3 {
+            low_degree_counts[degree] += 1;
+        }
 
         // assert!(
         //     degree >= 3,
@@ -347,6 +351,16 @@ fn check_invariants(vfg: &VirtualFlatGeometry) {
         //     vfg.graph[node].origin,
         //     degree
         // );
+    }
+    let sum = low_degree_counts.iter().sum::<usize>();
+    if sum > 0 {
+        log::error!(
+            "VFG has {} low-degree nodes: {} degree 0, {} degree 1, {} degree 2",
+            sum,
+            low_degree_counts[0],
+            low_degree_counts[1],
+            low_degree_counts[2],
+        );
     }
 
     // 5. All duplicated pairs (CutDuplicate and CutEndpointMidpoint) have matching peers.
@@ -456,7 +470,8 @@ fn check_invariants(vfg: &VirtualFlatGeometry) {
         if let (Some((cut_u, side_u)), Some((cut_v, side_v))) = (cut_side_of(u), cut_side_of(v)) {
             if cut_u == cut_v {
                 assert_eq!(
-                    side_u, side_v,
+                    side_u,
+                    side_v,
                     "Boundary edge between nodes {:?} and {:?} switches sides of cut {} ({} to {})",
                     u,
                     v,

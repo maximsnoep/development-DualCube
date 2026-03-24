@@ -7,7 +7,6 @@ use std::{
 use itertools::Itertools;
 use log::{error, warn};
 use mehsh::{
-    mesh::{self, algo::location::vert},
     prelude::{HasVertices, Mesh},
 };
 use petgraph::{
@@ -664,6 +663,7 @@ fn add_edge(
     //     unreachable!();
     // }
 }
+
 // For mostly tri-meshes, only quads accepted around boundaries.
 fn tri_mesh_boundary_edges(
     graph: &mut StableUnGraph<VirtualNode, VirtualEdgeWeight>,
