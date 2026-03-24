@@ -618,23 +618,20 @@ fn add_edge(
     patch_vertices: &HashSet<VertID>,
 ) {
     if let AddingEdgeInput::AlongEdge { source, edge } = input {
-        // First check whether the exact edge instance is in the midpoint map.
-        let mut edge = edge;
-        if !edge_midpoint_ids_to_node_indices.contains_key(&edge) {
+        let midpoint_edge = if edge_midpoint_ids_to_node_indices.contains_key(&edge) {
+            Some(edge)
+        } else {
             let twin = mesh.twin(edge);
             if edge_midpoint_ids_to_node_indices.contains_key(&twin) {
-                edge = twin;
+                Some(twin)
+            } else {
+                None
             }
-        }
+        };
 
-        // Project edge to a stable orientation (root->toor) for any non-midpoint.
-        if mesh.root(edge) > mesh.toor(edge) {
-            edge = mesh.twin(edge);
-        }
-
-        // First check if edge corresponds to a midpoint
-        if edge_midpoint_ids_to_node_indices.contains_key(&edge) {
-            match edge_midpoint_ids_to_node_indices.get(&edge).unwrap() {
+        // First check if edge corresponds to a midpoint.
+        if let Some(mid_edge) = midpoint_edge {
+            match edge_midpoint_ids_to_node_indices.get(&mid_edge).unwrap() {
                 EdgemidpointToVirtual::Unique(target) => {
                     if *target == source {
                         // We care about the vertex side, look in vertex side.
@@ -644,7 +641,7 @@ fn add_edge(
                             let length = (graph[source].position - graph[*target].position).norm();
                             graph.add_edge(source, *target, VirtualEdgeWeight { length });
                         }
-                        lookback.remove(&edge); // Clear lookback in case it was set from a previous duplicate.
+                        lookback.remove(&mid_edge); // Clear lookback in case it was set from a previous duplicate.
                         return;
                     }
                 }
@@ -654,8 +651,8 @@ fn add_edge(
                         // If this is the case, we care about the other side.
                     } else {
                         // The target is actually a duplicated pair. We need to use lookback
-                        if lookback.contains_key(&edge) {
-                            let target = lookback.get(&edge).unwrap();
+                        if lookback.contains_key(&mid_edge) {
+                            let target = lookback.get(&mid_edge).unwrap();
                             if graph.find_edge(source, *target).is_none() {
                                 let length =
                                     (graph[source].position - graph[*target].position).norm();
@@ -663,16 +660,23 @@ fn add_edge(
                             } else {
                                 unreachable!("Lookback case should not be able to cause parallel edges under current assumptions?");
                             }
-                            lookback.remove(&edge); // Clear lookback after using.
+                            lookback.remove(&mid_edge); // Clear lookback after using.
                             return;
                         } else {
                             // Lookback not set yet, set it and wait for the other duplicate to be processed.
-                            lookback.insert(edge, source);
+                            lookback.insert(mid_edge, source);
                             return;
                         }
                     }
                 }
             };
+        }
+
+        // For non-midpoint edges, project to a stable orientation (root->toor)
+        // so duplicate lookback keys match independent of half-edge direction.
+        let mut edge = edge;
+        if mesh.root(edge) > mesh.toor(edge) {
+            edge = mesh.twin(edge);
         }
 
         // Only reach here when if fails (edge has no midpoint), or source is actually a midpoint (so we want to find vertex).
@@ -743,7 +747,7 @@ fn add_edge(
                     lookback.remove(&edge); // Clear lookback in case it was set from a previous duplicate.
                 }
                 None => unreachable!(
-                    "Other vertex of boundary edge missing from virtual map: {:?}",
+                    "Other vertex missing from virtual map: {:?}",
                     other_vert
                 ),
             }
