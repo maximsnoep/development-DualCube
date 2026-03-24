@@ -69,17 +69,11 @@ pub enum VirtualNodeOrigin {
         side: bool,
     },
 
-    /// Artificial node introduced in a face to increase degree of some boundary cut vertex.
-    ArtifialInTri {
-        /// The nodes of the original face this node was placed in the middle of.
-        nodes: [NodeIndex; 3],
-    },
+    /// Artificial node introduced in a tri face to increase degree of some boundary cut vertex.
+    ArtificialInTri,
 
-    /// Artificial node introduced in a face to increase degree of some boundary cut vertex.
-    ArtificialInQuad {
-        /// The nodes of the original face this node was placed in the middle of.
-        nodes: [NodeIndex; 4],
-    },
+    /// Artificial node introduced in a quad face to increase degree of some boundary cut vertex.
+    ArtificialInQuad
 }
 
 /// Weight on virtual-mesh edges. Currently stores the Euclidean length so that

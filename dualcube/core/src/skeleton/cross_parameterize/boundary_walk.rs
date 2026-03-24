@@ -7,8 +7,7 @@ use std::{
 use itertools::Itertools;
 use log::{error, warn};
 use mehsh::{
-    mesh::{self, elem::edge},
-    prelude::{HasEdges, HasFaces, HasVertices, Mesh},
+    prelude::{HasEdges, HasFaces, HasVertices, Mesh, Vector3D},
 };
 use petgraph::{
     graph::{EdgeIndex, NodeIndex},
@@ -589,7 +588,34 @@ pub fn calculate_boundary_loop(
 
     if !boundary_lookback.is_empty() {
         // TODO SHOULD PANIC WHEN EVERYTHING IS FULLY WORKING, NOW JUST ERROR
-        error!("Boundary edge lookback produced non-empty result, indicating some boundary edge cases are not fully handled yet. Lookback: {:?}", boundary_lookback);
+        error!("Boundary edge lookback produced non-empty result, indicating some boundary edge cases are not fully handled yet. Lookback:");
+        // Print types in detail for debugging.
+        for (edge_id, node_idx) in &boundary_lookback {
+            let node = &graph[*node_idx];
+            let edge_verts = mesh.vertices(*edge_id).collect_vec();
+            let [v1, v2] = edge_verts.as_slice() else {
+                unreachable!("Edge always has 2 vertices");
+            };
+            let type_v1 = vert_to_nodes
+                .get(&v1)
+                .map(|x| match x {
+                    VertexToVirtual::Unique(_) => "Unique",
+                    VertexToVirtual::CutPair { .. } => "CutPair",
+                })
+                .unwrap_or("OUTSIDE PATCH");
+            let type_v2 = vert_to_nodes
+                .get(&v2)
+                .map(|x| match x {
+                    VertexToVirtual::Unique(_) => "Unique",
+                    VertexToVirtual::CutPair { .. } => "CutPair",
+                })
+                .unwrap_or("OUTSIDE PATCH");
+
+            error!(
+                    "Lookback entry: edge {:?} (verts {:?} with types {:?}) -> node {:?} with lookback origin {:?}",
+                    edge_id, [v1, v2], [type_v1, type_v2], node_idx, node.origin
+                );
+        }
     }
 
     if boundary_loop.is_empty() {
@@ -608,8 +634,6 @@ enum AddingEdgeInput {
 }
 
 /// Smartly adds an edge to the VFG. Accounts for looking back for duplicates and not adding multiple parallel edges.
-///
-/// TODO maybe: assert that source is endpoint of edge of midpoint of it.
 fn add_edge(
     graph: &mut StableUnGraph<VirtualNode, VirtualEdgeWeight>,
     lookback: &mut HashMap<EdgeID, NodeIndex>,
@@ -619,6 +643,8 @@ fn add_edge(
     mesh: &Mesh<INPUT>,
     patch_vertices: &HashSet<VertID>,
 ) {
+    #[allow(irrefutable_let_patterns)]
+    // TODO: remove this if it really turns out to be not necessary
     if let AddingEdgeInput::AlongEdge { source, edge } = input {
         let midpoint_edge = if edge_midpoint_ids_to_node_indices.contains_key(&edge) {
             Some(edge)
@@ -783,10 +809,13 @@ fn add_edge(
 }
 
 fn fill_faces_for_cut_endpoint(graph: &mut StableUnGraph<VirtualNode, VirtualEdgeWeight>) {
+    return ; // TODO: re-enable when lookback state works
     // To make sure we do not add vertices twice for faces with 2 cut endpoints
     let mut done: HashSet<NodeIndex> = HashSet::new();
 
-    return; // TODO: re-enable when cut duplicate stuff works
+    // Save what nodes to add (can't edit graph while iterating).
+    // Saved is per node its position, and the neigbors
+    let mut nodes_to_add: Vec<(Vector3D, Vec<NodeIndex>)> = Vec::new();
 
     // Find cut endpoint
     for node_idx in graph.node_indices() {
@@ -806,9 +835,11 @@ fn fill_faces_for_cut_endpoint(graph: &mut StableUnGraph<VirtualNode, VirtualEdg
             }
 
             // If they share an edge, we are in the tri case
+            let nodes;
             if graph.find_edge(neighbors[0], neighbors[1]).is_some() {
                 // Tri case
-                // TODO
+
+                nodes = vec![node_idx, neighbors[0], neighbors[1]];
 
                 // Mark all 3 nodes as done
                 done.insert(node_idx);
@@ -831,13 +862,18 @@ fn fill_faces_for_cut_endpoint(graph: &mut StableUnGraph<VirtualNode, VirtualEdg
                     .copied()
                     .collect_vec();
                 if shared.len() != 1 {
-                    panic!(
+                    // panic!(
+                    //     "Cut endpoint midpoint duplicate node {:?} neighbors do not share exactly one other neighbor as expected for quad face: {:?} and {:?} with shared {:?}",
+                    //     node_idx, neighbors_0, neighbors_1, shared
+                    // ); FIX THIS!!
+                    error!(
                         "Cut endpoint midpoint duplicate node {:?} neighbors do not share exactly one other neighbor as expected for quad face: {:?} and {:?} with shared {:?}",
                         node_idx, neighbors_0, neighbors_1, shared
                     );
+                    continue;
                 }
 
-                // TODO ... add vertex
+                nodes = vec![node_idx, neighbors[0], neighbors[1], shared[0]];
 
                 // Mark all 4 nodes as done
                 done.insert(node_idx);
@@ -845,6 +881,33 @@ fn fill_faces_for_cut_endpoint(graph: &mut StableUnGraph<VirtualNode, VirtualEdg
                 done.insert(neighbors[1]);
                 done.insert(shared[0]);
             }
+
+            // Add vertex in middle
+            let zero = Vector3D::new(0.0, 0.0, 0.0);
+            let mid_pos = nodes
+                .iter()
+                .map(|n| graph[*n].position)
+                .fold(zero, |acc, p| acc + p)
+                / (nodes.len() as f64);
+
+            nodes_to_add.push((mid_pos, nodes));
+        }
+    }
+
+    // Add all nodes we need to add
+    for (pos, neighbors) in &nodes_to_add {
+        let mid_idx = graph.add_node(VirtualNode {
+            position: *pos,
+            origin: match neighbors.len() {
+                3 => VirtualNodeOrigin::ArtificialInTri,
+                4 => VirtualNodeOrigin::ArtificialInQuad,
+                _ => unreachable!(),
+            },
+        });
+
+        for n in neighbors {
+            let length = (graph[mid_idx].position - graph[*n].position).norm();
+            graph.add_edge(mid_idx, *n, VirtualEdgeWeight { length });
         }
     }
 }
