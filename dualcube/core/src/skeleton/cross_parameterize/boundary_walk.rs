@@ -940,6 +940,13 @@ pub fn fill_faces_for_cut_endpoint(graph: &mut StableUnGraph<VirtualNode, Virtua
                         "is_tri: {:?}, Cut endpoint midpoint duplicate node {:?} neighbors do not share exactly one other neighbor as expected for quad face: {:?} and {:?} with shared {:?}",
                         is_tri_mesh, node_idx, neighbors_0, neighbors_1, shared
                     );
+                    let all_neighbors = neighbors_0.iter().chain(neighbors_1.iter()).copied().collect_vec();
+                    // Log the type of all neighbors for debugging.
+                    for n in &all_neighbors {
+                        let node = &graph[*n];
+                        error!("Neighbor node {:?} has origin {:?}", n, node.origin);
+                    }
+
                     continue;
                 }
 
@@ -950,12 +957,6 @@ pub fn fill_faces_for_cut_endpoint(graph: &mut StableUnGraph<VirtualNode, Virtua
                 done.insert(neighbors[0]);
                 done.insert(neighbors[1]);
                 done.insert(shared[0]);
-            }
-
-            match nodes.len() {
-                3 => info!("is_tri: {:?}, Tri face found for cut endpoint {:?} with nodes {:?}", is_tri_mesh, node_idx, nodes),
-                4 => info!("is_tri: {:?}, Quad face found for cut endpoint {:?} with nodes {:?}", is_tri_mesh, node_idx, nodes),
-                _ => unreachable!(),
             }
 
             // Add vertex in middle

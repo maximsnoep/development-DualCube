@@ -400,7 +400,7 @@ pub fn create_patch_convexity_mesh(
     let mut region_scores: HashMap<usize, f64> = HashMap::new();
     for (compact_id, node_idx) in curve_skeleton.node_indices().enumerate() {
         let mut score = curve_skeleton.patch_convexity_score(node_idx, mesh);
-        info!("Convexity score for node {:?}: {:.3}", node_idx, score);
+        // info!("Convexity score for node {:?}: {:.3}", node_idx, score);
         if !score.is_finite() {
             score = 0.0;
         }
