@@ -678,6 +678,38 @@ fn add_edge(
                     if *left == source || *right == source {
                         // If this is the case, we care about the other side.
                     } else {
+                        // If source and target are from the same cut, we can connect directly by matching sides.
+                        let source_cut = match graph[source].origin {
+                            VirtualNodeOrigin::CutDuplicate { cut_index, side, .. } => Some((cut_index, side)),
+                            VirtualNodeOrigin::CutEndpointMidpointDuplicate { cut_index, side, .. } => Some((cut_index, side)),
+                            _ => None,
+                        };
+
+                        let mut connected_directly = false;
+                        if let Some((s_cut, s_side)) = source_cut {
+                            let (l_cut, l_side) = match graph[*left].origin {
+                                VirtualNodeOrigin::CutEndpointMidpointDuplicate { cut_index, side, .. } => (cut_index, side),
+                                _ => unreachable!(),
+                            };
+                            let (r_cut, r_side) = match graph[*right].origin {
+                                VirtualNodeOrigin::CutEndpointMidpointDuplicate { cut_index, side, .. } => (cut_index, side),
+                                _ => unreachable!(),
+                            };
+
+                            if s_cut == l_cut {
+                                let target = if s_side == l_side { *left } else { *right };
+                                if graph.find_edge(source, target).is_none() {
+                                    let length = (graph[source].position - graph[target].position).norm();
+                                    graph.add_edge(source, target, VirtualEdgeWeight { length });
+                                }
+                                connected_directly = true;
+                            }
+                        }
+
+                        if connected_directly {
+                            return;
+                        }
+
                         // The target is actually a duplicated pair. We need to use lookback
                         if lookback.contains_key(&mid_edge) {
                             let target = lookback.get(&mid_edge).unwrap();
@@ -751,6 +783,16 @@ fn add_edge(
             // Check if other_vert is duplicated, if so we need to use lookback to find the correct duplicate to connect to.
             match vert_to_nodes.get(&other_vert) {
                 Some(VertexToVirtual::CutPair { .. }) => {
+                    // Unique nodes (like BoundaryMidpoint) do not need to use lookback. 
+                    // The CutDuplicate on the other side will process this edge and connect directly to us.
+                    let is_source_duplicate = matches!(
+                        graph[source].origin,
+                        VirtualNodeOrigin::CutDuplicate { .. } | VirtualNodeOrigin::CutEndpointMidpointDuplicate { .. }
+                    );
+                    if !is_source_duplicate {
+                        return;
+                    }
+
                     // This vertex is duplicated, we need to use lookback to find the correct duplicate to connect to.
                     if lookback.contains_key(&edge) {
                         let target = lookback.get(&edge).unwrap();
@@ -1100,17 +1142,22 @@ fn mesh_boundary_edges(
 
                         // Add all edges to current and next, except along cuts
                         for vertex in vertices {
-                            if vertex != *left_id && vertex != *right_id {
+                            if vertex == *left_id || vertex == *right_id {
                                 continue;
                             }
 
                             if let Some(edges) = mesh.edge_between_verts(*left_id, vertex) {
                                 // Do not add along cut
-                                if cut_edges.contains(&edges.0) || cut_edges.contains(&edges.1) {
-                                    continue;
+                                if !cut_edges.contains(&edges.0) && !cut_edges.contains(&edges.1) {
+                                    edges_to_add.insert((current, edges));
                                 }
+                            }
 
-                                edges_to_add.insert((current, edges));
+                            if let Some(edges) = mesh.edge_between_verts(*right_id, vertex) {
+                                // Do not add along cut
+                                if !cut_edges.contains(&edges.0) && !cut_edges.contains(&edges.1) {
+                                    edges_to_add.insert((next, edges));
+                                }
                             }
                         }
                     }
