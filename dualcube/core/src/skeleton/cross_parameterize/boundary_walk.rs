@@ -488,6 +488,8 @@ enum AddingEdgeInput {
 }
 
 /// Smartly adds an edge to the VFG. Accounts for looking back for duplicates and not adding multiple parallel edges.
+/// 
+/// TODO maybe: assert that source is endpoint of edge of midpoint of it.
 fn add_edge(
     graph: &mut StableUnGraph<VirtualNode, VirtualEdgeWeight>,
     lookback: &mut HashMap<EdgeID, NodeIndex>,
@@ -498,6 +500,20 @@ fn add_edge(
     patch_vertices: &HashSet<VertID>,
 ) {
     if let AddingEdgeInput::AlongEdge { source, edge } = input {
+        // First check whether the exact edge instance is in the midpoint map.
+        let mut edge = edge;
+        if !edge_midpoint_ids_to_node_indices.contains_key(&edge) {
+            let twin = mesh.twin(edge);
+            if edge_midpoint_ids_to_node_indices.contains_key(&twin) {
+                edge = twin;
+            }
+        }
+
+        // Project edge to a stable orientation (root->toor) for any non-midpoint.
+        if mesh.root(edge) > mesh.toor(edge) {
+            edge = mesh.twin(edge);
+        }
+
         // First check if edge corresponds to a midpoint
         if edge_midpoint_ids_to_node_indices.contains_key(&edge) {
             match edge_midpoint_ids_to_node_indices.get(&edge).unwrap() {
