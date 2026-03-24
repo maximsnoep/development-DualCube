@@ -559,27 +559,16 @@ fn check_invariants(vfg: &VirtualFlatGeometry) {
         let nbrs_left: HashSet<NodeIndex> = vfg.graph.neighbors(node).collect();
         let nbrs_right: HashSet<NodeIndex> = vfg.graph.neighbors(peer).collect();
         let shared: Vec<NodeIndex> = nbrs_left.intersection(&nbrs_right).copied().collect();
-        // assert!(
-        //     shared.is_empty(),
-        //     "Duplicated pair {:?} and {:?} share neighbors: {:?}",
-        //     node,
-        //     peer,
-        //     shared
-        //         .iter()
-        //         .map(|&s| format!("{:?} ({:?})", s, vfg.graph[s].origin))
-        //         .collect::<Vec<_>>(),
-        // );
-        if !shared.is_empty() {
-            log::error!(
-                "Duplicated pair {:?} and {:?} share neighbors: {:?}",
-                node,
-                peer,
-                shared
-                    .iter()
-                    .map(|&s| format!("{:?} ({:?})", s, vfg.graph[s].origin))
-                    .collect::<Vec<_>>(),
-            );
-        }
+        assert!(
+            shared.is_empty(),
+            "Duplicated pair {:?} and {:?} share neighbors: {:?}",
+            node,
+            peer,
+            shared
+                .iter()
+                .map(|&s| format!("{:?} ({:?})", s, vfg.graph[s].origin))
+                .collect::<Vec<_>>(),
+        );
     }
 
     // 11. No parallel edges (multi-edges between the same pair of nodes).
@@ -603,5 +592,5 @@ fn check_invariants(vfg: &VirtualFlatGeometry) {
     }
 
     // 12. All edges that have at least one duplicate as endpoint, should actually have an edge to either of the peers.
-    // TODO
+    // Checked in internal_edges already!
 }
