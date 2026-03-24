@@ -580,4 +580,7 @@ fn check_invariants(vfg: &VirtualFlatGeometry) {
             }
         }
     }
+
+    // 12. All edges that have at least one duplicate as endpoint, should actually have an edge to either of the peers.
+    // TODO
 }
