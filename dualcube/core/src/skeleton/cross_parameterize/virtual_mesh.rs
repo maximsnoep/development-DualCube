@@ -9,7 +9,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::prelude::{EdgeID, VertID, INPUT};
 use crate::skeleton::cross_parameterize::boundary_walk::{
-    calculate_boundary_loop, calculate_boundary_loop_reversal_flags,
+    calculate_boundary_loop, calculate_boundary_loop_reversal_flags, fill_faces_for_cut_endpoint,
 };
 use crate::skeleton::cross_parameterize::duplicate_cut_vertices::{
     duplicate_cut_endpoint, duplicate_cut_vertex,
@@ -275,6 +275,9 @@ impl VirtualFlatGeometry {
             vert_to_nodes,
             edge_midpoint_ids_to_node_indices,
         );
+
+        // Step 7: fill faces for cut endpoints
+        fill_faces_for_cut_endpoint(&mut vfg.graph);
 
         check_invariants(&vfg);
 
