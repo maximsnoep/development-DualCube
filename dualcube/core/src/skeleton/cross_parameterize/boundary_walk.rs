@@ -462,6 +462,8 @@ pub fn calculate_boundary_loop(
         }
     }
 
+    fill_faces_for_cut_endpoint(graph);
+
     if !boundary_lookback.is_empty() {
         // TODO SHOULD PANIC WHEN EVERYTHING IS FULLY WORKING, NOW JUST ERROR
         error!("Boundary edge lookback produced non-empty result, indicating some boundary edge cases are not fully handled yet. Lookback: {:?}", boundary_lookback);
@@ -479,14 +481,6 @@ enum AddingEdgeInput {
     AlongEdge {
         source: NodeIndex, // Side of duplicate is clear!
         edge: EdgeID,      // Other side is determined by lookback and duplicate status.
-    },
-
-    /// Add an edge to the VFG which does not correspond to any original mesh edge.
-    /// Assumes this is only used in context where it is guaranteed adding this edge will not lead to problems with crossings.
-    /// Useful for adding a third edge to midpoint cut duplicates.
-    NewEdge {
-        source: NodeIndex,
-        target: NodeIndex,
     },
 }
 
@@ -633,13 +627,6 @@ fn add_edge(
                 ),
             }
         }
-    } else if let AddingEdgeInput::NewEdge { source, target } = input {
-        if graph.find_edge(source, target).is_none() {
-            let length = (graph[source].position - graph[target].position).norm();
-            graph.add_edge(source, target, VirtualEdgeWeight { length });
-        } else {
-            warn!("New-edge case should not be able to cause parallel edges under current assumptions?");
-        }
     } else {
         unreachable!();
     }
@@ -669,6 +656,65 @@ fn add_edge(
     // } else {
     //     unreachable!();
     // }
+}
+
+fn fill_faces_for_cut_endpoint(graph: &mut StableUnGraph<VirtualNode, VirtualEdgeWeight>) {
+    // To make sure we do not add vertices twice for faces with 2 cut endpoints
+    let mut done: HashSet<NodeIndex> = HashSet::new();
+
+    return; // TODO: re-enable when cut duplicate stuff works
+
+    // Find cut endpoint
+    for node_idx in graph.node_indices() {
+        if let VirtualNodeOrigin::CutEndpointMidpointDuplicate { .. } = graph[node_idx].origin {
+            if done.contains(&node_idx) {
+                continue;
+            }
+
+            // Get the 2 direct neighbors (cutendpoints do not get more edges added until now)
+            let neighbors: Vec<NodeIndex> = graph.neighbors(node_idx).collect();
+            if neighbors.len() != 2 {
+                panic!(
+                    "Cut endpoint midpoint duplicate node {:?} has degree {}, expected 2.",
+                    node_idx,
+                    neighbors.len()
+                );
+            }
+
+            // If they share an edge, we are in the tri case
+            if graph.find_edge(neighbors[0], neighbors[1]).is_some() {
+                // Tri case
+                // TODO    
+
+
+                // Mark all 3 nodes as done
+                done.insert(node_idx);
+                done.insert(neighbors[0]);
+                done.insert(neighbors[1]);
+
+            } else {
+                // Face should be a quad now, we need to find the 4th vertex and connect to it.
+
+                let neighbors_0 = graph.neighbors(neighbors[0]).filter(|n| *n != node_idx).collect_vec();
+                let neighbors_1 = graph.neighbors(neighbors[1]).filter(|n| *n != node_idx).collect_vec();
+                let shared = neighbors_0.iter().filter(|n| neighbors_1.contains(n)).copied().collect_vec();
+                if shared.len() != 1 {
+                    panic!(
+                        "Cut endpoint midpoint duplicate node {:?} neighbors do not share exactly one other neighbor as expected for quad face: {:?} and {:?} with shared {:?}",
+                        node_idx, neighbors_0, neighbors_1, shared
+                    );
+                }
+
+                // TODO ... add vertex
+
+                // Mark all 4 nodes as done
+                done.insert(node_idx);
+                done.insert(neighbors[0]);
+                done.insert(neighbors[1]);
+                done.insert(shared[0]);
+            }
+        }
+    }
 }
 
 /// Handles both tri-meshes and quad meshes (and mixes).
@@ -719,7 +765,7 @@ fn mesh_boundary_edges(
                 mesh,
                 patch_vertices,
             );
-        },
+        }
         (
             VirtualNodeOrigin::BoundaryMidpoint { .. },
             VirtualNodeOrigin::CutEndpointMidpointDuplicate { .. },
@@ -738,8 +784,8 @@ fn mesh_boundary_edges(
 
             // Note that walking the face is difficult. The VFG might be partial if we came from the boundary side, but purely relying on original mesh is difficult as well because of the midpoints...
 
-            // TODO
-        },
+            // We do this in a second pass, after all CutDuplicates have their edges so we can reliably walk faces using only the VFG (no longer using mesh).
+        }
 
         (VirtualNodeOrigin::CutDuplicate { .. }, VirtualNodeOrigin::CutDuplicate { .. }) => {
             // TODO, something with sides?! Main difficult case.
@@ -756,7 +802,7 @@ fn mesh_boundary_edges(
         ) => {
             // We already add all necessary edges for the CutDuplicate, and the corner case is handled in Endpoint-Midpoint case.
             // Nothing to do!
-        },
+        }
 
         //
         _ => {
