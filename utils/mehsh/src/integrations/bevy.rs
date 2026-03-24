@@ -128,7 +128,7 @@ where
 
         let uvs = vec![[0., 0.]; positions.len()];
 
-        log::info!("Built bevy mesh with size {}x4", positions.len());
+        // log::info!("Built bevy mesh with size {}x4", positions.len());
         MeshBuilder {
             positions,
             normals,

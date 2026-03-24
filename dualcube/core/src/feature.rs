@@ -13,7 +13,7 @@ pub fn feature_extraction(mesh: &Mesh<INPUT>, angle_threshold: f64, min_connecte
             intermediate_features.insert(edge_id);
         }
     }
-    println!("Found {} intermediate feature edges", intermediate_features.len());
+    // println!("Found {} intermediate feature edges", intermediate_features.len());
 
     let mut filtered = HashSet::new();
     let mut features = HashSet::new();
@@ -44,7 +44,7 @@ pub fn feature_extraction(mesh: &Mesh<INPUT>, angle_threshold: f64, min_connecte
         }
     }
 
-    println!("Found {} filtered feature edges", features.len());
+    // println!("Found {} filtered feature edges", features.len());
 
     // Label each feature edge
     let mut labeled_features = [HashSet::new(), HashSet::new(), HashSet::new()];

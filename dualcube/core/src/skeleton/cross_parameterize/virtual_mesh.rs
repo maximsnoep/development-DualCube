@@ -280,14 +280,14 @@ impl VirtualFlatGeometry {
         // Step 7: fill faces for cut endpoints
         fill_faces_for_cut_endpoint(&mut vfg.graph, is_tri_mesh);
 
-        check_invariants(&vfg);
+        check_invariants(&vfg, is_tri_mesh);
 
         vfg
     }
 }
 
 /// Checks structural invariants on the completed VFG.
-fn check_invariants(vfg: &VirtualFlatGeometry) {
+fn check_invariants(vfg: &VirtualFlatGeometry, is_tri_mesh: bool) {
     // 1. Boundary loop is non-empty.
     assert!(!vfg.boundary_loop.is_empty(), "VFG boundary loop is empty");
 
@@ -363,7 +363,8 @@ fn check_invariants(vfg: &VirtualFlatGeometry) {
     let sum = low_degree_counts.iter().sum::<usize>();
     if sum > 0 {
         log::error!(
-            "VFG has {} low-degree nodes: {} degree 0, {} degree 1, {} degree 2",
+            "is_tri: {:?}, VFG has {} low-degree nodes: {} degree 0, {} degree 1, {} degree 2",
+            is_tri_mesh,
             sum,
             low_degree_counts[0],
             low_degree_counts[1],
