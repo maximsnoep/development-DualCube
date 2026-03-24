@@ -11,10 +11,10 @@ use crate::prelude::{EdgeID, VertID, INPUT};
 // use crate::skeleton::cross_parameterize::harmonic::solve_dirichlet;
 use crate::skeleton::orthogonalize::LabeledCurveSkeleton;
 
-mod cutting_plan;
-mod harmonic;
-mod duplicate_cut_vertices;
 mod boundary_walk;
+mod cutting_plan;
+mod duplicate_cut_vertices;
+mod harmonic;
 mod internal_edges;
 pub mod virtual_mesh;
 
@@ -27,7 +27,7 @@ use virtual_mesh::VirtualFlatGeometry;
 /// boundary loop should ideally be at least this far apart. A warning is
 /// emitted if this is violated (the cut is still valid, just potentially
 /// lower quality for parameterization).
-const MIN_CUT_BOUNDARY_PROPORTION: f64 = 0.05;
+const _MIN_CUT_BOUNDARY_PROPORTION: f64 = 0.05;
 
 /// A path across the mesh surface.
 ///
@@ -60,8 +60,6 @@ impl SurfacePath {
         positions
     }
 }
-
-
 
 /// A single cut connecting two boundary loops, with the exact surface path.
 #[derive(Debug, Clone)]
@@ -170,18 +168,6 @@ impl PolycubeMap {
 
         result
     }
-}
-
-/// A triangle in UV space with associated 3D positions at each vertex.
-struct UvTriangle {
-    uv: [Vector2D; 3],
-    pos: [Vector3D; 3],
-}
-
-/// A quadrilater in UV space with associated 3D positions at each vertex.
-struct UvQuad {
-    uv: [Vector2D; 4],
-    pos: [Vector3D; 4],
 }
 
 /// Performs cross-parameterization between the input and polycube labeled curve skeletons,
@@ -346,9 +332,9 @@ fn polygon_arc_interpolate(polygon: &[Vector2D], start: usize, end: usize, t: f6
 
 /// Maps every node in `vfg.boundary_loop` to a 2D position on a regular `n_sides`-gon.
 ///
-/// 
+///
 /// TODO...
-/// 
+///
 /// When `corner_indices` is non-empty (degree ≥ 2), each consecutive pair of
 /// corners defines a segment that maps to one polygon side. Nodes within a
 /// segment are distributed by arc-length along that side. This ensures boundary

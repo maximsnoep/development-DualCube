@@ -719,7 +719,7 @@ fn mesh_boundary_edges(
                 mesh,
                 patch_vertices,
             );
-        }
+        },
         (
             VirtualNodeOrigin::BoundaryMidpoint { .. },
             VirtualNodeOrigin::CutEndpointMidpointDuplicate { .. },
@@ -727,16 +727,23 @@ fn mesh_boundary_edges(
         | (
             VirtualNodeOrigin::CutEndpointMidpointDuplicate { .. },
             VirtualNodeOrigin::BoundaryMidpoint { .. },
+        )
+        | (
+            VirtualNodeOrigin::CutEndpointMidpointDuplicate { .. },
+            VirtualNodeOrigin::CutEndpointMidpointDuplicate { .. },
         ) => {
-            // Get triangle spanned by the edges that host the midpoints. (likely not explicitly necessary)
-            // Get opposite node of cut endpoint in this triangle, i.e. next_nodes - current_nodes (they always share 1 node to be a triangle)
-            // TODO..
-            // Add edge from cut endpoint to the opposite node.
-            // Add edge from opposite node to boundary midpoint.
-        }
+            // Walk face (quad or tri), add vertex in the middle and connect to all nodes.
+            // This fixes degrees in both current side majority triangle and minority triangle case (1 or 2 nodes inside patch).
+            // Also works for quads.
+
+            // Note that walking the face is difficult. The VFG might be partial if we came from the boundary side, but purely relying on original mesh is difficult as well because of the midpoints...
+
+            // TODO
+        },
 
         (VirtualNodeOrigin::CutDuplicate { .. }, VirtualNodeOrigin::CutDuplicate { .. }) => {
             // TODO, something with sides?! Main difficult case.
+            // Add all edges to both nodes
         }
 
         (
@@ -747,18 +754,9 @@ fn mesh_boundary_edges(
             VirtualNodeOrigin::CutDuplicate { .. },
             VirtualNodeOrigin::CutEndpointMidpointDuplicate { .. },
         ) => {
-            // TODO: something...
-            // The corner edge is already taken care of in Midpoint-Endpoint cases.
-            // TODO: something with adding edges from the right side...
-        }
-
-        (
-            VirtualNodeOrigin::CutEndpointMidpointDuplicate { .. },
-            VirtualNodeOrigin::CutEndpointMidpointDuplicate { .. },
-        ) => {
-
-            // ... could be resolved actually by adding a vertex in the middle of the quad resulting from the midpoints
-        }
+            // We already add all necessary edges for the CutDuplicate, and the corner case is handled in Endpoint-Midpoint case.
+            // Nothing to do!
+        },
 
         //
         _ => {
