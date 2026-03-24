@@ -6,7 +6,10 @@ use std::{
 
 use itertools::Itertools;
 use log::{error, warn};
-use mehsh::prelude::{HasVertices, Mesh};
+use mehsh::{
+    mesh::elem::edge,
+    prelude::{HasVertices, Mesh},
+};
 use petgraph::{
     graph::{EdgeIndex, NodeIndex},
     prelude::StableUnGraph,
@@ -24,7 +27,6 @@ use crate::{
             CuttingPlan,
         },
         orthogonalize::LabeledCurveSkeleton,
-        patch,
     },
 };
 
@@ -206,7 +208,9 @@ fn collect_cut_edges(
                     if prev != (*a, *b) {
                         panic!(
                             "Conflicting canonical direction for cut edge {:?}: {:?} vs {:?}",
-                            key, prev, (*a, *b)
+                            key,
+                            prev,
+                            (*a, *b)
                         );
                     }
                 }
@@ -242,12 +246,9 @@ fn find_cut_side_face_and_vertex(
     side: bool,
 ) -> CutSideFaceVertices {
     let undirected = ordered_vert_pair(u, v);
-    let (from, to) = *cut_edge_canonical_direction.get(&undirected).unwrap_or_else(|| {
-        panic!(
-            "No canonical cut direction stored for interior edge {:?}",
-            undirected
-        )
-    });
+    let (from, to) = *cut_edge_canonical_direction
+        .get(&undirected)
+        .expect("No canonical cut direction stored for cut edge");
 
     let (e0, e1) = mesh
         .edge_between_verts(from, to)
@@ -936,19 +937,60 @@ fn mesh_boundary_edges(
             }
 
             // Find vertices of face on our side. Note that this could be cut, so then the other vertices should not be used.
-            let _our_side_face_vertices = find_cut_side_face_and_vertex(
+            let our_side_face_vertices = find_cut_side_face_and_vertex(
                 mesh,
                 cut_edge_canonical_direction,
                 *left_id,
                 *right_id,
                 *side,
             );
+            let mut edges_to_add = HashSet::new();
+            match our_side_face_vertices {
+                CutSideFaceVertices::Tri { other, .. } => {
+                    // Possible edge from other to both
+                    if let Some(edges) = mesh.edge_between_verts(*left_id, other) {
+                        edges_to_add.insert((current, edges));
+                    }
+                    if let Some(edges) = mesh.edge_between_verts(*right_id, other) {
+                        edges_to_add.insert((next, edges));
+                    }
+                }
+                CutSideFaceVertices::Quad {
+                    other_a, other_b, ..
+                } => {
+                    // Not all of these are possible, but just check all combinations and add if valid.
+                    for other in [other_a, other_b] {
+                        if let Some(edges) = mesh.edge_between_verts(*left_id, other) {
+                            edges_to_add.insert((current, edges));
+                        }
+                        if let Some(edges) = mesh.edge_between_verts(*right_id, other) {
+                            edges_to_add.insert((next, edges));
+                        }
+                    }
+                }
+            }
 
             // Do BFS over faces, starting with the face on the correct side we found.
             // Disallow traversing over cut edges (can just look at cuts which edges are cut edges, maybe preprocess this into a set for lookups)
             // Only add faces if they have at least 1 of {left_id, right_id} (note that there is only one face on this side with both!)
             // For all faces, for all its edges that connect to {left_id, right_id}, add edge to the corresponding node, add_edge it.
             // TODO
+
+            // For all edges we found, add them to the graph
+            for (source, edges) in edges_to_add {
+                // I don't think it matters which of the half-edges we use
+                let edge = edges.0;
+
+                add_edge(
+                    graph,
+                    boundary_lookback,
+                    vert_to_nodes,
+                    edge_midpoint_ids_to_node_indices,
+                    AddingEdgeInput::AlongEdge { source, edge },
+                    mesh,
+                    patch_vertices,
+                );
+            }
         }
 
         (
