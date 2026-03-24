@@ -1032,7 +1032,7 @@ fn mesh_boundary_edges(
 
                         // Only add to queue if face is not cut by a boundary. We check if all vertices are in the patch.
                         if vertices.iter().all(|v| patch_vertices.contains(v)) {
-                            // queue.push_back(other_face);
+                            queue.push_back(other_face);
                         }
 
                         // Add all edges to current and next, except along cuts
