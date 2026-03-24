@@ -584,8 +584,6 @@ pub fn calculate_boundary_loop(
         }
     }
 
-    fill_faces_for_cut_endpoint(graph);
-
     if !boundary_lookback.is_empty() {
         // TODO SHOULD PANIC WHEN EVERYTHING IS FULLY WORKING, NOW JUST ERROR
         error!("Boundary edge lookback produced non-empty result, indicating some boundary edge cases are not fully handled yet. Lookback:");
@@ -881,8 +879,7 @@ fn add_edge(
     // }
 }
 
-fn fill_faces_for_cut_endpoint(graph: &mut StableUnGraph<VirtualNode, VirtualEdgeWeight>) {
-    return ; // TODO: re-enable when lookback state works
+pub fn fill_faces_for_cut_endpoint(graph: &mut StableUnGraph<VirtualNode, VirtualEdgeWeight>) {
     // To make sure we do not add vertices twice for faces with 2 cut endpoints
     let mut done: HashSet<NodeIndex> = HashSet::new();
 
