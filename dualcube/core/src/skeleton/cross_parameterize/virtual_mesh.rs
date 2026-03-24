@@ -160,6 +160,7 @@ impl VirtualFlatGeometry {
         skeleton: &LabeledCurveSkeleton,
         mesh: &Mesh<INPUT>,
         cutting_plan: &CuttingPlan,
+        is_tri_mesh: bool,
     ) -> Self {
         // Initialize empty structures and fill at each step
         let mut graph: StableUnGraph<VirtualNode, VirtualEdgeWeight> = StableUnGraph::default();
@@ -277,7 +278,7 @@ impl VirtualFlatGeometry {
         );
 
         // Step 7: fill faces for cut endpoints
-        fill_faces_for_cut_endpoint(&mut vfg.graph);
+        fill_faces_for_cut_endpoint(&mut vfg.graph, is_tri_mesh);
 
         check_invariants(&vfg);
 

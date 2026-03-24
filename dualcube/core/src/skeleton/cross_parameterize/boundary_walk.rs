@@ -5,7 +5,7 @@ use std::{
 };
 
 use itertools::Itertools;
-use log::{error, warn};
+use log::{error, info, warn};
 use mehsh::{
     prelude::{HasEdges, HasFaces, HasVertices, Mesh, Vector3D},
 };
@@ -879,8 +879,7 @@ fn add_edge(
     // }
 }
 
-pub fn fill_faces_for_cut_endpoint(graph: &mut StableUnGraph<VirtualNode, VirtualEdgeWeight>) {
-    return ;
+pub fn fill_faces_for_cut_endpoint(graph: &mut StableUnGraph<VirtualNode, VirtualEdgeWeight>, is_tri_mesh: bool) {
     // To make sure we do not add vertices twice for faces with 2 cut endpoints
     let mut done: HashSet<NodeIndex> = HashSet::new();
 
@@ -938,8 +937,8 @@ pub fn fill_faces_for_cut_endpoint(graph: &mut StableUnGraph<VirtualNode, Virtua
                     //     node_idx, neighbors_0, neighbors_1, shared
                     // ); FIX THIS!!
                     error!(
-                        "Cut endpoint midpoint duplicate node {:?} neighbors do not share exactly one other neighbor as expected for quad face: {:?} and {:?} with shared {:?}",
-                        node_idx, neighbors_0, neighbors_1, shared
+                        "is_tri: {:?}, Cut endpoint midpoint duplicate node {:?} neighbors do not share exactly one other neighbor as expected for quad face: {:?} and {:?} with shared {:?}",
+                        is_tri_mesh, node_idx, neighbors_0, neighbors_1, shared
                     );
                     continue;
                 }
@@ -951,6 +950,12 @@ pub fn fill_faces_for_cut_endpoint(graph: &mut StableUnGraph<VirtualNode, Virtua
                 done.insert(neighbors[0]);
                 done.insert(neighbors[1]);
                 done.insert(shared[0]);
+            }
+
+            match nodes.len() {
+                3 => info!("is_tri: {:?}, Tri face found for cut endpoint {:?} with nodes {:?}", is_tri_mesh, node_idx, nodes),
+                4 => info!("is_tri: {:?}, Quad face found for cut endpoint {:?} with nodes {:?}", is_tri_mesh, node_idx, nodes),
+                _ => unreachable!(),
             }
 
             // Add vertex in middle

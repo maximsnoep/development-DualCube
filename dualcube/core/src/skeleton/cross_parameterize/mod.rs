@@ -240,6 +240,7 @@ fn parameterize_region(
         input_skeleton,
         input_mesh,
         &input_plan,
+        true, // base mesh is strict tri, but in cuts we can introduce quads.
     );
     let (polycube_vfg, polycube_uv) = parameterize_side(
         patch_node_idx,
@@ -247,6 +248,7 @@ fn parameterize_region(
         polycube_skeleton,
         polycube_mesh,
         &polycube_plan,
+        false, // base mesh is quad, cuts split quads into quads.
     );
 
     RegionParameterization {
@@ -271,6 +273,7 @@ fn parameterize_side(
     skeleton: &LabeledCurveSkeleton,
     mesh: &Mesh<INPUT>,
     cutting_plan: &CuttingPlan,
+    is_tri_mesh: bool,
 ) -> (VirtualFlatGeometry, HashMap<NodeIndex, Vector2D>) {
     if degree == 0 {
         warn!(
@@ -282,7 +285,7 @@ fn parameterize_side(
 
     // Build virtual geometry by cutting the mesh open along cut paths,
     // duplicating vertices so the result is a topological disk.
-    let vfg = VirtualFlatGeometry::build(patch_node_idx, skeleton, mesh, cutting_plan);
+    let vfg = VirtualFlatGeometry::build(patch_node_idx, skeleton, mesh, cutting_plan, is_tri_mesh);
 
     // Assign 2D positions to every node on the disk boundary.
     // The canonical polygon has n_sides sides:
