@@ -11,7 +11,7 @@ use crate::prelude::{EdgeID, VertID, INPUT};
 use crate::skeleton::boundary_loop::BoundaryLoop;
 use crate::skeleton::orthogonalize::LabeledCurveSkeleton;
 
-use super::{CutPath, CuttingPlan, SurfacePath, MIN_CUT_BOUNDARY_PROPORTION};
+use super::{CutPath, CuttingPlan, SurfacePath};
 
 /// Computes cutting plans for both the input and polycube sides of a region.
 ///
@@ -56,9 +56,9 @@ pub fn compute_cutting_plans(
     );
 
     // Find cut paths on both sides independently.
-    let mut input_cuts =
+    let input_cuts =
         compute_side_cut_paths(node_idx, &cut_topology, input_skeleton, input_mesh);
-    let mut polycube_cuts =
+    let polycube_cuts =
         compute_side_cut_paths(node_idx, &cut_topology, polycube_skeleton, polycube_mesh);
 
     // Ensure cut endpoints on the same boundary are not adjacent (<=1 midpoint

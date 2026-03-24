@@ -1,9 +1,7 @@
 use core::panic;
 use std::collections::{HashMap, HashSet};
-use std::f64::consts::PI;
 
-use log::{info, warn};
-use mehsh::prelude::{HasEdges, HasPosition, HasVertices, Mesh, Vector3D};
+use mehsh::prelude::{HasPosition, Mesh, Vector3D};
 use petgraph::graph::{EdgeIndex, NodeIndex};
 use petgraph::stable_graph::StableUnGraph;
 use petgraph::visit::EdgeRef;
@@ -69,6 +67,18 @@ pub enum VirtualNodeOrigin {
         cut_index: usize,
         /// Which side of the cut: `false` = left, `true` = right.
         side: bool,
+    },
+
+    /// Artificial node introduced in a face to increase degree of some boundary cut vertex.
+    ArtifialInTri {
+        /// The nodes of the original face this node was placed in the middle of.
+        nodes: [NodeIndex; 3],
+    },
+
+    /// Artificial node introduced in a face to increase degree of some boundary cut vertex.
+    ArtificialInQuad {
+        /// The nodes of the original face this node was placed in the middle of.
+        nodes: [NodeIndex; 4],
     },
 }
 
