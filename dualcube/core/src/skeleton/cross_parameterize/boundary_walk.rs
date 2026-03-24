@@ -1,14 +1,14 @@
 use core::panic;
 use std::{
-    collections::{HashMap, HashSet},
+    collections::{HashMap, HashSet, VecDeque},
     f64::consts::PI,
 };
 
 use itertools::Itertools;
 use log::{error, warn};
 use mehsh::{
-    mesh::elem::edge,
-    prelude::{HasVertices, Mesh},
+    mesh::{self, elem::edge},
+    prelude::{HasEdges, HasFaces, HasVertices, Mesh},
 };
 use petgraph::{
     graph::{EdgeIndex, NodeIndex},
@@ -189,11 +189,9 @@ fn ordered_vert_pair(a: VertID, b: VertID) -> (VertID, VertID) {
 
 /// Collects all mesh-vertex edges traversed by cut interior paths.
 fn collect_cut_edges(
+    mesh: &Mesh<INPUT>,
     cutting_plan: &CuttingPlan,
-) -> (
-    HashSet<(VertID, VertID)>,
-    HashMap<(VertID, VertID), (VertID, VertID)>,
-) {
+) -> (HashSet<EdgeID>, HashMap<(VertID, VertID), (VertID, VertID)>) {
     let mut cut_edges = HashSet::new();
     let mut cut_edge_canonical_direction: HashMap<(VertID, VertID), (VertID, VertID)> =
         HashMap::new();
@@ -202,7 +200,11 @@ fn collect_cut_edges(
         for pair in cut.path.interior_verts.windows(2) {
             if let [a, b] = pair {
                 let key = ordered_vert_pair(*a, *b);
-                cut_edges.insert(key);
+                let edges = mesh
+                    .edge_between_verts(*a, *b)
+                    .expect("Cut interior vertices are not connected by an edge.");
+                cut_edges.insert(edges.0);
+                cut_edges.insert(edges.1);
 
                 if let Some(prev) = cut_edge_canonical_direction.insert(key, (*a, *b)) {
                     if prev != (*a, *b) {
@@ -312,7 +314,7 @@ pub fn calculate_boundary_loop(
     patch_vertices: &HashSet<VertID>,
 ) -> Vec<NodeIndex> {
     let mut succ: HashMap<NodeIndex, NodeIndex> = HashMap::new();
-    let (cut_edges, cut_edge_canonical_direction) = collect_cut_edges(cutting_plan);
+    let (cut_edges, cut_edge_canonical_direction) = collect_cut_edges(mesh, cutting_plan);
 
     let resolve_midpoint_edge_id = |edge_id: EdgeID| -> EdgeID {
         if edge_midpoint_ids_to_node_indices.contains_key(&edge_id) {
@@ -746,10 +748,7 @@ fn add_edge(
                     }
                     lookback.remove(&edge); // Clear lookback in case it was set from a previous duplicate.
                 }
-                None => unreachable!(
-                    "Other vertex missing from virtual map: {:?}",
-                    other_vert
-                ),
+                None => unreachable!("Other vertex missing from virtual map: {:?}", other_vert),
             }
         }
     } else {
@@ -857,7 +856,7 @@ fn mesh_boundary_edges(
     current: NodeIndex,
     next: NodeIndex,
     boundary_lookback: &mut HashMap<EdgeID, NodeIndex>,
-    cut_edges: &HashSet<(VertID, VertID)>,
+    cut_edges: &HashSet<EdgeID>,
     cut_edge_canonical_direction: &HashMap<(VertID, VertID), (VertID, VertID)>,
     vert_to_nodes: &HashMap<VertID, VertexToVirtual>,
     edge_midpoint_ids_to_node_indices: &HashMap<EdgeID, EdgemidpointToVirtual>,
@@ -932,11 +931,13 @@ fn mesh_boundary_edges(
                 original: right_id, ..
             },
         ) => {
-            let cut_pair = ordered_vert_pair(*left_id, *right_id);
-            if !cut_edges.contains(&cut_pair) {
+            let edge = mesh.edge_between_verts(*left_id, *right_id).expect(
+                "Cut duplicate vertices are not connected by an edge in the original mesh.",
+            );
+            if !cut_edges.contains(&edge.0) || !cut_edges.contains(&edge.1) {
                 panic!(
                     "CutDuplicate-CutDuplicate boundary step is not on a known cut edge: {:?}",
-                    cut_pair
+                    edge
                 );
             }
 
@@ -949,8 +950,9 @@ fn mesh_boundary_edges(
                 *side,
             );
             let mut edges_to_add = HashSet::new();
+            let starting_face;
             match our_side_face_vertices {
-                CutSideFaceVertices::Tri { other, .. } => {
+                CutSideFaceVertices::Tri { other, face } => {
                     // Possible edge from other to both
                     if let Some(edges) = mesh.edge_between_verts(*left_id, other) {
                         edges_to_add.insert((current, edges));
@@ -958,9 +960,13 @@ fn mesh_boundary_edges(
                     if let Some(edges) = mesh.edge_between_verts(*right_id, other) {
                         edges_to_add.insert((next, edges));
                     }
+
+                    starting_face = face
                 }
                 CutSideFaceVertices::Quad {
-                    other_a, other_b, ..
+                    other_a,
+                    other_b,
+                    face,
                 } => {
                     // Not all of these are possible, but just check all combinations and add if valid.
                     for other in [other_a, other_b] {
@@ -971,6 +977,8 @@ fn mesh_boundary_edges(
                             edges_to_add.insert((next, edges));
                         }
                     }
+
+                    starting_face = face
                 }
             }
 
@@ -978,7 +986,76 @@ fn mesh_boundary_edges(
             // Disallow traversing over cut edges (can just look at cuts which edges are cut edges, maybe preprocess this into a set for lookups)
             // Only add faces if they have at least 1 of {left_id, right_id} (note that there is only one face on this side with both!)
             // For all faces, for all its edges that connect to {left_id, right_id}, add edge to the corresponding node, add_edge it.
-            // TODO
+            let seen_faces: &mut HashSet<FaceID> = &mut HashSet::new();
+            seen_faces.insert(starting_face);
+            let mut queue: VecDeque<FaceID> = VecDeque::new();
+            queue.push_back(starting_face);
+
+            let bfs_step =
+                |face_id: FaceID,
+                 queue: &mut VecDeque<FaceID>,
+                 seen: &mut HashSet<FaceID>,
+                 forbidden_edges: &HashSet<EdgeID>,
+                 edges_to_add: &mut HashSet<(NodeIndex, (EdgeID, EdgeID))>| {
+                    // Every edge is part of exactly 2 faces, one of which will be the one we are looking at.
+                    // Edges of the face will act as 'edges' to other faces in the face 'graph'.
+                    for edge in mesh.edges(face_id) {
+                        // Do not traverse over cut edges
+                        if forbidden_edges.contains(&edge) {
+                            continue;
+                        }
+
+                        // Get the two faces on either side of this edge
+                        let faces = mesh.faces(edge).collect_vec();
+                        let [face1, face2] = faces.as_slice() else {
+                            panic!("Watertight mesh is expected to have exactly 2 incident faces for each edge, but Edge {:?} has {:?}",
+                                            edge, faces
+                                        );
+                        };
+                        let other_face = if *face1 == face_id {
+                            *face2
+                        } else if *face2 == face_id {
+                            *face1
+                        } else {
+                            unreachable!("One of the two faces must be the current face");
+                        };
+
+                        if seen.contains(&other_face) {
+                            continue;
+                        }
+
+                        // Check if other_face has at least 1 of {left_id, right_id}
+                        let vertices = mesh.vertices(other_face).collect_vec();
+                        if !vertices.contains(left_id) && !vertices.contains(right_id) {
+                            continue;
+                        }
+
+                        // Face is now valid. Do BFS bookkeeping.
+                        seen.insert(other_face);
+                        queue.push_back(other_face);
+
+                        // Add all edges to current and next
+                        for vertex in vertices {
+                            if vertex != *left_id && vertex != *right_id {
+                                continue;
+                            }
+
+                            if let Some(edges) = mesh.edge_between_verts(*left_id, vertex) {
+                                edges_to_add.insert((current, edges));
+                            }
+                        }
+                    }
+                };
+
+            while !queue.is_empty() {
+                bfs_step(
+                    queue.pop_front().unwrap(),
+                    &mut queue,
+                    seen_faces,
+                    cut_edges,
+                    &mut edges_to_add,
+                );
+            }
 
             // For all edges we found, add them to the graph
             for (source, edges) in edges_to_add {
