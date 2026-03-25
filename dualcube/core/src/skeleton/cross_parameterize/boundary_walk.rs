@@ -666,7 +666,12 @@ fn add_edge(
                             let length = (graph[source].position - graph[*target].position).norm();
                             graph.add_edge(source, *target, VirtualEdgeWeight { length });
                         }
-                        lookback.remove(&mid_edge); // Clear lookback in case it was set from a previous duplicate.
+                        // Only clear lookback if WE were the one who set it (source is stored).
+                        // Blindly removing could erase an entry set by a duplicate pair that
+                        // hasn't been consumed yet.
+                        if lookback.get(&mid_edge) == Some(&source) {
+                            lookback.remove(&mid_edge);
+                        }
                         return;
                     }
                 }
@@ -706,13 +711,40 @@ fn add_edge(
 
                         // The target is actually a duplicated pair. We need to use lookback
                         if lookback.contains_key(&mid_edge) {
-                            let target = lookback.get(&mid_edge).unwrap();
-                            if graph.find_edge(source, *target).is_none() {
+                            let target = *lookback.get(&mid_edge).unwrap();
+                            if target == source {
+                                warn!("add_edge: midpoint lookback for {:?} was set by the same node {:?} — skipping self-loop.", mid_edge, source);
+                                lookback.remove(&mid_edge);
+                                return;
+                            }
+                            if graph.find_edge(source, target).is_none() {
+                                // Validate that the pairing makes sense: both should be duplicates of related originals.
+                                let source_is_dup = matches!(
+                                    graph[source].origin,
+                                    VirtualNodeOrigin::CutDuplicate { .. }
+                                        | VirtualNodeOrigin::CutEndpointMidpointDuplicate { .. }
+                                );
+                                let target_is_dup = matches!(
+                                    graph[target].origin,
+                                    VirtualNodeOrigin::CutDuplicate { .. }
+                                        | VirtualNodeOrigin::CutEndpointMidpointDuplicate { .. }
+                                );
+                                assert!(
+                                    source_is_dup && target_is_dup,
+                                    "Midpoint lookback paired non-duplicate nodes: source {:?} ({:?}) and target {:?} ({:?})",
+                                    source, graph[source].origin, target, graph[target].origin
+                                );
                                 let length =
-                                    (graph[source].position - graph[*target].position).norm();
-                                graph.add_edge(source, *target, VirtualEdgeWeight { length });
+                                    (graph[source].position - graph[target].position).norm();
+                                graph.add_edge(source, target, VirtualEdgeWeight { length });
                             } else {
-                                unreachable!("Lookback case should not be able to cause parallel edges under current assumptions?");
+                                // Edge already exists — can happen when multiple code paths
+                                // (CutDup-CutDup BFS, CutEndpoint-CutDup walk, etc.) wire the
+                                // same logical edge. This is harmless.
+                                warn!(
+                                    "add_edge: midpoint lookback for {:?} found existing edge {:?}→{:?}, skipping.",
+                                    mid_edge, source, target
+                                );
                             }
                             lookback.remove(&mid_edge); // Clear lookback after using.
                             return;
@@ -812,12 +844,36 @@ fn add_edge(
 
                     // This vertex is duplicated, we need to use lookback to find the correct duplicate to connect to.
                     if lookback.contains_key(&edge) {
-                        let target = lookback.get(&edge).unwrap();
-                        if graph.find_edge(source, *target).is_none() {
-                            let length = (graph[source].position - graph[*target].position).norm();
-                            graph.add_edge(source, *target, VirtualEdgeWeight { length });
+                        let target = *lookback.get(&edge).unwrap();
+                        if target == source {
+                            lookback.remove(&edge);
+                            return;
+                        }
+                        if graph.find_edge(source, target).is_none() {
+                            // Validate that the pairing makes sense.
+                            let source_is_dup = matches!(
+                                graph[source].origin,
+                                VirtualNodeOrigin::CutDuplicate { .. }
+                                    | VirtualNodeOrigin::CutEndpointMidpointDuplicate { .. }
+                            );
+                            let target_is_dup = matches!(
+                                graph[target].origin,
+                                VirtualNodeOrigin::CutDuplicate { .. }
+                                    | VirtualNodeOrigin::CutEndpointMidpointDuplicate { .. }
+                            );
+                            assert!(
+                                source_is_dup && target_is_dup,
+                                "Vertex lookback paired non-duplicate nodes: source {:?} ({:?}) and target {:?} ({:?})",
+                                source, graph[source].origin, target, graph[target].origin
+                            );
+                            let length = (graph[source].position - graph[target].position).norm();
+                            graph.add_edge(source, target, VirtualEdgeWeight { length });
                         } else {
-                            unreachable!("Lookback case should not be able to cause parallel edges under current assumptions?");
+                            // Edge already exists — harmless, multiple code paths can wire the same edge.
+                            warn!(
+                                "add_edge: vertex lookback for {:?} found existing edge {:?}→{:?}, skipping.",
+                                edge, source, target
+                            );
                         }
                         lookback.remove(&edge); // Clear lookback after using.
                     } else {
@@ -831,7 +887,10 @@ fn add_edge(
                         let length = (graph[source].position - graph[*target].position).norm();
                         graph.add_edge(source, *target, VirtualEdgeWeight { length });
                     }
-                    lookback.remove(&edge); // Clear lookback in case it was set from a previous duplicate.
+                    // Only clear lookback if WE set it; don't erase a pending duplicate pair entry.
+                    if lookback.get(&edge) == Some(&source) {
+                        lookback.remove(&edge);
+                    }
                 }
                 None => unreachable!("Other vertex missing from virtual map: {:?}", other_vert),
             }
