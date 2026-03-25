@@ -2,7 +2,7 @@ use std::collections::HashMap;
 use std::f64::consts::{FRAC_PI_2, TAU};
 
 use itertools::Itertools;
-use log::{info, warn};
+use log::{error, info, warn};
 use mehsh::mesh::elem::edge;
 use mehsh::prelude::{HasPosition, HasVertices, Mesh, Vector2D, Vector3D};
 
@@ -355,11 +355,11 @@ fn map_boundary_to_polygon(vfg: &VirtualFlatGeometry) -> HashMap<NodeIndex, Vect
             total_length += len;
         }
 
-        // We pick vertex 0 to be the first corner, then place the next 3 corners at cumulative
+        // We pick index 0 to be the first corner, then place the next 3 corners at cumulative
         // arc-lengths of 1/4, 2/4, and 3/4 around the loop. We enforce strictly increasing indices
         // to guarantee 4 distinct corners, even if edge lengths are disproportionately large.
-        let mut corner_node_indices = Vec::with_capacity(4);
-        corner_node_indices.push(boundary[0]);
+        let mut corner_indices = Vec::with_capacity(4);
+        corner_indices.push(0);
 
         let mut current_idx = 0;
         let mut cumulative_length = 0.0;
@@ -380,12 +380,43 @@ fn map_boundary_to_polygon(vfg: &VirtualFlatGeometry) -> HashMap<NodeIndex, Vect
                 current_idx += 1;
             }
 
-            corner_node_indices.push(boundary[current_idx]);
+            corner_indices.push(current_idx);
         }
 
         // Do arc-length parameterization within each of the 4 segments between corners.
         let mut result = HashMap::new();
 
+        // Process each of the 4 segments formed by the corners.
+        for s in 0..4 {
+            let start_idx = corner_indices[s];
+            let end_idx = corner_indices[(s + 1) % 4];
+
+            // Calculate the total arc-length of the current segment.
+            let mut segment_length = 0.0;
+            let mut curr = start_idx;
+            while curr != end_idx {
+                segment_length += edge_lengths[curr];
+                curr = (curr + 1) % boundary.len();
+            }
+
+            // Map each vertex in this segment to a coordinate on the polygon.
+            let mut current_segment_len = 0.0;
+            let mut curr = start_idx;
+            while curr != end_idx {
+                // Prevent division by zero if a segment has 0 length somehow.
+                let t = if segment_length > 0.0 {
+                    current_segment_len / segment_length
+                } else {
+                    error!("Segment {} of boundary has zero length, cannot parameterize! Assigning t=0 for all vertices in this segment.", s);
+                    0.0
+                };
+
+                result.insert(boundary[curr], polygon_point(4, s, t));
+
+                current_segment_len += edge_lengths[curr];
+                curr = (curr + 1) % boundary.len();
+            }
+        }
 
         return result;
     }
@@ -502,7 +533,7 @@ fn map_boundary_to_polygon(vfg: &VirtualFlatGeometry) -> HashMap<NodeIndex, Vect
 ///
 /// The polygon has `n` vertices, is inscribed within a unit circle, and has its initial vertex located exactly at the top (0.0, 1.0).
 /// Vertices are generated in a counter-clockwise direction.
-pub fn polygon_point(n: usize, segment: usize, t: f64) -> (f64, f64) {
+pub fn polygon_point(n: usize, segment: usize, t: f64) -> Vector2D {
     assert!(n >= 3, "A polygon must have at least 3 vertices.");
     assert!(
         segment < n,
@@ -528,5 +559,5 @@ pub fn polygon_point(n: usize, segment: usize, t: f64) -> (f64, f64) {
     let x = (1.0 - t) * start_x + t * end_x;
     let y = (1.0 - t) * start_y + t * end_y;
 
-    (x, y)
+    Vector2D::new(x, y)
 }
