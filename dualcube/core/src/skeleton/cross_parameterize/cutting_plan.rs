@@ -92,7 +92,6 @@ fn compute_side_cut_paths(
     skeleton: &LabeledCurveSkeleton,
     mesh: &Mesh<INPUT>,
 ) -> Vec<CutPath> {
-    warn!("TODO: do we even wanna use this?!");
     let patch_verts = &skeleton[node_idx].skeleton_node.patch_vertices;
     let patch_set: HashSet<VertID> = patch_verts.iter().copied().collect();
     let vert_to_idx: HashMap<VertID, usize> = patch_verts
