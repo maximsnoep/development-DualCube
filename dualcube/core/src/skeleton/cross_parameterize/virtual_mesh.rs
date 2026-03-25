@@ -119,6 +119,33 @@ pub enum VertexToVirtual {
     CutPair { left: NodeIndex, right: NodeIndex },
 }
 
+impl Iterator for VertexToVirtual {
+    type Item = NodeIndex;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        match self {
+            VertexToVirtual::Unique(n) => {
+                let result = Some(*n);
+                *self = VertexToVirtual::Unique(NodeIndex::end()); // Mark as exhausted
+                result
+            }
+            VertexToVirtual::CutPair { left, right } => {
+                if *left != NodeIndex::end() {
+                    let result = Some(*left);
+                    *left = NodeIndex::end(); // Mark left as exhausted
+                    result
+                } else if *right != NodeIndex::end() {
+                    let result = Some(*right);
+                    *right = NodeIndex::end(); // Mark right as exhausted
+                    result
+                } else {
+                    None // Both exhausted
+                }
+            }
+        }
+    }
+}
+
 pub enum EdgemidpointToVirtual {
     Unique(NodeIndex),
     CutEndpointPair { left: NodeIndex, right: NodeIndex },
