@@ -6,9 +6,7 @@ use std::{
 
 use itertools::Itertools;
 use log::{error, info, warn};
-use mehsh::{
-    prelude::{HasEdges, HasFaces, HasVertices, Mesh, Vector3D},
-};
+use mehsh::prelude::{HasEdges, HasFaces, HasVertices, Mesh, Vector3D};
 use petgraph::{
     graph::{EdgeIndex, NodeIndex},
     prelude::StableUnGraph,
@@ -223,15 +221,8 @@ fn collect_cut_edges(
 }
 
 enum CutSideFaceVertices {
-    Tri {
-        face: FaceID,
-        other: VertID,
-    },
-    Quad {
-        face: FaceID,
-        other_a: VertID,
-        other_b: VertID,
-    },
+    Tri { face: FaceID },
+    Quad { face: FaceID },
 }
 
 /// Returns the face on the chosen side of directed cut segment `u -> v`, plus
@@ -283,15 +274,8 @@ fn find_cut_side_face_and_vertex(
     }
 
     match others.len() {
-        1 => CutSideFaceVertices::Tri {
-            face: side_face,
-            other: others[0],
-        },
-        2 => CutSideFaceVertices::Quad {
-            face: side_face,
-            other_a: others[0],
-            other_b: others[1],
-        },
+        1 => CutSideFaceVertices::Tri { face: side_face },
+        2 => CutSideFaceVertices::Quad { face: side_face },
         _ => panic!("Unexpected number of non-cut vertices found."),
     }
 }
@@ -707,7 +691,8 @@ fn add_edge(
                             if s_cut == l_cut {
                                 let target = if s_side == l_side { *left } else { *right };
                                 if graph.find_edge(source, target).is_none() {
-                                    let length = (graph[source].position - graph[target].position).norm();
+                                    let length =
+                                        (graph[source].position - graph[target].position).norm();
                                     graph.add_edge(source, target, VirtualEdgeWeight { length });
                                 }
                                 connected_directly = true;
@@ -791,11 +776,12 @@ fn add_edge(
             // Check if other_vert is duplicated, if so we need to use lookback to find the correct duplicate to connect to.
             match vert_to_nodes.get(&other_vert) {
                 Some(VertexToVirtual::CutPair { left, right }) => {
-                    // Unique nodes (like BoundaryMidpoint) do not need to use lookback. 
+                    // Unique nodes (like BoundaryMidpoint) do not need to use lookback.
                     // The CutDuplicate on the other side will process this edge and connect directly to us.
                     let is_source_duplicate = matches!(
                         graph[source].origin,
-                        VirtualNodeOrigin::CutDuplicate { .. } | VirtualNodeOrigin::CutEndpointMidpointDuplicate { .. }
+                        VirtualNodeOrigin::CutDuplicate { .. }
+                            | VirtualNodeOrigin::CutEndpointMidpointDuplicate { .. }
                     );
                     if !is_source_duplicate {
                         return;
@@ -815,7 +801,8 @@ fn add_edge(
                         if s_cut == l_cut {
                             let target = if s_side == l_side { *left } else { *right };
                             if graph.find_edge(source, target).is_none() {
-                                let length = (graph[source].position - graph[target].position).norm();
+                                let length =
+                                    (graph[source].position - graph[target].position).norm();
                                 graph.add_edge(source, target, VirtualEdgeWeight { length });
                             }
                             return;
@@ -851,35 +838,12 @@ fn add_edge(
     } else {
         unreachable!();
     }
-
-    // if let AddingEdgeInput::DuplicateToSingular { source, target } = input {
-    //     // Only add if not already present, to avoid parallel edges.
-    //     if graph.find_edge(source, target).is_none() {
-    //         let length = (graph[source].position - graph[target].position).norm();
-    //         graph.add_edge(source, target, VirtualEdgeWeight { length });
-    //     }
-    // } else if let AddingEdgeInput::DuplicateToDuplicate { source, edge } = input {
-    //     if let Some(prev_target) = lookback.get(&edge) {
-    //         // Add edge
-    //         if graph.find_edge(source, *prev_target).is_none() {
-    //             let length = (graph[source].position - graph[*prev_target].position).norm();
-    //             graph.add_edge(source, *prev_target, VirtualEdgeWeight { length });
-    //         } else {
-    //             unreachable!("Duplicate to duplicate case cannot cause parallel edges.");
-    //         }
-
-    //         // Clear lookback
-    //         lookback.remove(&edge);
-    //     } else {
-    //         lookback.insert(edge, source);
-    //         // Edge will be added when we encounter the other duplicate.
-    //     }
-    // } else {
-    //     unreachable!();
-    // }
 }
 
-pub fn fill_faces_for_cut_endpoint(graph: &mut StableUnGraph<VirtualNode, VirtualEdgeWeight>, is_tri_mesh: bool) {
+pub fn fill_faces_for_cut_endpoint(
+    graph: &mut StableUnGraph<VirtualNode, VirtualEdgeWeight>,
+    is_tri_mesh: bool,
+) {
     // To make sure we do not add vertices twice for faces with 2 cut endpoints
     let mut done: HashSet<NodeIndex> = HashSet::new();
 
@@ -940,7 +904,11 @@ pub fn fill_faces_for_cut_endpoint(graph: &mut StableUnGraph<VirtualNode, Virtua
                         "is_tri: {:?}, Cut endpoint midpoint duplicate node {:?} neighbors do not share exactly one other neighbor as expected for quad face: {:?} and {:?} with shared {:?}",
                         is_tri_mesh, node_idx, neighbors_0, neighbors_1, shared
                     );
-                    let all_neighbors = neighbors_0.iter().chain(neighbors_1.iter()).copied().collect_vec();
+                    // let all_neighbors = neighbors_0
+                    //     .iter()
+                    //     .chain(neighbors_1.iter())
+                    //     .copied()
+                    //     .collect_vec();
                     // Log the type of all neighbors for debugging.
                     // for n in &all_neighbors {
                     //     let node = &graph[*n];
@@ -1058,20 +1026,25 @@ fn mesh_boundary_edges(
         }
 
         (
-            VirtualNodeOrigin::CutEndpointMidpointDuplicate { cut_index: left_cut_index, .. },
-            VirtualNodeOrigin::CutEndpointMidpointDuplicate { cut_index: right_cut_index, .. }, 
+            VirtualNodeOrigin::CutEndpointMidpointDuplicate {
+                cut_index: left_cut_index,
+                ..
+            },
+            VirtualNodeOrigin::CutEndpointMidpointDuplicate {
+                cut_index: right_cut_index,
+                ..
+            },
         ) => {
             // This is kinda 2 cases:
             // - Different cut, then actually there are no other edges to connect. Necessarily, the face is only this edge, the two different cuts going out and then an edge connecting those (quad).
             // We could connect those non-endpoint vertices together but I think the other cases should cover this..
-
 
             // - Same cut, then the cut has no internal vertices, there may or may not be edges to add? This is unclear to me now. TODO...
             // For now just panic in that case and hope it never happens!
             if left_cut_index == right_cut_index {
                 // Same cut, handle accordingly
                 panic!("TODO: no internal vertices along cut. Is this even possible ever?!");
-            } 
+            }
         }
 
         (
@@ -1154,11 +1127,7 @@ fn mesh_boundary_edges(
                                             edge, faces
                                         );
                         };
-                        let other_face = if *face1 == face_id {
-                            *face2
-                        } else {
-                            *face1
-                        };
+                        let other_face = if *face1 == face_id { *face2 } else { *face1 };
 
                         if seen.contains(&other_face) {
                             continue;
@@ -1230,7 +1199,7 @@ fn mesh_boundary_edges(
         ) => {
             // If the cut has at least 2 internal vertices, then we do not need to do work here.
             // Unfortunately, for the polycube, having exactly 1 internal path vertex is very common.
-            // So, we need to add edges of the CutDuplicate just lik ein the CutDuplocate-CutDuplicate case.
+            // So, we need to add edges of the CutDuplicate just like in the CutDuplocate-CutDuplicate case.
             // TODO
         }
 

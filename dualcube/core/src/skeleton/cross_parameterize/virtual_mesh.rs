@@ -373,14 +373,14 @@ fn check_invariants(vfg: &VirtualFlatGeometry, is_tri_mesh: bool) {
             low_degree_counts[2],
         );
 
-        for (node, degree) in low_degree_nodes {
-            log::error!(
-                "Low-degree node {:?}: degree {}, origin={:?}",
-                node,
-                degree,
-                vfg.graph[node].origin,
-            );
-        }
+        // for (node, degree) in low_degree_nodes {
+        //     log::error!(
+        //         "Low-degree node {:?}: degree {}, origin={:?}",
+        //         node,
+        //         degree,
+        //         vfg.graph[node].origin,
+        //     );
+        // }
     }
 
     // 5. All duplicated pairs (CutDuplicate and CutEndpointMidpoint) have matching peers.
