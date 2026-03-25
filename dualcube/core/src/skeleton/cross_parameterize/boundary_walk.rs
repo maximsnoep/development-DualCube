@@ -942,10 +942,10 @@ pub fn fill_faces_for_cut_endpoint(graph: &mut StableUnGraph<VirtualNode, Virtua
                     );
                     let all_neighbors = neighbors_0.iter().chain(neighbors_1.iter()).copied().collect_vec();
                     // Log the type of all neighbors for debugging.
-                    for n in &all_neighbors {
-                        let node = &graph[*n];
-                        error!("Neighbor node {:?} has origin {:?}", n, node.origin);
-                    }
+                    // for n in &all_neighbors {
+                    //     let node = &graph[*n];
+                    //     error!("Neighbor node {:?} has origin {:?}", n, node.origin);
+                    // }
 
                     continue;
                 }
