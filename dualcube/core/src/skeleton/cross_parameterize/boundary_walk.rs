@@ -960,10 +960,10 @@ pub fn fill_faces_for_cut_endpoint(
                     //     "Cut endpoint midpoint duplicate node {:?} neighbors do not share exactly one other neighbor as expected for quad face: {:?} and {:?} with shared {:?}",
                     //     node_idx, neighbors_0, neighbors_1, shared
                     // ); FIX THIS!!
-                    error!(
-                        "is_tri: {:?}, Cut endpoint midpoint duplicate node {:?} neighbors do not share exactly one other neighbor as expected for quad face: {:?} and {:?} with shared {:?}",
-                        is_tri_mesh, node_idx, neighbors_0, neighbors_1, shared
-                    );
+                    // error!(
+                    //     "is_tri: {:?}, Cut endpoint midpoint duplicate node {:?} neighbors do not share exactly one other neighbor as expected for quad face: {:?} and {:?} with shared {:?}",
+                    //     is_tri_mesh, node_idx, neighbors_0, neighbors_1, shared
+                    // );
                     // let all_neighbors = neighbors_0
                     //     .iter()
                     //     .chain(neighbors_1.iter())

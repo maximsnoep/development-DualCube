@@ -1,5 +1,6 @@
 use std::collections::HashMap;
 
+use log::warn;
 use mehsh::prelude::{HasEdges, HasVertices, Mesh};
 
 use crate::{
@@ -71,8 +72,15 @@ pub fn add_internal_edges(
                         },
                         VertexToVirtual::Unique(other_node),
                     ) => {
-                        // Only check whether connection was covered to one of the duplicates before.
-                        // TODO : correctness check: edge exists to one of the duplicates
+                        let has_left = vfg.graph.find_edge(*self_left, *other_node).is_some();
+                        let has_right = vfg.graph.find_edge(*self_right, *other_node).is_some();
+                        if !has_left && !has_right {
+                            warn!(
+                                "internal_edges check: CutPair({:?})={{L:{:?},R:{:?}}} <-> Unique({:?})={:?} — NO edge exists. \
+                                 Mesh edge {:?}<->{:?}",
+                                vert, self_left, self_right, other_vert, other_node, vert, other_vert
+                            );
+                        }
                     }
                     (
                         VertexToVirtual::Unique(self_node),
@@ -81,8 +89,15 @@ pub fn add_internal_edges(
                             right: other_right,
                         },
                     ) => {
-                        // Only check whether connection was covered to one of the duplicates before.
-                        // TODO : correctness check: edge exists to one of the duplicates before.
+                        let has_left = vfg.graph.find_edge(*self_node, *other_left).is_some();
+                        let has_right = vfg.graph.find_edge(*self_node, *other_right).is_some();
+                        if !has_left && !has_right {
+                            warn!(
+                                "internal_edges check: Unique({:?})={:?} <-> CutPair({:?})={{L:{:?},R:{:?}}} — NO edge exists. \
+                                 Mesh edge {:?}<->{:?}",
+                                vert, self_node, other_vert, other_left, other_right, vert, other_vert
+                            );
+                        }
                     }
                     // Both cuts
                     (
@@ -95,11 +110,18 @@ pub fn add_internal_edges(
                             right: other_right,
                         },
                     ) => {
-                        // Only check whether connection was covered to one of the duplicates before.
-                        // TODO : edge exist between any of the duplicates of other sides
+                        let has_any = vfg.graph.find_edge(*self_left, *other_left).is_some()
+                            || vfg.graph.find_edge(*self_left, *other_right).is_some()
+                            || vfg.graph.find_edge(*self_right, *other_left).is_some()
+                            || vfg.graph.find_edge(*self_right, *other_right).is_some();
+                        if !has_any {
+                            warn!(
+                                "internal_edges check: CutPair({:?})={{L:{:?},R:{:?}}} <-> CutPair({:?})={{L:{:?},R:{:?}}} — NO edge exists among any pair. \
+                                 Mesh edge {:?}<->{:?}",
+                                vert, self_left, self_right, other_vert, other_left, other_right, vert, other_vert
+                            );
+                        }
                     }
-
-                    _ => unreachable!("Unexpected origin pair encountered."),
                 }
             } else {
                 // Other side of edge lies outside patch, so other vertex is not in VFG.
@@ -135,12 +157,13 @@ pub fn add_internal_edges(
                         VertexToVirtual::Unique(self_node),
                         EdgemidpointToVirtual::Unique(mid_node),
                     ) => {
-                        // let self_pos = vfg.graph[*self_node].position;
-                        // let mid_pos = vfg.graph[*mid_node].position;
-                        // let length = (self_pos - mid_pos).norm();
-                        // vfg.graph
-                        //     .add_edge(*self_node, *mid_node, VirtualEdgeWeight { length });
-                        // TODO: correctness check: edge exists
+                        if vfg.graph.find_edge(*self_node, *mid_node).is_none() {
+                            warn!(
+                                "internal_edges check: Unique({:?})={:?} <-> UniqueMid({:?})={:?} — NO edge exists. \
+                                 Mesh edge {:?}<->{:?} (midpoint edge {:?})",
+                                vert, self_node, midpoint_edge, mid_node, vert, other_vert, midpoint_edge
+                            );
+                        }
                     }
                     // Vertex is duplicated, midpoint unique
                     (
@@ -150,8 +173,15 @@ pub fn add_internal_edges(
                         },
                         EdgemidpointToVirtual::Unique(mid_node),
                     ) => {
-                        // Only check whether connection was covered to one of the duplicates before.
-                        // TODO: correctness check: edge exists to one of the duplicates
+                        let has_left = vfg.graph.find_edge(*self_left, *mid_node).is_some();
+                        let has_right = vfg.graph.find_edge(*self_right, *mid_node).is_some();
+                        if !has_left && !has_right {
+                            warn!(
+                                "internal_edges check: CutPair({:?})={{L:{:?},R:{:?}}} <-> UniqueMid({:?})={:?} — NO edge exists. \
+                                 Mesh edge {:?}<->{:?} (midpoint edge {:?})",
+                                vert, self_left, self_right, midpoint_edge, mid_node, vert, other_vert, midpoint_edge
+                            );
+                        }
                     }
                     // Vertex unique, midpoint duplicated
                     (
@@ -161,8 +191,15 @@ pub fn add_internal_edges(
                             right: mid_right,
                         },
                     ) => {
-                        // Only check whether connection was covered to one of the duplicates before.
-                        // TODO : correctness check: edge exists to one of the duplicates
+                        let has_left = vfg.graph.find_edge(*self_node, *mid_left).is_some();
+                        let has_right = vfg.graph.find_edge(*self_node, *mid_right).is_some();
+                        if !has_left && !has_right {
+                            warn!(
+                                "internal_edges check: Unique({:?})={:?} <-> CutEndpointMid({:?})={{L:{:?},R:{:?}}} — NO edge exists. \
+                                 Mesh edge {:?}<->{:?} (midpoint edge {:?})",
+                                vert, self_node, midpoint_edge, mid_left, mid_right, vert, other_vert, midpoint_edge
+                            );
+                        }
                     }
                     // Both duplicated
                     (
@@ -175,8 +212,17 @@ pub fn add_internal_edges(
                             right: mid_right,
                         },
                     ) => {
-                        // Only check whether connection was covered to one of the duplicates before.
-                        // TODO : correctness check: edge exist between any of the duplicates of other sides
+                        let has_any = vfg.graph.find_edge(*self_left, *mid_left).is_some()
+                            || vfg.graph.find_edge(*self_left, *mid_right).is_some()
+                            || vfg.graph.find_edge(*self_right, *mid_left).is_some()
+                            || vfg.graph.find_edge(*self_right, *mid_right).is_some();
+                        if !has_any {
+                            warn!(
+                                "internal_edges check: CutPair({:?})={{L:{:?},R:{:?}}} <-> CutEndpointMid({:?})={{L:{:?},R:{:?}}} — NO edge exists among any pair. \
+                                 Mesh edge {:?}<->{:?} (midpoint edge {:?})",
+                                vert, self_left, self_right, midpoint_edge, mid_left, mid_right, vert, other_vert, midpoint_edge
+                            );
+                        }
                     }
                 }
             }
