@@ -412,120 +412,153 @@ fn map_boundary_to_polygon(
     }
 
     let origin_first_boundary_node = &vfg.graph[boundary[0]].origin;
+    let origin_second_boundary_node = &vfg.graph[boundary[1]].origin;
     // Note that this is not strictly necessary as a result from the other methods, but it is always the case now and simplifies logic here so we just assume it.
-    if let VirtualNodeOrigin::CutEndpointMidpointDuplicate { .. } = origin_first_boundary_node {
-    } else {
-        panic!("Assumption violated: first boundary node {:?} does not have origin CutEndpointMidpointDuplicate as expected for a cut-open disk boundary", boundary[0]);
+    // The assumption is that the first node is always the start of some cut, and the second is along that cut.
+    match (origin_first_boundary_node, origin_second_boundary_node) {
+        (
+            VirtualNodeOrigin::CutEndpointMidpointDuplicate { .. },
+            VirtualNodeOrigin::CutDuplicate { .. },
+        ) => {
+            // This is the expected case: the boundary starts with a cut endpoint, so we can alternate cut/non-cut segments as expected.
+        }
+        (
+            VirtualNodeOrigin::CutEndpointMidpointDuplicate {
+                cut_index: cut1, ..
+            },
+            VirtualNodeOrigin::CutEndpointMidpointDuplicate {
+                cut_index: cut2, ..
+            },
+        ) => {
+            // Cut is very short. We check that the endpoints are from the same cut.
+            if cut1 != cut2 {
+                panic!(
+                    "Boundary loop starts with cut endpoints from different cuts: {:?} and {:?}",
+                    origin_first_boundary_node, origin_second_boundary_node
+                );
+            }
+        }
+        _ => {
+            panic!(
+                "Unexpected boundary start node types: {:?} and {:?}",
+                origin_first_boundary_node, origin_second_boundary_node
+            );
+        }
     }
+
+    // Because our starting pattern is always set, we know that the order in which we traverse the segments is also set.
+    // We can traverse the boundary in order and we will see all segments in the correct order.
 
     let result = HashMap::new();
 
-    // Since cuts have at least their two endpoints, we do per segment (alternatingly as the boundary alternates between cut and non-cut):
-    // - Per cut-segment: parameterize by arc-length, to [0, 1], so putting the cut endpoints at 0 and 1, and midpoints in between.
-    // - Per non-cut segment: parameterize by arc-length, to (0, 1), so not putting any nodes at the corners.
+    let mut currently_building = CurrentlyBuildingSegment::None; // Start with none before seeing the first node.
+    let mut segment_index = -1; // Will be incremented to 0 at the first cut segment.
+    let mut previous_was_cut_endpoint = false; // Necessary to see when we are skipping empty non-cut segments.
+    let mut in_order_vertices_in_seg = Vec::new();
+    for idx in boundary {
+        let node = &vfg.graph[*idx];
+        let origin = &node.origin;
 
-    // Regular polygon vertices.
-    // let polygon: Vec<Vector2D> = (0..n_sides)
-    //     .map(|k| {
-    //         let angle = 2.0 * PI * k as f64 / n_sides as f64;
-    //         Vector2D::new(angle.cos(), angle.sin())
-    //     })
-    //     .collect();
+        match (currently_building, origin) {
+            (
+                CurrentlyBuildingSegment::None,
+                VirtualNodeOrigin::CutEndpointMidpointDuplicate { .. },
+            ) => {
+                // Start a new cut segment.
+                segment_index += if previous_was_cut_endpoint { 2 } else { 1 };
+                currently_building = CurrentlyBuildingSegment::Cut;
+                in_order_vertices_in_seg.push(node);
 
-    // let corners = &vfg.corner_indices;
+                previous_was_cut_endpoint = false;
+            }
+            (CurrentlyBuildingSegment::Cut, VirtualNodeOrigin::CutDuplicate { .. }) => {
+                // Continue building cut segment.
+                in_order_vertices_in_seg.push(node);
+                previous_was_cut_endpoint = false;
+            }
+            (
+                CurrentlyBuildingSegment::Cut,
+                VirtualNodeOrigin::CutEndpointMidpointDuplicate { .. },
+            ) => {
+                // End the current segment
+                currently_building = CurrentlyBuildingSegment::None;
+                in_order_vertices_in_seg.push(node);
+                previous_was_cut_endpoint = true;
 
-    // if !corners.is_empty() && corners.len() != n_sides {
-    //     warn!(
-    //         "map_boundary_to_polygon: corner count {} != n_sides {}, falling back to arc-length",
-    //         corners.len(),
-    //         n_sides,
-    //     );
-    // }
+                // Parameterize
+                parameterize_segment(true, segment_index as usize, &in_order_vertices_in_seg);
 
-    // if !corners.is_empty() && corners.len() == n_sides {
-    //     // Structured mapping: each segment of boundary nodes maps to one polygon side.
-    //     // When adjacent cut endpoints produce empty segments (seg_len == 0), we
-    //     // absorb those empty polygon sides into the next non-empty segment so
-    //     // that its nodes span a wider polygon arc and no gap is left.
-    //     let mut result = HashMap::new();
+                // Flush buffer and start new for next segment.
+                in_order_vertices_in_seg.clear();
+            }
+            (CurrentlyBuildingSegment::None, VirtualNodeOrigin::BoundaryMidpoint { .. }) => {
+                // Start a new non-cut segment.
+                segment_index += 1;
+                currently_building = CurrentlyBuildingSegment::NonCut;
+                previous_was_cut_endpoint = false;
+            }
+            (CurrentlyBuildingSegment::NonCut, VirtualNodeOrigin::BoundaryMidpoint { .. }) => {
+                // Continue building non-cut segment.
+                in_order_vertices_in_seg.push(node);
+                previous_was_cut_endpoint = false;
+            }
+            (
+                CurrentlyBuildingSegment::NonCut,
+                VirtualNodeOrigin::CutEndpointMidpointDuplicate { .. },
+            ) => {
+                // Previous segment should have ended previously, update segment for now
+                segment_index += 1;
+                currently_building = CurrentlyBuildingSegment::Cut;
+                previous_was_cut_endpoint = true; // but what we set here in this case should never matter, as the next up will always be CutDuplicate or Endpoint of same cut.
 
-    //     // Pre-compute segment lengths for all sides.
-    //     let seg_lens: Vec<usize> = (0..n_sides)
-    //         .map(|side| {
-    //             let seg_start = corners[side];
-    //             let seg_end = corners[(side + 1) % n_sides];
-    //             if seg_end > seg_start {
-    //                 seg_end - seg_start
-    //             } else if seg_end == seg_start {
-    //                 0
-    //             } else {
-    //                 n - seg_start + seg_end
-    //             }
-    //         })
-    //         .collect();
+                // Parameterize
+                parameterize_segment(false, segment_index as usize, &in_order_vertices_in_seg);
 
-    //     for side in 0..n_sides {
-    //         if seg_lens[side] == 0 {
-    //             continue; // Empty side — absorbed by the next non-empty side.
-    //         }
+                // Flush buffer and start new for next segment.
+                in_order_vertices_in_seg.clear();
 
-    //         // Walk backward through preceding empty sides to find where the
-    //         // effective polygon arc starts.
-    //         let mut effective_start = side;
-    //         loop {
-    //             let prev = (effective_start + n_sides - 1) % n_sides;
-    //             if seg_lens[prev] != 0 || prev == side {
-    //                 break;
-    //             }
-    //             effective_start = prev;
-    //         }
-    //         let effective_end = (side + 1) % n_sides;
-
-    //         let seg_start = corners[side];
-    //         let seg_len = seg_lens[side];
-
-    //         // Compute arc lengths within this segment.
-    //         let mut seg_arc: Vec<f64> = Vec::with_capacity(seg_len);
-    //         let mut seg_total: f64 = 0.0;
-    //         for j in 0..seg_len {
-    //             let idx_a = (seg_start + j) % n;
-    //             let idx_b = (seg_start + j + 1) % n;
-    //             let a = vfg.graph[boundary[idx_a]].position;
-    //             let b = vfg.graph[boundary[idx_b]].position;
-    //             let len = (b - a).norm();
-    //             seg_arc.push(len);
-    //             seg_total += len;
-    //         }
-
-    //         // Place nodes along the (possibly extended) polygon arc.
-    //         let mut cumulative: f64 = 0.0;
-    //         for j in 0..seg_len {
-    //             let idx = (seg_start + j) % n;
-    //             let node = boundary[idx];
-    //             let t = if seg_total > 1e-15 {
-    //                 cumulative / seg_total
-    //             } else {
-    //                 j as f64 / seg_len as f64
-    //             };
-    //             let pos = polygon_arc_interpolate(&polygon, effective_start, effective_end, t);
-    //             result.insert(node, pos);
-    //             cumulative += seg_arc[j];
-    //         }
-    //     }
-
-    //     // Verify all boundary nodes got assigned a position.
-    //     let missing = boundary.iter().filter(|n| !result.contains_key(n)).count();
-    //     if missing > 0 {
-    //         warn!(
-    //             "map_boundary_to_polygon: {} of {} boundary nodes missing after corner mapping!",
-    //             missing, n,
-    //         );
-    //     }
-
-    //     return result;
-    // }
+                // So save this node after clearing
+                in_order_vertices_in_seg.push(node);
+            }
+            _ => {
+                panic!(
+                    "Unexpected boundary node type {:?} while building segment of type {:?}",
+                    origin, currently_building
+                );
+            }
+        }
+    }
+    // Last segment can be non-cut which only flushes on the next cut, so we need to flush it manually at the end (only happens if last non-cut is empty)
+    if matches!(currently_building, CurrentlyBuildingSegment::NonCut) {
+        // Parameterize
+        parameterize_segment(false, segment_index as usize, &in_order_vertices_in_seg);
+        in_order_vertices_in_seg.clear(); // doesn't really matter at this point
+    }
 
     result
+}
+
+fn parameterize_segment(
+    is_cut_segment: bool,
+    segment_index: usize,
+    in_order_vertices_in_seg: &[&virtual_mesh::VirtualNode],
+) -> HashMap<NodeIndex, Vector2D> {
+    info!(
+        "Parameterizing {} segment {} with nodes {:?}",
+        if is_cut_segment { "cut" } else { "non-cut" },
+        segment_index,
+        in_order_vertices_in_seg.len()
+    );
+    // - Per cut-segment: parameterize by arc-length, to [0, 1], so putting the cut endpoints at 0 and 1, and midpoints in between.
+    // - Per non-cut segment: parameterize by arc-length, to (0, 1), so not putting any nodes at the corners.
+    HashMap::new()
+}
+
+#[derive(Debug, Clone, Copy)]
+enum CurrentlyBuildingSegment {
+    Cut,
+    NonCut,
+    None,
 }
 
 /// Evaluates a 2D position along the boundary of a regular polygon.
