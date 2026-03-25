@@ -1058,13 +1058,20 @@ fn mesh_boundary_edges(
         }
 
         (
-            VirtualNodeOrigin::CutEndpointMidpointDuplicate { .. },
-            VirtualNodeOrigin::CutEndpointMidpointDuplicate { .. }, 
+            VirtualNodeOrigin::CutEndpointMidpointDuplicate { cut_index: left_cut_index, .. },
+            VirtualNodeOrigin::CutEndpointMidpointDuplicate { cut_index: right_cut_index, .. }, 
         ) => {
             // This is kinda 2 cases:
             // - Different cut, then actually there are no other edges to connect. Necessarily, the face is only this edge, the two different cuts going out and then an edge connecting those (quad).
-                // We could connect those non-endpoint vertices together but I think the other cases should cover this..
+            // We could connect those non-endpoint vertices together but I think the other cases should cover this..
+
+
             // - Same cut, then the cut has no internal vertices, there may or may not be edges to add? This is unclear to me now. TODO...
+            // For now just panic in that case and hope it never happens!
+            if left_cut_index == right_cut_index {
+                // Same cut, handle accordingly
+                panic!("TODO: no internal vertices along cut. Is this even possible ever?!");
+            } 
         }
 
         (
@@ -1221,8 +1228,10 @@ fn mesh_boundary_edges(
             VirtualNodeOrigin::CutDuplicate { .. },
             VirtualNodeOrigin::CutEndpointMidpointDuplicate { .. },
         ) => {
-            // We already add all necessary edges for the CutDuplicate, and the corner case is handled in Endpoint-Midpoint case.
-            // Nothing to do!
+            // If the cut has at least 2 internal vertices, then we do not need to do work here.
+            // Unfortunately, for the polycube, having exactly 1 internal path vertex is very common.
+            // So, we need to add edges of the CutDuplicate just lik ein the CutDuplocate-CutDuplicate case.
+            // TODO
         }
 
         //
