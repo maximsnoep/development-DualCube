@@ -1,7 +1,9 @@
 use std::collections::HashMap;
+use std::f64::consts::{FRAC_PI_2, TAU};
 
 use itertools::Itertools;
-use log::warn;
+use log::{info, warn};
+use mehsh::mesh::elem::edge;
 use mehsh::prelude::{HasPosition, HasVertices, Mesh, Vector2D, Vector3D};
 
 use petgraph::graph::{EdgeIndex, NodeIndex};
@@ -312,52 +314,85 @@ fn parameterize_side(
     (vfg, uv_map)
 }
 
-/// Interpolates a position along the boundary of a regular polygon, from
-/// vertex `start` to vertex `end` (going forward through intermediate
-/// vertices). `t` in `[0, 1)` maps proportionally across the arc.
+/// Maps every node in `vfg.boundary_loop` to a 2D position on a regular `n_sides`-gon,
+///  where for a region with degree we have `n_sides` = 4 for degree 1, and `n_sides` = 4(d-1) for degree d >= 2.
 ///
-/// When `start == end` (zero-length arc), returns `polygon[start]`.
-/// When the arc spans one edge, this reduces to simple linear interpolation.
-fn polygon_arc_interpolate(polygon: &[Vector2D], start: usize, end: usize, t: f64) -> Vector2D {
-    let n = polygon.len();
-    let n_edges = (end + n - start) % n;
-    if n_edges == 0 {
-        return polygon[start];
-    }
-    let total = n_edges as f64;
-    let pos = (t * total).clamp(0.0, total - 1e-12);
-    let edge = pos as usize;
-    let local_t = pos - edge as f64;
-    let a = polygon[(start + edge) % n];
-    let b = polygon[(start + edge + 1) % n];
-    a * (1.0 - local_t) + b * local_t
-}
-
-/// Maps every node in `vfg.boundary_loop` to a 2D position on a regular `n_sides`-gon.
+/// For a boundary without cuts, we simply pick 4 points to be corners, and do arc-length parameterization within each of the 4 segments.
 ///
+/// When there are cuts, each segment of the polygon corresponds to a part of the boundary loop.
+/// The boundary alternates between cut segments (between cut endpoints) and non-cut segments (though possibly empty when cut endpoints are adjacent).
 ///
-/// TODO...
-///
-/// When `corner_indices` is non-empty (degree ≥ 2), each consecutive pair of
-/// corners defines a segment that maps to one polygon side. Nodes within a
-/// segment are distributed by arc-length along that side. This ensures boundary
-/// midpoints and cut vertices land on the correct polygon side.
-///
-/// When `corner_indices` is empty (degree 1), nodes are distributed by global
-/// arc-length around the polygon.
-///
-/// The polygon has circumradius 1 with vertices at angles `2πk/n_sides`.
-fn map_boundary_to_polygon(
-    vfg: &VirtualFlatGeometry,
-    _n_sides: usize,
-) -> HashMap<NodeIndex, Vector2D> {
+/// The polygon has circumradius 1 with corners at angles `2*pi*k/n_sides` for k'th corner.
+fn map_boundary_to_polygon(vfg: &VirtualFlatGeometry) -> HashMap<NodeIndex, Vector2D> {
     let boundary = &vfg.boundary_loop;
-    let n = boundary.len();
-    if n == 0 {
-        return HashMap::new();
+
+    // Traverse the boundary to get the number of different sides
+    // Note that it is possible for there to be 0 vertices in a segment, as CutEndpoints can connect directly.
+    let segments = 1;
+
+    // TODO: traverse boundary
+
+    info!(
+        "{:?} boundary segments (cut/non-cut alternations)",
+        segments
+    );
+
+    if segments == 1 {
+        // No cuts: simple case. Just pick 4 corners and do arc-length parameterization within each of the 4 segments.
+        if boundary.len() < 4 {
+            // TODO: catch this upstream...
+            panic!("Boundary has fewer than 4 vertices, cannot map to polygon with 4 sides");
+        }
+
+        // Calculate total length so we can parameterize.
+        let mut total_length: f64 = 0.0;
+        let mut edge_lengths: Vec<f64> = vec![0.0; boundary.len()];
+        for i in 0..boundary.len() {
+            let a = vfg.graph[boundary[i]].position;
+            let b = vfg.graph[boundary[(i + 1) % boundary.len()]].position;
+            let len = (b - a).norm();
+            edge_lengths[i] = len;
+            total_length += len;
+        }
+
+        // We pick vertex 0 to be the first corner, then place the next 3 corners at cumulative
+        // arc-lengths of 1/4, 2/4, and 3/4 around the loop. We enforce strictly increasing indices
+        // to guarantee 4 distinct corners, even if edge lengths are disproportionately large.
+        let mut corner_node_indices = Vec::with_capacity(4);
+        corner_node_indices.push(boundary[0]);
+
+        let mut current_idx = 0;
+        let mut cumulative_length = 0.0;
+
+        for k in 1..4 {
+            let target_length = total_length * (k as f64 / 4.0);
+
+            // The maximum index we can pick and still leave enough vertices for the remaining corners.
+            let max_idx = boundary.len() - (4 - k);
+
+            // Advance by at least one vertex to ensure corners are distinct.
+            current_idx += 1;
+            cumulative_length += edge_lengths[current_idx - 1];
+
+            // Continue advancing until we reach the target length or the maximum allowed index.
+            while current_idx < max_idx && cumulative_length < target_length {
+                cumulative_length += edge_lengths[current_idx];
+                current_idx += 1;
+            }
+
+            corner_node_indices.push(boundary[current_idx]);
+        }
+
+        // Do arc-length parameterization within each of the 4 segments between corners.
+        let mut result = HashMap::new();
+
+
+        return result;
     }
 
-    warn!("TODO!!!");
+    // Since cuts have at least their two endpoints, we do per segment (alternatingly as the boundary alternates between cut and non-cut):
+    // - Per cut-segment: parameterize by arc-length, to [0, 1], so putting the cut endpoints at 0 and 1, and midpoints in between.
+    // - Per non-cut segment: parameterize by arc-length, to (0, 1), so not putting any nodes at the corners.
 
     // Regular polygon vertices.
     // let polygon: Vec<Vector2D> = (0..n_sides)
@@ -460,35 +495,38 @@ fn map_boundary_to_polygon(
     //     return result;
     // }
 
-    // // Fallback: global arc-length distribution (degree 1, no corners).
-    // let mut seg_lengths: Vec<f64> = vec![0.0; n];
-    // let mut total: f64 = 0.0;
-    // for i in 0..n {
-    //     let a = vfg.graph[boundary[i]].position;
-    //     let b = vfg.graph[boundary[(i + 1) % n]].position;
-    //     let len = (b - a).norm();
-    //     seg_lengths[i] = len;
-    //     total += len;
-    // }
-
-    // let mut result = HashMap::new();
-    // let mut cumulative: f64 = 0.0;
-
-    // for (i, &node) in boundary.iter().enumerate() {
-    //     let t = cumulative / total; // in [0, 1)
-
-    //     let frac = t * n_sides as f64;
-    //     let side = (frac as usize).min(n_sides - 1);
-    //     let local_t = frac - side as f64;
-
-    //     let p0 = polygon[side];
-    //     let p1 = polygon[(side + 1) % n_sides];
-    //     let pos = p0 * (1.0 - local_t) + p1 * local_t;
-
-    //     result.insert(node, pos);
-    //     cumulative += seg_lengths[i];
-    // }
-
-    // result
     todo!()
+}
+
+/// Evaluates a 2D position along the boundary of a regular polygon.
+///
+/// The polygon has `n` vertices, is inscribed within a unit circle, and has its initial vertex located exactly at the top (0.0, 1.0).
+/// Vertices are generated in a counter-clockwise direction.
+pub fn polygon_point(n: usize, segment: usize, t: f64) -> (f64, f64) {
+    assert!(n >= 3, "A polygon must have at least 3 vertices.");
+    assert!(
+        segment < n,
+        "Segment index must be in the range [0, n-1], got {} for n={}",
+        segment,
+        n
+    );
+
+    let n_f64 = n as f64;
+    let s_f64 = segment as f64;
+
+    // Calculate the angles for the start and end of the segment.
+    let angle_start = FRAC_PI_2 + (s_f64 * TAU / n_f64);
+    let angle_end = FRAC_PI_2 + ((s_f64 + 1.0) * TAU / n_f64);
+
+    let start_x = angle_start.cos();
+    let start_y = angle_start.sin();
+
+    let end_x = angle_end.cos();
+    let end_y = angle_end.sin();
+
+    // Linearly interpolate between the start and end vertices.
+    let x = (1.0 - t) * start_x + t * end_x;
+    let y = (1.0 - t) * start_y + t * end_y;
+
+    (x, y)
 }
