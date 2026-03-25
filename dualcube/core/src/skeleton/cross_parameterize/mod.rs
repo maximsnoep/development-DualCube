@@ -10,6 +10,7 @@ use petgraph::graph::{EdgeIndex, NodeIndex};
 use serde::{Deserialize, Serialize};
 
 use crate::prelude::{EdgeID, VertID, INPUT};
+use crate::skeleton::cross_parameterize::virtual_mesh::VirtualNodeOrigin;
 // use crate::skeleton::cross_parameterize::harmonic::solve_dirichlet;
 use crate::skeleton::orthogonalize::LabeledCurveSkeleton;
 
@@ -290,19 +291,14 @@ fn parameterize_side(
     let vfg = VirtualFlatGeometry::build(patch_node_idx, skeleton, mesh, cutting_plan, is_tri_mesh);
 
     // Assign 2D positions to every node on the disk boundary.
-    // The canonical polygon has n_sides sides:
-    //   - degree 1 -> square (4 sides)
-    //   - degree d >= 2 -> regular 4(d-1)-gon
-    let n_sides = if degree == 1 { 4 } else { 4 * (degree - 1) };
-    // let boundary_positions = map_boundary_to_polygon(&vfg, n_sides);
+    let _boundary_positions = map_boundary_to_polygon(&vfg, degree);
 
     // TODO temp debug
     if degree >= 2 {
         log::info!(
-            "parameterize_side: region {:?} degree {}, n_sides={}, boundary_loop={}",
+            "parameterize_side: region {:?} degree {},  boundary_loop={}",
             patch_node_idx,
             degree,
-            n_sides,
             vfg.boundary_loop.len(),
         );
     }
@@ -323,21 +319,15 @@ fn parameterize_side(
 /// The boundary alternates between cut segments (between cut endpoints) and non-cut segments (though possibly empty when cut endpoints are adjacent).
 ///
 /// The polygon has circumradius 1 with corners at angles `2*pi*k/n_sides` for k'th corner.
-fn map_boundary_to_polygon(vfg: &VirtualFlatGeometry) -> HashMap<NodeIndex, Vector2D> {
+///
+/// Degree parameter is the degree of the region being parameterized in the skeleton.
+fn map_boundary_to_polygon(
+    vfg: &VirtualFlatGeometry,
+    degree: usize,
+) -> HashMap<NodeIndex, Vector2D> {
     let boundary = &vfg.boundary_loop;
 
-    // Traverse the boundary to get the number of different sides
-    // Note that it is possible for there to be 0 vertices in a segment, as CutEndpoints can connect directly.
-    let segments = 1;
-
-    // TODO: traverse boundary
-
-    info!(
-        "{:?} boundary segments (cut/non-cut alternations)",
-        segments
-    );
-
-    if segments == 1 {
+    if degree == 1 {
         // No cuts: simple case. Just pick 4 corners and do arc-length parameterization within each of the 4 segments.
         if boundary.len() < 4 {
             // TODO: catch this upstream...
@@ -420,6 +410,15 @@ fn map_boundary_to_polygon(vfg: &VirtualFlatGeometry) -> HashMap<NodeIndex, Vect
 
         return result;
     }
+
+    let origin_first_boundary_node = &vfg.graph[boundary[0]].origin;
+    // Note that this is not strictly necessary as a result from the other methods, but it is always the case now and simplifies logic here so we just assume it.
+    if let VirtualNodeOrigin::CutEndpointMidpointDuplicate { .. } = origin_first_boundary_node {
+    } else {
+        panic!("Assumption violated: first boundary node {:?} does not have origin CutEndpointMidpointDuplicate as expected for a cut-open disk boundary", boundary[0]);
+    }
+
+    let result = HashMap::new();
 
     // Since cuts have at least their two endpoints, we do per segment (alternatingly as the boundary alternates between cut and non-cut):
     // - Per cut-segment: parameterize by arc-length, to [0, 1], so putting the cut endpoints at 0 and 1, and midpoints in between.
@@ -526,7 +525,7 @@ fn map_boundary_to_polygon(vfg: &VirtualFlatGeometry) -> HashMap<NodeIndex, Vect
     //     return result;
     // }
 
-    todo!()
+    result
 }
 
 /// Evaluates a 2D position along the boundary of a regular polygon.
