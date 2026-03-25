@@ -336,6 +336,7 @@ fn check_invariants(vfg: &VirtualFlatGeometry, is_tri_mesh: bool) {
 
     // 4. Degree checks.
     let mut low_degree_counts = [0; 3]; // Index 0 for degree 0, 1 for degree 1, 2 for degree 2
+    let mut low_degree_nodes: Vec<(NodeIndex, usize)> = Vec::new();
     for node in vfg.graph.node_indices() {
         let degree = vfg.graph.edges(node).count();
 
@@ -350,6 +351,7 @@ fn check_invariants(vfg: &VirtualFlatGeometry, is_tri_mesh: bool) {
         // }
         if degree < 3 {
             low_degree_counts[degree] += 1;
+            low_degree_nodes.push((node, degree));
         }
 
         // assert!(
@@ -370,6 +372,15 @@ fn check_invariants(vfg: &VirtualFlatGeometry, is_tri_mesh: bool) {
             low_degree_counts[1],
             low_degree_counts[2],
         );
+
+        for (node, degree) in low_degree_nodes {
+            log::error!(
+                "Low-degree node {:?}: degree {}, origin={:?}",
+                node,
+                degree,
+                vfg.graph[node].origin,
+            );
+        }
     }
 
     // 5. All duplicated pairs (CutDuplicate and CutEndpointMidpoint) have matching peers.
