@@ -1011,12 +1011,12 @@ fn mesh_boundary_edges(
             );
         }
         (
-            VirtualNodeOrigin::BoundaryMidpoint { .. },
+            VirtualNodeOrigin::BoundaryMidpoint { edge, .. },
             VirtualNodeOrigin::CutEndpointMidpointDuplicate { .. },
         )
         | (
             VirtualNodeOrigin::CutEndpointMidpointDuplicate { .. },
-            VirtualNodeOrigin::BoundaryMidpoint { .. },
+            VirtualNodeOrigin::BoundaryMidpoint { edge, .. },
         ) => {
             // Walk face (quad or tri), add vertex in the middle and connect to all nodes.
             // This fixes degrees in both current side majority triangle and minority triangle case (1 or 2 nodes inside patch).
@@ -1025,6 +1025,26 @@ fn mesh_boundary_edges(
             // Note that walking the face is difficult. The VFG might be partial if we came from the boundary side, but purely relying on original mesh is difficult as well because of the midpoints...
 
             // We do this in a second pass, after all CutDuplicates have their edges so we can reliably walk faces using only the VFG (no longer using mesh).
+
+            // We now only add the edge for the boundary midpoint, connecting it to its mesh vertex.
+            add_edge(
+                graph,
+                boundary_lookback,
+                vert_to_nodes,
+                edge_midpoint_ids_to_node_indices,
+                AddingEdgeInput::AlongEdge {
+                    source: if let VirtualNodeOrigin::BoundaryMidpoint { .. } =
+                        graph[current].origin
+                    {
+                        current
+                    } else {
+                        next
+                    },
+                    edge: *edge,
+                },
+                mesh,
+                patch_vertices,
+            );
         }
 
         (
