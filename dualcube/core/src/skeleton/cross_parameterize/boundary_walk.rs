@@ -554,6 +554,7 @@ pub fn calculate_boundary_loop(
             edge_midpoint_ids_to_node_indices,
             mesh,
             patch_vertices,
+            cutting_plan,
         );
 
         // Add the traced disk boundary as actual VFG edges.
@@ -970,6 +971,7 @@ fn mesh_boundary_edges(
     edge_midpoint_ids_to_node_indices: &HashMap<EdgeID, EdgemidpointToVirtual>,
     mesh: &Mesh<INPUT>,
     patch_vertices: &HashSet<VertID>,
+    cutting_plan: &CuttingPlan,
 ) {
     let current_type = &graph[current].origin.clone();
     let next_type = &graph[next].origin.clone();
@@ -1197,10 +1199,164 @@ fn mesh_boundary_edges(
             VirtualNodeOrigin::CutDuplicate { .. },
             VirtualNodeOrigin::CutEndpointMidpointDuplicate { .. },
         ) => {
-            // If the cut has at least 2 internal vertices, then we do not need to do work here.
-            // Unfortunately, for the polycube, having exactly 1 internal path vertex is very common.
-            // So, we need to add edges of the CutDuplicate just like in the CutDuplocate-CutDuplicate case.
-            // TODO
+            // If the cut has at least 2 internal vertices, edges are handled by CutDuplicate-CutDuplicate.
+            // For single-internal-vertex cuts (common on polycubes), we add edges here.
+            //
+            // The idea: the single interior vertex v has a ring of faces around it. The cut
+            // crosses through two of these faces (F_start containing the start boundary edge,
+            // F_end containing the end boundary edge), splitting the ring into a left arc and
+            // a right arc. We walk the arc on our side and add all edges from v to its
+            // face-edge neighbors in those faces.
+            let cut_dup_node = if matches!(current_type, VirtualNodeOrigin::CutDuplicate { .. }) {
+                current
+            } else {
+                next
+            };
+
+            let (v, cut_index, side) = match &graph[cut_dup_node].origin {
+                VirtualNodeOrigin::CutDuplicate {
+                    original,
+                    cut_index,
+                    side,
+                    ..
+                } => (*original, *cut_index, *side),
+                _ => unreachable!(),
+            };
+
+            let cut = &cutting_plan.cuts[cut_index];
+
+            // Only handle single-internal-vertex cuts here.
+            if cut.path.interior_verts.len() != 1 {
+                return;
+            }
+
+            // Find the two faces the cut crosses through at v.
+            let find_face_containing_v = |boundary_edge: EdgeID| -> FaceID {
+                let f = mesh.face(boundary_edge);
+                let f_verts: Vec<VertID> = mesh.vertices(f).collect();
+                if f_verts.contains(&v) {
+                    return f;
+                }
+                let twin = mesh.twin(boundary_edge);
+                let f2 = mesh.face(twin);
+                let f2_verts: Vec<VertID> = mesh.vertices(f2).collect();
+                if f2_verts.contains(&v) {
+                    return f2;
+                }
+                panic!(
+                    "Vertex {:?} not found in either face of boundary edge {:?}",
+                    v, boundary_edge
+                );
+            };
+
+            let f_start = find_face_containing_v(cut.path.start);
+            let f_end = find_face_containing_v(cut.path.end);
+
+            // Determine left/right adjacent faces of F_start at v using half-edge structure.
+            //
+            // In F_start's CCW boundary, the outgoing half-edge from v (root = v) goes to
+            // v_next, and the incoming half-edge (toor = v) comes from v_prev.
+            // The face adjacent via edge v-v_next is the LEFT side of the cut direction
+            // (from boundary midpoint toward v). The face via v-v_prev is the RIGHT side.
+            let f_start_edges: Vec<EdgeID> = mesh.edges(f_start).collect();
+            let mut v_next: Option<VertID> = None;
+            let mut v_prev: Option<VertID> = None;
+            for e in &f_start_edges {
+                if mesh.root(*e) == v {
+                    v_next = Some(mesh.toor(*e));
+                }
+                if mesh.toor(*e) == v {
+                    v_prev = Some(mesh.root(*e));
+                }
+            }
+            let v_next = v_next.expect("v must have an outgoing half-edge in F_start");
+            let v_prev = v_prev.expect("v must have an incoming half-edge in F_start");
+
+            let adjacent_face_via = |neighbor: VertID| -> FaceID {
+                let (e0, _e1) = mesh
+                    .edge_between_verts(v, neighbor)
+                    .expect("v and face neighbor must share an edge");
+                if mesh.face(e0) == f_start {
+                    mesh.face(mesh.twin(e0))
+                } else {
+                    mesh.face(e0)
+                }
+            };
+
+            // side == false -> left, side == true -> right
+            let (starting_face, entry_neighbor) = if !side {
+                (adjacent_face_via(v_next), v_next)
+            } else {
+                (adjacent_face_via(v_prev), v_prev)
+            };
+
+            // Walk the ring of faces around v on our side, collecting edges.
+            let mut edges_to_add: HashSet<(NodeIndex, (EdgeID, EdgeID))> = HashSet::new();
+            let mut current_face = starting_face;
+            let mut entry_v_neighbor = entry_neighbor;
+
+            for i in 0..1000 {
+                if current_face == f_end {
+                    break;
+                }
+                if i == 999 {
+                    panic!("Boundary walk around cut vertex did not reach the other side's face after 1000 iterations, likely infinite loop. Current face: {:?}, entry neighbor: {:?}",
+                            current_face, entry_v_neighbor);
+                }
+
+                // Find v's two face-edge neighbors and the exit neighbor.
+                let face_edges: Vec<EdgeID> = mesh.edges(current_face).collect();
+                let mut exit_neighbor: Option<VertID> = None;
+                for e in &face_edges {
+                    let w = if mesh.root(*e) == v {
+                        mesh.toor(*e)
+                    } else if mesh.toor(*e) == v {
+                        mesh.root(*e)
+                    } else {
+                        continue;
+                    };
+
+                    // Add this edge from v to w.
+                    if let Some(edge_pair) = mesh.edge_between_verts(v, w) {
+                        if !cut_edges.contains(&edge_pair.0) && !cut_edges.contains(&edge_pair.1) {
+                            edges_to_add.insert((cut_dup_node, edge_pair));
+                        }
+                    }
+
+                    if w != entry_v_neighbor {
+                        exit_neighbor = Some(w);
+                    }
+                }
+                let exit_neighbor =
+                    exit_neighbor.expect("Face must have a second edge incident to v");
+
+                // Move to next face via the exit edge.
+                let (e0, _e1) = mesh
+                    .edge_between_verts(v, exit_neighbor)
+                    .expect("Edge between v and exit neighbor must exist");
+                let next_face = if mesh.face(e0) == current_face {
+                    mesh.face(mesh.twin(e0))
+                } else {
+                    mesh.face(e0)
+                };
+
+                entry_v_neighbor = exit_neighbor;
+                current_face = next_face;
+            }
+
+            // Add all collected edges to the VFG.
+            for (source, edges) in edges_to_add {
+                let edge = edges.0;
+                add_edge(
+                    graph,
+                    boundary_lookback,
+                    vert_to_nodes,
+                    edge_midpoint_ids_to_node_indices,
+                    AddingEdgeInput::AlongEdge { source, edge },
+                    mesh,
+                    patch_vertices,
+                );
+            }
         }
 
         //
