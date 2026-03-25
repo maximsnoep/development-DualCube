@@ -10,8 +10,8 @@ use petgraph::graph::{EdgeIndex, NodeIndex};
 use serde::{Deserialize, Serialize};
 
 use crate::prelude::{EdgeID, VertID, INPUT};
+use crate::skeleton::cross_parameterize::harmonic::solve_dirichlet;
 use crate::skeleton::cross_parameterize::virtual_mesh::VirtualNodeOrigin;
-// use crate::skeleton::cross_parameterize::harmonic::solve_dirichlet;
 use crate::skeleton::orthogonalize::LabeledCurveSkeleton;
 
 mod boundary_walk;
@@ -287,25 +287,14 @@ fn parameterize_side(
     }
 
     // Build virtual geometry by cutting the mesh open along cut paths,
-    // duplicating vertices so the result is a topological disk.
+    // duplicating vertices and edges along the cut so the result is a topological disk.
     let vfg = VirtualFlatGeometry::build(patch_node_idx, skeleton, mesh, cutting_plan, is_tri_mesh);
 
     // Assign 2D positions to every node on the disk boundary.
-    let _boundary_positions = map_boundary_to_polygon(&vfg, degree);
-
-    // TODO temp debug
-    if degree >= 2 {
-        log::info!(
-            "parameterize_side: region {:?} degree {},  boundary_loop={}",
-            patch_node_idx,
-            degree,
-            vfg.boundary_loop.len(),
-        );
-    }
+    let boundary_positions = map_boundary_to_polygon(&vfg, degree);
 
     // Solve the Dirichlet problem on the VFG graph.
-    // let uv_map = solve_dirichlet(&vfg, &boundary_positions);
-    let uv_map = HashMap::new(); // TODO
+    let uv_map = solve_dirichlet(&vfg, &boundary_positions);
 
     (vfg, uv_map)
 }
