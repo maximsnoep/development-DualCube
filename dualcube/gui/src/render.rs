@@ -1,8 +1,7 @@
 use crate::render_skeleton::{
     create_labeled_skeleton_gizmos, create_patch_boundary_gizmos, create_patch_convexity_mesh,
     create_patch_mesh, create_polycube_patch_boundary_gizmos, create_polycube_patch_mesh,
-    get_region_color,
-    create_skeleton_gizmos,
+    create_skeleton_gizmos, get_region_color,
 };
 use crate::ui::UiResource;
 use crate::{colors, MainMesh, PerpetualGizmos};
@@ -26,7 +25,7 @@ use bevy_orbit_camera::*;
 use bevy_toon::ToonMaterial;
 use core::f32;
 use dualcube::prelude::*;
-use dualcube::skeleton::cross_parameterize::virtual_mesh::VirtualNodeOrigin;
+use dualcube::skeleton::cross_parameterize::virtual_mesh::{VertexToVirtual, VirtualNodeOrigin};
 use dualcube::skeleton::cross_parameterize::PolycubeMap;
 use dualcube::skeleton::orthogonalize::LabeledCurveSkeleton;
 use egui_dock::LeafNode;
@@ -327,7 +326,10 @@ pub fn reset(
     for object in all::<Objects>() {
         let handle = images.add(image.clone());
         handles.map.insert(CameraFor(object), handle.clone());
-        let projection = if object == Objects::PolycubeMap || object == Objects::Polycube || object == Objects::UvDomain {
+        let projection = if object == Objects::PolycubeMap
+            || object == Objects::Polycube
+            || object == Objects::UvDomain
+        {
             let mut proj = OrthographicProjection::default_3d();
             proj.scaling_mode = ScalingMode::FixedVertical {
                 viewport_height: 30.,
@@ -524,7 +526,9 @@ pub fn respawn_renders(
                                             Rendered,
                                         ));
                                     }
-                                    Objects::PolycubeMap | Objects::Polycube | Objects::UvDomain => {
+                                    Objects::PolycubeMap
+                                    | Objects::Polycube
+                                    | Objects::UvDomain => {
                                         commands.spawn((
                                             mesh_handle,
                                             MeshMaterial3d(flat_material.clone()),
@@ -591,8 +595,12 @@ pub fn update(
     let viewport_height = main_surface_viewport.max[1] - main_surface_viewport.min[1];
     let scale_factor = window.scale_factor() as f32;
 
-    let physical_x = (main_surface_viewport.min[0] * scale_factor).round().max(0.0) as u32;
-    let physical_y = (main_surface_viewport.min[1] * scale_factor).round().max(0.0) as u32;
+    let physical_x = (main_surface_viewport.min[0] * scale_factor)
+        .round()
+        .max(0.0) as u32;
+    let physical_y = (main_surface_viewport.min[1] * scale_factor)
+        .round()
+        .max(0.0) as u32;
     let physical_width = (viewport_width * scale_factor).round().max(0.0) as u32;
     let physical_height = (viewport_height * scale_factor).round().max(0.0) as u32;
 
@@ -619,7 +627,6 @@ pub fn update(
         });
     }
 
-
     let normalized_translation = main_transform.translation - Vec3::from(Objects::InputMesh);
     let normalized_rotation = main_transform.rotation;
 
@@ -633,8 +640,7 @@ pub fn update(
             // Use main camera's XY offset for panning, scaled down since UV domain is smaller.
             let pan_x = normalized_translation.x / 25.0 * 2.0;
             let pan_y = normalized_translation.y / 25.0 * 2.0;
-            sub_transform.translation =
-                uv_center + Vec3::new(pan_x, pan_y, 50.0);
+            sub_transform.translation = uv_center + Vec3::new(pan_x, pan_y, 50.0);
             sub_transform.rotation = Quat::IDENTITY;
             if let Projection::Orthographic(orthographic) = sub_projection.as_mut() {
                 // Zoom coupled to main camera distance: closer = more zoomed in.
@@ -741,14 +747,15 @@ fn create_virtual_mesh_debug_gizmos(
             let a_is_cut = matches!(a_origin, VirtualNodeOrigin::CutDuplicate { .. });
             let b_is_cut = matches!(b_origin, VirtualNodeOrigin::CutDuplicate { .. });
 
-            let a_is_boundary_midpoint = matches!(a_origin, VirtualNodeOrigin::BoundaryMidpoint { .. });
-            let b_is_boundary_midpoint = matches!(b_origin, VirtualNodeOrigin::BoundaryMidpoint { .. });
+            let a_is_boundary_midpoint =
+                matches!(a_origin, VirtualNodeOrigin::BoundaryMidpoint { .. });
+            let b_is_boundary_midpoint =
+                matches!(b_origin, VirtualNodeOrigin::BoundaryMidpoint { .. });
             let a_is_boundary_vertex = boundary_original_nodes.contains(&a);
             let b_is_boundary_vertex = boundary_original_nodes.contains(&b);
 
-            let is_midpoint_neighbor_edge =
-                (a_is_boundary_midpoint && !b_is_boundary_midpoint)
-                    || (b_is_boundary_midpoint && !a_is_boundary_midpoint);
+            let is_midpoint_neighbor_edge = (a_is_boundary_midpoint && !b_is_boundary_midpoint)
+                || (b_is_boundary_midpoint && !a_is_boundary_midpoint);
 
             let edge_color = if a_is_cut && b_is_cut {
                 Some(cut_cut_edge_color)
@@ -817,20 +824,32 @@ fn create_input_uv_patch_mesh(
     let mut vert_uv_avg: HashMap<VertID, Vector2D> = HashMap::new();
 
     for region in pmap.regions.values() {
-        info_once!("TODO: redo UV calc after new VFG")
-        // for (&vert_id, vfg_nodes) in &region.input_vfg.vert_to_nodes {
-        //     let mut uv_sum = Vector2D::new(0.0, 0.0);
-        //     let mut uv_count = 0.0;
-        //     for &node in vfg_nodes {
-        //         if let Some(&uv) = region.input_uv.get(&node) {
-        //             uv_sum += uv;
-        //             uv_count += 1.0;
-        //         }
-        //     }
-        //     if uv_count > 0.0 {
-        //         vert_uv_avg.insert(vert_id, uv_sum / uv_count);
-        //     }
-        // }
+        for (&vert_id, vfg_nodes) in &region.input_vfg.vert_to_nodes {
+            let mut uv_sum = Vector2D::new(0.0, 0.0);
+            let mut uv_count = 0.0;
+            match vfg_nodes {
+                VertexToVirtual::Unique(node) => {
+                    if let Some(&uv) = region.input_uv.get(&node) {
+                        uv_sum += uv;
+                        uv_count += 1.0;
+                    }
+                }
+                VertexToVirtual::CutPair { left, right } => {
+                    if let Some(&uv) = region.input_uv.get(&left) {
+                        uv_sum += uv;
+                        uv_count += 1.0;
+                    }
+                    if let Some(&uv) = region.input_uv.get(&right) {
+                        uv_sum += uv;
+                        uv_count += 1.0;
+                    }
+                }
+            }
+
+            if uv_count > 0.0 {
+                vert_uv_avg.insert(vert_id, uv_sum / uv_count);
+            }
+        }
     }
 
     if vert_uv_avg.is_empty() {
@@ -894,117 +913,64 @@ fn create_input_uv_patch_mesh(
         }
     };
 
-    let mut add_triangle_with_boundary_split = |a: (VertID, Vector3D),
-                                                b: (VertID, Vector3D),
-                                                c: (VertID, Vector3D),
-                                                normal: Vector3D| {
-        let (va, pa) = a;
-        let (vb, pb) = b;
-        let (vc, pc) = c;
+    let mut add_triangle_with_boundary_split =
+        |a: (VertID, Vector3D), b: (VertID, Vector3D), c: (VertID, Vector3D), normal: Vector3D| {
+            let (va, pa) = a;
+            let (vb, pb) = b;
+            let (vc, pc) = c;
 
-        let (Some(&ra), Some(&rb), Some(&rc)) = (
-            vertex_to_region.get(&va),
-            vertex_to_region.get(&vb),
-            vertex_to_region.get(&vc),
-        ) else {
-            return;
+            let (Some(&ra), Some(&rb), Some(&rc)) = (
+                vertex_to_region.get(&va),
+                vertex_to_region.get(&vb),
+                vertex_to_region.get(&vc),
+            ) else {
+                return;
+            };
+
+            let (Some(&uv_a), Some(&uv_b), Some(&uv_c)) = (
+                vert_uv_avg.get(&va),
+                vert_uv_avg.get(&vb),
+                vert_uv_avg.get(&vc),
+            ) else {
+                return;
+            };
+
+            if ra == rb && rb == rc {
+                add_colored_triangle(pa, pb, pc, normal, uv_a, uv_b, uv_c, true, true, true);
+                return;
+            }
+
+            let mut split_two_plus_one = |pa: Vector3D,
+                                          pb: Vector3D,
+                                          pc: Vector3D,
+                                          uv_a: Vector2D,
+                                          uv_b: Vector2D,
+                                          uv_c: Vector2D| {
+                let p_ac = (pa + pc) * 0.5;
+                let p_bc = (pb + pc) * 0.5;
+                let uv_ac = (uv_a + uv_c) / 2.0;
+                let uv_bc = (uv_b + uv_c) / 2.0;
+
+                add_colored_triangle(pa, pb, p_ac, normal, uv_a, uv_b, uv_ac, true, true, false);
+                add_colored_triangle(
+                    pb, p_bc, p_ac, normal, uv_b, uv_bc, uv_ac, true, false, false,
+                );
+                add_colored_triangle(
+                    p_ac, p_bc, pc, normal, uv_ac, uv_bc, uv_c, false, false, true,
+                );
+            };
+
+            if ra == rb {
+                split_two_plus_one(pa, pb, pc, uv_a, uv_b, uv_c);
+            } else if rb == rc {
+                split_two_plus_one(pb, pc, pa, uv_b, uv_c, uv_a);
+            } else if ra == rc {
+                split_two_plus_one(pc, pa, pb, uv_c, uv_a, uv_b);
+            } else {
+                // Rare fallback: all three vertices assigned different regions.
+                add_colored_triangle(pa, pb, pc, normal, uv_a, uv_b, uv_c, true, true, true);
+            }
         };
-
-        let (Some(&uv_a), Some(&uv_b), Some(&uv_c)) = (
-            vert_uv_avg.get(&va),
-            vert_uv_avg.get(&vb),
-            vert_uv_avg.get(&vc),
-        ) else {
-            return;
-        };
-
-        if ra == rb && rb == rc {
-            add_colored_triangle(
-                pa,
-                pb,
-                pc,
-                normal,
-                uv_a,
-                uv_b,
-                uv_c,
-                true,
-                true,
-                true,
-            );
-            return;
-        }
-
-        let mut split_two_plus_one = |pa: Vector3D,
-                                      pb: Vector3D,
-                                      pc: Vector3D,
-                                      uv_a: Vector2D,
-                                      uv_b: Vector2D,
-                                      uv_c: Vector2D| {
-            let p_ac = (pa + pc) * 0.5;
-            let p_bc = (pb + pc) * 0.5;
-            let uv_ac = (uv_a + uv_c) / 2.0;
-            let uv_bc = (uv_b + uv_c) / 2.0;
-
-            add_colored_triangle(
-                pa,
-                pb,
-                p_ac,
-                normal,
-                uv_a,
-                uv_b,
-                uv_ac,
-                true,
-                true,
-                false,
-            );
-            add_colored_triangle(
-                pb,
-                p_bc,
-                p_ac,
-                normal,
-                uv_b,
-                uv_bc,
-                uv_ac,
-                true,
-                false,
-                false,
-            );
-            add_colored_triangle(
-                p_ac,
-                p_bc,
-                pc,
-                normal,
-                uv_ac,
-                uv_bc,
-                uv_c,
-                false,
-                false,
-                true,
-            );
-        };
-
-        if ra == rb {
-            split_two_plus_one(pa, pb, pc, uv_a, uv_b, uv_c);
-        } else if rb == rc {
-            split_two_plus_one(pb, pc, pa, uv_b, uv_c, uv_a);
-        } else if ra == rc {
-            split_two_plus_one(pc, pa, pb, uv_c, uv_a, uv_b);
-        } else {
-            // Rare fallback: all three vertices assigned different regions.
-            add_colored_triangle(
-                pa,
-                pb,
-                pc,
-                normal,
-                uv_a,
-                uv_b,
-                uv_c,
-                true,
-                true,
-                true,
-            );
-        }
-    };
 
     for face_id in input.face_ids() {
         let normal = input.normal(face_id);
@@ -1058,12 +1024,13 @@ fn create_input_uv_long_edge_overlay(
     let region_i = selected_region.min(sorted_regions.len().saturating_sub(1));
     let (region_idx, region) = sorted_regions[region_i];
 
-    let boundary_from_origin = |origin: &VirtualNodeOrigin| {
-        match origin {
-            VirtualNodeOrigin::BoundaryMidpoint { boundary_edge: boundary, .. }
-            | VirtualNodeOrigin::CutEndpointMidpointDuplicate { boundary, .. } => Some(*boundary),
-            _ => None,
+    let boundary_from_origin = |origin: &VirtualNodeOrigin| match origin {
+        VirtualNodeOrigin::BoundaryMidpoint {
+            boundary_edge: boundary,
+            ..
         }
+        | VirtualNodeOrigin::CutEndpointMidpointDuplicate { boundary, .. } => Some(*boundary),
+        _ => None,
     };
 
     let other_region_color = |boundary| -> Option<bevy::prelude::Color> {
@@ -1104,7 +1071,9 @@ fn create_input_uv_long_edge_overlay(
             let color = match boundary_count {
                 2 => bevy::prelude::Color::BLACK,
                 1 => {
-                    let boundary = ba.or(bb).expect("boundary must exist when boundary_count=1");
+                    let boundary = ba
+                        .or(bb)
+                        .expect("boundary must exist when boundary_count=1");
                     other_region_color(boundary).unwrap_or(bevy::prelude::Color::WHITE)
                 }
                 _ => bevy::prelude::Color::WHITE,
@@ -1121,9 +1090,7 @@ fn create_input_uv_long_edge_overlay(
     if count > 0 {
         error!(
             "UV long-edge detector: region {:?} has {} long UV edges (threshold={:.3})",
-            region_idx,
-            count,
-            threshold
+            region_idx, count, threshold
         );
     }
 
@@ -1182,12 +1149,13 @@ fn create_uv_domain_view(
     let cut_boundary_color = bevy::prelude::Color::srgb(1.0, 0.5, 0.0); // orange: cut boundary
     let input_interior_color = bevy::prelude::Color::srgb(0.5, 0.5, 0.5);
 
-    let boundary_from_origin = |origin: &VirtualNodeOrigin| {
-        match origin {
-            VirtualNodeOrigin::BoundaryMidpoint { boundary_edge: boundary, .. }
-            | VirtualNodeOrigin::CutEndpointMidpointDuplicate { boundary, .. } => Some(*boundary),
-            _ => None,
+    let boundary_from_origin = |origin: &VirtualNodeOrigin| match origin {
+        VirtualNodeOrigin::BoundaryMidpoint {
+            boundary_edge: boundary,
+            ..
         }
+        | VirtualNodeOrigin::CutEndpointMidpointDuplicate { boundary, .. } => Some(*boundary),
+        _ => None,
     };
 
     let other_region_color = |boundary| -> Option<bevy::prelude::Color> {
@@ -1230,9 +1198,7 @@ fn create_uv_domain_view(
         .collect();
 
     // UV to flat XY position (centered at origin).
-    let uv_to_pos = |uv: &Vector2D| -> Vec3 {
-        Vec3::new(uv.x as f32, uv.y as f32, 0.0)
-    };
+    let uv_to_pos = |uv: &Vector2D| -> Vec3 { Vec3::new(uv.x as f32, uv.y as f32, 0.0) };
 
     // Build the background polygon from the actual boundary UV positions of the
     // input VFG — these are the vertices that were placed on the canonical polygon
@@ -1307,8 +1273,7 @@ fn create_uv_domain_view(
         let Some((a, b)) = region.polycube_vfg.graph.edge_endpoints(edge_idx) else {
             continue;
         };
-        let (Some(uv_a), Some(uv_b)) =
-            (region.polycube_uv.get(&a), region.polycube_uv.get(&b))
+        let (Some(uv_a), Some(uv_b)) = (region.polycube_uv.get(&a), region.polycube_uv.get(&b))
         else {
             continue;
         };
@@ -1383,11 +1348,7 @@ fn create_uv_domain_view(
                 });
             polycube_vertex_gizmos.sphere(Isometry3d::from_translation(pos), 0.035, color);
         } else {
-            polycube_vertex_gizmos.sphere(
-                Isometry3d::from_translation(pos),
-                0.02,
-                polycube_color,
-            );
+            polycube_vertex_gizmos.sphere(Isometry3d::from_translation(pos), 0.02, polycube_color);
         }
     }
 
@@ -1699,12 +1660,7 @@ pub fn refresh(solution: &Solution, configuration: &Configuration) -> RenderObje
                             -0.01,
                             "triangles",
                         )
-                        .gizmo(
-                            virtual_mesh_edge_gizmos,
-                            3.,
-                            -0.0102,
-                            "virtual mesh debug",
-                        )
+                        .gizmo(virtual_mesh_edge_gizmos, 3., -0.0102, "virtual mesh debug")
                         .gizmo(
                             virtual_mesh_vertex_gizmos,
                             1.,
@@ -1718,7 +1674,10 @@ pub fn refresh(solution: &Solution, configuration: &Configuration) -> RenderObje
             Objects::UvDomain => {
                 if let (Some(pmap), Some(labeled)) = (
                     solution.skeleton.as_ref().and_then(|s| s.polycube_map()),
-                    solution.skeleton.as_ref().and_then(|s| s.labeled_skeleton()),
+                    solution
+                        .skeleton
+                        .as_ref()
+                        .and_then(|s| s.labeled_skeleton()),
                 ) {
                     let render_obj =
                         create_uv_domain_view(pmap, labeled, configuration.uv_domain_region);
@@ -2221,7 +2180,10 @@ pub fn refresh(solution: &Solution, configuration: &Configuration) -> RenderObje
 
                 if let (Some(pmap), Some(labeled)) = (
                     solution.skeleton.as_ref().and_then(|s| s.polycube_map()),
-                    solution.skeleton.as_ref().and_then(|s| s.labeled_skeleton()),
+                    solution
+                        .skeleton
+                        .as_ref()
+                        .and_then(|s| s.labeled_skeleton()),
                 ) {
                     let mut gizmos_cuts = GizmoAsset::new();
                     let cut_color = colors::to_bevy(colors::SNOEP_YELLOW);
@@ -2239,12 +2201,7 @@ pub fn refresh(solution: &Solution, configuration: &Configuration) -> RenderObje
                     let (virtual_mesh_edge_gizmos, virtual_mesh_vertex_gizmos) =
                         create_virtual_mesh_debug_gizmos(solution, translation, scale, false);
                     render_obj
-                        .gizmo(
-                            virtual_mesh_edge_gizmos,
-                            2.0,
-                            -0.0012,
-                            "virtual mesh debug",
-                        )
+                        .gizmo(virtual_mesh_edge_gizmos, 2.0, -0.0012, "virtual mesh debug")
                         .gizmo(
                             virtual_mesh_vertex_gizmos,
                             1.0,
