@@ -452,8 +452,7 @@ fn map_boundary_to_polygon(
     let result = HashMap::new();
 
     let mut currently_building = CurrentlyBuildingSegment::None; // Start with none before seeing the first node.
-    let mut segment_index = -1; // Will be incremented to 0 at the first cut segment.
-    let mut previous_was_cut_endpoint = false; // Necessary to see when we are skipping empty non-cut segments.
+    let mut segment_index = -1; // Will be 0 for the first cut segment.
     let mut in_order_vertices_in_seg = Vec::new();
     for idx in boundary {
         let node = &vfg.graph[*idx];
@@ -464,26 +463,22 @@ fn map_boundary_to_polygon(
                 CurrentlyBuildingSegment::None,
                 VirtualNodeOrigin::CutEndpointMidpointDuplicate { .. },
             ) => {
-                // Start a new cut segment.
-                segment_index += if previous_was_cut_endpoint { 2 } else { 1 };
+                // Start a new cut segment. If we just completed a cut, there was an empty non-cut segment in between.
+                segment_index += if segment_index < 0 { 1 } else { 2 };
                 currently_building = CurrentlyBuildingSegment::Cut;
                 in_order_vertices_in_seg.push(node);
-
-                previous_was_cut_endpoint = false;
             }
             (CurrentlyBuildingSegment::Cut, VirtualNodeOrigin::CutDuplicate { .. }) => {
                 // Continue building cut segment.
                 in_order_vertices_in_seg.push(node);
-                previous_was_cut_endpoint = false;
             }
             (
                 CurrentlyBuildingSegment::Cut,
                 VirtualNodeOrigin::CutEndpointMidpointDuplicate { .. },
             ) => {
-                // End the current segment
+                // End the current cut segment.
                 currently_building = CurrentlyBuildingSegment::None;
                 in_order_vertices_in_seg.push(node);
-                previous_was_cut_endpoint = true;
 
                 // Parameterize
                 parameterize_segment(true, segment_index as usize, &in_order_vertices_in_seg);
@@ -495,29 +490,22 @@ fn map_boundary_to_polygon(
                 // Start a new non-cut segment.
                 segment_index += 1;
                 currently_building = CurrentlyBuildingSegment::NonCut;
-                previous_was_cut_endpoint = false;
+                in_order_vertices_in_seg.push(node);
             }
             (CurrentlyBuildingSegment::NonCut, VirtualNodeOrigin::BoundaryMidpoint { .. }) => {
                 // Continue building non-cut segment.
                 in_order_vertices_in_seg.push(node);
-                previous_was_cut_endpoint = false;
             }
             (
                 CurrentlyBuildingSegment::NonCut,
                 VirtualNodeOrigin::CutEndpointMidpointDuplicate { .. },
             ) => {
-                // Previous segment should have ended previously, update segment for now
-                segment_index += 1;
-                currently_building = CurrentlyBuildingSegment::Cut;
-                previous_was_cut_endpoint = true; // but what we set here in this case should never matter, as the next up will always be CutDuplicate or Endpoint of same cut.
-
-                // Parameterize
+                // Non-cut segment ended, now cut starts.
                 parameterize_segment(false, segment_index as usize, &in_order_vertices_in_seg);
-
-                // Flush buffer and start new for next segment.
                 in_order_vertices_in_seg.clear();
 
-                // So save this node after clearing
+                segment_index += 1;
+                currently_building = CurrentlyBuildingSegment::Cut;
                 in_order_vertices_in_seg.push(node);
             }
             _ => {
