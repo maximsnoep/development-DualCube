@@ -2,13 +2,47 @@ use std::collections::HashMap;
 
 use log::warn;
 use mehsh::prelude::{HasEdges, HasVertices, Mesh};
+use petgraph::graph::NodeIndex;
 
 use crate::{
     prelude::{EdgeID, VertID, INPUT},
     skeleton::cross_parameterize::virtual_mesh::{
         EdgemidpointToVirtual, VertexToVirtual, VirtualEdgeWeight, VirtualFlatGeometry,
+        VirtualNodeOrigin,
     },
 };
+
+/// Helper: returns a short string describing a node's origin (cut_index, side, degree).
+fn describe_node(vfg: &VirtualFlatGeometry, n: NodeIndex) -> String {
+    let deg = vfg.graph.edges(n).count();
+    match &vfg.graph[n].origin {
+        VirtualNodeOrigin::CutDuplicate {
+            original,
+            cut_index,
+            side,
+            ..
+        } => format!(
+            "CutDup(orig={:?}, cut={}, side={}, deg={})",
+            original,
+            cut_index,
+            if *side { "R" } else { "L" },
+            deg
+        ),
+        VirtualNodeOrigin::CutEndpointMidpointDuplicate {
+            cut_index, side, ..
+        } => format!(
+            "CutEndpointMid(cut={}, side={}, deg={})",
+            cut_index,
+            if *side { "R" } else { "L" },
+            deg
+        ),
+        VirtualNodeOrigin::BoundaryMidpoint { edge, .. } => {
+            format!("BoundaryMid(edge={:?}, deg={})", edge, deg)
+        }
+        VirtualNodeOrigin::MeshVertex(v) => format!("MeshVertex({:?}, deg={})", v, deg),
+        other => format!("{:?}(deg={})", other, deg),
+    }
+}
 
 /// Adds all edges to the VFG based on mesh connectivity. Does not touch boundaries or cuts.
 pub fn add_internal_edges(
@@ -76,9 +110,14 @@ pub fn add_internal_edges(
                         let has_right = vfg.graph.find_edge(*self_right, *other_node).is_some();
                         if !has_left && !has_right {
                             warn!(
-                                "internal_edges check: CutPair({:?})={{L:{:?},R:{:?}}} <-> Unique({:?})={:?} — NO edge exists. \
+                                "internal_edges check: MISSING CutPair<->Unique. \
+                                 self={:?} L=[{:?} {}] R=[{:?} {}] other={:?} [{:?} {}]. \
                                  Mesh edge {:?}<->{:?}",
-                                vert, self_left, self_right, other_vert, other_node, vert, other_vert
+                                vert,
+                                self_left, describe_node(&vfg, *self_left),
+                                self_right, describe_node(&vfg, *self_right),
+                                other_vert, other_node, describe_node(&vfg, *other_node),
+                                vert, other_vert
                             );
                         }
                     }
@@ -93,9 +132,14 @@ pub fn add_internal_edges(
                         let has_right = vfg.graph.find_edge(*self_node, *other_right).is_some();
                         if !has_left && !has_right {
                             warn!(
-                                "internal_edges check: Unique({:?})={:?} <-> CutPair({:?})={{L:{:?},R:{:?}}} — NO edge exists. \
+                                "internal_edges check: MISSING Unique<->CutPair. \
+                                 self={:?} [{:?} {}] other={:?} L=[{:?} {}] R=[{:?} {}]. \
                                  Mesh edge {:?}<->{:?}",
-                                vert, self_node, other_vert, other_left, other_right, vert, other_vert
+                                vert, self_node, describe_node(&vfg, *self_node),
+                                other_vert,
+                                other_left, describe_node(&vfg, *other_left),
+                                other_right, describe_node(&vfg, *other_right),
+                                vert, other_vert
                             );
                         }
                     }
@@ -116,9 +160,17 @@ pub fn add_internal_edges(
                             || vfg.graph.find_edge(*self_right, *other_right).is_some();
                         if !has_any {
                             warn!(
-                                "internal_edges check: CutPair({:?})={{L:{:?},R:{:?}}} <-> CutPair({:?})={{L:{:?},R:{:?}}} — NO edge exists among any pair. \
+                                "internal_edges check: MISSING CutPair<->CutPair. \
+                                 self={:?} L=[{:?} {}] R=[{:?} {}] \
+                                 other={:?} L=[{:?} {}] R=[{:?} {}]. \
                                  Mesh edge {:?}<->{:?}",
-                                vert, self_left, self_right, other_vert, other_left, other_right, vert, other_vert
+                                vert,
+                                self_left, describe_node(&vfg, *self_left),
+                                self_right, describe_node(&vfg, *self_right),
+                                other_vert,
+                                other_left, describe_node(&vfg, *other_left),
+                                other_right, describe_node(&vfg, *other_right),
+                                vert, other_vert
                             );
                         }
                     }
@@ -159,9 +211,12 @@ pub fn add_internal_edges(
                     ) => {
                         if vfg.graph.find_edge(*self_node, *mid_node).is_none() {
                             warn!(
-                                "internal_edges check: Unique({:?})={:?} <-> UniqueMid({:?})={:?} — NO edge exists. \
+                                "internal_edges check: MISSING Unique<->UniqueMid. \
+                                 self={:?} [{:?} {}] mid=[{:?} {}]. \
                                  Mesh edge {:?}<->{:?} (midpoint edge {:?})",
-                                vert, self_node, midpoint_edge, mid_node, vert, other_vert, midpoint_edge
+                                vert, self_node, describe_node(&vfg, *self_node),
+                                mid_node, describe_node(&vfg, *mid_node),
+                                vert, other_vert, midpoint_edge
                             );
                         }
                     }
@@ -177,9 +232,14 @@ pub fn add_internal_edges(
                         let has_right = vfg.graph.find_edge(*self_right, *mid_node).is_some();
                         if !has_left && !has_right {
                             warn!(
-                                "internal_edges check: CutPair({:?})={{L:{:?},R:{:?}}} <-> UniqueMid({:?})={:?} — NO edge exists. \
+                                "internal_edges check: MISSING CutPair<->UniqueMid. \
+                                 self={:?} L=[{:?} {}] R=[{:?} {}] mid=[{:?} {}]. \
                                  Mesh edge {:?}<->{:?} (midpoint edge {:?})",
-                                vert, self_left, self_right, midpoint_edge, mid_node, vert, other_vert, midpoint_edge
+                                vert,
+                                self_left, describe_node(&vfg, *self_left),
+                                self_right, describe_node(&vfg, *self_right),
+                                mid_node, describe_node(&vfg, *mid_node),
+                                vert, other_vert, midpoint_edge
                             );
                         }
                     }
@@ -195,9 +255,13 @@ pub fn add_internal_edges(
                         let has_right = vfg.graph.find_edge(*self_node, *mid_right).is_some();
                         if !has_left && !has_right {
                             warn!(
-                                "internal_edges check: Unique({:?})={:?} <-> CutEndpointMid({:?})={{L:{:?},R:{:?}}} — NO edge exists. \
+                                "internal_edges check: MISSING Unique<->CutEndpointMid. \
+                                 self={:?} [{:?} {}] mid_L=[{:?} {}] mid_R=[{:?} {}]. \
                                  Mesh edge {:?}<->{:?} (midpoint edge {:?})",
-                                vert, self_node, midpoint_edge, mid_left, mid_right, vert, other_vert, midpoint_edge
+                                vert, self_node, describe_node(&vfg, *self_node),
+                                mid_left, describe_node(&vfg, *mid_left),
+                                mid_right, describe_node(&vfg, *mid_right),
+                                vert, other_vert, midpoint_edge
                             );
                         }
                     }
@@ -218,9 +282,16 @@ pub fn add_internal_edges(
                             || vfg.graph.find_edge(*self_right, *mid_right).is_some();
                         if !has_any {
                             warn!(
-                                "internal_edges check: CutPair({:?})={{L:{:?},R:{:?}}} <-> CutEndpointMid({:?})={{L:{:?},R:{:?}}} — NO edge exists among any pair. \
+                                "internal_edges check: MISSING CutPair<->CutEndpointMid. \
+                                 self={:?} L=[{:?} {}] R=[{:?} {}] \
+                                 mid_L=[{:?} {}] mid_R=[{:?} {}]. \
                                  Mesh edge {:?}<->{:?} (midpoint edge {:?})",
-                                vert, self_left, self_right, midpoint_edge, mid_left, mid_right, vert, other_vert, midpoint_edge
+                                vert,
+                                self_left, describe_node(&vfg, *self_left),
+                                self_right, describe_node(&vfg, *self_right),
+                                mid_left, describe_node(&vfg, *mid_left),
+                                mid_right, describe_node(&vfg, *mid_right),
+                                vert, other_vert, midpoint_edge
                             );
                         }
                     }
