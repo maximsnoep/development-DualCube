@@ -188,12 +188,17 @@ fn ordered_vert_pair(a: VertID, b: VertID) -> (VertID, VertID) {
 fn collect_cut_edges(
     mesh: &Mesh<INPUT>,
     cutting_plan: &CuttingPlan,
-) -> (HashSet<EdgeID>, HashMap<(VertID, VertID), (VertID, VertID)>) {
+) -> (
+    HashSet<EdgeID>,
+    HashMap<(VertID, VertID), (VertID, VertID)>,
+    HashMap<EdgeID, usize>,
+) {
     let mut cut_edges = HashSet::new();
     let mut cut_edge_canonical_direction: HashMap<(VertID, VertID), (VertID, VertID)> =
         HashMap::new();
+    let mut cut_edge_to_cut_index: HashMap<EdgeID, usize> = HashMap::new();
 
-    for cut in &cutting_plan.cuts {
+    for (cut_index, cut) in cutting_plan.cuts.iter().enumerate() {
         for pair in cut.path.interior_verts.windows(2) {
             if let [a, b] = pair {
                 let key = ordered_vert_pair(*a, *b);
@@ -202,6 +207,8 @@ fn collect_cut_edges(
                     .expect("Cut interior vertices are not connected by an edge.");
                 cut_edges.insert(edges.0);
                 cut_edges.insert(edges.1);
+                cut_edge_to_cut_index.insert(edges.0, cut_index);
+                cut_edge_to_cut_index.insert(edges.1, cut_index);
 
                 if let Some(prev) = cut_edge_canonical_direction.insert(key, (*a, *b)) {
                     if prev != (*a, *b) {
@@ -217,7 +224,7 @@ fn collect_cut_edges(
         }
     }
 
-    (cut_edges, cut_edge_canonical_direction)
+    (cut_edges, cut_edge_canonical_direction, cut_edge_to_cut_index)
 }
 
 enum CutSideFaceVertices {
@@ -297,7 +304,7 @@ pub fn calculate_boundary_loop(
     patch_vertices: &HashSet<VertID>,
 ) -> Vec<NodeIndex> {
     let mut succ: HashMap<NodeIndex, NodeIndex> = HashMap::new();
-    let (cut_edges, cut_edge_canonical_direction) = collect_cut_edges(mesh, cutting_plan);
+    let (cut_edges, cut_edge_canonical_direction, cut_edge_to_cut_index) = collect_cut_edges(mesh, cutting_plan);
 
     let resolve_midpoint_edge_id = |edge_id: EdgeID| -> EdgeID {
         if edge_midpoint_ids_to_node_indices.contains_key(&edge_id) {
@@ -550,6 +557,7 @@ pub fn calculate_boundary_loop(
             &mut boundary_lookback,
             &cut_edges,
             &cut_edge_canonical_direction,
+            &cut_edge_to_cut_index,
             vert_to_nodes,
             edge_midpoint_ids_to_node_indices,
             mesh,
@@ -613,6 +621,12 @@ enum AddingEdgeInput {
     AlongEdge {
         source: NodeIndex, // Side of duplicate is clear!
         edge: EdgeID,      // Other side is determined by lookback and duplicate status.
+    },
+    /// Both source and target are already resolved (e.g. cross-cut duplicate resolution).
+    /// Just add the edge directly, no lookback needed.
+    DirectEdge {
+        source: NodeIndex,
+        target: NodeIndex,
     },
 }
 
@@ -895,6 +909,11 @@ fn add_edge(
                 None => unreachable!("Other vertex missing from virtual map: {:?}", other_vert),
             }
         }
+    } else if let AddingEdgeInput::DirectEdge { source, target } = input {
+        if graph.find_edge(source, target).is_none() {
+            let length = (graph[source].position - graph[target].position).norm();
+            graph.add_edge(source, target, VirtualEdgeWeight { length });
+        }
     } else {
         unreachable!();
     }
@@ -1026,6 +1045,7 @@ fn mesh_boundary_edges(
     boundary_lookback: &mut HashMap<EdgeID, NodeIndex>,
     cut_edges: &HashSet<EdgeID>,
     cut_edge_canonical_direction: &HashMap<(VertID, VertID), (VertID, VertID)>,
+    cut_edge_to_cut_index: &HashMap<EdgeID, usize>,
     vert_to_nodes: &HashMap<VertID, VertexToVirtual>,
     edge_midpoint_ids_to_node_indices: &HashMap<EdgeID, EdgemidpointToVirtual>,
     mesh: &Mesh<INPUT>,
@@ -1132,12 +1152,15 @@ fn mesh_boundary_edges(
             VirtualNodeOrigin::CutDuplicate {
                 original: left_id,
                 side,
+                cut_index: our_cut_index,
                 ..
             },
             VirtualNodeOrigin::CutDuplicate {
                 original: right_id, ..
             },
         ) => {
+            let our_cut_index = *our_cut_index;
+
             // Find vertices of face on our side.
             let our_side_face_vertices = find_cut_side_face_and_vertex(
                 mesh,
@@ -1146,54 +1169,168 @@ fn mesh_boundary_edges(
                 *right_id,
                 *side,
             );
-            let mut edges_to_add = HashSet::new();
+            let mut edges_to_add: HashSet<(NodeIndex, (EdgeID, EdgeID))> = HashSet::new();
+            let mut direct_edges_to_add: Vec<(NodeIndex, NodeIndex)> = Vec::new();
             let starting_face = match our_side_face_vertices {
                 CutSideFaceVertices::Tri { face, .. } => face,
                 CutSideFaceVertices::Quad { face, .. } => face,
             };
 
+            /// Helper: check if an edge is on our own cut (should be skipped) vs another cut (allowed).
+            fn is_same_cut_edge(
+                edge: EdgeID,
+                cut_edges: &HashSet<EdgeID>,
+                cut_edge_to_cut_index: &HashMap<EdgeID, usize>,
+                our_cut_index: usize,
+            ) -> bool {
+                if !cut_edges.contains(&edge) {
+                    return false;
+                }
+                cut_edge_to_cut_index.get(&edge) == Some(&our_cut_index)
+            }
+
+            /// Helper: given a source CutDuplicate node and a target vertex on a different cut,
+            /// resolve the correct target duplicate by checking which side of the target's cut
+            /// the given face is on. Uses canonical cut direction at the target vertex.
+            fn resolve_cross_cut_target(
+                vertex: VertID,
+                face: FaceID,
+                vert_to_nodes: &HashMap<VertID, VertexToVirtual>,
+                graph: &StableUnGraph<VirtualNode, VirtualEdgeWeight>,
+                mesh: &Mesh<INPUT>,
+                cut_edge_canonical_direction: &HashMap<(VertID, VertID), (VertID, VertID)>,
+                cutting_plan: &CuttingPlan,
+            ) -> Option<NodeIndex> {
+                let (left, right) = match vert_to_nodes.get(&vertex)? {
+                    VertexToVirtual::CutPair { left, right } => (*left, *right),
+                    _ => return None,
+                };
+                let (target_cut_index, _) = get_cut_info(&graph[left].origin);
+
+                // Find a cut edge of the target's cut that is incident to vertex.
+                // Walk interior_verts of the target's cut to find an adjacent pair containing vertex.
+                let target_cut = &cutting_plan.cuts[target_cut_index];
+                let interior = &target_cut.path.interior_verts;
+                let mut adjacent_vert: Option<VertID> = None;
+                for pair in interior.windows(2) {
+                    if pair[0] == vertex {
+                        adjacent_vert = Some(pair[1]);
+                        break;
+                    } else if pair[1] == vertex {
+                        adjacent_vert = Some(pair[0]);
+                        break;
+                    }
+                }
+                let adj = adjacent_vert?;
+
+                // Get the canonical direction for this cut edge.
+                let key = if vertex < adj { (vertex, adj) } else { (adj, vertex) };
+                let (from, to) = *cut_edge_canonical_direction.get(&key)?;
+
+                // Find the oriented half-edge from→to.
+                let (e0, e1) = mesh.edge_between_verts(from, to)?;
+                let edge_ft = if mesh.root(e0) == from && mesh.toor(e0) == to {
+                    e0
+                } else {
+                    e1
+                };
+
+                // mesh.face(edge_ft) is the LEFT face of the canonical direction.
+                // side == false means LEFT.
+                let left_face = mesh.face(edge_ft);
+                if face == left_face {
+                    Some(left) // face is on the left side
+                } else {
+                    Some(right) // face is on the right side
+                }
+            }
+
+            /// Helper: collect edges from a cut vertex to the other vertices in a face,
+            /// handling both same-cut (skip) and cross-cut (resolve directly) cases.
+            fn collect_edges_from_face(
+                cut_vert: VertID,
+                source_node: NodeIndex,
+                face: FaceID,
+                mesh: &Mesh<INPUT>,
+                cut_edges: &HashSet<EdgeID>,
+                cut_edge_to_cut_index: &HashMap<EdgeID, usize>,
+                our_cut_index: usize,
+                vert_to_nodes: &HashMap<VertID, VertexToVirtual>,
+                graph: &StableUnGraph<VirtualNode, VirtualEdgeWeight>,
+                cut_edge_canonical_direction: &HashMap<(VertID, VertID), (VertID, VertID)>,
+                cutting_plan: &CuttingPlan,
+                edges_to_add: &mut HashSet<(NodeIndex, (EdgeID, EdgeID))>,
+                direct_edges_to_add: &mut Vec<(NodeIndex, NodeIndex)>,
+                left_id: VertID,
+                right_id: VertID,
+            ) {
+                let vertices: Vec<VertID> = mesh.vertices(face).collect();
+                for vertex in vertices {
+                    if vertex == left_id || vertex == right_id {
+                        continue;
+                    }
+
+                    if let Some(edges) = mesh.edge_between_verts(cut_vert, vertex) {
+                        if is_same_cut_edge(edges.0, cut_edges, cut_edge_to_cut_index, our_cut_index) {
+                            // Same cut edge — skip, handled by the boundary loop itself.
+                            continue;
+                        }
+
+                        if cut_edges.contains(&edges.0) || cut_edges.contains(&edges.1) {
+                            // Cross-cut edge: target is on a different cut.
+                            // Resolve the correct target duplicate using the face we're in.
+                            if let Some(target) = resolve_cross_cut_target(
+                                vertex,
+                                face,
+                                vert_to_nodes,
+                                graph,
+                                mesh,
+                                cut_edge_canonical_direction,
+                                cutting_plan,
+                            ) {
+                                direct_edges_to_add.push((source_node, target));
+                            }
+                        } else {
+                            // Regular non-cut edge — use normal add_edge with lookback.
+                            edges_to_add.insert((source_node, edges));
+                        }
+                    }
+                }
+            }
+
             // Do BFS over faces to find all incident edges on our side of the cut.
-            // We start with the face on the correct side we found.
-            // We walk the ring of faces around the cut vertex, staying on our side by not crossing cut edges or boundary edges.
             let seen_faces: &mut HashSet<FaceID> = &mut HashSet::new();
             seen_faces.insert(starting_face);
             let mut queue: VecDeque<FaceID> = VecDeque::new();
             queue.push_back(starting_face);
 
             // Add initial edges from starting face
-            let vertices: Vec<VertID> = mesh.vertices(starting_face).collect();
-            for vertex in vertices {
-                if vertex == *left_id || vertex == *right_id {
-                    continue;
-                }
-
-                if let Some(edges) = mesh.edge_between_verts(*left_id, vertex) {
-                    if !cut_edges.contains(&edges.0) && !cut_edges.contains(&edges.1) {
-                        edges_to_add.insert((current, edges));
-                    }
-                }
-
-                if let Some(edges) = mesh.edge_between_verts(*right_id, vertex) {
-                    if !cut_edges.contains(&edges.0) && !cut_edges.contains(&edges.1) {
-                        edges_to_add.insert((next, edges));
-                    }
-                }
-            }
+            collect_edges_from_face(
+                *left_id, current, starting_face, mesh,
+                cut_edges, cut_edge_to_cut_index, our_cut_index,
+                vert_to_nodes, graph, cut_edge_canonical_direction, cutting_plan,
+                &mut edges_to_add, &mut direct_edges_to_add, *left_id, *right_id,
+            );
+            collect_edges_from_face(
+                *right_id, next, starting_face, mesh,
+                cut_edges, cut_edge_to_cut_index, our_cut_index,
+                vert_to_nodes, graph, cut_edge_canonical_direction, cutting_plan,
+                &mut edges_to_add, &mut direct_edges_to_add, *left_id, *right_id,
+            );
 
             let bfs_step =
                 |face_id: FaceID,
                  queue: &mut VecDeque<FaceID>,
                  seen: &mut HashSet<FaceID>,
-                 edges_to_add: &mut HashSet<(NodeIndex, (EdgeID, EdgeID))>| {
-                    // Every edge is part of exactly 2 faces, one of which will be the one we are looking at.
+                 edges_to_add: &mut HashSet<(NodeIndex, (EdgeID, EdgeID))>,
+                 direct_edges_to_add: &mut Vec<(NodeIndex, NodeIndex)>| {
                     for edge in mesh.edges(face_id) {
-                        // Do not traverse over cut edges
-                        if cut_edges.contains(&edge) {
+                        // Only skip edges of our OWN cut (not other cuts).
+                        if is_same_cut_edge(edge, cut_edges, cut_edge_to_cut_index, our_cut_index) {
                             continue;
                         }
 
-                        // Do not traverse over boundary edges to stay within the patch side.
-                        // Boundary edges have midpoints in our map.
+                        // Do not traverse over boundary edges.
                         let twin = mesh.twin(edge);
                         if edge_midpoint_ids_to_node_indices.contains_key(&edge)
                             || edge_midpoint_ids_to_node_indices.contains_key(&twin)
@@ -1223,23 +1360,22 @@ fn mesh_boundary_edges(
 
                         queue.push_back(other_face);
 
-                        // Add all edges from this face to current and next, except along cuts.
-                        for vertex in vertices {
-                            if vertex == *left_id || vertex == *right_id {
-                                continue;
-                            }
-
-                            if let Some(edges) = mesh.edge_between_verts(*left_id, vertex) {
-                                if !cut_edges.contains(&edges.0) && !cut_edges.contains(&edges.1) {
-                                    edges_to_add.insert((current, edges));
-                                }
-                            }
-
-                            if let Some(edges) = mesh.edge_between_verts(*right_id, vertex) {
-                                if !cut_edges.contains(&edges.0) && !cut_edges.contains(&edges.1) {
-                                    edges_to_add.insert((next, edges));
-                                }
-                            }
+                        // Collect edges from left_id and right_id to other vertices in this face.
+                        if vertices.contains(left_id) {
+                            collect_edges_from_face(
+                                *left_id, current, other_face, mesh,
+                                cut_edges, cut_edge_to_cut_index, our_cut_index,
+                                vert_to_nodes, graph, cut_edge_canonical_direction, cutting_plan,
+                                edges_to_add, direct_edges_to_add, *left_id, *right_id,
+                            );
+                        }
+                        if vertices.contains(right_id) {
+                            collect_edges_from_face(
+                                *right_id, next, other_face, mesh,
+                                cut_edges, cut_edge_to_cut_index, our_cut_index,
+                                vert_to_nodes, graph, cut_edge_canonical_direction, cutting_plan,
+                                edges_to_add, direct_edges_to_add, *left_id, *right_id,
+                            );
                         }
                     }
                 };
@@ -1250,20 +1386,32 @@ fn mesh_boundary_edges(
                     &mut queue,
                     seen_faces,
                     &mut edges_to_add,
+                    &mut direct_edges_to_add,
                 );
             }
 
-            // For all edges we found, add them to the graph
+            // Add regular edges via add_edge (with lookback for duplicate resolution)
             for (source, edges) in edges_to_add {
-                // I don't think it matters which of the half-edges we use
                 let edge = edges.0;
-
                 add_edge(
                     graph,
                     boundary_lookback,
                     vert_to_nodes,
                     edge_midpoint_ids_to_node_indices,
                     AddingEdgeInput::AlongEdge { source, edge },
+                    mesh,
+                    patch_vertices,
+                );
+            }
+
+            // Add cross-cut edges directly (target already resolved)
+            for (source, target) in direct_edges_to_add {
+                add_edge(
+                    graph,
+                    boundary_lookback,
+                    vert_to_nodes,
+                    edge_midpoint_ids_to_node_indices,
+                    AddingEdgeInput::DirectEdge { source, target },
                     mesh,
                     patch_vertices,
                 );
