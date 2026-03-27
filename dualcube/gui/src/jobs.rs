@@ -577,11 +577,10 @@ fn poll_jobs(
                     solution_resource.next[1] = HashMap::new();
                     solution_resource.next[2] = HashMap::new();
 
-                    // TODO: TEMPORARY: directly go to skeletonization after import
-                    // jobs.write(JobRequest::Run(Box::new(Job::Refresh {
-                    //     solution: solution_resource.current_solution.clone(),
-                    //     collapse_history_step: configuration.collapse_history_step,
-                    // })));
+                    jobs.write(JobRequest::Run(Box::new(Job::Refresh {
+                        solution: solution_resource.current_solution.clone(),
+                        configuration: configuration.clone(),
+                    })));
                     info! ("Import completed, starting skeletonization");
                     jobs.write(JobRequest::Run(Box::new(Job::CalculateSkeleton {
                         solution: solution_resource.current_solution.clone(),
