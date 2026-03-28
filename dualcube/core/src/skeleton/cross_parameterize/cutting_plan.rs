@@ -56,8 +56,7 @@ pub fn compute_cutting_plans(
     );
 
     // Find cut paths on both sides independently.
-    let input_cuts =
-        compute_side_cut_paths(node_idx, &cut_topology, input_skeleton, input_mesh);
+    let input_cuts = compute_side_cut_paths(node_idx, &cut_topology, input_skeleton, input_mesh);
     let polycube_cuts =
         compute_side_cut_paths(node_idx, &cut_topology, polycube_skeleton, polycube_mesh);
 
@@ -238,27 +237,6 @@ fn find_shortest_cut_path(
     }
 }
 
-/// Computes 3D midpoint positions for all edges in a boundary loop.
-fn compute_midpoint_positions(boundary: &BoundaryLoop, mesh: &Mesh<INPUT>) -> Vec<Vector3D> {
-    boundary
-        .edge_midpoints
-        .iter()
-        .map(|&e| {
-            let p0 = mesh.position(mesh.root(e));
-            let p1 = mesh.position(mesh.toor(e));
-            (p0 + p1) * 0.5
-        })
-        .collect()
-}
-
-/// Computes segment lengths between consecutive midpoints (cyclic).
-fn compute_segment_lengths(midpoints: &[Vector3D]) -> Vec<f64> {
-    let n = midpoints.len();
-    (0..n)
-        .map(|i| (midpoints[(i + 1) % n] - midpoints[i]).norm())
-        .collect()
-}
-
 fn build_vertex_surface_path(
     start_edge: EdgeID,
     vertex_path: &[VertID],
@@ -269,12 +247,6 @@ fn build_vertex_surface_path(
         interior_verts: vertex_path.to_vec(),
         end: end_edge,
     }
-}
-
-/// Circular distance on [0, 1).
-fn circular_dist(a: f64, b: f64) -> f64 {
-    let d = (a - b).abs();
-    d.min(1.0 - d)
 }
 
 /// Returns the index (into `boundary.edge_midpoints`) of the midpoint that has

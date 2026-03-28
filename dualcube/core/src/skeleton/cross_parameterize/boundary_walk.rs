@@ -5,7 +5,7 @@ use std::{
 };
 
 use itertools::Itertools;
-use log::{error, info, warn};
+use log::{error, warn};
 use mehsh::prelude::{HasEdges, HasFaces, HasVertices, Mesh, Vector3D};
 use petgraph::{
     graph::{EdgeIndex, NodeIndex},
@@ -706,7 +706,7 @@ fn add_edge(
                         let mut connected_directly = false;
                         if let Some((s_cut, s_side)) = source_cut {
                             let (l_cut, l_side) = get_cut_info(&graph[*left].origin);
-                            let (_r_cut, r_side) = get_cut_info(&graph[*right].origin);
+                            let (_r_cut, _r_side) = get_cut_info(&graph[*right].origin);
 
                             if s_cut == l_cut {
                                 let target = if s_side == l_side { *left } else { *right };
@@ -979,10 +979,10 @@ pub fn fill_faces_for_cut_endpoint(
                     //     "Cut endpoint midpoint duplicate node {:?} neighbors do not share exactly one other neighbor as expected for quad face: {:?} and {:?} with shared {:?}",
                     //     node_idx, neighbors_0, neighbors_1, shared
                     // ); FIX THIS!!
-                    // error!(
-                    //     "is_tri: {:?}, Cut endpoint midpoint duplicate node {:?} neighbors do not share exactly one other neighbor as expected for quad face: {:?} and {:?} with shared {:?}",
-                    //     is_tri_mesh, node_idx, neighbors_0, neighbors_1, shared
-                    // );
+                    error!(
+                        "is_tri: {:?}, Cut endpoint midpoint duplicate node {:?} neighbors do not share exactly one other neighbor as expected for quad face: {:?} and {:?} with shared {:?}",
+                        is_tri_mesh, node_idx, neighbors_0, neighbors_1, shared
+                    );
                     // let all_neighbors = neighbors_0
                     //     .iter()
                     //     .chain(neighbors_1.iter())
