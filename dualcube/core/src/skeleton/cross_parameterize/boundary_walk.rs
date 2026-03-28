@@ -1707,6 +1707,42 @@ fn mesh_boundary_edges(
                 current_face = next_face;
             }
 
+            // TODO: check why this is necessary?! bug elsewhere?
+            // Process the straddling faces (f_start and f_end) for our-side neighbors only.
+            // These faces contain edges to BOTH sides of the cut, so we can't use collect_face_edges
+            // (which would collect all edges). Instead, we selectively add only the edges to the
+            // neighbor on our side.
+            //
+            // f_start: entry_neighbor is on our side (v_next for left, v_prev for right)
+            // f_end: entry_v_neighbor (the last value from the walk) is on our side
+            let straddling_neighbors = [
+                (f_start, entry_neighbor),
+                (f_end, entry_v_neighbor),
+            ];
+            for (straddling_face, our_neighbor) in &straddling_neighbors {
+                // Find the other v-neighbors in this face (to exclude them)
+                let other_v_neighbors: Vec<VertID> = mesh.edges(*straddling_face)
+                    .filter_map(|e| {
+                        let w = if mesh.root(e) == v {
+                            Some(mesh.toor(e))
+                        } else if mesh.toor(e) == v {
+                            Some(mesh.root(e))
+                        } else {
+                            None
+                        };
+                        w.filter(|w| w != our_neighbor)
+                    })
+                    .collect();
+
+                collect_face_edges(
+                    v, *straddling_face, cut_dup_node, mesh,
+                    cut_edges, cut_edge_to_cut_index, cut_index,
+                    vert_to_nodes, graph, cut_edge_canonical_direction, cutting_plan,
+                    &mut edges_to_add, &mut direct_edges_to_add,
+                    &other_v_neighbors,
+                );
+            }
+
             // Add regular edges via add_edge (with lookback for duplicate resolution)
             for (source, edges) in &edges_to_add {
                 let edge = edges.0;
