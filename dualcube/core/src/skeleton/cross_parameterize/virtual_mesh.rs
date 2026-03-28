@@ -568,26 +568,21 @@ fn check_invariants(vfg: &VirtualFlatGeometry, is_tri_mesh: bool) {
     //     n_nodes,
     // );
 
-    // 10. Duplicated pairs should not share neighbors from the SAME cut on the
-    //     same side. However, sharing IS valid for:
-    //     - Unique / BoundaryMidpoint / Artificial neighbors (they exist on both sides)
-    //     - CutDuplicate / CutEndpointMidpointDuplicate from a DIFFERENT cut
-    //       (both faces of the edge can be on the same side of the other cut)
+    // 10. All duplicated pairs (CutDuplicate and CutEndpointMidpoint) have
+    //    fully disjoint VFG neighbor sets.
     for node in vfg.graph.node_indices() {
-        let (is_left_copy, our_cut) = match vfg.graph[node].origin {
+        let is_left_copy = match vfg.graph[node].origin {
             VirtualNodeOrigin::CutDuplicate {
                 side: false,
                 peer: Some(_),
-                cut_index,
                 ..
-            } => (true, cut_index),
+            } => true,
             VirtualNodeOrigin::CutEndpointMidpointDuplicate {
                 side: false,
                 peer: Some(_),
-                cut_index,
                 ..
-            } => (true, cut_index),
-            _ => (false, 0),
+            } => true,
+            _ => false,
         };
         if !is_left_copy {
             continue;
@@ -600,27 +595,12 @@ fn check_invariants(vfg: &VirtualFlatGeometry, is_tri_mesh: bool) {
         let nbrs_left: HashSet<NodeIndex> = vfg.graph.neighbors(node).collect();
         let nbrs_right: HashSet<NodeIndex> = vfg.graph.neighbors(peer).collect();
         let shared: Vec<NodeIndex> = nbrs_left.intersection(&nbrs_right).copied().collect();
-        // Filter to only flag same-cut shared neighbors (which are invalid).
-        let invalid_shared: Vec<NodeIndex> = shared
-            .into_iter()
-            .filter(|&s| {
-                match vfg.graph[s].origin {
-                    VirtualNodeOrigin::CutDuplicate { cut_index, .. } => cut_index == our_cut,
-                    VirtualNodeOrigin::CutEndpointMidpointDuplicate { cut_index, .. } => {
-                        cut_index == our_cut
-                    }
-                    // Unique, BoundaryMidpoint, Artificial nodes can legitimately
-                    // be shared (they are not duplicated).
-                    _ => false,
-                }
-            })
-            .collect();
         assert!(
-            invalid_shared.is_empty(),
-            "Duplicated pair {:?} and {:?} share same-cut neighbors: {:?}",
+            shared.is_empty(),
+            "Duplicated pair {:?} and {:?} share neighbors: {:?}",
             node,
             peer,
-            invalid_shared
+            shared
                 .iter()
                 .map(|&s| format!("{:?} ({:?})", s, vfg.graph[s].origin))
                 .collect::<Vec<_>>(),
