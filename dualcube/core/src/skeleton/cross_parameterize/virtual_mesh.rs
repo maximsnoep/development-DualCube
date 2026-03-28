@@ -568,21 +568,26 @@ fn check_invariants(vfg: &VirtualFlatGeometry, is_tri_mesh: bool) {
     //     n_nodes,
     // );
 
-    // 10. All duplicated pairs (CutDuplicate and CutEndpointMidpoint) have
-    //    fully disjoint VFG neighbor sets.
+    // 10. Duplicated pairs (CutDuplicate and CutEndpointMidpoint) have
+    //     disjoint VFG neighbor sets, EXCEPT that a duplicate from a different
+    //     cut may legitimately be a neighbor of both sides.  This happens when
+    //     the two faces incident to edge V-W are on the same side of one cut
+    //     but different sides of the other cut.
     for node in vfg.graph.node_indices() {
-        let is_left_copy = match vfg.graph[node].origin {
+        let (is_left_copy, our_cut) = match vfg.graph[node].origin {
             VirtualNodeOrigin::CutDuplicate {
                 side: false,
                 peer: Some(_),
+                cut_index,
                 ..
-            } => true,
+            } => (true, cut_index),
             VirtualNodeOrigin::CutEndpointMidpointDuplicate {
                 side: false,
                 peer: Some(_),
+                cut_index,
                 ..
-            } => true,
-            _ => false,
+            } => (true, cut_index),
+            _ => (false, 0),
         };
         if !is_left_copy {
             continue;
@@ -595,12 +600,36 @@ fn check_invariants(vfg: &VirtualFlatGeometry, is_tri_mesh: bool) {
         let nbrs_left: HashSet<NodeIndex> = vfg.graph.neighbors(node).collect();
         let nbrs_right: HashSet<NodeIndex> = vfg.graph.neighbors(peer).collect();
         let shared: Vec<NodeIndex> = nbrs_left.intersection(&nbrs_right).copied().collect();
+
+        // Filter out shared neighbors that are duplicates from a different cut
+        // (cross-cut shared neighbors are legitimate).
+        let bad_shared: Vec<NodeIndex> = shared
+            .iter()
+            .copied()
+            .filter(|&s| {
+                let neighbor_cut = match vfg.graph[s].origin {
+                    VirtualNodeOrigin::CutDuplicate { cut_index, .. } => Some(cut_index),
+                    VirtualNodeOrigin::CutEndpointMidpointDuplicate { cut_index, .. } => {
+                        Some(cut_index)
+                    }
+                    _ => None,
+                };
+                // Only flag if the neighbor is NOT a duplicate from a different cut
+                match neighbor_cut {
+                    Some(c) if c != our_cut => false, // cross-cut: allowed
+                    _ => true,                        // same cut or non-duplicate: not allowed
+                }
+            })
+            .collect();
+
         assert!(
-            shared.is_empty(),
-            "Duplicated pair {:?} and {:?} share neighbors: {:?}",
+            bad_shared.is_empty(),
+            "Duplicated pair {:?} ({:?}) and {:?} ({:?}) share neighbors: {:?}",
             node,
+            vfg.graph[node].origin,
             peer,
-            shared
+            vfg.graph[peer].origin,
+            bad_shared
                 .iter()
                 .map(|&s| format!("{:?} ({:?})", s, vfg.graph[s].origin))
                 .collect::<Vec<_>>(),
