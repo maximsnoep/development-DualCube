@@ -1056,7 +1056,7 @@ fn is_same_cut_edge(
 /// single-interior-vertex cuts (via boundary edge ring walk).
 fn resolve_cross_cut_target(
     vertex: VertID,
-    face: FaceID,
+    neighbor: VertID,
     vert_to_nodes: &HashMap<VertID, VertexToVirtual>,
     graph: &StableUnGraph<VirtualNode, VirtualEdgeWeight>,
     mesh: &Mesh<INPUT>,
@@ -1068,134 +1068,169 @@ fn resolve_cross_cut_target(
         _ => return None,
     };
     let (target_cut_index, _) = get_cut_info(&graph[left].origin);
-
-    // Find a cut edge of the target's cut that is incident to vertex.
-    // Walk interior_verts of the target's cut to find an adjacent pair containing vertex.
     let target_cut = &cutting_plan.cuts[target_cut_index];
     let interior = &target_cut.path.interior_verts;
-    let mut adjacent_vert: Option<VertID> = None;
-    for pair in interior.windows(2) {
-        if pair[0] == vertex {
-            adjacent_vert = Some(pair[1]);
-            break;
-        } else if pair[1] == vertex {
-            adjacent_vert = Some(pair[0]);
-            break;
+
+    // Find the position of vertex in the interior list.
+    let pos = interior.iter().position(|&v| v == vertex)?;
+
+    // Classify neighbor vertices (not faces) as left or right by walking
+    // the fan from the left split point to the right split point.
+    //
+    // Split point A: the "previous" direction (towards start boundary)
+    // Split point B: the "next" direction (towards end boundary)
+    //
+    // We walk from split A's left side, collecting neighbor vertices until
+    // we reach split B.
+
+    // Helper: find the face incident to a boundary edge that contains vertex.
+    let find_face_with_vertex = |boundary_edge: EdgeID, v: VertID| -> Option<FaceID> {
+        let f = mesh.face(boundary_edge);
+        if mesh.vertices(f).any(|fv| fv == v) {
+            return Some(f);
         }
+        let twin = mesh.twin(boundary_edge);
+        let f2 = mesh.face(twin);
+        if mesh.vertices(f2).any(|fv| fv == v) {
+            return Some(f2);
+        }
+        None
+    };
+
+    // Collect cut edges to stop at.
+    let mut cut_edge_set: HashSet<EdgeID> = HashSet::new();
+    if pos > 0 {
+        let prev = interior[pos - 1];
+        let (ea, eb) = mesh.edge_between_verts(vertex, prev)?;
+        cut_edge_set.insert(ea);
+        cut_edge_set.insert(eb);
+    }
+    if pos + 1 < interior.len() {
+        let next = interior[pos + 1];
+        let (ea, eb) = mesh.edge_between_verts(vertex, next)?;
+        cut_edge_set.insert(ea);
+        cut_edge_set.insert(eb);
     }
 
-    if let Some(adj) = adjacent_vert {
-        // Multi-interior case: use canonical direction of cut edge.
-        let key = if vertex < adj {
-            (vertex, adj)
+    // Determine the first left neighbor and start face for the walk.
+    let (start_left_face, first_left_neighbor): (FaceID, VertID);
+
+    if pos > 0 {
+        // Split A is a cut edge: vertex → interior[pos-1].
+        let prev = interior[pos - 1];
+        let key = if vertex < prev {
+            (vertex, prev)
         } else {
-            (adj, vertex)
+            (prev, vertex)
         };
         let (from, to) = *cut_edge_canonical_direction.get(&key)?;
-
-        // Find the oriented half-edge from→to.
         let (e0, e1) = mesh.edge_between_verts(from, to)?;
         let edge_ft = if mesh.root(e0) == from && mesh.toor(e0) == to {
             e0
         } else {
             e1
         };
-
-        // mesh.face(edge_ft) is the LEFT face of the canonical direction.
-        // side == false means LEFT.
-        let left_face = mesh.face(edge_ft);
-        if face == left_face {
-            Some(left) // face is on the left side
-        } else {
-            Some(right) // face is on the right side
+        start_left_face = mesh.face(edge_ft);
+        // In start_left_face, find the neighbor of vertex that isn't prev.
+        let mut other = None;
+        for e in mesh.edges(start_left_face) {
+            let w = if mesh.root(e) == vertex {
+                mesh.toor(e)
+            } else if mesh.toor(e) == vertex {
+                mesh.root(e)
+            } else {
+                continue;
+            };
+            if w != prev {
+                other = Some(w);
+            }
         }
+        first_left_neighbor = other?;
     } else {
-        // Single-interior case: vertex is the only interior vertex of its cut.
-        // There are no cut edges between interior vertices, so we determine the
-        // side by walking the ring of faces around vertex using the boundary edges.
-
-        // Find the face containing vertex and the start boundary edge (f_start).
-        let find_face_with_vertex = |boundary_edge: EdgeID, v: VertID| -> Option<FaceID> {
-            let f = mesh.face(boundary_edge);
-            let f_verts: Vec<VertID> = mesh.vertices(f).collect();
-            if f_verts.contains(&v) {
-                return Some(f);
-            }
-            let twin = mesh.twin(boundary_edge);
-            let f2 = mesh.face(twin);
-            let f2_verts: Vec<VertID> = mesh.vertices(f2).collect();
-            if f2_verts.contains(&v) {
-                return Some(f2);
-            }
-            None
-        };
-
+        // Split A is the start boundary face.
         let f_start = find_face_with_vertex(target_cut.path.start, vertex)?;
-        let f_end = find_face_with_vertex(target_cut.path.end, vertex)?;
 
-        // Find v_next: the vertex that vertex goes TO in f_start's CCW boundary.
-        let f_start_edges: Vec<EdgeID> = mesh.edges(f_start).collect();
+        // Find v_next: the vertex that vertex goes TO in f_start.
         let mut v_next: Option<VertID> = None;
-        for e in &f_start_edges {
-            if mesh.root(*e) == vertex {
-                v_next = Some(mesh.toor(*e));
+        for e in mesh.edges(f_start) {
+            if mesh.root(e) == vertex {
+                v_next = Some(mesh.toor(e));
                 break;
             }
         }
         let v_next = v_next?;
 
-        // The face across edge vertex->v_next from f_start is the first LEFT face.
-        let (e0, _e1) = mesh.edge_between_verts(vertex, v_next)?;
-        let first_left_face = if mesh.face(e0) == f_start {
+        // v_next is the first left neighbor (it's on the left side of the split
+        // within f_start). The first left face is across edge vertex→v_next.
+        first_left_neighbor = v_next;
+        let (e0, _) = mesh.edge_between_verts(vertex, v_next)?;
+        start_left_face = if mesh.face(e0) == f_start {
             mesh.face(mesh.twin(e0))
         } else {
             mesh.face(e0)
         };
+    }
 
-        // Walk left arc: collect faces from first_left_face until f_end (inclusive).
-        let mut left_faces: HashSet<FaceID> = HashSet::new();
-        let mut cur_face = first_left_face;
-        let mut entry_neighbor = v_next;
+    // Determine the stop condition.
+    let stop_face: Option<FaceID> = if pos + 1 < interior.len() {
+        None // Stop at cut edge
+    } else {
+        find_face_with_vertex(target_cut.path.end, vertex)
+    };
 
-        for _ in 0..1000 {
-            left_faces.insert(cur_face);
-            if cur_face == f_end {
-                break;
-            }
+    // Walk the fan collecting left-side neighbor vertices.
+    // Include first_left_neighbor (it's on the left boundary within f_start).
+    let mut left_neighbors: HashSet<VertID> = HashSet::new();
+    left_neighbors.insert(first_left_neighbor);
 
-            // Find exit neighbor: the other vertex connected to vertex in this face.
-            let face_edges: Vec<EdgeID> = mesh.edges(cur_face).collect();
-            let mut exit_neighbor: Option<VertID> = None;
-            for e in &face_edges {
-                let w = if mesh.root(*e) == vertex {
-                    mesh.toor(*e)
-                } else if mesh.toor(*e) == vertex {
-                    mesh.root(*e)
-                } else {
-                    continue;
-                };
-                if w != entry_neighbor {
-                    exit_neighbor = Some(w);
-                }
-            }
-            let exit = exit_neighbor?;
+    let mut cur_face = start_left_face;
+    let mut cur_entry = first_left_neighbor;
 
-            let (e0, _) = mesh.edge_between_verts(vertex, exit)?;
-            let next_face = if mesh.face(e0) == cur_face {
-                mesh.face(mesh.twin(e0))
+    for _ in 0..1000 {
+        // Collect the exit neighbor (the non-entry neighbor of vertex in this face).
+        let mut exit: Option<VertID> = None;
+        for e in mesh.edges(cur_face) {
+            let w = if mesh.root(e) == vertex {
+                mesh.toor(e)
+            } else if mesh.toor(e) == vertex {
+                mesh.root(e)
             } else {
-                mesh.face(e0)
+                continue;
             };
+            if w != cur_entry {
+                exit = Some(w);
+            }
+        }
+        let exit = exit?;
 
-            entry_neighbor = exit;
-            cur_face = next_face;
+        // Check if the edge to exit is a cut edge of this cut.
+        let (ea, _) = mesh.edge_between_verts(vertex, exit)?;
+        if cut_edge_set.contains(&ea) || cut_edge_set.contains(&mesh.twin(ea)) {
+            break;
         }
 
-        if left_faces.contains(&face) {
-            Some(left)
+        // If we've reached the stop face, don't include the exit neighbor
+        // (it's on the boundary towards the right arc within f_end).
+        if stop_face == Some(cur_face) {
+            break;
+        }
+
+        left_neighbors.insert(exit);
+
+        // Advance to next face.
+        let next_face = if mesh.face(ea) == cur_face {
+            mesh.face(mesh.twin(ea))
         } else {
-            Some(right)
-        }
+            mesh.face(ea)
+        };
+        cur_entry = exit;
+        cur_face = next_face;
+    }
+
+    if left_neighbors.contains(&neighbor) {
+        Some(left)
+    } else {
+        Some(right)
     }
 }
 
@@ -1254,10 +1289,10 @@ fn collect_face_edges(
 
             if is_cross_cut_target {
                 // Cross-cut edge: resolve the correct target duplicate directly
-                // based on which side of the target's cut this face is on.
+                // based on which side of the target's cut the source vertex is.
                 if let Some(target) = resolve_cross_cut_target(
                     w,
-                    face,
+                    v,
                     vert_to_nodes,
                     graph,
                     mesh,
