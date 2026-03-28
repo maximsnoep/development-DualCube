@@ -400,14 +400,14 @@ fn check_invariants(vfg: &VirtualFlatGeometry, is_tri_mesh: bool) {
             low_degree_counts[2],
         );
 
-        // for (node, degree) in low_degree_nodes {
-        //     log::error!(
-        //         "Low-degree node {:?}: degree {}, origin={:?}",
-        //         node,
-        //         degree,
-        //         vfg.graph[node].origin,
-        //     );
-        // }
+        for (node, degree) in low_degree_nodes {
+            log::error!(
+                "Low-degree node {:?}: degree {}, origin={:?}",
+                node,
+                degree,
+                vfg.graph[node].origin,
+            );
+        }
     }
 
     // 5. All duplicated pairs (CutDuplicate and CutEndpointMidpoint) have matching peers.
@@ -530,45 +530,7 @@ fn check_invariants(vfg: &VirtualFlatGeometry, is_tri_mesh: bool) {
         }
     }
 
-    // // 9. All graph nodes are accounted for in vert_to_nodes, midpoints, or cut-endpoint midpoints.
-    // // TODO: double check this
-    // let tracked_nodes: HashSet<NodeIndex> = vfg
-    //     .vert_to_nodes
-    //     .values()
-    //     .flat_map(|v| v.iter().copied())
-    //     .collect();
-    // let midpoint_count = vfg
-    //     .graph
-    //     .node_indices()
-    //     .filter(|n| {
-    //         matches!(
-    //             vfg.graph[*n].origin,
-    //             VirtualNodeOrigin::BoundaryMidpoint { .. }
-    //         )
-    //     })
-    //     .count();
-    // let cut_endpoint_mid_count = vfg
-    //     .graph
-    //     .node_indices()
-    //     .filter(|n| {
-    //         matches!(
-    //             vfg.graph[*n].origin,
-    //             VirtualNodeOrigin::CutEndpointMidpoint { .. }
-    //         )
-    //     })
-    //     .count();
-    // let vertex_node_count = tracked_nodes.len();
-    // assert_eq!(
-    //     vertex_node_count + midpoint_count + cut_endpoint_mid_count,
-    //     n_nodes,
-    //     "Node accounting mismatch: {} vertex + {} midpoint + {} cut-endpoint-midpoint != {} total",
-    //     vertex_node_count,
-    //     midpoint_count,
-    //     cut_endpoint_mid_count,
-    //     n_nodes,
-    // );
-
-    // 10. All duplicated pairs (CutDuplicate and CutEndpointMidpoint) have
+    // 9. All duplicated pairs (CutDuplicate and CutEndpointMidpoint) have
     //    fully disjoint VFG neighbor sets.
     for node in vfg.graph.node_indices() {
         let is_left_copy = match vfg.graph[node].origin {
@@ -609,7 +571,7 @@ fn check_invariants(vfg: &VirtualFlatGeometry, is_tri_mesh: bool) {
         );
     }
 
-    // 11. No parallel edges (multi-edges between the same pair of nodes).
+    // 10. No parallel edges (multi-edges between the same pair of nodes).
     let mut edge_set: HashSet<(usize, usize)> = HashSet::new();
     for node in vfg.graph.node_indices() {
         for edge in vfg.graph.edges(node) {
@@ -629,6 +591,6 @@ fn check_invariants(vfg: &VirtualFlatGeometry, is_tri_mesh: bool) {
         }
     }
 
-    // 12. All edges that have at least one duplicate as endpoint, should actually have an edge to either of the peers.
+    // 11. All edges that have at least one duplicate as endpoint, should actually have an edge to either of the peers.
     // Checked in internal_edges already!
 }

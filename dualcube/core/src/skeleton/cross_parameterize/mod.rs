@@ -2,8 +2,7 @@ use std::collections::HashMap;
 use std::f64::consts::{FRAC_PI_2, TAU};
 
 use itertools::Itertools;
-use log::{error, info, warn};
-use mehsh::mesh::elem::edge;
+use log::{error, warn};
 use mehsh::prelude::{HasPosition, HasVertices, Mesh, Vector2D, Vector3D};
 
 use petgraph::graph::{EdgeIndex, NodeIndex};
