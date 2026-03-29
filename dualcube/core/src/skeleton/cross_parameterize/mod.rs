@@ -10,7 +10,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::prelude::{EdgeID, VertID, INPUT};
 use crate::skeleton::cross_parameterize::harmonic::solve_dirichlet;
-use crate::skeleton::cross_parameterize::virtual_mesh::VirtualNodeOrigin;
+use crate::skeleton::cross_parameterize::virtual_mesh::{VirtualNode, VirtualNodeOrigin};
 use crate::skeleton::orthogonalize::LabeledCurveSkeleton;
 
 use bvh::aabb::{Aabb, Bounded};
@@ -66,7 +66,7 @@ impl UvFace {
 
 fn interpolate_tri_if_inside(uv: Vector2D, a: Vector2D, b: Vector2D, c: Vector2D, pa: Vector3D, pb: Vector3D, pc: Vector3D) -> Option<Vector3D> {
     let bc = barycentric_2d(uv, a, b, c);
-    if bc.iter().all(|&c| c >= -1e-9) {
+    if bc.iter().all(|&c| c >= -1e-4) {
         Some(pa * bc[0] + pb * bc[1] + pc * bc[2])
     } else {
         None
@@ -77,17 +77,16 @@ fn barycentric_2d(p: Vector2D, a: Vector2D, b: Vector2D, c: Vector2D) -> [f64; 3
     let v0 = b - a;
     let v1 = c - a;
     let v2 = p - a;
-    let d00 = v0.dot(&v0);
-    let d01 = v0.dot(&v1);
-    let d11 = v1.dot(&v1);
-    let d20 = v2.dot(&v0);
-    let d21 = v2.dot(&v1);
-    let denom = d00 * d11 - d01 * d01;
+    
+    // 2D cross product: v.x * w.y - v.y * w.x
+    let denom = v0.x * v1.y - v0.y * v1.x;
+    
     if denom.abs() < 1e-12 {
-        return [1.0, 0.0, 0.0];
+        return [-1.0, -1.0, -1.0]; // Degenerate triangle, reject
     }
-    let v = (d11 * d20 - d01 * d21) / denom;
-    let w = (d00 * d21 - d01 * d20) / denom;
+    
+    let v = (v2.x * v1.y - v2.y * v1.x) / denom;
+    let w = (v0.x * v2.y - v0.y * v2.x) / denom;
     let u = 1.0 - v - w;
     [u, v, w]
 }
@@ -300,11 +299,14 @@ impl PolycubeMap {
                 let region = &self.regions[&region_idx];
                 if let Some(uv) = region.input_uv.get(&vfg_node_idx) {
                     if let (Some(bvh), faces) = (&region.polycube_bvh, &region.polycube_faces) {
-                        let query = nalgebra::Point3::new(uv.x, uv.y, 0.0);
-                        let candidates = bvh.traverse(&Aabb::empty().grow(&query), faces);
+                        let epsilon = 1e-4;
+                        let query_min = nalgebra::Point3::new(uv.x - epsilon, uv.y - epsilon, -epsilon);
+                        let query_max = nalgebra::Point3::new(uv.x + epsilon, uv.y + epsilon, epsilon);
+                        let query = Aabb::with_bounds(query_min, query_max);
+                        let candidates = bvh.traverse(&query, faces);
                         
                         let mut mapped_pos = None;
-                        for face in candidates {
+                        for face in &candidates {
                             if let Some(pos) = face.interpolate(*uv) {
                                 mapped_pos = Some(pos);
                                 break;
@@ -314,7 +316,7 @@ impl PolycubeMap {
                         if let Some(pos) = mapped_pos {
                             result.set_position(vert_id, pos);
                         } else {
-                            warn!("UV {:?} for vertex {:?} not found in polycube BVH for region {:?}", uv, vert_id, region_idx);
+                            error!("UV {:?} for vertex {:?} not found in polycube BVH candidates ({} candidates) for region {:?}", uv, vert_id, candidates.len(), region_idx);
                         }
                     }
                 }
@@ -435,6 +437,43 @@ fn parameterize_region(
     }
 }
 
+fn is_empty_tri(graph: &petgraph::stable_graph::StableUnGraph<VirtualNode, crate::skeleton::cross_parameterize::virtual_mesh::VirtualEdgeWeight>, uv_map: &HashMap<NodeIndex, Vector2D>, tri: &[NodeIndex; 3], uvs: &[Vector2D; 3]) -> bool {
+    for node in graph.node_indices() {
+        if tri.contains(&node) { continue; }
+        if let Some(&p) = uv_map.get(&node) {
+            let bc = barycentric_2d(p, uvs[0], uvs[1], uvs[2]);
+            if bc[0] > 1e-5 && bc[1] > 1e-5 && bc[2] > 1e-5 {
+                return false;
+            }
+        }
+    }
+    true
+}
+
+fn is_empty_quad(graph: &petgraph::stable_graph::StableUnGraph<VirtualNode, crate::skeleton::cross_parameterize::virtual_mesh::VirtualEdgeWeight>, uv_map: &HashMap<NodeIndex, Vector2D>, quad: &[NodeIndex; 4], uvs: &[Vector2D; 4]) -> bool {
+    // Check convexity: cross products of adjacent edges must have the same sign
+    let cross1 = (uvs[1].x - uvs[0].x) * (uvs[2].y - uvs[1].y) - (uvs[1].y - uvs[0].y) * (uvs[2].x - uvs[1].x);
+    let cross2 = (uvs[2].x - uvs[0].x) * (uvs[3].y - uvs[2].y) - (uvs[2].y - uvs[0].y) * (uvs[3].x - uvs[2].x);
+    if cross1 * cross2 <= 0.0 {
+        return false; // Not convex or bow-tie
+    }
+
+    for node in graph.node_indices() {
+        if quad.contains(&node) { continue; }
+        if let Some(&p) = uv_map.get(&node) {
+            let bc1 = barycentric_2d(p, uvs[0], uvs[1], uvs[2]);
+            if bc1[0] > 1e-5 && bc1[1] > 1e-5 && bc1[2] > 1e-5 {
+                return false;
+            }
+            let bc2 = barycentric_2d(p, uvs[0], uvs[2], uvs[3]);
+            if bc2[0] > 1e-5 && bc2[1] > 1e-5 && bc2[2] > 1e-5 {
+                return false;
+            }
+        }
+    }
+    true
+}
+
 /// Extracts triangles and quads from the VFG graph and maps them to UV domain.
 fn extract_faces(vfg: &VirtualFlatGeometry, uv_map: &HashMap<NodeIndex, Vector2D>) -> Vec<UvFace> {
     let mut faces = Vec::new();
@@ -455,11 +494,14 @@ fn extract_faces(vfg: &VirtualFlatGeometry, uv_map: &HashMap<NodeIndex, Vector2D
                     tri.sort();
                     if seen_tris.insert(tri) {
                         if let (Some(&uv_u), Some(&uv_v), Some(&uv_w)) = (uv_map.get(&u), uv_map.get(&v), uv_map.get(&w)) {
-                            faces.push(UvFace::Tri {
-                                uvs: [uv_u, uv_v, uv_w],
-                                positions: [graph[u].position, graph[v].position, graph[w].position],
-                                real_index: faces.len(),
-                            });
+                            let uvs = [uv_u, uv_v, uv_w];
+                            if is_empty_tri(graph, uv_map, &[u, v, w], &uvs) {
+                                faces.push(UvFace::Tri {
+                                    uvs,
+                                    positions: [graph[u].position, graph[v].position, graph[w].position],
+                                    real_index: faces.len(),
+                                });
+                            }
                         }
                     }
                 }
@@ -486,12 +528,15 @@ fn extract_faces(vfg: &VirtualFlatGeometry, uv_map: &HashMap<NodeIndex, Vector2D
                             if let (Some(&uv_u), Some(&uv_v1), Some(&uv_w), Some(&uv_v2)) = 
                                 (uv_map.get(&u), uv_map.get(&v1), uv_map.get(&w), uv_map.get(&v2)) {
                                 
-                                // Ordering: u-v1, v1-w, w-v2, v2-u
-                                faces.push(UvFace::Quad {
-                                    uvs: [uv_u, uv_v1, uv_w, uv_v2],
-                                    positions: [graph[u].position, graph[v1].position, graph[w].position, graph[v2].position],
-                                    real_index: faces.len(),
-                                });
+                                let uvs = [uv_u, uv_v1, uv_w, uv_v2];
+                                if is_empty_quad(graph, uv_map, &[u, v1, w, v2], &uvs) {
+                                    // Ordering: u-v1, v1-w, w-v2, v2-u
+                                    faces.push(UvFace::Quad {
+                                        uvs,
+                                        positions: [graph[u].position, graph[v1].position, graph[w].position, graph[v2].position],
+                                        real_index: faces.len(),
+                                    });
+                                }
                             }
                         }
                     }
