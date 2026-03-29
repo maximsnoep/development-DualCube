@@ -243,7 +243,7 @@ fn parameterize_region(
         input_mesh,
         &input_plan,
         true, // base mesh is strict tri, but in cuts we can introduce quads.
-    );
+    ); // resulting VFG should be strictly triangulated as we triangulate inside quads using extra node.
     let (polycube_vfg, polycube_uv) = parameterize_side(
         patch_node_idx,
         degree,
@@ -251,7 +251,9 @@ fn parameterize_region(
         polycube_mesh,
         &polycube_plan,
         false, // base mesh is quad, cuts split quads into quads.
-    );
+    ); // result is mix of quads and tris.
+
+    // TODO: calculate BVHs
 
     RegionParameterization {
         input_vfg,
