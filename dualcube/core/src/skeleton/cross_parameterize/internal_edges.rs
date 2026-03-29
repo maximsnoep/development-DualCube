@@ -1,11 +1,12 @@
 use std::collections::HashMap;
 
-use log::warn;
-use mehsh::prelude::{HasEdges, HasVertices, Mesh};
+use itertools::Itertools;
+use log::{info, warn};
+use mehsh::prelude::{HasEdges, HasFaces, HasVertices, Mesh};
 use petgraph::graph::NodeIndex;
 
 use crate::{
-    prelude::{EdgeID, VertID, INPUT},
+    prelude::{EdgeID, FaceID, VertID, INPUT},
     skeleton::cross_parameterize::virtual_mesh::{
         EdgemidpointToVirtual, VertexToVirtual, VirtualEdgeWeight, VirtualFlatGeometry,
         VirtualNodeOrigin,
@@ -101,44 +102,29 @@ pub fn add_internal_edges(
                     // One cut, one unique
                     (
                         VertexToVirtual::CutPair {
-                            left: self_left,
-                            right: self_right,
+                            left: dup_left,
+                            right: dup_right,
                         },
-                        VertexToVirtual::Unique(other_node),
+                        VertexToVirtual::Unique(unique),
+                    )
+                    | (
+                        VertexToVirtual::Unique(unique),
+                        VertexToVirtual::CutPair {
+                            left: dup_left,
+                            right: dup_right,
+                        },
                     ) => {
-                        let has_left = vfg.graph.find_edge(*self_left, *other_node).is_some();
-                        let has_right = vfg.graph.find_edge(*self_right, *other_node).is_some();
+                        let has_left = vfg.graph.find_edge(*dup_left, *unique).is_some();
+                        let has_right = vfg.graph.find_edge(*dup_right, *unique).is_some();
                         if !has_left && !has_right {
-                            warn!(
-                                "internal_edges check: MISSING CutPair<->Unique. \
+                            panic!(
+                                "internal_edges check: MISSING CutPair<->Unique (or Unique<->CutPair). \
                                  self={:?} L=[{:?} {}] R=[{:?} {}] other={:?} [{:?} {}]. \
                                  Mesh edge {:?}<->{:?}",
                                 vert,
-                                self_left, describe_node(&vfg, *self_left),
-                                self_right, describe_node(&vfg, *self_right),
-                                other_vert, other_node, describe_node(&vfg, *other_node),
-                                vert, other_vert
-                            );
-                        }
-                    }
-                    (
-                        VertexToVirtual::Unique(self_node),
-                        VertexToVirtual::CutPair {
-                            left: other_left,
-                            right: other_right,
-                        },
-                    ) => {
-                        let has_left = vfg.graph.find_edge(*self_node, *other_left).is_some();
-                        let has_right = vfg.graph.find_edge(*self_node, *other_right).is_some();
-                        if !has_left && !has_right {
-                            warn!(
-                                "internal_edges check: MISSING Unique<->CutPair. \
-                                 self={:?} [{:?} {}] other={:?} L=[{:?} {}] R=[{:?} {}]. \
-                                 Mesh edge {:?}<->{:?}",
-                                vert, self_node, describe_node(&vfg, *self_node),
-                                other_vert,
-                                other_left, describe_node(&vfg, *other_left),
-                                other_right, describe_node(&vfg, *other_right),
+                                dup_left, describe_node(&vfg, *dup_left),
+                                dup_right, describe_node(&vfg, *dup_right),
+                                other_vert, unique, describe_node(&vfg, *unique),
                                 vert, other_vert
                             );
                         }
@@ -159,18 +145,23 @@ pub fn add_internal_edges(
                             || vfg.graph.find_edge(*self_right, *other_left).is_some()
                             || vfg.graph.find_edge(*self_right, *other_right).is_some();
                         if !has_any {
-                            warn!(
+                            panic!(
                                 "internal_edges check: MISSING CutPair<->CutPair. \
                                  self={:?} L=[{:?} {}] R=[{:?} {}] \
                                  other={:?} L=[{:?} {}] R=[{:?} {}]. \
                                  Mesh edge {:?}<->{:?}",
                                 vert,
-                                self_left, describe_node(&vfg, *self_left),
-                                self_right, describe_node(&vfg, *self_right),
+                                self_left,
+                                describe_node(&vfg, *self_left),
+                                self_right,
+                                describe_node(&vfg, *self_right),
                                 other_vert,
-                                other_left, describe_node(&vfg, *other_left),
-                                other_right, describe_node(&vfg, *other_right),
-                                vert, other_vert
+                                other_left,
+                                describe_node(&vfg, *other_left),
+                                other_right,
+                                describe_node(&vfg, *other_right),
+                                vert,
+                                other_vert
                             );
                         }
                     }
@@ -210,13 +201,18 @@ pub fn add_internal_edges(
                         EdgemidpointToVirtual::Unique(mid_node),
                     ) => {
                         if vfg.graph.find_edge(*self_node, *mid_node).is_none() {
-                            warn!(
+                            panic!(
                                 "internal_edges check: MISSING Unique<->UniqueMid. \
                                  self={:?} [{:?} {}] mid=[{:?} {}]. \
                                  Mesh edge {:?}<->{:?} (midpoint edge {:?})",
-                                vert, self_node, describe_node(&vfg, *self_node),
-                                mid_node, describe_node(&vfg, *mid_node),
-                                vert, other_vert, midpoint_edge
+                                vert,
+                                self_node,
+                                describe_node(&vfg, *self_node),
+                                mid_node,
+                                describe_node(&vfg, *mid_node),
+                                vert,
+                                other_vert,
+                                midpoint_edge
                             );
                         }
                     }
@@ -234,13 +230,97 @@ pub fn add_internal_edges(
                             warn!(
                                 "internal_edges check: MISSING CutPair<->UniqueMid. \
                                  self={:?} L=[{:?} {}] R=[{:?} {}] mid=[{:?} {}]. \
-                                 Mesh edge {:?}<->{:?} (midpoint edge {:?})",
+                                 Mesh edge {:?}<->{:?} (midpoint edge {:?}). Falling back on repair. \
+                                 This indicates an underlying issue in boundary wriring logic that should be fixed.",
                                 vert,
                                 self_left, describe_node(&vfg, *self_left),
                                 self_right, describe_node(&vfg, *self_right),
                                 mid_node, describe_node(&vfg, *mid_node),
                                 vert, other_vert, midpoint_edge
                             );
+
+                            let corresponding_mesh_vertex = match &vfg.graph[*self_left].origin {
+                                VirtualNodeOrigin::CutDuplicate { original, .. } => original,
+                                other => {
+                                    panic!(
+                                        "Expected CutPair node to be CutDuplicate, found {:?}",
+                                        other
+                                    );
+                                }
+                            };
+
+                            // We look at the 2 faces adjacent to this edge and try to determine the correct target from there.
+                            let faces: [FaceID; 2] = mesh
+                                .faces(edge)
+                                .collect_array()
+                                .expect("Expected exactly two faces adjacent to internal edge");
+
+                            // Collect all bounding both faces, filter to ones that have self_left or self_right
+                            let bounding_edges = faces
+                                .iter()
+                                .flat_map(|&face| mesh.edges(face))
+                                .filter(|&e| {
+                                    let [u, v] = mesh
+                                        .vertices(e)
+                                        .collect_array()
+                                        .expect("Expected edge to have exactly two vertices");
+                                    u == *corresponding_mesh_vertex
+                                        || v == *corresponding_mesh_vertex
+                                });
+
+                            for e in bounding_edges {
+                                info!("Examining bounding edge {:?} for voting", e);
+                            }
+
+                            // Get the corresponding edges in the VFG
+                            // TODO
+
+                            // Vote which of self_left or self_right is correct
+                            let mut left_votes = 0;
+                            let mut right_votes = 0;
+                            // TODO: collect votes using edges
+
+                            if left_votes > 0 && right_votes > 0 {
+                                panic!(
+                                    "internal_edges check: AMBIGUOUS CutPair<->UniqueMid. \
+                                     self={:?} L=[{:?} {}] R=[{:?} {}] mid=[{:?} {}]. \
+                                     Mesh edge {:?}<->{:?} (midpoint edge {:?}). \
+                                     Votes: left={}, right={}. Falling back on repair. \
+                                     This indicates an underlying issue in boundary wriring logic that should be fixed.",
+                                    vert,
+                                    self_left, describe_node(&vfg, *self_left),
+                                    self_right, describe_node(&vfg, *self_right),
+                                    mid_node, describe_node(&vfg, *mid_node),
+                                    vert, other_vert, midpoint_edge,
+                                    left_votes, right_votes
+                                );
+                            } else if left_votes > 0 {
+                                vfg.graph.add_edge(
+                                    *self_left,
+                                    *mid_node,
+                                    VirtualEdgeWeight { length: 0. },
+                                );
+                            } else if right_votes > 0 {
+                                vfg.graph.add_edge(
+                                    *self_right,
+                                    *mid_node,
+                                    VirtualEdgeWeight { length: 0. },
+                                );
+                            } else {
+                                panic!(
+                                    "internal_edges check: NO VOTES for CutPair<->UniqueMid. \
+                                     self={:?} L=[{:?} {}] R=[{:?} {}] mid=[{:?} {}]. \
+                                     Mesh edge {:?}<->{:?} (midpoint edge {:?}). \
+                                     Votes: left={}, right={}. Falling back on repair. \
+                                     This indicates an underlying issue in boundary wriring logic that should be fixed.",
+                                    vert,
+                                    self_left, describe_node(&vfg, *self_left),
+                                    self_right, describe_node(&vfg, *self_right),
+                                    mid_node, describe_node(&vfg, *mid_node),
+                                    vert, other_vert, midpoint_edge,
+                                    left_votes, right_votes
+                                );
+                            }
                         }
                     }
                     // Vertex unique, midpoint duplicated
@@ -254,14 +334,20 @@ pub fn add_internal_edges(
                         let has_left = vfg.graph.find_edge(*self_node, *mid_left).is_some();
                         let has_right = vfg.graph.find_edge(*self_node, *mid_right).is_some();
                         if !has_left && !has_right {
-                            warn!(
+                            panic!(
                                 "internal_edges check: MISSING Unique<->CutEndpointMid. \
                                  self={:?} [{:?} {}] mid_L=[{:?} {}] mid_R=[{:?} {}]. \
                                  Mesh edge {:?}<->{:?} (midpoint edge {:?})",
-                                vert, self_node, describe_node(&vfg, *self_node),
-                                mid_left, describe_node(&vfg, *mid_left),
-                                mid_right, describe_node(&vfg, *mid_right),
-                                vert, other_vert, midpoint_edge
+                                vert,
+                                self_node,
+                                describe_node(&vfg, *self_node),
+                                mid_left,
+                                describe_node(&vfg, *mid_left),
+                                mid_right,
+                                describe_node(&vfg, *mid_right),
+                                vert,
+                                other_vert,
+                                midpoint_edge
                             );
                         }
                     }
@@ -281,17 +367,23 @@ pub fn add_internal_edges(
                             || vfg.graph.find_edge(*self_right, *mid_left).is_some()
                             || vfg.graph.find_edge(*self_right, *mid_right).is_some();
                         if !has_any {
-                            warn!(
+                            panic!(
                                 "internal_edges check: MISSING CutPair<->CutEndpointMid. \
                                  self={:?} L=[{:?} {}] R=[{:?} {}] \
                                  mid_L=[{:?} {}] mid_R=[{:?} {}]. \
                                  Mesh edge {:?}<->{:?} (midpoint edge {:?})",
                                 vert,
-                                self_left, describe_node(&vfg, *self_left),
-                                self_right, describe_node(&vfg, *self_right),
-                                mid_left, describe_node(&vfg, *mid_left),
-                                mid_right, describe_node(&vfg, *mid_right),
-                                vert, other_vert, midpoint_edge
+                                self_left,
+                                describe_node(&vfg, *self_left),
+                                self_right,
+                                describe_node(&vfg, *self_right),
+                                mid_left,
+                                describe_node(&vfg, *mid_left),
+                                mid_right,
+                                describe_node(&vfg, *mid_right),
+                                vert,
+                                other_vert,
+                                midpoint_edge
                             );
                         }
                     }
