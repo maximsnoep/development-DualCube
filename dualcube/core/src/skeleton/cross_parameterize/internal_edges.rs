@@ -1,7 +1,7 @@
 use std::collections::HashMap;
 
 use itertools::Itertools;
-use log::{info, warn};
+use log::warn;
 use mehsh::prelude::{HasEdges, HasFaces, HasVertices, Mesh};
 use petgraph::graph::NodeIndex;
 
