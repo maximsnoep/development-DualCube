@@ -266,23 +266,140 @@ pub fn add_internal_edges(
                                         .expect("Expected edge to have exactly two vertices");
                                     u == *corresponding_mesh_vertex
                                         || v == *corresponding_mesh_vertex
-                                });
-
-                            for e in bounding_edges {
-                                info!("Examining bounding edge {:?} for voting", e);
-                            }
-
-                            // Get the corresponding edges in the VFG
-                            // TODO
+                                })
+                                .collect::<Vec<_>>();
 
                             // Vote which of self_left or self_right is correct
                             let mut left_votes = 0;
                             let mut right_votes = 0;
-                            // TODO: collect votes using edges
+                            for &e in &bounding_edges {
+                                let [u, v] = mesh
+                                    .vertices(e)
+                                    .collect_array()
+                                    .expect("Expected edge to have exactly two vertices");
+                                let other_endpoint = if u == *corresponding_mesh_vertex {
+                                    v
+                                } else if v == *corresponding_mesh_vertex {
+                                    u
+                                } else {
+                                    continue;
+                                };
 
-                            if left_votes > 0 && right_votes > 0 {
+                                // Skip the boundary edge currently being repaired; we vote from
+                                // the already-wired neighborhood around the adjacent faces.
+                                if other_endpoint == other_vert {
+                                    continue;
+                                }
+
+                                if patch_vertices.contains(&other_endpoint) {
+                                    let other_nodes = vert_to_nodes
+                                        .get(&other_endpoint)
+                                        .expect("Patch vertex missing from virtual node map");
+                                    match other_nodes {
+                                        VertexToVirtual::Unique(other_node) => {
+                                            if vfg.graph.find_edge(*self_left, *other_node).is_some() {
+                                                left_votes += 1;
+                                            }
+                                            if vfg.graph.find_edge(*self_right, *other_node).is_some() {
+                                                right_votes += 1;
+                                            }
+                                        }
+                                        VertexToVirtual::CutPair {
+                                            left: other_left,
+                                            right: other_right,
+                                        } => {
+                                            if vfg.graph.find_edge(*self_left, *other_left).is_some()
+                                                || vfg.graph.find_edge(*self_left, *other_right).is_some()
+                                            {
+                                                left_votes += 1;
+                                            }
+                                            if vfg.graph.find_edge(*self_right, *other_left).is_some()
+                                                || vfg.graph.find_edge(*self_right, *other_right).is_some()
+                                            {
+                                                right_votes += 1;
+                                            }
+                                        }
+                                    }
+                                } else {
+                                    // Neighbor is outside patch, so it should correspond to a boundary midpoint.
+                                    let midpoint_node_origin = if let Some(m) =
+                                        edge_midpoint_ids_to_node_indices.get(&e)
+                                    {
+                                        Some(m)
+                                    } else {
+                                        let twin = mesh.twin(e);
+                                        edge_midpoint_ids_to_node_indices.get(&twin)
+                                    };
+
+                                    let Some(midpoint_node_origin) = midpoint_node_origin else {
+                                        continue;
+                                    };
+
+                                    match midpoint_node_origin {
+                                        EdgemidpointToVirtual::Unique(other_mid) => {
+                                            if vfg.graph.find_edge(*self_left, *other_mid).is_some() {
+                                                left_votes += 1;
+                                            }
+                                            if vfg.graph.find_edge(*self_right, *other_mid).is_some() {
+                                                right_votes += 1;
+                                            }
+                                        }
+                                        EdgemidpointToVirtual::CutEndpointPair {
+                                            left: mid_left,
+                                            right: mid_right,
+                                        } => {
+                                            if vfg.graph.find_edge(*self_left, *mid_left).is_some()
+                                                || vfg.graph.find_edge(*self_left, *mid_right).is_some()
+                                            {
+                                                left_votes += 1;
+                                            }
+                                            if vfg.graph.find_edge(*self_right, *mid_left).is_some()
+                                                || vfg.graph.find_edge(*self_right, *mid_right).is_some()
+                                            {
+                                                right_votes += 1;
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+
+                            let chosen_side = if left_votes > right_votes {
+                                Some(*self_left)
+                            } else if right_votes > left_votes {
+                                Some(*self_right)
+                            } else {
+                                None
+                            };
+
+                            if let Some(chosen_side) = chosen_side {
+                                if left_votes > 0 && right_votes > 0 {
+                                    warn!(
+                                        "internal_edges fallback: both sides received votes for CutPair<->UniqueMid; choosing majority. \
+                                         self={:?} L=[{:?} {}] R=[{:?} {}] mid=[{:?} {}]. \
+                                         Mesh edge {:?}<->{:?} (midpoint edge {:?}). Votes: left={}, right={}",
+                                        vert,
+                                        self_left,
+                                        describe_node(&vfg, *self_left),
+                                        self_right,
+                                        describe_node(&vfg, *self_right),
+                                        mid_node,
+                                        describe_node(&vfg, *mid_node),
+                                        vert,
+                                        other_vert,
+                                        midpoint_edge,
+                                        left_votes,
+                                        right_votes
+                                    );
+                                }
+
+                                let length =
+                                    (vfg.graph[chosen_side].position - vfg.graph[*mid_node].position)
+                                        .norm();
+                                vfg.graph
+                                    .add_edge(chosen_side, *mid_node, VirtualEdgeWeight { length });
+                            } else if left_votes == 0 && right_votes == 0 {
                                 panic!(
-                                    "internal_edges check: AMBIGUOUS CutPair<->UniqueMid. \
+                                    "internal_edges check: NO VOTES for CutPair<->UniqueMid. \
                                      self={:?} L=[{:?} {}] R=[{:?} {}] mid=[{:?} {}]. \
                                      Mesh edge {:?}<->{:?} (midpoint edge {:?}). \
                                      Votes: left={}, right={}. Falling back on repair. \
@@ -294,21 +411,9 @@ pub fn add_internal_edges(
                                     vert, other_vert, midpoint_edge,
                                     left_votes, right_votes
                                 );
-                            } else if left_votes > 0 {
-                                vfg.graph.add_edge(
-                                    *self_left,
-                                    *mid_node,
-                                    VirtualEdgeWeight { length: 0. },
-                                );
-                            } else if right_votes > 0 {
-                                vfg.graph.add_edge(
-                                    *self_right,
-                                    *mid_node,
-                                    VirtualEdgeWeight { length: 0. },
-                                );
                             } else {
                                 panic!(
-                                    "internal_edges check: NO VOTES for CutPair<->UniqueMid. \
+                                    "internal_edges check: TIE while voting CutPair<->UniqueMid. \
                                      self={:?} L=[{:?} {}] R=[{:?} {}] mid=[{:?} {}]. \
                                      Mesh edge {:?}<->{:?} (midpoint edge {:?}). \
                                      Votes: left={}, right={}. Falling back on repair. \
