@@ -3,7 +3,7 @@ use std::f64::consts::{FRAC_PI_2, TAU};
 
 use itertools::Itertools;
 use log::{error, warn};
-use mehsh::prelude::{HasPosition, HasVertices, Mesh, Vector2D, Vector3D};
+use mehsh::prelude::{HasPosition, HasVertices, Mesh, Vector2D, Vector3D, SetPosition};
 
 use petgraph::graph::{EdgeIndex, NodeIndex};
 use serde::{Deserialize, Serialize};
@@ -12,6 +12,10 @@ use crate::prelude::{EdgeID, VertID, INPUT};
 use crate::skeleton::cross_parameterize::harmonic::solve_dirichlet;
 use crate::skeleton::cross_parameterize::virtual_mesh::VirtualNodeOrigin;
 use crate::skeleton::orthogonalize::LabeledCurveSkeleton;
+
+use bvh::aabb::{Aabb, Bounded};
+use bvh::bounding_hierarchy::BHShape;
+use bvh::bvh::Bvh;
 
 mod boundary_walk;
 mod cutting_plan;
@@ -22,6 +26,98 @@ pub mod virtual_mesh;
 
 use cutting_plan::compute_cutting_plans;
 use virtual_mesh::VirtualFlatGeometry;
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub enum UvFace {
+    Tri {
+        uvs: [Vector2D; 3],
+        positions: [Vector3D; 3],
+        real_index: usize,
+    },
+    Quad {
+        uvs: [Vector2D; 4],
+        positions: [Vector3D; 4],
+        real_index: usize,
+    },
+}
+
+impl UvFace {
+    pub fn interpolate(&self, uv: Vector2D) -> Option<Vector3D> {
+        match self {
+            UvFace::Tri { uvs, positions, .. } => {
+                let bc = barycentric_2d(uv, uvs[0], uvs[1], uvs[2]);
+                if bc.iter().all(|&c| c >= -1e-9) {
+                    Some(positions[0] * bc[0] + positions[1] * bc[1] + positions[2] * bc[2])
+                } else {
+                    None
+                }
+            }
+            UvFace::Quad { uvs, positions, .. } => {
+                // Split into two tris: (0,1,2) and (0,2,3)
+                if let Some(pos) = interpolate_tri_if_inside(uv, uvs[0], uvs[1], uvs[2], positions[0], positions[1], positions[2]) {
+                    Some(pos)
+                } else {
+                    interpolate_tri_if_inside(uv, uvs[0], uvs[2], uvs[3], positions[0], positions[2], positions[3])
+                }
+            }
+        }
+    }
+}
+
+fn interpolate_tri_if_inside(uv: Vector2D, a: Vector2D, b: Vector2D, c: Vector2D, pa: Vector3D, pb: Vector3D, pc: Vector3D) -> Option<Vector3D> {
+    let bc = barycentric_2d(uv, a, b, c);
+    if bc.iter().all(|&c| c >= -1e-9) {
+        Some(pa * bc[0] + pb * bc[1] + pc * bc[2])
+    } else {
+        None
+    }
+}
+
+fn barycentric_2d(p: Vector2D, a: Vector2D, b: Vector2D, c: Vector2D) -> [f64; 3] {
+    let v0 = b - a;
+    let v1 = c - a;
+    let v2 = p - a;
+    let d00 = v0.dot(&v0);
+    let d01 = v0.dot(&v1);
+    let d11 = v1.dot(&v1);
+    let d20 = v2.dot(&v0);
+    let d21 = v2.dot(&v1);
+    let denom = d00 * d11 - d01 * d01;
+    if denom.abs() < 1e-12 {
+        return [1.0, 0.0, 0.0];
+    }
+    let v = (d11 * d20 - d01 * d21) / denom;
+    let w = (d00 * d21 - d01 * d20) / denom;
+    let u = 1.0 - v - w;
+    [u, v, w]
+}
+
+impl Bounded<f64, 3> for UvFace {
+    fn aabb(&self) -> Aabb<f64, 3> {
+        match self {
+            UvFace::Tri { uvs, .. } => {
+                let p0 = nalgebra::Point3::new(uvs[0].x, uvs[0].y, 0.0);
+                let p1 = nalgebra::Point3::new(uvs[1].x, uvs[1].y, 0.0);
+                let p2 = nalgebra::Point3::new(uvs[2].x, uvs[2].y, 0.0);
+                Aabb::empty().grow(&p0).grow(&p1).grow(&p2)
+            }
+            UvFace::Quad { uvs, .. } => {
+                let p0 = nalgebra::Point3::new(uvs[0].x, uvs[0].y, 0.0);
+                let p1 = nalgebra::Point3::new(uvs[1].x, uvs[1].y, 0.0);
+                let p2 = nalgebra::Point3::new(uvs[2].x, uvs[2].y, 0.0);
+                let p3 = nalgebra::Point3::new(uvs[3].x, uvs[3].y, 0.0);
+                Aabb::empty().grow(&p0).grow(&p1).grow(&p2).grow(&p3)
+            }
+        }
+    }
+}
+
+impl BHShape<f64, 3> for UvFace {
+    fn set_bh_node_index(&mut self, _index: usize) {}
+    fn bh_node_index(&self) -> usize {
+        0
+    }
+}
 
 /// Minimum desired separation between cut endpoints on the same boundary,
 /// measured as a proportion of the boundary's total arc-length (i.e. in
@@ -122,6 +218,22 @@ pub struct RegionParameterization {
 
     /// The cut paths used to parameterize the polycube mesh side, stored only for visualisation.
     pub polycube_cuts: Vec<Vec<Vector3D>>,
+
+    /// Extracted faces for the input side.
+    #[serde(skip)]
+    pub input_faces: Vec<UvFace>,
+
+    /// BVH for the input side UV domain.
+    #[serde(skip)]
+    pub input_bvh: Option<Bvh<f64, 3>>,
+
+    /// Extracted faces for the polycube side.
+    #[serde(skip)]
+    pub polycube_faces: Vec<UvFace>,
+
+    /// BVH for the polycube side UV domain.
+    #[serde(skip)]
+    pub polycube_bvh: Option<Bvh<f64, 3>>,
 }
 
 /// Calculates the midpoint position of a boundary edge, given its `EdgeID` and the mesh.
@@ -164,9 +276,50 @@ impl PolycubeMap {
         _polycube_skeleton: &LabeledCurveSkeleton,
         _polycube_mesh: &Mesh<INPUT>,
     ) -> Mesh<INPUT> {
-        let result = input_mesh.clone();
+        let mut result = input_mesh.clone();
 
-        // TODO
+        // Map input VertID to region and VFG NodeIndex
+        let mut vert_to_region = HashMap::new();
+        for (region_idx, region_param) in &self.regions {
+            for vfg_node_idx in region_param.input_vfg.graph.node_indices() {
+                let origin = &region_param.input_vfg.graph[vfg_node_idx].origin;
+                match origin {
+                    VirtualNodeOrigin::MeshVertex(v) => {
+                        vert_to_region.insert(*v, (*region_idx, vfg_node_idx));
+                    }
+                    VirtualNodeOrigin::CutDuplicate { original, .. } => {
+                        vert_to_region.insert(*original, (*region_idx, vfg_node_idx));
+                    }
+                    _ => {}
+                }
+            }
+        }
+
+        for vert_id in input_mesh.vert_ids() {
+            if let Some(&(region_idx, vfg_node_idx)) = vert_to_region.get(&vert_id) {
+                let region = &self.regions[&region_idx];
+                if let Some(uv) = region.input_uv.get(&vfg_node_idx) {
+                    if let (Some(bvh), faces) = (&region.polycube_bvh, &region.polycube_faces) {
+                        let query = nalgebra::Point3::new(uv.x, uv.y, 0.0);
+                        let candidates = bvh.traverse(&Aabb::empty().grow(&query), faces);
+                        
+                        let mut mapped_pos = None;
+                        for face in candidates {
+                            if let Some(pos) = face.interpolate(*uv) {
+                                mapped_pos = Some(pos);
+                                break;
+                            }
+                        }
+
+                        if let Some(pos) = mapped_pos {
+                            result.set_position(vert_id, pos);
+                        } else {
+                            warn!("UV {:?} for vertex {:?} not found in polycube BVH for region {:?}", uv, vert_id, region_idx);
+                        }
+                    }
+                }
+            }
+        }
 
         result
     }
@@ -253,7 +406,20 @@ fn parameterize_region(
         false, // base mesh is quad, cuts split quads into quads.
     ); // result is mix of quads and tris.
 
-    // TODO: calculate BVHs
+    // Calculate BVHs
+    let mut input_faces = extract_faces(&input_vfg, &input_uv);
+    let input_bvh = if !input_faces.is_empty() {
+        Some(Bvh::build(&mut input_faces))
+    } else {
+        None
+    };
+
+    let mut polycube_faces = extract_faces(&polycube_vfg, &polycube_uv);
+    let polycube_bvh = if !polycube_faces.is_empty() {
+        Some(Bvh::build(&mut polycube_faces))
+    } else {
+        None
+    };
 
     RegionParameterization {
         input_vfg,
@@ -262,7 +428,78 @@ fn parameterize_region(
         polycube_uv,
         input_cuts,
         polycube_cuts,
+        input_faces,
+        input_bvh,
+        polycube_faces,
+        polycube_bvh,
     }
+}
+
+/// Extracts triangles and quads from the VFG graph and maps them to UV domain.
+fn extract_faces(vfg: &VirtualFlatGeometry, uv_map: &HashMap<NodeIndex, Vector2D>) -> Vec<UvFace> {
+    let mut faces = Vec::new();
+    let graph = &vfg.graph;
+    let mut seen_tris = std::collections::HashSet::new();
+    let mut seen_quads = std::collections::HashSet::new();
+
+    for u in graph.node_indices() {
+        let neighbors: Vec<NodeIndex> = graph.neighbors(u).collect();
+        
+        // Find triangles
+        for i in 0..neighbors.len() {
+            for j in i + 1..neighbors.len() {
+                let v = neighbors[i];
+                let w = neighbors[j];
+                if graph.find_edge(v, w).is_some() {
+                    let mut tri = [u, v, w];
+                    tri.sort();
+                    if seen_tris.insert(tri) {
+                        if let (Some(&uv_u), Some(&uv_v), Some(&uv_w)) = (uv_map.get(&u), uv_map.get(&v), uv_map.get(&w)) {
+                            faces.push(UvFace::Tri {
+                                uvs: [uv_u, uv_v, uv_w],
+                                positions: [graph[u].position, graph[v].position, graph[w].position],
+                                real_index: faces.len(),
+                            });
+                        }
+                    }
+                }
+            }
+        }
+        
+        // Find quads
+        for i in 0..neighbors.len() {
+            for j in i + 1..neighbors.len() {
+                let v1 = neighbors[i];
+                let v2 = neighbors[j];
+                
+                let neighbors_v1: std::collections::HashSet<_> = graph.neighbors(v1).collect();
+                for w in graph.neighbors(v2) {
+                    if w != u && neighbors_v1.contains(&w) {
+                        // Check for diagonal
+                        if graph.find_edge(v1, v2).is_some() || graph.find_edge(u, w).is_some() {
+                            continue;
+                        }
+                        
+                        let mut quad = [u, v1, w, v2];
+                        quad.sort();
+                        if seen_quads.insert(quad) {
+                            if let (Some(&uv_u), Some(&uv_v1), Some(&uv_w), Some(&uv_v2)) = 
+                                (uv_map.get(&u), uv_map.get(&v1), uv_map.get(&w), uv_map.get(&v2)) {
+                                
+                                // Ordering: u-v1, v1-w, w-v2, v2-u
+                                faces.push(UvFace::Quad {
+                                    uvs: [uv_u, uv_v1, uv_w, uv_v2],
+                                    positions: [graph[u].position, graph[v1].position, graph[w].position, graph[v2].position],
+                                    real_index: faces.len(),
+                                });
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+    faces
 }
 
 /// Parameterizes one side (input or polycube) of a region onto the canonical domain, by
