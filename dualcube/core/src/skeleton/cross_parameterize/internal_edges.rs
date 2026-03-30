@@ -326,9 +326,17 @@ pub fn add_internal_edges(
                                         VertexToVirtual::Unique(other_node) => {
                                             if vfg.graph.find_edge(*self_left, *other_node).is_some() {
                                                 left_votes += 1;
+                                                info!(
+                                                    "Vote for LEFT because of edge {:?}<->{:?} connecting self_left to {:?} (corresponding to {:?})",
+                                                    vert, other_endpoint, other_node, other_endpoint
+                                                );
                                             }
                                             if vfg.graph.find_edge(*self_right, *other_node).is_some() {
                                                 right_votes += 1;
+                                                info!(
+                                                    "Vote for RIGHT because of edge {:?}<->{:?} connecting self_right to {:?} (corresponding to {:?})",
+                                                    vert, other_endpoint, other_node, other_endpoint
+                                                );
                                             }
                                         }
                                         VertexToVirtual::CutPair {
@@ -339,11 +347,19 @@ pub fn add_internal_edges(
                                                 || vfg.graph.find_edge(*self_left, *other_right).is_some()
                                             {
                                                 left_votes += 1;
+                                                info!(
+                                                    "Vote for LEFT because of edge {:?}<->{:?} connecting self_left to {:?} (corresponding to {:?})",
+                                                    vert, other_endpoint, other_left, other_endpoint
+                                                );
                                             }
                                             if vfg.graph.find_edge(*self_right, *other_left).is_some()
                                                 || vfg.graph.find_edge(*self_right, *other_right).is_some()
                                             {
                                                 right_votes += 1;
+                                                info!(
+                                                    "Vote for RIGHT because of edge {:?}<->{:?} connecting self_right to {:?} (corresponding to {:?})",
+                                                    vert, other_endpoint, other_right, other_endpoint
+                                                );
                                             }
                                         }
                                     }
@@ -366,9 +382,17 @@ pub fn add_internal_edges(
                                         EdgemidpointToVirtual::Unique(other_mid) => {
                                             if vfg.graph.find_edge(*self_left, *other_mid).is_some() {
                                                 left_votes += 1;
+                                                info!(
+                                                    "Vote for LEFT because of edge {:?}<->{:?} connecting self_left to midpoint node {:?} (corresponding to edge {:?})",
+                                                    vert, other_endpoint, other_mid, e
+                                                );
                                             }
                                             if vfg.graph.find_edge(*self_right, *other_mid).is_some() {
                                                 right_votes += 1;
+                                                info!(
+                                                    "Vote for RIGHT because of edge {:?}<->{:?} connecting self_right to midpoint node {:?} (corresponding to edge {:?})",
+                                                    vert, other_endpoint, other_mid, e
+                                                );
                                             }
                                         }
                                         EdgemidpointToVirtual::CutEndpointPair {
@@ -379,11 +403,19 @@ pub fn add_internal_edges(
                                                 || vfg.graph.find_edge(*self_left, *mid_right).is_some()
                                             {
                                                 left_votes += 1;
+                                                info!(
+                                                    "Vote for LEFT because of edge {:?}<->{:?} connecting self_left to midpoint node {:?} (corresponding to edge {:?})",
+                                                    vert, other_endpoint, mid_left, e
+                                                );
                                             }
                                             if vfg.graph.find_edge(*self_right, *mid_left).is_some()
                                                 || vfg.graph.find_edge(*self_right, *mid_right).is_some()
                                             {
                                                 right_votes += 1;
+                                                info!(
+                                                    "Vote for RIGHT because of edge {:?}<->{:?} connecting self_right to midpoint node {:?} (corresponding to edge {:?})",
+                                                    vert, other_endpoint, mid_right, e
+                                                );
                                             }
                                         }
                                     }
