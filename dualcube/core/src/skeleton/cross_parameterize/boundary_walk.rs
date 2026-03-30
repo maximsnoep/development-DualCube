@@ -975,26 +975,10 @@ pub fn fill_faces_for_cut_endpoint(
                     .copied()
                     .collect_vec();
                 if shared.len() != 1 {
-                    // panic!(
-                    //     "Cut endpoint midpoint duplicate node {:?} neighbors do not share exactly one other neighbor as expected for quad face: {:?} and {:?} with shared {:?}",
-                    //     node_idx, neighbors_0, neighbors_1, shared
-                    // ); FIX THIS!!
-                    error!(
-                        "is_tri: {:?}, Cut endpoint midpoint duplicate node {:?} neighbors do not share exactly one other neighbor as expected for quad face: {:?} and {:?} with shared {:?}",
-                        is_tri_mesh, node_idx, neighbors_0, neighbors_1, shared
+                    panic!(
+                        "Cut endpoint midpoint duplicate node {:?} neighbors do not share exactly one other neighbor as expected for quad face: {:?} and {:?} with shared {:?}",
+                        node_idx, neighbors_0, neighbors_1, shared
                     );
-                    // let all_neighbors = neighbors_0
-                    //     .iter()
-                    //     .chain(neighbors_1.iter())
-                    //     .copied()
-                    //     .collect_vec();
-                    // Log the type of all neighbors for debugging.
-                    // for n in &all_neighbors {
-                    //     let node = &graph[*n];
-                    //     error!("Neighbor node {:?} has origin {:?}", n, node.origin);
-                    // }
-
-                    continue;
                 }
 
                 nodes = vec![node_idx, neighbors[0], neighbors[1], shared[0]];
