@@ -1,7 +1,7 @@
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 use itertools::Itertools;
-use log::warn;
+use log::{info, warn};
 use mehsh::prelude::{HasEdges, HasFaces, HasVertices, Mesh};
 use petgraph::graph::NodeIndex;
 
@@ -267,16 +267,49 @@ pub fn add_internal_edges(
                                     u == *corresponding_mesh_vertex
                                         || v == *corresponding_mesh_vertex
                                 })
-                                .collect::<Vec<_>>();
+                                .collect::<HashSet<_>>();
+
+                            // Filter for twins
+                            let mut seen_edges = HashSet::new();
+                            let mut to_remove = Vec::new();
+                            for &e in &bounding_edges {
+                                let twin = mesh.twin(e);
+                                if seen_edges.contains(&twin) {
+                                    // remove twin from bounding_edges to avoid double counting ?
+                                    to_remove.push(twin);
+                                }
+                                seen_edges.insert(e);
+                                seen_edges.insert(twin);
+                            }
+                            for e in to_remove {
+                                if bounding_edges.contains(&e) {
+                                    seen_edges.remove(&e);
+                                }
+                            }
 
                             // Vote which of self_left or self_right is correct
                             let mut left_votes = 0;
                             let mut right_votes = 0;
+                            let twin = mesh.twin(edge);
                             for &e in &bounding_edges {
+                                if e == edge || e == twin {
+                                    continue;
+                                }
                                 let [u, v] = mesh
                                     .vertices(e)
                                     .collect_array()
                                     .expect("Expected edge to have exactly two vertices");
+
+                                // DEBUG: print the endpoints of the edge we are looking at and `edge`
+                                info!(
+                                    "Voting on edge {:?}<->{:?} for vertex {:?} (corresponding to {:?}). \
+                                     Currently have left_votes={}, right_votes={}. \
+                                     Looking at bounding edge {:?} with vertices {:?} and {:?}.",
+                                    vert, other_vert, vert, corresponding_mesh_vertex,
+                                    left_votes, right_votes,
+                                    e, u, v
+                                );
+
                                 let other_endpoint = if u == *corresponding_mesh_vertex {
                                     v
                                 } else if v == *corresponding_mesh_vertex {
@@ -284,12 +317,6 @@ pub fn add_internal_edges(
                                 } else {
                                     continue;
                                 };
-
-                                // Skip the boundary edge currently being repaired; we vote from
-                                // the already-wired neighborhood around the adjacent faces.
-                                if other_endpoint == other_vert {
-                                    continue;
-                                }
 
                                 if patch_vertices.contains(&other_endpoint) {
                                     let other_nodes = vert_to_nodes
