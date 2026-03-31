@@ -19,6 +19,12 @@ DualCube requires the Rust programming language and the Cargo package manager. T
 
 ### Clone the project
 
+The development branch can be cloned through:
+```
+git clone https://www.github.com/maximsnoep/DualCube
+```
+
+The official stable branch can be cloned through:
 ```
 git clone https://www.github.com/maximsnoep/DualCube
 ```
@@ -38,11 +44,20 @@ This workspace contains separate `gui` and `cli` packages, so the recommended wa
 ```
 cargo run -p gui
 ```
+Or the release build:
+```
+cargo run -p gui --release
+```
+
 
 ### Run the CLI
 
 ```
 cargo run -p cli
+```
+Or the release build:
+```
+cargo run -p cli --release
 ```
 
 ## Status
