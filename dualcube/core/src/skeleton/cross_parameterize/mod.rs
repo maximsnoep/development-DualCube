@@ -378,7 +378,7 @@ fn parameterize_region(
         polycube_mesh,
     );
 
-    // Finalize: save cut positions for visualisation.
+    // Save cut positions for visualisation.
     let input_cuts: Vec<Vec<Vector3D>> = input_plan
         .cuts
         .iter()
