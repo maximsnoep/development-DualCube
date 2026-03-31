@@ -4,9 +4,10 @@ version = "0.1.0"
 edition = "2021"
 
 [dependencies]
-mehsh = { path = "../../utils/mehsh", features = ["bevy", "obj", "stl", "petgraph"] }
+mehsh = { path = "../../utils/mehsh", features = ["obj", "stl", "petgraph"] }
 grapff = { path = "../../utils/grapff" }
 log = "0.4.27"
+nalgebra = "0.32.4"
 itertools = "0.14.0"
 slotmap = "1.0.7"
 ordered-float = "5.0.0"
@@ -15,7 +16,6 @@ rand = "0.9.1"
 faer = "0.22.6"
 faer_gmres = "0.3.1"
 serde = "1.0.188"
-bitcode = "0.6.6"
 thiserror = "2.0.17"
 orx-parallel = "3.4.0"
 petgraph = "0.8.2"

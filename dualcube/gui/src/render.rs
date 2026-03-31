@@ -9,7 +9,6 @@ use bevy::camera::ScalingMode;
 use bevy::camera::Viewport;
 use bevy::camera::{visibility::RenderLayers, CameraOutputMode};
 use bevy::core_pipeline::tonemapping::Tonemapping;
-use bevy::gizmos::config;
 use bevy::prelude::*;
 use bevy::render::render_resource::{
     Extent3d, TextureDescriptor, TextureDimension, TextureFormat, TextureUsages,
@@ -1175,8 +1174,6 @@ pub fn refresh(solution: &Solution) -> RenderObjectStore {
                     // Tangent frame (force orthonormal)
                     let (t1_raw, _t2_raw, n_raw) = input.tangent_frame(vert_id);
                     let n = n_raw.normalize();
-                    let t1 = (t1_raw - n * t1_raw.dot(&n)).normalize();
-                    let t2 = n.cross(&t1); // guarantees orthonormal + right-handed
 
                     // ---------
                     // Local scale h(v): mean 1-ring edge length (resolution proxy)
@@ -1193,72 +1190,8 @@ pub fn refresh(solution: &Solution) -> RenderObjectStore {
                     }
                     let h = (h_sum / h_cnt).max(min_h);
 
-                    // Normal equations for 4 unknowns: [a11 a12 a21 a22]
-                    let mut ata = nalgebra::Matrix4::<f64>::zeros();
-                    let mut atb = nalgebra::Vector4::<f64>::zeros();
-
-                    for neighbor_id in input.neighbors(vert_id) {
-                        let p = input.position(neighbor_id);
-
-                        let e = p - v;
-                        let e_t = e - n * e.dot(&n);
-                        let len2 = e_t.dot(&e_t);
-                        if len2 < 1e-12 {
-                            continue;
-                        }
-
-                        let nj = input.normal(neighbor_id).normalize();
-                        let dn = nj - n;
-                        let dn_t = dn - n * dn.dot(&n);
-
-                        let u = nalgebra::Vector2::new(t1.dot(&e_t), t2.dot(&e_t));
-                        let dn2 = nalgebra::Vector2::new(t1.dot(&dn_t), t2.dot(&dn_t));
-
-                        // Weight (simple + works well)
-                        let alpha = (1.0 / len2).min(1e6);
-
-                        // dn2.x = -(a11*u.x + a12*u.y)
-                        // dn2.y = -(a21*u.x + a22*u.y)
-                        let r1 = nalgebra::Vector4::new(u.x, u.y, 0.0, 0.0);
-                        let r2 = nalgebra::Vector4::new(0.0, 0.0, u.x, u.y);
-
-                        ata += alpha * (r1 * r1.transpose() + r2 * r2.transpose());
-                        atb += alpha * (r1 * (-dn2.x) + r2 * (-dn2.y));
-                    }
-
-                    // Solve ATA * a = ATb (skip degenerate vertices)
-                    let inv = match ata.try_inverse() {
-                        Some(inv) => inv,
-                        None => continue,
-                    };
-                    let a = inv * atb;
-
-                    // Build 2x2 A (shape operator in tangent coordinates) and symmetrize
-                    let mut A = nalgebra::Matrix2::new(a[0], a[1], a[2], a[3]);
-                    A = 0.5 * (A + A.transpose());
-
-                    // Eigen-decompose symmetric 2x2
-                    let eig = nalgebra::SymmetricEigen::new(A);
-                    let eigenvalues = eig.eigenvalues;
-                    let eigenvectors = eig.eigenvectors;
-
-                    // SymmetricEigen eigenvalues ascending: [0]=min, [1]=max
-                    let k_min = eigenvalues[0];
-                    let k_max = eigenvalues[1];
-
-                    // Avoid column() inference issues: index directly
-                    let dmin_x: f64 = eigenvectors[(0, 0)];
-                    let dmin_y: f64 = eigenvectors[(1, 0)];
-                    let dmax_x: f64 = eigenvectors[(0, 1)];
-                    let dmax_y: f64 = eigenvectors[(1, 1)];
-
-                    // Map 2D eigenvectors back to 3D tangent vectors
-                    let mut dir_min = (t1 * dmin_x + t2 * dmin_y).normalize();
-                    let mut dir_max = (t1 * dmax_x + t2 * dmax_y).normalize();
-
-                    // Enforce perfect tangency + orthogonality (cleaner field)
-                    dir_max = (dir_max - n * dir_max.dot(&n)).normalize();
-                    dir_min = n.cross(&dir_max).normalize();
+                    let (k_min, k_max, dir_min, dir_max) =
+                        dualcube::elastica::estimate_vertex_principal_frame(input, vert_id);
 
                     // -------------------------
                     // Sanity checks (debug-friendly)
@@ -1320,20 +1253,82 @@ pub fn refresh(solution: &Solution) -> RenderObjectStore {
                     );
                 }
 
-                // let mut elastica_gizmos = GizmoAsset::new();
-                // for (v1, v2s) in solution.elastica_graph.extended_edges() {
-                //     let p1 = input.position(v1);
-                //     for v2 in v2s {
-                //         let p2 = input.position(v2);
-                //         let p1_transformed = world_to_view(p1, translation, scale);
-                //         let p2_transformed = world_to_view(p2, translation, scale);
-                //         elastica_gizmos.line(
-                //             p1_transformed,
-                //             p2_transformed,
-                //             colors::to_bevy(colors::BLACK),
-                //         );
-                //     }
-                // }
+                let elastica_polylines_x = solution
+                    .elastica_graph
+                    .derivative_edge_polylines(PrincipalDirection::X);
+                let elastica_polylines_y = solution
+                    .elastica_graph
+                    .derivative_edge_polylines(PrincipalDirection::Y);
+                let elastica_polylines_z = solution
+                    .elastica_graph
+                    .derivative_edge_polylines(PrincipalDirection::Z);
+
+                let max_weight_x = elastica_polylines_x
+                    .iter()
+                    .map(|(_, _, _, weight)| *weight)
+                    .fold(0.0_f64, f64::max);
+                let max_weight_y = elastica_polylines_y
+                    .iter()
+                    .map(|(_, _, _, weight)| *weight)
+                    .fold(0.0_f64, f64::max);
+                let max_weight_z = elastica_polylines_z
+                    .iter()
+                    .map(|(_, _, _, weight)| *weight)
+                    .fold(0.0_f64, f64::max);
+
+                println!("Max weights: x = {max_weight_x}, y = {max_weight_y}, z = {max_weight_z}");
+
+                let mut elastica_gizmos_x = GizmoAsset::new();
+                for (v0, v1, v2, weight) in &elastica_polylines_x {
+                    if *weight < 0.7 {
+                        continue;
+                    }
+                    let p0 = input.position(*v0);
+                    let p1 = input.position(*v1);
+                    let p2 = input.position(*v2);
+                    let p0_transformed = world_to_view(p0, translation, scale);
+                    let p1_transformed = world_to_view(p1, translation, scale);
+                    let p2_transformed = world_to_view(p2, translation, scale);
+                    let color = colors::from_direction(PrincipalDirection::X, None, None);
+                    // let alpha = opacity_from_weight(*weight, max_weight_x);
+                    let c = bevy::color::Color::srgb(color[0], color[1], color[2]);
+                    elastica_gizmos_x.line(p0_transformed, p1_transformed, c);
+                    elastica_gizmos_x.line(p1_transformed, p2_transformed, c);
+                }
+                let mut elastica_gizmos_y = GizmoAsset::new();
+                for (v0, v1, v2, weight) in &elastica_polylines_y {
+                    if *weight > 0.5 {
+                        continue;
+                    }
+                    let p0 = input.position(*v0);
+                    let p1 = input.position(*v1);
+                    let p2 = input.position(*v2);
+                    let p0_transformed = world_to_view(p0, translation, scale);
+                    let p1_transformed = world_to_view(p1, translation, scale);
+                    let p2_transformed = world_to_view(p2, translation, scale);
+                    let color = colors::from_direction(PrincipalDirection::Y, None, None);
+                    // let alpha = opacity_from_weight(*weight, max_weight_y);
+                    let c = bevy::color::Color::srgb(color[0], color[1], color[2]);
+                    elastica_gizmos_y.line(p0_transformed, p1_transformed, c);
+                    elastica_gizmos_y.line(p1_transformed, p2_transformed, c);
+                }
+                let mut elastica_gizmos_z = GizmoAsset::new();
+                for (v0, v1, v2, weight) in &elastica_polylines_z {
+                    if *weight > 0.1 {
+                        continue;
+                    }
+                    let p0 = input.position(*v0);
+                    let p1 = input.position(*v1);
+                    let p2 = input.position(*v2);
+                    let p0_transformed = world_to_view(p0, translation, scale);
+                    let p1_transformed = world_to_view(p1, translation, scale);
+                    let p2_transformed = world_to_view(p2, translation, scale);
+                    let color = colors::from_direction(PrincipalDirection::Z, None, None);
+                    // let alpha = opacity_from_weight(*weight, max_weight_z);
+                    let c = bevy::color::Color::srgb(color[0], color[1], color[2]);
+                    elastica_gizmos_z.line(p0_transformed, p1_transformed, c);
+                    elastica_gizmos_z.line(p1_transformed, p2_transformed, c);
+                }
 
                 render_object_store.add_object(
                     object,
@@ -1349,8 +1344,6 @@ pub fn refresh(solution: &Solution) -> RenderObjectStore {
                         .gizmo(gizmos_zloops, 3., -0.000111, "z-loops")
                         .gizmo(gizmos_paths, 3., -0.0001, "paths")
                         .gizmo(gizmos_flat_paths, 1., -0.00011, "flat paths")
-                        // .mesh(input, &color_map_flag, "flag")
-                        // .gizmo(gizmos_flag_paths, 2., -1e-4, "flag paths")
                         .gizmo(gizmos_features, 5., -0.00012, "features")
                         .gizmo(granulated_mesh_gizmos, 0.5, -0.00001, "refined wireframe")
                         .gizmo(gizmos_xfield, 1., -0.0001, "x-vector field")
@@ -1368,6 +1361,9 @@ pub fn refresh(solution: &Solution) -> RenderObjectStore {
                             -0.00013,
                             "minimum principal curvature",
                         )
+                        .gizmo(elastica_gizmos_x, 2., -0.00014, "elastica graph x")
+                        .gizmo(elastica_gizmos_y, 2., -0.00015, "elastica graph y")
+                        .gizmo(elastica_gizmos_z, 2., -0.00016, "elastica graph z")
                         .to_owned(),
                 );
             }

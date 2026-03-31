@@ -122,8 +122,8 @@ pub struct Solution {
 
     // #[serde(skip)]
     pub fields: Option<crate::field::Fields<INPUT>>,
-    // #[serde(skip)]
-    // pub elastica_graph: ElasticaGraph<INPUT>,
+    #[serde(skip)]
+    pub elastica_graph: ElasticaGraph<INPUT>,
     // #[serde(skip)]
     pub external_flag: Option<ids::SecMap<FACE, INPUT, usize>>,
 }
@@ -152,7 +152,7 @@ impl Solution {
             external_flag: None,
             last_loop: None,
             fields: None,
-            // elastica_graph: ElasticaGraph::new(mesh_ref.clone(), 2, 40, 0.5),
+            elastica_graph: ElasticaGraph::new(mesh_ref.clone(), 2, 40, 6, 0.0, 100.),
         }
     }
 

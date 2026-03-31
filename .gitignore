@@ -3,3 +3,4 @@
 !/out/examples
 
 .cargo/config.toml
+profile.json.gz

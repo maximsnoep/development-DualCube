@@ -165,11 +165,18 @@ impl<M: Tag> HasPosition<VERT, M> for Mesh<M> {
 }
 
 impl<M: Tag> HasNormal<VERT, M> for Mesh<M> {
-    fn normal(&self, id: VertKey<M>) -> Vector3D {
+    fn compute_normal(&self, id: VertKey<M>) -> Vector3D {
         self.faces(id)
             .map(|face_id| self.normal(face_id))
             .sum::<Vector3D>()
             .normalize()
+    }
+
+    fn normal(&self, id: VertKey<M>) -> Vector3D {
+        self.vert_normal_cache
+            .get(&id)
+            .copied()
+            .unwrap_or_else(|| self.compute_normal(id))
     }
 }
 

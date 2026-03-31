@@ -82,7 +82,7 @@ impl<M: Tag> HasPosition<FACE, M> for Mesh<M> {
 }
 
 impl<M: Tag> HasNormal<FACE, M> for Mesh<M> {
-    fn normal(&self, id: FaceKey<M>) -> Vector3D {
+    fn compute_normal(&self, id: FaceKey<M>) -> Vector3D {
         // TODO: Make this better for non-planar faces.
         let mut vertices = self.vertices(id);
         let p_u = self.position(vertices.next().unwrap());
@@ -91,6 +91,13 @@ impl<M: Tag> HasNormal<FACE, M> for Mesh<M> {
         let p = p_v - p_u;
         let q = p_w - p_u;
         p.cross(&q).normalize()
+    }
+
+    fn normal(&self, id: FaceKey<M>) -> Vector3D {
+        self.face_normal_cache
+            .get(&id)
+            .copied()
+            .unwrap_or_else(|| self.compute_normal(id))
     }
 }
 

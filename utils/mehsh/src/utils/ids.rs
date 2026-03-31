@@ -39,7 +39,10 @@ impl<K, M> std::fmt::Debug for Key<K, M> {
 impl<K, M> Key<K, M> {
     #[must_use]
     pub const fn new(raw: DefaultKey) -> Self {
-        Self { raw, _marker: PhantomData }
+        Self {
+            raw,
+            _marker: PhantomData,
+        }
     }
 
     #[must_use]
@@ -140,7 +143,10 @@ impl<K1, K2, M> AssMap<K1, K2, M> {
 
     pub fn insert(&mut self, k1: Key<K1, M>, k2: Key<K2, M>) -> Option<Key<K2, M>> {
         if let Some(raw) = self.map.insert(k1.raw(), k2.raw()) {
-            return Some(Key { raw, _marker: PhantomData });
+            return Some(Key {
+                raw,
+                _marker: PhantomData,
+            });
         }
         None
     }
@@ -148,7 +154,10 @@ impl<K1, K2, M> AssMap<K1, K2, M> {
     #[must_use]
     pub fn get(&self, key: Key<K1, M>) -> Option<Key<K2, M>> {
         if let Some(&raw) = self.map.get(key.raw()) {
-            return Some(Key { raw, _marker: PhantomData });
+            return Some(Key {
+                raw,
+                _marker: PhantomData,
+            });
         }
         None
     }
@@ -233,11 +242,22 @@ impl<K, M, V> SecMap<K, M, V>
 where
     K: Eq + Hash,
     M: Eq + Hash,
+    V: Clone,
 {
     #[must_use]
     pub fn new() -> Self {
         Self {
             map: SecondaryMap::new(),
+            _marker: PhantomData,
+        }
+    }
+
+    pub fn convert<T>(other: &SecMap<K, T, V>) -> Self
+    where
+        T: Eq + Hash,
+    {
+        Self {
+            map: other.map.clone(),
             _marker: PhantomData,
         }
     }

@@ -262,7 +262,12 @@ impl<M: Tag> Mesh<M> {
 
         // Find intersection of a_b and c1_c2
         // Calculate the intersection of the lines a_b and c1_c2
-        let intersection = geom::calculate_2d_lineseg_intersection(a_position, b_position, c1_position, c2_position)?;
+        let intersection = geom::calculate_2d_lineseg_intersection(
+            a_position,
+            b_position,
+            c1_position,
+            c2_position,
+        )?;
 
         // assert!(intersection[1].abs() == 0., "{intersection:?}");
 

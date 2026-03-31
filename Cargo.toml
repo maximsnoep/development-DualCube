@@ -6,7 +6,7 @@
 resolver = "3"
 members = [
     "dualcube/core",
-    # "dualcube-cli",
+    "dualcube/cli",
     "dualcube/gui",
     "utils/mehsh",
     "utils/grapff",
@@ -20,14 +20,9 @@ codegen-units = 1
 debug = 0
 strip = "debuginfo"
 
-[profile.release-fast]
-inherits = "release"
-incremental = true
-codegen-units = 4
-
 [profile.profiling]
 inherits = "release"
-codegen-units = 4
+codegen-units = 16
 debug = 2
 strip = false
 

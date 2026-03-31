@@ -242,6 +242,7 @@ fn main() {
             primary_window: Some(Window {
                 title: "DualCube".to_string(),
                 mode: WindowMode::Windowed,
+
                 resolution: WindowResolution::default().with_scale_factor_override(1.),
                 ..Default::default()
             }),

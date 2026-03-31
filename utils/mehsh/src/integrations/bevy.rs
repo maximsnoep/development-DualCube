@@ -1,47 +1,34 @@
 use crate::prelude::*;
-use bevy_math::Vec3;
-use itertools::Itertools;
 use orx_parallel::*;
 use std::collections::HashMap;
 
 #[derive(Default)]
 pub struct MeshBuilder {
-    positions: Vec<Vec3>,
-    normals: Vec<Vec3>,
+    positions: Vec<[f32; 3]>,
+    normals: Vec<[f32; 3]>,
     colors: Vec<[f32; 4]>,
     uvs: Vec<[f32; 2]>,
 }
 
 impl MeshBuilder {
     #[must_use]
-    pub fn with_capacity(capacity: usize) -> Self {
+    pub fn new() -> Self {
         Self {
-            positions: Vec::with_capacity(capacity),
-            normals: Vec::with_capacity(capacity),
-            colors: Vec::with_capacity(capacity),
-            uvs: Vec::with_capacity(capacity),
+            positions: Vec::new(),
+            normals: Vec::new(),
+            colors: Vec::new(),
+            uvs: Vec::new(),
         }
-    }
-
-    #[allow(clippy::cast_possible_truncation)]
-    pub fn add_vertex(&mut self, position: &Vector3D, normal: &Vector3D, color: &Color) {
-        self.positions.push(to_bevy_vec(position));
-        self.normals.push(to_bevy_vec(normal));
-        self.colors
-            .push(bevy_color::ColorToComponents::to_f32_array(
-                bevy_color::Color::srgb_from_array(*color).to_linear(),
-            ));
-        self.uvs.push([0., 0.]);
     }
 
     #[allow(clippy::cast_possible_truncation)]
     pub fn normalize(&mut self, scale: f64, translation: Vector3D) {
         for position in &mut self.positions {
-            *position = bevy_math::Vec3::new(
-                position.x.mul_add(scale as f32, translation.x as f32),
-                position.y.mul_add(scale as f32, translation.y as f32),
-                position.z.mul_add(scale as f32, translation.z as f32),
-            );
+            *position = [
+                position[0].mul_add(scale as f32, translation.x as f32),
+                position[1].mul_add(scale as f32, translation.y as f32),
+                position[2].mul_add(scale as f32, translation.z as f32),
+            ];
         }
     }
 
@@ -52,7 +39,7 @@ impl MeshBuilder {
             bevy_asset::RenderAssetUsages::RENDER_WORLD | bevy_asset::RenderAssetUsages::MAIN_WORLD,
         )
         .with_inserted_indices(bevy_mesh::Indices::U32(
-            (0..u32::try_from(self.positions.len()).unwrap()).collect(),
+            (0..self.positions.len() as u32).collect::<Vec<_>>(),
         ))
         .with_inserted_attribute(bevy_mesh::Mesh::ATTRIBUTE_POSITION, self.positions)
         .with_inserted_attribute(bevy_mesh::Mesh::ATTRIBUTE_NORMAL, self.normals)
@@ -73,11 +60,7 @@ where
         color_map: &HashMap<FaceKey<M>, [f32; 3]>,
     ) -> (bevy_mesh::Mesh, Vector3D, f64) {
         if self.faces.is_empty() {
-            return (
-                MeshBuilder::with_capacity(0).build(),
-                Vector3D::new(0., 0., 0.),
-                1.,
-            );
+            return (MeshBuilder::new().build(), Vector3D::new(0., 0., 0.), 1.);
         }
         let mut bevy_mesh_builder = self.bevy_builder(color_map);
         let (scale, translation) = self.scale_translation();
@@ -86,49 +69,62 @@ where
     }
 
     fn bevy_builder(&self, color_map: &HashMap<FaceKey<M>, [f32; 3]>) -> MeshBuilder {
-        let triangulated = self
-            .face_ids_iter()
-            .iter_into_par()
-            .flat_map(|face_id| match self.vertices(face_id).collect_vec()[..] {
-                [v0, v1, v2] => {
-                    vec![v0, v1, v2]
-                }
-                [v0, v1, v2, v3] => {
-                    vec![v3, v0, v1, v1, v2, v3]
-                }
-                _ => vec![],
-            })
-            .collect::<Vec<_>>();
-        let positions = triangulated
+        let triangulated_faces = self
+            .face_ids()
             .par()
-            .map(|&v| to_bevy_vec(&self.position(v)))
-            .collect::<Vec<_>>();
-        let normals = triangulated
-            .par()
-            .map(|&v| to_bevy_vec(&self.normal(v)))
-            .collect::<Vec<_>>();
-
-        let colors = self
-            .face_ids_iter()
-            .iter_into_par()
-            .flat_map(|face| {
-                let bevy_color = bevy_color::ColorToComponents::to_f32_array(
-                    bevy_color::Color::srgb_from_array(
-                        color_map.get(&face).unwrap_or(&[0., 0., 0.]).to_owned(),
+            .map(|&id| match self.vertices(id).collect_vec().as_slice() {
+                &[v0, v1, v2] => {
+                    let (p0, p1, p2) = (
+                        v3d_to_slice(self.position(v0)),
+                        v3d_to_slice(self.position(v1)),
+                        v3d_to_slice(self.position(v2)),
+                    );
+                    let (n0, n1, n2) = (
+                        v3d_to_slice(self.normal(v0)),
+                        v3d_to_slice(self.normal(v1)),
+                        v3d_to_slice(self.normal(v2)),
+                    );
+                    let c = srgb_to_linear(color_map.get(&id).copied().unwrap_or([0., 0., 0.]));
+                    (vec![p0, p1, p2], vec![n0, n1, n2], vec![c; 3])
+                }
+                &[v0, v1, v2, v3] => {
+                    let (p0, p1, p2, p3) = (
+                        v3d_to_slice(self.position(v0)),
+                        v3d_to_slice(self.position(v1)),
+                        v3d_to_slice(self.position(v2)),
+                        v3d_to_slice(self.position(v3)),
+                    );
+                    let (n0, n1, n2, n3) = (
+                        v3d_to_slice(self.normal(v0)),
+                        v3d_to_slice(self.normal(v1)),
+                        v3d_to_slice(self.normal(v2)),
+                        v3d_to_slice(self.normal(v3)),
+                    );
+                    let c = srgb_to_linear(color_map.get(&id).copied().unwrap_or([0., 0., 0.]));
+                    (
+                        vec![p3, p0, p1, p1, p2, p3],
+                        vec![n3, n0, n1, n1, n2, n3],
+                        vec![c; 6],
                     )
-                    .to_linear(),
-                );
-                match self.vertices(face).count() {
-                    3 => vec![bevy_color; 3],
-                    4 => vec![bevy_color; 6],
-                    _ => vec![],
                 }
+                _ => (vec![], vec![], vec![]),
             })
             .collect::<Vec<_>>();
 
+        let total_len: usize = triangulated_faces.iter().map(|(p, _, _)| p.len()).sum();
+        log::info!("Building mesh for Bevy with {total_len} vertices.",);
+
+        let mut positions = Vec::with_capacity(total_len);
+        let mut normals = Vec::with_capacity(total_len);
+        let mut colors = Vec::with_capacity(total_len);
+
+        for (p, n, c) in triangulated_faces {
+            positions.extend(p);
+            normals.extend(n);
+            colors.extend(c);
+        }
         let uvs = vec![[0., 0.]; positions.len()];
 
-        log::info!("Built bevy mesh with size {}x4", positions.len());
         MeshBuilder {
             positions,
             normals,
@@ -142,12 +138,19 @@ where
     pub fn gizmos(&self, color: [f32; 3]) -> bevy_gizmos::GizmoAsset {
         let mut gizmo = bevy_gizmos::GizmoAsset::new();
         let (scale, translation) = self.scale_translation();
-        for &(u, v) in &self.edges_positions() {
-            gizmo.line(
-                to_bevy_vec(&(u * scale + translation)),
-                to_bevy_vec(&(v * scale + translation)),
-                bevy_color::Color::srgb_from_array(color),
-            );
+        for e in self.edge_ids_iter() {
+            if let &[u, v] = self
+                .vertices(e)
+                .map(|id| self.position(id))
+                .collect::<Vec<_>>()
+                .as_slice()
+            {
+                gizmo.line(
+                    v3d_to_bevy(&(u * scale + translation)),
+                    v3d_to_bevy(&(v * scale + translation)),
+                    srgb_to_bevy(color),
+                );
+            }
         }
         gizmo
     }
@@ -160,7 +163,20 @@ where
     }
 }
 
-#[allow(clippy::cast_possible_truncation)]
-fn to_bevy_vec(vec: &Vector3D) -> Vec3 {
-    Vec3::new(vec.x as f32, vec.y as f32, vec.z as f32)
+fn v3d_to_slice(vec: Vector3D) -> [f32; 3] {
+    [vec.x as f32, vec.y as f32, vec.z as f32]
+}
+
+fn srgb_to_linear(color: [f32; 3]) -> [f32; 4] {
+    bevy_color::ColorToComponents::to_f32_array(
+        bevy_color::Color::srgb_from_array(color).to_linear(),
+    )
+}
+
+fn v3d_to_bevy(vec: &Vector3D) -> bevy_math::Vec3 {
+    bevy_math::Vec3::new(vec.x as f32, vec.y as f32, vec.z as f32)
+}
+
+fn srgb_to_bevy(color: [f32; 3]) -> bevy_color::Color {
+    bevy_color::Color::srgb_from_array(color)
 }

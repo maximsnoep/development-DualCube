@@ -67,6 +67,8 @@ impl Import for Dsol {
                 format!("deserializing {} (rmp-serde)", path.display())
             })?;
 
-        Ok(serialized.solution)
+        let solution = serialized.solution;
+
+        Ok(solution)
     }
 }

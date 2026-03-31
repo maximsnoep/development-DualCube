@@ -19,14 +19,21 @@ impl<M: Tag> Mesh<M> {
             }
         }
 
-        log::info!("Triangulated {} faces into {} new faces", self.faces.len(), new_faces.len());
+        log::info!(
+            "Triangulated {} faces into {} new faces",
+            self.faces.len(),
+            new_faces.len()
+        );
 
         Ok((new_mesh, new_faces))
     }
 
     pub fn triangulate_face(&mut self, face: FaceKey<M>) -> Result<Vec<FaceKey<M>>, MeshError<M>> {
         let edges = self.edges(face).collect_vec();
-        let original_edges = self.edges(face).map(|e| self.vertices(e).collect_vec()).collect_vec();
+        let original_edges = self
+            .edges(face)
+            .map(|e| self.vertices(e).collect_vec())
+            .collect_vec();
         let original_vertices = self.vertices(face).collect_vec();
 
         let triangles = [[1, 0, 3], [3, 2, 1]]; // For testing purposes, replace with actual triangulation for higher degree faces.
@@ -53,7 +60,10 @@ impl<M: Tag> Mesh<M> {
                 if original_edges.contains(&vec![start_vertex, end_vertex]) {
                     // If it exists, use the existing edge
 
-                    let index = original_edges.iter().position(|e| e == &vec![start_vertex, end_vertex]).unwrap();
+                    let index = original_edges
+                        .iter()
+                        .position(|e| e == &vec![start_vertex, end_vertex])
+                        .unwrap();
                     let e1 = edges[index];
 
                     edge_ids.push(e1);
@@ -61,7 +71,10 @@ impl<M: Tag> Mesh<M> {
                     // If it doesn't exist, create a new edge
                     let edge_id = self.add_edge();
                     // ONLY DO IF THE EDGE IS NEW..
-                    if endpoints_to_edges.insert((start_vertex, end_vertex), edge_id).is_some() {
+                    if endpoints_to_edges
+                        .insert((start_vertex, end_vertex), edge_id)
+                        .is_some()
+                    {
                         return Err(MeshError::DuplicateEdge(start_vertex, end_vertex));
                     }
                     edge_ids.push(edge_id);
@@ -77,7 +90,10 @@ impl<M: Tag> Mesh<M> {
 
             // Linking each edge to its next edge in the face
             for edge_index in 0..edge_ids.len() {
-                self.edge_next.insert(edge_ids[edge_index], edge_ids[(edge_index + 1) % edge_ids.len()]);
+                self.edge_next.insert(
+                    edge_ids[edge_index],
+                    edge_ids[(edge_index + 1) % edge_ids.len()],
+                );
             }
         }
 

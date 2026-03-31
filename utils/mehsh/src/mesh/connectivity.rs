@@ -37,8 +37,14 @@ pub enum MeshError<M> {
 }
 
 // Define a new trait that combines all required supertraits.
-pub trait Tag: Default + Debug + Clone + Copy + PartialEq + Eq + std::hash::Hash + Send + Sync {}
-impl<T> Tag for T where T: Default + Debug + Clone + Copy + PartialEq + Eq + std::hash::Hash + Send + Sync {}
+pub trait Tag:
+    Default + Debug + Clone + Copy + PartialEq + Eq + std::hash::Hash + Send + Sync
+{
+}
+impl<T> Tag for T where
+    T: Default + Debug + Clone + Copy + PartialEq + Eq + std::hash::Hash + Send + Sync
+{
+}
 
 #[macro_export]
 macro_rules! define_tag {
@@ -66,6 +72,10 @@ pub struct Mesh<M: Tag> {
     pub edge_twin: ids::AssMap<EDGE, EDGE, M>,
     pub vert_repr: ids::AssMap<VERT, EDGE, M>,
     pub face_repr: ids::AssMap<FACE, EDGE, M>,
+    #[serde(skip)]
+    pub(crate) vert_normal_cache: ids::SecMap<VERT, M, Vector3D>,
+    #[serde(skip)]
+    pub(crate) face_normal_cache: ids::SecMap<FACE, M, Vector3D>,
 }
 
 impl<M: Tag> Mesh<M> {
@@ -81,6 +91,20 @@ impl<M: Tag> Mesh<M> {
             edge_twin: ids::AssMap::convert(&other.edge_twin),
             vert_repr: ids::AssMap::convert(&other.vert_repr),
             face_repr: ids::AssMap::convert(&other.face_repr),
+            vert_normal_cache: ids::SecMap::convert(&other.vert_normal_cache),
+            face_normal_cache: ids::SecMap::convert(&other.face_normal_cache),
+        }
+    }
+
+    // Compute normals
+    pub fn fill_normal_cache(&mut self) {
+        for vert_id in self.vert_ids() {
+            let normal = self.compute_normal(vert_id);
+            self.vert_normal_cache.insert(&vert_id, normal);
+        }
+        for face_id in self.face_ids() {
+            let normal = self.compute_normal(face_id);
+            self.face_normal_cache.insert(&face_id, normal);
         }
     }
 
@@ -128,10 +152,16 @@ impl<M: Tag> Mesh<M> {
     }
 
     #[must_use]
+    pub fn edge_ids_iter(&self) -> impl Iterator<Item = EdgeKey<M>> {
+        self.edges.ids()
+    }
+
+    #[must_use]
     pub fn face_ids(&self) -> Vec<FaceKey<M>> {
         self.faces.ids().collect()
     }
 
+    #[must_use]
     pub fn face_ids_iter(&self) -> impl Iterator<Item = FaceKey<M>> {
         self.faces.ids()
     }
@@ -165,7 +195,9 @@ impl<M: Tag> Mesh<M> {
     }
 
     // TODO: make this more ergonamic
-    pub fn neighbor_function_edgepairgraph(&self) -> impl Fn([EdgeKey<M>; 2]) -> Vec<[EdgeKey<M>; 2]> + '_ {
+    pub fn neighbor_function_edgepairgraph(
+        &self,
+    ) -> impl Fn([EdgeKey<M>; 2]) -> Vec<[EdgeKey<M>; 2]> + '_ {
         |[_, to]| {
             let next = self.twin(to);
             vec![[self.next(next), self.next(self.next(next))]]
@@ -193,12 +225,13 @@ impl<M: Tag> Mesh<M> {
         // a center,
         // the distances from the center to each faces along the axis, the faces are orthogonal to the axis.
 
-        let (min, max) = self
-            .verts
-            .vals()
-            .fold((Vector3D::repeat(f64::INFINITY), Vector3D::repeat(f64::NEG_INFINITY)), |(min, max), v| {
-                (min.zip_map(v, f64::min), max.zip_map(v, f64::max))
-            });
+        let (min, max) = self.verts.vals().fold(
+            (
+                Vector3D::repeat(f64::INFINITY),
+                Vector3D::repeat(f64::NEG_INFINITY),
+            ),
+            |(min, max), v| (min.zip_map(v, f64::min), max.zip_map(v, f64::max)),
+        );
 
         let center = (min + max) / 2.0;
         let half_extents = (max - min) / 2.0;
@@ -229,6 +262,7 @@ pub trait HasPosition<K, M> {
 
 pub trait HasNormal<K, M> {
     #[must_use]
+    fn compute_normal(&self, id: ids::Key<K, M>) -> Vector3D;
     fn normal(&self, id: ids::Key<K, M>) -> Vector3D;
 }
 

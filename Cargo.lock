@@ -2070,6 +2070,24 @@ dependencies = [
 ]
 
 [[package]]
+name = "cli"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "dualcube",
+ "enum-iterator",
+ "grapff",
+ "io",
+ "itertools 0.14.0",
+ "log",
+ "mehsh",
+ "ordered-float",
+ "rand 0.10.0",
+ "rayon",
+ "slotmap",
+]
+
+[[package]]
 name = "clipboard-win"
 version = "5.4.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2564,13 +2582,13 @@ name = "dualcube"
 version = "0.1.0"
 dependencies = [
  "bimap",
- "bitcode",
  "faer",
  "faer_gmres",
  "grapff",
  "itertools 0.14.0",
  "log",
  "mehsh",
+ "nalgebra 0.32.6",
  "ordered-float",
  "orx-parallel",
  "petgraph",

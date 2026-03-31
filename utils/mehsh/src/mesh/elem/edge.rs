@@ -108,12 +108,16 @@ impl<M: Tag> HasPosition<EDGE, M> for Mesh<M> {
 }
 
 impl<M: Tag> HasNormal<EDGE, M> for Mesh<M> {
-    fn normal(&self, id: EdgeKey<M>) -> Vector3D {
+    fn compute_normal(&self, id: EdgeKey<M>) -> Vector3D {
         if let Some([f1, f2]) = self.faces(id).collect_array::<2>() {
             (self.normal(f1) + self.normal(f2)).normalize()
         } else {
             panic!("Expected exactly two faces for edge {id:?}");
         }
+    }
+
+    fn normal(&self, id: EdgeKey<M>) -> Vector3D {
+        self.compute_normal(id)
     }
 }
 
