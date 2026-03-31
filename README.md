@@ -15,9 +15,7 @@ It provides:
 
 ### Prerequisites
 
-DualCube requires:
-- [Rust](https://www.rust-lang.org/tools/install) and Cargo, preferably installed via [rustup](https://rustup.rs/),
-- and [Git](https://git-scm.com/install/) to clone and update the repository.
+DualCube requires the Rust programming language and the Cargo package manager. The recommended installation method is [rustup](https://rustup.rs/). To download or update the repository, you will also want [git](https://git-scm.com/install/).
 
 ### Clone the project
 
