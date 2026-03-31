@@ -1,7 +1,7 @@
 # DualCube: Robust Polycube Maps
-> Maxim Snoep, via [algo](https://algo.win.tue.nl) at [(TU/e)](https://tue.nl)
+> Maxim Snoep, via [algo](https://algo.win.tue.nl) at [TU/e](https://tue.nl)
 
-**DualCube** is a research-driven implementation of robust algorithms for polycube map construction[^1][^2].
+**DualCube** is a research-oriented implementation of robust algorithms for polycube map construction.[^1][^2]
 
 It provides:
 - robust polycube segmentations on triangle meshes,
@@ -15,18 +15,22 @@ It provides:
 
 ### Prerequisites
 
-DualCube requires the Rust programming language and the Cargo package manager. The recommended installation method is [rustup](https://rustup.rs/). To download or update the repository, you will also want [git](https://git-scm.com/install/).
+DualCube requires:
+- [Rust](https://www.rust-lang.org/tools/install) and Cargo, preferably installed via [rustup](https://rustup.rs/),
+- and [Git](https://git-scm.com/install/) to clone and update the repository.
 
 ### Clone the project
 
-The development branch can be cloned through:
+To clone the development repository:
 ```
 git clone https://www.github.com/maximsnoep/DualCube
+cd DualCube
 ```
 
-The official stable branch can be cloned through:
+To clone the official stable repository:
 ```
-git clone https://www.github.com/maximsnoep/DualCube
+git clone https://www.github.com/tue-alga/DualCube
+cd DualCube
 ```
 
 ### Update to the latest version
@@ -37,29 +41,30 @@ git pull
 
 ## How to Run
 
-This workspace contains separate `gui` and `cli` packages, so the recommended way to run them is with package-based Cargo commands (`-p ...`). By default, `cargo run` uses the **dev** profile. For optimized runs, use `--release`.
+This workspace contains separate `gui` and `cli` packages, so the recommended way to run them is with package-based Cargo commands using `-p ...`. By default, `cargo run` uses the `dev` profile. For optimized runs, use `--release`.
 
 ### Run the GUI
 
 ```
 cargo run -p gui
 ```
-Or the release build:
+
+Release build:
 ```
 cargo run -p gui --release
 ```
-
 
 ### Run the CLI
 
 ```
 cargo run -p cli
 ```
-Or the release build:
+
+Release build:
 ```
 cargo run -p cli --release
 ```
 
 ## Status
 
-This is an active research codebase. It is suitable for experimentation, visualization, and batch testing, but interfaces, workflows, and file formats will continue to evolve.
+DualCube is an active research codebase intended for experimentation, visualization, and batch testing. Interfaces, workflows, and file formats may continue to evolve.
