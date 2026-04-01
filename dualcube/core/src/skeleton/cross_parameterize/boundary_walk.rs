@@ -5,7 +5,7 @@ use std::{
 };
 
 use itertools::Itertools;
-use log::{error, warn};
+use log::warn;
 use mehsh::prelude::{HasEdges, HasFaces, HasVertices, Mesh, Vector3D};
 use petgraph::{
     graph::{EdgeIndex, NodeIndex},
@@ -156,7 +156,11 @@ pub fn calculate_boundary_loop_reversal_flags(
         }
 
         if left_votes > 0 && right_votes > 0 {
-            warn!("Conflicting votes for boundary loop orientation on skeleton edge {:?}: {} left vs {} right. This may indicate a non-manifold boundary or other irregularity. Defaulting to no reversal.", edge_id, left_votes, right_votes);
+            panic!(
+                "Conflicting votes for boundary loop orientation on skeleton edge {:?}: \
+                 {} left vs {} right. The mesh may be non-manifold or the patch boundary malformed.",
+                edge_id, left_votes, right_votes
+            );
         } else if left_votes == 0 && right_votes == 0 {
             panic!(
                 "Could not classify orientation for boundary loop {:?}: no non-degenerate votes.",
@@ -606,9 +610,7 @@ pub fn calculate_boundary_loop(
     }
 
     if !boundary_lookback.is_empty() {
-        // TODO SHOULD PANIC WHEN EVERYTHING IS FULLY WORKING, NOW JUST ERROR
-        error!("Boundary edge lookback produced non-empty result, indicating some boundary edge cases are not fully handled yet. Lookback:");
-        // Print types in detail for debugging.
+        let mut details = String::new();
         for (edge_id, node_idx) in &boundary_lookback {
             let node = &graph[*node_idx];
             let edge_verts = mesh.vertices(*edge_id).collect_vec();
@@ -629,12 +631,16 @@ pub fn calculate_boundary_loop(
                     VertexToVirtual::CutPair { .. } => "CutPair",
                 })
                 .unwrap_or("OUTSIDE PATCH");
-
-            error!(
-                    "Lookback entry: edge {:?} (verts {:?} with types {:?}) -> node {:?} with lookback origin {:?}",
-                    edge_id, [v1, v2], [type_v1, type_v2], node_idx, node.origin
-                );
+            details.push_str(&format!(
+                "\n  edge {:?} (verts {:?} with types {:?}) -> node {:?} origin {:?}",
+                edge_id, [v1, v2], [type_v1, type_v2], node_idx, node.origin
+            ));
         }
+        panic!(
+            "Boundary edge lookback is non-empty after boundary traversal ({} entries). \
+             Some boundary edges were not fully handled:{details}",
+            boundary_lookback.len()
+        );
     }
 
     if boundary_loop.is_empty() {

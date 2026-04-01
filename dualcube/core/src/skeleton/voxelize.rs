@@ -336,8 +336,6 @@ fn compute_quad_boundary_loop(
         .collect();
 
     if boundary_faces.is_empty() {
-        // Check: count faces that have at least one source + target vertex but
-        // were rejected because of a foreign vertex.
         let near_miss_count = polycube_mesh.face_ids().iter().filter(|&&face_id| {
             let mut has_source = false;
             let mut has_target = false;
@@ -349,12 +347,12 @@ fn compute_quad_boundary_loop(
             }
             has_source && has_target && has_foreign
         }).count();
-        warn!(
+        panic!(
             "No boundary faces found between {:?} and {:?}. \
-             ({} faces had source+target vertices but also a foreign vertex.)",
+             ({} faces had source+target vertices but also a foreign vertex.) \
+             The polycube mesh may be malformed.",
             source, target, near_miss_count
         );
-        return BoundaryLoop { edge_midpoints: Vec::new() };
     }
 
     // Find a starting crossing half-edge on a pure boundary face.

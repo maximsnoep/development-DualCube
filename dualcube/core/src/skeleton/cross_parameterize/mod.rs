@@ -2,7 +2,6 @@ use std::collections::HashMap;
 use std::f64::consts::{FRAC_PI_2, TAU};
 
 use itertools::Itertools;
-use log::{error, warn};
 use mehsh::prelude::{HasPosition, HasVertices, Mesh, SetPosition, Vector2D, Vector3D};
 
 use petgraph::graph::{EdgeIndex, NodeIndex};
@@ -344,7 +343,12 @@ impl PolycubeMap {
                         if let Some(pos) = mapped_pos {
                             result.set_position(vert_id, pos);
                         } else {
-                            error!("UV {:?} for vertex {:?} not found in polycube BVH candidates ({} candidates) for region {:?}", uv, vert_id, candidates.len(), region_idx);
+                            panic!(
+                                "UV {:?} for vertex {:?} not found in polycube BVH \
+                                 ({} candidates) for region {:?}. \
+                                 The UV may be outside the polycube domain.",
+                                uv, vert_id, candidates.len(), region_idx
+                            );
                         }
                     }
                 }
@@ -417,25 +421,25 @@ fn parameterize_region(
         .map(|cut| cut.path.to_positions(polycube_mesh))
         .collect();
 
-    // Build VFG and parameterize each side using the shared coordination.
-    let (input_vfg, input_uv) = parameterize_side(
-        patch_node_idx,
-        degree,
-        input_skeleton,
-        input_mesh,
-        true,  // is_input_side
-        true,  // is_tri_mesh: base mesh is strict tri, cuts can introduce quads
-        &coordination,
-    );
-    let (polycube_vfg, polycube_uv) = parameterize_side(
-        patch_node_idx,
-        degree,
-        polycube_skeleton,
-        polycube_mesh,
-        false, // is_input_side
-        false, // is_tri_mesh: base mesh is quad, cuts split quads into quads
-        &coordination,
-    );
+    // Build VFGs for both sides.
+    let input_vfg = build_region_vfg(patch_node_idx, degree, input_skeleton, input_mesh, true, true, &coordination);
+    let polycube_vfg = build_region_vfg(patch_node_idx, degree, polycube_skeleton, polycube_mesh, false, false, &coordination);
+
+    // For degree-1 (no cuts), coordinate the polygon basis index from the polycube's natural
+    // corner to the input boundary. Without this both sides start at an arbitrary position and
+    // corner 0 of the square polygon ends up at different physical locations → rotational twist.
+    let (polycube_basis, input_basis) = if degree < 2 {
+        degree1_basis_indices(&polycube_vfg, &input_vfg)
+    } else {
+        (0, 0)
+    };
+
+    // Map boundaries to polygon and solve Dirichlet for each side.
+    let polycube_boundary_positions = map_boundary_to_polygon(&polycube_vfg, degree, &coordination.cycle_order, polycube_basis);
+    let polycube_uv = solve_dirichlet(&polycube_vfg, &polycube_boundary_positions);
+
+    let input_boundary_positions = map_boundary_to_polygon(&input_vfg, degree, &coordination.cycle_order, input_basis);
+    let input_uv = solve_dirichlet(&input_vfg, &input_boundary_positions);
 
     // Calculate BVHs
     let mut input_faces = extract_faces(&input_vfg, &input_uv);
@@ -612,12 +616,11 @@ fn extract_faces(vfg: &VirtualFlatGeometry, uv_map: &HashMap<NodeIndex, Vector2D
     faces
 }
 
-/// Parameterizes one side (input or polycube) of a region onto the canonical domain.
+/// Builds the Virtual Flat Geometry for one side of a region.
 ///
-/// `is_input_side` selects which cut paths and boundary frames from `coordination` to use.
-/// Returns `(vfg, uv_map)` where `uv_map` maps every VFG node index to its
-/// 2D canonical-domain position.
-fn parameterize_side(
+/// Sets up the cutting plan and phase anchor from `coordination`, then delegates to
+/// `VirtualFlatGeometry::build`. Does NOT run the harmonic solve.
+fn build_region_vfg(
     patch_node_idx: NodeIndex,
     degree: usize,
     skeleton: &LabeledCurveSkeleton,
@@ -625,16 +628,14 @@ fn parameterize_side(
     is_input_side: bool,
     is_tri_mesh: bool,
     coordination: &RegionCoordination,
-) -> (VirtualFlatGeometry, HashMap<NodeIndex, Vector2D>) {
+) -> VirtualFlatGeometry {
     if degree == 0 {
-        warn!(
-            "TODO: Degree 0 node {:?}, skipping parameterization",
+        panic!(
+            "Degree 0 node {:?}: parameterization is not defined for isolated patches.",
             patch_node_idx
         );
-        return (VirtualFlatGeometry::empty(), HashMap::new());
     }
 
-    // Select the side-appropriate cuts and boundary frames.
     let cuts = if is_input_side {
         &coordination.input_cuts
     } else {
@@ -646,9 +647,6 @@ fn parameterize_side(
         &coordination.polycube_frames
     };
 
-    // Derive the phase-anchor edge from cycle_order.events[0].
-    // Both sides resolve the same anchor spec to their own boundary frame, giving
-    // topologically equivalent starting positions.
     let phase_anchor_edge: Option<EdgeID> = coordination
         .cycle_order
         .events
@@ -656,7 +654,6 @@ fn parameterize_side(
         .map(|anchor| {
             let frame = &frames[&anchor.boundary];
             let slot_id = if is_input_side {
-                // Proportionally map polycube slot index to input slot index.
                 let pc_total = coordination.polycube_frames[&anchor.boundary].num_slots();
                 let in_total = frame.num_slots();
                 let pos = anchor.slot_id as f64 / pc_total as f64;
@@ -667,28 +664,114 @@ fn parameterize_side(
             frame.slot_edge(slot_id)
         });
 
-    // Wrap cuts into a CuttingPlan (VFG builder still uses that type).
     let cutting_plan = CuttingPlan {
         cuts: cuts.to_vec(),
     };
 
-    // Build virtual geometry by cutting the mesh open along cut paths.
-    let vfg = VirtualFlatGeometry::build(
+    VirtualFlatGeometry::build(
         patch_node_idx,
         skeleton,
         mesh,
         &cutting_plan,
         is_tri_mesh,
         phase_anchor_edge,
-    );
+    )
+}
 
-    // Assign 2D positions to every node on the disk boundary.
-    let boundary_positions = map_boundary_to_polygon(&vfg, degree, &coordination.cycle_order);
+/// Computes the canonical polygon basis indices for a degree-1 (no-cut) region.
+///
+/// On the polycube side, find the boundary node with the sharpest 3D turn (a polycube corner).
+/// Project its arc-fraction to the input boundary. Both sides then place polygon corner 0 at
+/// these corresponding positions, eliminating the arbitrary rotational offset.
+fn degree1_basis_indices(
+    polycube_vfg: &VirtualFlatGeometry,
+    input_vfg: &VirtualFlatGeometry,
+) -> (usize, usize) {
+    let pc_basis = find_boundary_corner(polycube_vfg);
+    let pc_frac = boundary_arc_fraction(polycube_vfg, pc_basis);
+    let in_basis = boundary_index_at_fraction(input_vfg, pc_frac);
+    (pc_basis, in_basis)
+}
 
-    // Solve the Dirichlet problem on the VFG graph.
-    let uv_map = solve_dirichlet(&vfg, &boundary_positions);
+/// Returns the index into `vfg.boundary_loop` that has the largest 3D turn angle.
+///
+/// For a polycube, this is a boundary midpoint adjacent to a polycube face corner (≈90° turn).
+fn find_boundary_corner(vfg: &VirtualFlatGeometry) -> usize {
+    let boundary = &vfg.boundary_loop;
+    let n = boundary.len();
+    if n < 3 {
+        return 0;
+    }
+    let mut max_turn: f64 = 0.0;
+    let mut best_idx = 0;
+    for i in 0..n {
+        let p0 = vfg.graph[boundary[(i + n - 1) % n]].position;
+        let p1 = vfg.graph[boundary[i]].position;
+        let p2 = vfg.graph[boundary[(i + 1) % n]].position;
+        let d1 = p1 - p0;
+        let d2 = p2 - p1;
+        let n1 = d1.norm();
+        let n2 = d2.norm();
+        if n1 < 1e-12 || n2 < 1e-12 {
+            continue;
+        }
+        // |sin(turn_angle)| = |d1 × d2| / (|d1| |d2|)
+        let cross = d1.cross(&d2);
+        let turn = cross.norm() / (n1 * n2);
+        if turn > max_turn {
+            max_turn = turn;
+            best_idx = i;
+        }
+    }
+    best_idx
+}
 
-    (vfg, uv_map)
+/// Returns the cumulative arc-fraction (in [0, 1]) of `boundary_loop[idx]` from the loop start.
+fn boundary_arc_fraction(vfg: &VirtualFlatGeometry, idx: usize) -> f64 {
+    let boundary = &vfg.boundary_loop;
+    let n = boundary.len();
+    let mut total = 0.0;
+    let mut before = 0.0;
+    for i in 0..n {
+        let a = vfg.graph[boundary[i]].position;
+        let b = vfg.graph[boundary[(i + 1) % n]].position;
+        let len = (b - a).norm();
+        if i < idx {
+            before += len;
+        }
+        total += len;
+    }
+    if total < 1e-12 {
+        0.0
+    } else {
+        before / total
+    }
+}
+
+/// Returns the index in `vfg.boundary_loop` closest to arc-fraction `frac` from the loop start.
+fn boundary_index_at_fraction(vfg: &VirtualFlatGeometry, frac: f64) -> usize {
+    let boundary = &vfg.boundary_loop;
+    let n = boundary.len();
+    if n == 0 {
+        return 0;
+    }
+    let mut total = 0.0;
+    let mut lengths = vec![0.0f64; n];
+    for i in 0..n {
+        let a = vfg.graph[boundary[i]].position;
+        let b = vfg.graph[boundary[(i + 1) % n]].position;
+        lengths[i] = (b - a).norm();
+        total += lengths[i];
+    }
+    let target = frac * total;
+    let mut cumul = 0.0;
+    for i in 0..n {
+        if cumul + lengths[i] >= target {
+            return i;
+        }
+        cumul += lengths[i];
+    }
+    n - 1
 }
 
 /// Maps every node in `vfg.boundary_loop` to a 2D position on a regular `n_sides`-gon,
@@ -708,6 +791,7 @@ fn map_boundary_to_polygon(
     vfg: &VirtualFlatGeometry,
     degree: usize,
     cycle_order: &CutCycleOrder,
+    basis_index: usize,
 ) -> HashMap<NodeIndex, Vector2D> {
     let boundary = &vfg.boundary_loop;
 
@@ -729,7 +813,6 @@ fn map_boundary_to_polygon(
             total_length += len;
         }
 
-        let basis_index = 0;
         // We pick `basis_index` to be the first corner, then place the next 3 corners at cumulative
         // arc-lengths of 1/4, 2/4, and 3/4 around the loop. We enforce strictly increasing offsets
         // to guarantee 4 distinct corners, even if edge lengths are disproportionately large.
@@ -783,8 +866,11 @@ fn map_boundary_to_polygon(
                 let t = if segment_length > 0.0 {
                     current_segment_len / segment_length
                 } else {
-                    error!("Segment {} of boundary has zero length, cannot parameterize! Assigning t=0 for all vertices in this segment.", s);
-                    0.0
+                    panic!(
+                        "Segment {} of degree-1 boundary has zero length; \
+                         the cut endpoints may be adjacent or the geometry is degenerate.",
+                        s
+                    );
                 };
 
                 result.insert(boundary[curr], polygon_point(4, s, t));
