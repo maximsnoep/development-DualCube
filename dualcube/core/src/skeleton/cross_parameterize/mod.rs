@@ -747,105 +747,82 @@ fn map_boundary_to_polygon(
         return result;
     }
 
-    let origin_first_boundary_node = &vfg.graph[boundary[0]].origin;
-    let origin_second_boundary_node = &vfg.graph[boundary[1]].origin;
-    // Note that this is not strictly necessary as a result from the other methods, but it is always the case now and simplifies logic here so we just assume it.
-    // The assumption is that the first node is always the start of some cut, and the second is along that cut.
-    match (origin_first_boundary_node, origin_second_boundary_node) {
-        (
-            VirtualNodeOrigin::CutEndpointMidpointDuplicate { .. },
-            VirtualNodeOrigin::CutDuplicate { .. },
-        ) => {
-            // This is the expected case: the boundary starts with a cut endpoint, so we can alternate cut/non-cut segments as expected.
-        }
-        (
-            VirtualNodeOrigin::CutEndpointMidpointDuplicate {
-                cut_index: cut1, ..
-            },
-            VirtualNodeOrigin::CutEndpointMidpointDuplicate {
-                cut_index: cut2, ..
-            },
-        ) => {
-            // Cut is very short. We check that the endpoints are from the same cut.
-            if cut1 != cut2 {
-                panic!(
-                    "Boundary loop starts with cut endpoints from different cuts: {:?} and {:?}",
-                    origin_first_boundary_node, origin_second_boundary_node
-                );
-            }
-        }
-        _ => {
-            panic!(
-                "Unexpected boundary start node types: {:?} and {:?}",
-                origin_first_boundary_node, origin_second_boundary_node
-            );
-        }
+    let n_sides = 4 * (degree - 1);
+    if boundary.len() < 2 {
+        panic!(
+            "Boundary has fewer than 2 vertices for degree {} region",
+            degree
+        );
     }
 
-    // Because our starting pattern is always set, we know that the order in which we traverse the segments is also set.
-    // We can traverse the boundary in order and we will see all segments in the correct order.
+    // Robust against arbitrary cyclic starting index: identify all cut-endpoint duplicates,
+    // then parameterize each segment between consecutive endpoints around the cycle.
+    let endpoint_positions: Vec<usize> = boundary
+        .iter()
+        .enumerate()
+        .filter_map(|(i, &node_idx)| {
+            if matches!(
+                vfg.graph[node_idx].origin,
+                VirtualNodeOrigin::CutEndpointMidpointDuplicate { .. }
+            ) {
+                Some(i)
+            } else {
+                None
+            }
+        })
+        .collect();
 
-    let n_sides = 4 * (degree - 1);
+    if endpoint_positions.is_empty() {
+        panic!(
+            "Degree {} boundary has no cut endpoints; cannot build cut/non-cut segments",
+            degree
+        );
+    }
+    if endpoint_positions.len() != n_sides {
+        panic!(
+            "Boundary endpoint count mismatch for degree {}: expected {} cut-endpoint nodes, found {}",
+            degree,
+            n_sides,
+            endpoint_positions.len()
+        );
+    }
+
+    let n = boundary.len();
     let mut result = HashMap::new();
 
-    let mut currently_building = CurrentlyBuildingSegment::Cut;
-    let mut segment_index = 0;
-    let mut buf = vec![boundary[0]];
+    for segment_index in 0..endpoint_positions.len() {
+        let start_pos = endpoint_positions[segment_index];
+        let end_pos = endpoint_positions[(segment_index + 1) % endpoint_positions.len()];
 
-    for &idx in &boundary[1..] {
-        let node = &vfg.graph[idx];
-        let origin = &node.origin;
-        buf.push(idx);
+        let mut buf = vec![boundary[start_pos]];
+        let mut cursor = (start_pos + 1) % n;
 
-        match (currently_building, origin) {
-            (CurrentlyBuildingSegment::Cut, VirtualNodeOrigin::CutDuplicate { .. }) => {
-                // Continue cut segment.
+        while cursor != end_pos {
+            let node_idx = boundary[cursor];
+            match vfg.graph[node_idx].origin {
+                VirtualNodeOrigin::CutDuplicate { .. }
+                | VirtualNodeOrigin::BoundaryMidpoint { .. } => {
+                    // Valid interior of a segment between two cut endpoints.
+                }
+                VirtualNodeOrigin::CutEndpointMidpointDuplicate { .. } => {
+                    panic!(
+                        "Unexpected cut endpoint inside segment {} while tracing boundary between endpoint positions {} and {}",
+                        segment_index, start_pos, end_pos
+                    );
+                }
+                ref other => {
+                    panic!(
+                        "Unexpected boundary node type {:?} while building segment {}",
+                        other, segment_index
+                    );
+                }
             }
-            (
-                CurrentlyBuildingSegment::Cut,
-                VirtualNodeOrigin::CutEndpointMidpointDuplicate { .. },
-            ) => {
-                // End the current cut segment.
-                parameterize_segment(segment_index, n_sides, &buf, vfg, &mut result);
-
-                // Flush buffer and start new for next segment (Non-Cut).
-                buf = vec![idx];
-                segment_index += 1;
-                currently_building = CurrentlyBuildingSegment::NonCut;
-            }
-            (CurrentlyBuildingSegment::NonCut, VirtualNodeOrigin::BoundaryMidpoint { .. }) => {
-                // Continue building non-cut segment.
-            }
-            (
-                CurrentlyBuildingSegment::NonCut,
-                VirtualNodeOrigin::CutEndpointMidpointDuplicate { .. },
-            ) => {
-                // Non-cut segment ended, now cut starts.
-                parameterize_segment(segment_index, n_sides, &buf, vfg, &mut result);
-
-                buf = vec![idx];
-                segment_index += 1;
-                currently_building = CurrentlyBuildingSegment::Cut;
-            }
-            _ => {
-                panic!(
-                    "Unexpected boundary node type {:?} while building segment {} of type {:?}",
-                    origin, segment_index, currently_building
-                );
-            }
+            buf.push(node_idx);
+            cursor = (cursor + 1) % n;
         }
-    }
 
-    // Last segment always ends back at the start of the first segment.
-    buf.push(boundary[0]);
-    parameterize_segment(segment_index, n_sides, &buf, vfg, &mut result);
-    segment_index += 1;
-
-    if segment_index != n_sides {
-        panic!(
-            "Boundary loop tracing failed: expected {} segments for degree {}, but found {}. Boundary len: {}",
-            n_sides, degree, segment_index, boundary.len()
-        );
+        buf.push(boundary[end_pos]);
+        parameterize_segment(segment_index, n_sides, &buf, vfg, &mut result);
     }
 
     result
@@ -898,12 +875,6 @@ fn parameterize_segment(
 
         result.insert(idx, pos);
     }
-}
-
-#[derive(Debug, Clone, Copy)]
-enum CurrentlyBuildingSegment {
-    Cut,
-    NonCut,
 }
 
 /// Evaluates a 2D position along the boundary of a regular polygon.
