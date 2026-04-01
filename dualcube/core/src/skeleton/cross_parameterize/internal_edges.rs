@@ -269,32 +269,29 @@ pub fn add_internal_edges(
                                 })
                                 .collect::<HashSet<_>>();
 
-                            // Filter for twins
+                            // Deduplicate half-edge twins: keep one representative per undirected edge.
                             let mut seen_edges = HashSet::new();
-                            let mut to_remove = Vec::new();
+                            let mut unique_bounding_edges = Vec::new();
                             for &e in &bounding_edges {
-                                let twin = mesh.twin(e);
-                                if seen_edges.contains(&twin) {
-                                    // remove twin from bounding_edges to avoid double counting ?
-                                    to_remove.push(twin);
+                                if seen_edges.contains(&e) {
+                                    continue;
                                 }
+                                let twin = mesh.twin(e);
                                 seen_edges.insert(e);
                                 seen_edges.insert(twin);
-                            }
-                            for e in to_remove {
-                                if bounding_edges.contains(&e) {
-                                    seen_edges.remove(&e);
-                                }
+                                unique_bounding_edges.push(e);
                             }
 
                             // Vote which of self_left or self_right is correct
                             let mut left_votes = 0;
                             let mut right_votes = 0;
                             let twin = mesh.twin(edge);
-                            for &e in &bounding_edges {
+                            for &e in &unique_bounding_edges {
                                 if e == edge || e == twin {
                                     continue;
                                 }
+                                let left_before = left_votes;
+                                let right_before = right_votes;
                                 let [u, v] = mesh
                                     .vertices(e)
                                     .collect_array()
@@ -419,6 +416,14 @@ pub fn add_internal_edges(
                                             }
                                         }
                                     }
+                                }
+
+                                // A single bounding edge should not contribute to both sides;
+                                // if that happens (e.g. duplicated neighbor endpoint), treat it
+                                // as ambiguous. This (should be) an artifcate of the cutting.
+                                if left_votes > left_before && right_votes > right_before {
+                                    left_votes = left_before;
+                                    right_votes = right_before;
                                 }
                             }
 
