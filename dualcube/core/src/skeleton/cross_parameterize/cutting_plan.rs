@@ -542,14 +542,11 @@ pub fn compute_boundary_frames(
         let boundary = &edge_ref.weight().boundary_loop;
         let reversed = *reverse_flags.get(&skel_edge).unwrap_or(&false);
 
+        // Slots are always the canonical edge IDs from edge_midpoints (the ones stored in the
+        // VFG's edge_midpoint_ids_to_node_indices map). Reversal only changes the ORDER,
+        // not the edge IDs — taking twins would produce IDs absent from the VFG map.
         let slots: Vec<EdgeID> = if reversed {
-            boundary
-                .edge_midpoints
-                .iter()
-                .copied()
-                .rev()
-                .map(|e| mesh.twin(e))
-                .collect()
+            boundary.edge_midpoints.iter().copied().rev().collect()
         } else {
             boundary.edge_midpoints.clone()
         };
@@ -814,13 +811,23 @@ fn enumerate_candidates_recursive(
     }
 }
 
+/// Maps a polycube slot index to the proportionally equivalent input slot index.
+///
+/// Polycube slot `pc_slot` out of `pc_total` represents arc fraction `pc_slot / pc_total`.
+/// The input slot is the nearest index to that same arc fraction within `in_total` slots.
+fn map_polycube_slot_to_input(pc_slot: usize, pc_total: usize, in_total: usize) -> usize {
+    let pos = pc_slot as f64 / pc_total as f64;
+    (pos * in_total as f64).round() as usize % in_total
+}
+
 /// Scores a polycube candidate on the input side (tie-break).
 ///
-/// Uses the same slot IDs to pick input-side endpoint edges, then runs
+/// Proportionally maps polycube slot indices to input slot indices, then runs
 /// constrained Dijkstra. Returns `None` if any cut is unrealizable.
 pub fn score_input_candidate(
     candidate: &PolycubeCandidate,
     node_idx: NodeIndex,
+    polycube_frames: &HashMap<EdgeIndex, BoundaryFrame>,
     input_frames: &HashMap<EdgeIndex, BoundaryFrame>,
     input_skeleton: &LabeledCurveSkeleton,
     input_mesh: &Mesh<INPUT>,
@@ -838,13 +845,16 @@ pub fn score_input_candidate(
     let mut total_len = 0.0;
 
     for &(edge_a, sa, edge_b, sb) in &candidate.assignments {
-        // The input frame may have more slots than the polycube frame, but we use
-        // the same slot *index* so the endpoint lands at the same fraction of the
-        // boundary arc.  If the index is out of range, map it modulo input slot count.
+        let pc_frame_a = polycube_frames.get(&edge_a)?;
+        let pc_frame_b = polycube_frames.get(&edge_b)?;
         let input_frame_a = input_frames.get(&edge_a)?;
         let input_frame_b = input_frames.get(&edge_b)?;
-        let sa_input = sa % input_frame_a.num_slots();
-        let sb_input = sb % input_frame_b.num_slots();
+
+        // Proportional mapping: polycube slot at arc fraction sa/pc_total → nearest input slot.
+        let sa_input =
+            map_polycube_slot_to_input(sa, pc_frame_a.num_slots(), input_frame_a.num_slots());
+        let sb_input =
+            map_polycube_slot_to_input(sb, pc_frame_b.num_slots(), input_frame_b.num_slots());
 
         let start_slot_edge = input_frame_a.slot_edge(sa_input);
         let end_slot_edge = input_frame_b.slot_edge(sb_input);
@@ -919,6 +929,7 @@ fn build_cut_cycle_order(
 fn select_candidate(
     mut polycube_candidates: Vec<PolycubeCandidate>,
     node_idx: NodeIndex,
+    polycube_frames: &HashMap<EdgeIndex, BoundaryFrame>,
     input_frames: &HashMap<EdgeIndex, BoundaryFrame>,
     input_skeleton: &LabeledCurveSkeleton,
     input_mesh: &Mesh<INPUT>,
@@ -944,9 +955,14 @@ fn select_candidate(
             break;
         }
 
-        let Some((input_score, input_cuts)) =
-            score_input_candidate(candidate, node_idx, input_frames, input_skeleton, input_mesh)
-        else {
+        let Some((input_score, input_cuts)) = score_input_candidate(
+            candidate,
+            node_idx,
+            polycube_frames,
+            input_frames,
+            input_skeleton,
+            input_mesh,
+        ) else {
             continue;
         };
 
@@ -1053,6 +1069,7 @@ pub fn compute_region_coordination(
     let (endpoint_specs, polycube_cuts, input_cuts) = select_candidate(
         polycube_candidates,
         node_idx,
+        &polycube_frames,
         &input_frames,
         input_skeleton,
         input_mesh,
