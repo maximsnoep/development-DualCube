@@ -18,6 +18,7 @@ use bvh::bounding_hierarchy::BHShape;
 use bvh::bvh::Bvh;
 
 mod boundary_walk;
+pub mod coordination;
 mod cutting_plan;
 mod duplicate_cut_vertices;
 mod harmonic;

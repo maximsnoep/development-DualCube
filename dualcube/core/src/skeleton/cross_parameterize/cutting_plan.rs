@@ -9,8 +9,13 @@ use petgraph::visit::EdgeRef;
 
 use crate::prelude::{EdgeID, VertID, INPUT};
 use crate::skeleton::boundary_loop::BoundaryLoop;
+use crate::skeleton::cross_parameterize::boundary_walk::calculate_boundary_loop_reversal_flags;
 use crate::skeleton::orthogonalize::LabeledCurveSkeleton;
 
+use super::coordination::{
+    BoundaryFrame, CutCycleOrder, CutEndpointSpec, PolycubeCandidate, RegionCoordination,
+    path_length,
+};
 use super::{CutPath, CuttingPlan, SurfacePath};
 
 /// Computes cutting plans for both the input and polycube sides of a region.
@@ -513,4 +518,554 @@ fn kruskal_mst(weighted_edges: &[(EdgeIndex, EdgeIndex, f64)]) -> Vec<(EdgeIndex
     }
 
     result
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Phase B: boundary frames + constrained cut paths
+// ─────────────────────────────────────────────────────────────────────────────
+
+/// Builds an oriented `BoundaryFrame` for every boundary loop of a region.
+///
+/// Orientation is determined by `calculate_boundary_loop_reversal_flags`: if a
+/// boundary's raw `edge_midpoints` order places the patch on the right, we
+/// reverse + twin so the patch is on the left (CCW convention).
+pub fn compute_boundary_frames(
+    node_idx: NodeIndex,
+    skeleton: &LabeledCurveSkeleton,
+    mesh: &Mesh<INPUT>,
+) -> HashMap<EdgeIndex, BoundaryFrame> {
+    let reverse_flags = calculate_boundary_loop_reversal_flags(node_idx, skeleton, mesh);
+    let mut frames = HashMap::new();
+
+    for edge_ref in skeleton.edges(node_idx) {
+        let skel_edge = edge_ref.id();
+        let boundary = &edge_ref.weight().boundary_loop;
+        let reversed = *reverse_flags.get(&skel_edge).unwrap_or(&false);
+
+        let slots: Vec<EdgeID> = if reversed {
+            boundary
+                .edge_midpoints
+                .iter()
+                .copied()
+                .rev()
+                .map(|e| mesh.twin(e))
+                .collect()
+        } else {
+            boundary.edge_midpoints.clone()
+        };
+
+        assert!(
+            slots.len() >= 2,
+            "Boundary loop on skeleton edge {:?} has only {} slots (need >= 2)",
+            skel_edge,
+            slots.len()
+        );
+
+        frames.insert(
+            skel_edge,
+            BoundaryFrame {
+                skeleton_edge: skel_edge,
+                orientation_reversed: reversed,
+                slots,
+            },
+        );
+    }
+
+    frames
+}
+
+/// Finds the shortest cut path from a specific start-slot edge to a specific
+/// end-slot edge, with constrained source/target vertex sets.
+///
+/// Sources = patch vertices incident to `start_slot_edge`.
+/// Targets = patch vertices incident to `end_slot_edge`.
+/// Returns `None` when Dijkstra cannot reach any target (caller rejects candidate).
+fn find_constrained_cut_path(
+    edge_a: EdgeIndex,
+    edge_b: EdgeIndex,
+    start_slot_edge: EdgeID,
+    end_slot_edge: EdgeID,
+    patch_verts: &[VertID],
+    patch_set: &HashSet<VertID>,
+    vert_to_idx: &HashMap<VertID, usize>,
+    mesh: &Mesh<INPUT>,
+    forbidden_verts: &HashSet<VertID>,
+) -> Option<CutPath> {
+    // Vertices incident to the start slot that are inside the patch.
+    let sources: HashSet<VertID> = [mesh.root(start_slot_edge), mesh.toor(start_slot_edge)]
+        .into_iter()
+        .filter(|v| patch_set.contains(v) && !forbidden_verts.contains(v))
+        .collect();
+
+    if sources.is_empty() {
+        return None;
+    }
+
+    // Vertices incident to the end slot that are inside the patch.
+    let target_verts: HashSet<VertID> = [mesh.root(end_slot_edge), mesh.toor(end_slot_edge)]
+        .into_iter()
+        .filter(|v| patch_set.contains(v))
+        .collect();
+
+    if target_verts.is_empty() {
+        return None;
+    }
+
+    let (dist, pred) =
+        dijkstra_with_predecessors(&sources, patch_verts, vert_to_idx, mesh, forbidden_verts);
+
+    // Pick the closest reachable target.
+    let best_b_idx = target_verts
+        .iter()
+        .filter(|v| !forbidden_verts.contains(v))
+        .filter_map(|v| vert_to_idx.get(v).copied())
+        .filter(|&idx| dist[idx].is_finite())
+        .min_by(|&a, &b| dist[a].partial_cmp(&dist[b]).unwrap_or(Ordering::Equal))?;
+
+    // Reconstruct vertex path.
+    let mut path_indices = Vec::new();
+    let mut current = best_b_idx;
+    for _ in 0..=patch_verts.len() {
+        path_indices.push(current);
+        match pred[current] {
+            Some(prev) => current = prev,
+            None => break,
+        }
+    }
+    path_indices.reverse();
+
+    let vertex_path: Vec<VertID> = path_indices.iter().map(|&i| patch_verts[i]).collect();
+    assert!(
+        !vertex_path.is_empty(),
+        "Constrained cut path between {:?} and {:?} reconstructed empty",
+        edge_a,
+        edge_b
+    );
+
+    let path = build_vertex_surface_path(start_slot_edge, &vertex_path, end_slot_edge);
+    Some(CutPath {
+        start_boundary: edge_a,
+        end_boundary: edge_b,
+        path,
+    })
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Phase C: polycube candidate enumeration + input tie-break scoring
+// ─────────────────────────────────────────────────────────────────────────────
+
+/// Enumerates all feasible polycube slot assignments for the given cut topology.
+///
+/// Feasibility constraints per candidate:
+/// 1. No two endpoints on the same boundary occupy the same slot.
+/// 2. Two endpoints on the same boundary must not be adjacent (distance 1 mod N).
+/// 3. Every constrained Dijkstra path must be realizable.
+///
+/// Panics if no feasible candidate exists.
+pub fn enumerate_polycube_candidates(
+    node_idx: NodeIndex,
+    cut_topology: &[(EdgeIndex, EdgeIndex)],
+    polycube_frames: &HashMap<EdgeIndex, BoundaryFrame>,
+    polycube_skeleton: &LabeledCurveSkeleton,
+    polycube_mesh: &Mesh<INPUT>,
+) -> Vec<PolycubeCandidate> {
+    let patch_verts = &polycube_skeleton[node_idx].skeleton_node.patch_vertices;
+    let patch_set: HashSet<VertID> = patch_verts.iter().copied().collect();
+    let vert_to_idx: HashMap<VertID, usize> = patch_verts
+        .iter()
+        .enumerate()
+        .map(|(i, &v)| (v, i))
+        .collect();
+
+    let mut results = Vec::new();
+
+    enumerate_candidates_recursive(
+        cut_topology,
+        0,
+        polycube_frames,
+        patch_verts,
+        &patch_set,
+        &vert_to_idx,
+        polycube_mesh,
+        &mut HashMap::new(),
+        &mut HashSet::new(),
+        &mut Vec::new(),
+        &mut Vec::new(),
+        &mut results,
+    );
+
+    assert!(
+        !results.is_empty(),
+        "No feasible polycube candidate found for region {:?} with {} cuts",
+        node_idx,
+        cut_topology.len()
+    );
+
+    results
+}
+
+#[allow(clippy::too_many_arguments)]
+fn enumerate_candidates_recursive(
+    cut_topology: &[(EdgeIndex, EdgeIndex)],
+    cut_idx: usize,
+    polycube_frames: &HashMap<EdgeIndex, BoundaryFrame>,
+    patch_verts: &[VertID],
+    patch_set: &HashSet<VertID>,
+    vert_to_idx: &HashMap<VertID, usize>,
+    mesh: &Mesh<INPUT>,
+    boundary_used_slots: &mut HashMap<EdgeIndex, HashSet<usize>>,
+    used_interior_verts: &mut HashSet<VertID>,
+    partial_assignments: &mut Vec<(EdgeIndex, usize, EdgeIndex, usize)>,
+    partial_cuts: &mut Vec<CutPath>,
+    results: &mut Vec<PolycubeCandidate>,
+) {
+    if cut_idx == cut_topology.len() {
+        let primary_score: f64 = partial_cuts
+            .iter()
+            .map(|c| path_length(&c.path, mesh))
+            .sum();
+        results.push(PolycubeCandidate {
+            assignments: partial_assignments.clone(),
+            cuts: partial_cuts.clone(),
+            primary_score,
+        });
+        return;
+    }
+
+    let (edge_a, edge_b) = cut_topology[cut_idx];
+    let frame_a = &polycube_frames[&edge_a];
+    let frame_b = &polycube_frames[&edge_b];
+
+    let slots_a: Vec<usize> = (0..frame_a.num_slots())
+        .filter(|s| {
+            !boundary_used_slots
+                .get(&edge_a)
+                .map(|u| u.contains(s))
+                .unwrap_or(false)
+        })
+        .collect();
+
+    let slots_b: Vec<usize> = (0..frame_b.num_slots())
+        .filter(|s| {
+            !boundary_used_slots
+                .get(&edge_b)
+                .map(|u| u.contains(s))
+                .unwrap_or(false)
+        })
+        .collect();
+
+    for &sa in &slots_a {
+        for &sb in &slots_b {
+            // Same boundary: reject if adjacent.
+            if edge_a == edge_b && (sa == sb || frame_a.slots_adjacent(sa, sb)) {
+                continue;
+            }
+
+            let start_slot_edge = frame_a.slot_edge(sa);
+            let end_slot_edge = frame_b.slot_edge(sb);
+
+            let Some(cut) = find_constrained_cut_path(
+                edge_a,
+                edge_b,
+                start_slot_edge,
+                end_slot_edge,
+                patch_verts,
+                patch_set,
+                vert_to_idx,
+                mesh,
+                used_interior_verts,
+            ) else {
+                continue;
+            };
+
+            let new_verts: Vec<VertID> = cut.path.interior_verts.clone();
+
+            boundary_used_slots.entry(edge_a).or_default().insert(sa);
+            boundary_used_slots.entry(edge_b).or_default().insert(sb);
+            for &v in &new_verts {
+                used_interior_verts.insert(v);
+            }
+            partial_assignments.push((edge_a, sa, edge_b, sb));
+            partial_cuts.push(cut);
+
+            enumerate_candidates_recursive(
+                cut_topology,
+                cut_idx + 1,
+                polycube_frames,
+                patch_verts,
+                patch_set,
+                vert_to_idx,
+                mesh,
+                boundary_used_slots,
+                used_interior_verts,
+                partial_assignments,
+                partial_cuts,
+                results,
+            );
+
+            partial_cuts.pop();
+            partial_assignments.pop();
+            for &v in &new_verts {
+                used_interior_verts.remove(&v);
+            }
+            boundary_used_slots.entry(edge_a).or_default().remove(&sa);
+            boundary_used_slots.entry(edge_b).or_default().remove(&sb);
+        }
+    }
+}
+
+/// Scores a polycube candidate on the input side (tie-break).
+///
+/// Uses the same slot IDs to pick input-side endpoint edges, then runs
+/// constrained Dijkstra. Returns `None` if any cut is unrealizable.
+pub fn score_input_candidate(
+    candidate: &PolycubeCandidate,
+    node_idx: NodeIndex,
+    input_frames: &HashMap<EdgeIndex, BoundaryFrame>,
+    input_skeleton: &LabeledCurveSkeleton,
+    input_mesh: &Mesh<INPUT>,
+) -> Option<(f64, Vec<CutPath>)> {
+    let patch_verts = &input_skeleton[node_idx].skeleton_node.patch_vertices;
+    let patch_set: HashSet<VertID> = patch_verts.iter().copied().collect();
+    let vert_to_idx: HashMap<VertID, usize> = patch_verts
+        .iter()
+        .enumerate()
+        .map(|(i, &v)| (v, i))
+        .collect();
+
+    let mut used_verts: HashSet<VertID> = HashSet::new();
+    let mut input_cuts = Vec::new();
+    let mut total_len = 0.0;
+
+    for &(edge_a, sa, edge_b, sb) in &candidate.assignments {
+        // The input frame may have more slots than the polycube frame, but we use
+        // the same slot *index* so the endpoint lands at the same fraction of the
+        // boundary arc.  If the index is out of range, map it modulo input slot count.
+        let input_frame_a = input_frames.get(&edge_a)?;
+        let input_frame_b = input_frames.get(&edge_b)?;
+        let sa_input = sa % input_frame_a.num_slots();
+        let sb_input = sb % input_frame_b.num_slots();
+
+        let start_slot_edge = input_frame_a.slot_edge(sa_input);
+        let end_slot_edge = input_frame_b.slot_edge(sb_input);
+
+        let cut = find_constrained_cut_path(
+            edge_a,
+            edge_b,
+            start_slot_edge,
+            end_slot_edge,
+            patch_verts,
+            &patch_set,
+            &vert_to_idx,
+            input_mesh,
+            &used_verts,
+        )?;
+
+        total_len += path_length(&cut.path, input_mesh);
+        for &v in &cut.path.interior_verts {
+            used_verts.insert(v);
+        }
+        input_cuts.push(cut);
+    }
+
+    Some((total_len, input_cuts))
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Phase D: candidate selection + CutCycleOrder + compute_region_coordination
+// ─────────────────────────────────────────────────────────────────────────────
+
+/// Builds the canonical `CutCycleOrder` from the selected endpoint assignments.
+///
+/// Walks every boundary frame's slot list in deterministic order (sorted by
+/// `EdgeIndex`). The first event visited becomes `events[0]` (phase anchor).
+fn build_cut_cycle_order(
+    endpoint_specs: &[CutEndpointSpec],
+    polycube_frames: &HashMap<EdgeIndex, BoundaryFrame>,
+) -> CutCycleOrder {
+    let spec_map: HashMap<(EdgeIndex, usize), &CutEndpointSpec> = endpoint_specs
+        .iter()
+        .map(|s| ((s.boundary, s.slot_id), s))
+        .collect();
+
+    let mut boundary_order: Vec<EdgeIndex> = polycube_frames.keys().copied().collect();
+    boundary_order.sort_by_key(|e| e.index());
+
+    let mut events: Vec<CutEndpointSpec> = Vec::new();
+    for boundary in boundary_order {
+        let frame = &polycube_frames[&boundary];
+        for slot_id in 0..frame.num_slots() {
+            if let Some(&spec) = spec_map.get(&(boundary, slot_id)) {
+                events.push(spec.clone());
+            }
+        }
+    }
+
+    assert_eq!(
+        events.len(),
+        endpoint_specs.len(),
+        "CutCycleOrder event count mismatch: expected {}, got {}",
+        endpoint_specs.len(),
+        events.len()
+    );
+
+    CutCycleOrder { events }
+}
+
+/// Lexicographically selects the best candidate:
+/// primary = polycube path length, secondary = input path length, tertiary = canonical assignment key.
+///
+/// Panics if all candidates fail input-side realization.
+fn select_candidate(
+    mut polycube_candidates: Vec<PolycubeCandidate>,
+    node_idx: NodeIndex,
+    input_frames: &HashMap<EdgeIndex, BoundaryFrame>,
+    input_skeleton: &LabeledCurveSkeleton,
+    input_mesh: &Mesh<INPUT>,
+) -> (Vec<CutEndpointSpec>, Vec<CutPath>, Vec<CutPath>) {
+    polycube_candidates.sort_by(|a, b| {
+        a.primary_score
+            .partial_cmp(&b.primary_score)
+            .unwrap_or(Ordering::Equal)
+            .then_with(|| {
+                canonical_assignment_key(&a.assignments)
+                    .cmp(&canonical_assignment_key(&b.assignments))
+            })
+    });
+
+    // Lex pass: iterate in primary-score order, tracking the best (primary, secondary) seen.
+    let mut best_primary = f64::INFINITY;
+    let mut best_secondary = f64::INFINITY;
+    let mut best: Option<(Vec<CutEndpointSpec>, Vec<CutPath>, Vec<CutPath>)> = None;
+
+    for candidate in &polycube_candidates {
+        // Once primary score strictly exceeds the best already accepted, we can stop.
+        if candidate.primary_score > best_primary + 1e-12 {
+            break;
+        }
+
+        let Some((input_score, input_cuts)) =
+            score_input_candidate(candidate, node_idx, input_frames, input_skeleton, input_mesh)
+        else {
+            continue;
+        };
+
+        let primary = candidate.primary_score;
+        let is_better = best.is_none()
+            || primary < best_primary - 1e-12
+            || (primary <= best_primary + 1e-12 && input_score < best_secondary - 1e-12);
+
+        if is_better {
+            best_primary = primary;
+            best_secondary = input_score;
+
+            let endpoint_specs: Vec<CutEndpointSpec> = candidate
+                .assignments
+                .iter()
+                .enumerate()
+                .flat_map(|(cut_id, &(edge_a, sa, edge_b, sb))| {
+                    [
+                        CutEndpointSpec {
+                            cut_id,
+                            boundary: edge_a,
+                            slot_id: sa,
+                            is_start: true,
+                        },
+                        CutEndpointSpec {
+                            cut_id,
+                            boundary: edge_b,
+                            slot_id: sb,
+                            is_start: false,
+                        },
+                    ]
+                })
+                .collect();
+
+            best = Some((endpoint_specs, candidate.cuts.clone(), input_cuts));
+        }
+    }
+
+    let (endpoint_specs, polycube_cuts, input_cuts) = best.unwrap_or_else(|| {
+        panic!(
+            "No candidate for region {:?} survived input-side realization",
+            node_idx
+        )
+    });
+
+    (endpoint_specs, polycube_cuts, input_cuts)
+}
+
+/// Stable canonical key for deterministic tie-breaking.
+fn canonical_assignment_key(
+    assignments: &[(EdgeIndex, usize, EdgeIndex, usize)],
+) -> Vec<(usize, usize, usize, usize)> {
+    let mut key: Vec<(usize, usize, usize, usize)> = assignments
+        .iter()
+        .map(|&(ea, sa, eb, sb)| (ea.index(), sa, eb.index(), sb))
+        .collect();
+    key.sort();
+    key
+}
+
+/// Main entry point: computes the fully coordinated region artifact (replaces `compute_cutting_plans`).
+///
+/// For degree < 2 returns an empty coordination (no cuts needed).
+pub fn compute_region_coordination(
+    node_idx: NodeIndex,
+    input_skeleton: &LabeledCurveSkeleton,
+    polycube_skeleton: &LabeledCurveSkeleton,
+    input_mesh: &Mesh<INPUT>,
+    polycube_mesh: &Mesh<INPUT>,
+) -> RegionCoordination {
+    let degree = input_skeleton.edges(node_idx).count();
+
+    let polycube_frames = compute_boundary_frames(node_idx, polycube_skeleton, polycube_mesh);
+    let input_frames = compute_boundary_frames(node_idx, input_skeleton, input_mesh);
+
+    if degree < 2 {
+        return RegionCoordination {
+            polycube_frames,
+            input_frames,
+            endpoint_specs: Vec::new(),
+            cycle_order: CutCycleOrder { events: Vec::new() },
+            polycube_cuts: Vec::new(),
+            input_cuts: Vec::new(),
+        };
+    }
+
+    let cut_topology = compute_cut_topology(
+        node_idx,
+        degree,
+        input_skeleton,
+        polycube_skeleton,
+        input_mesh,
+        polycube_mesh,
+    );
+
+    let polycube_candidates = enumerate_polycube_candidates(
+        node_idx,
+        &cut_topology,
+        &polycube_frames,
+        polycube_skeleton,
+        polycube_mesh,
+    );
+
+    let (endpoint_specs, polycube_cuts, input_cuts) = select_candidate(
+        polycube_candidates,
+        node_idx,
+        &input_frames,
+        input_skeleton,
+        input_mesh,
+    );
+
+    let cycle_order = build_cut_cycle_order(&endpoint_specs, &polycube_frames);
+
+    RegionCoordination {
+        polycube_frames,
+        input_frames,
+        endpoint_specs,
+        cycle_order,
+        polycube_cuts,
+        input_cuts,
+    }
 }
