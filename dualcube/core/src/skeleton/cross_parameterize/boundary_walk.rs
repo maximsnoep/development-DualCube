@@ -291,6 +291,11 @@ fn find_cut_side_face_and_vertex(
 /// The resulting loop is a simple cycle of virtual node indices, following all boundaries in CCW.
 /// Adds all edges for nodes along the boundary (properly dealing with duplicates and cuts.)
 ///
+/// `phase_anchor_edge` fixes the canonical start of the walk: when `Some`, the walk begins at
+/// the *left* copy of that boundary-edge midpoint, ensuring both sides start at the same
+/// position. When `None`, falls back to the first cut's start endpoint (degree ≥ 2) or
+/// any boundary midpoint (degree 1).
+///
 /// Note that for the tri-mesh, quads are accepted around boundaries.
 pub fn calculate_boundary_loop(
     patch_node_idx: NodeIndex,
@@ -302,6 +307,7 @@ pub fn calculate_boundary_loop(
     cutting_plan: &CuttingPlan,
     reverse_flags: &HashMap<EdgeIndex, bool>,
     patch_vertices: &HashSet<VertID>,
+    phase_anchor_edge: Option<EdgeID>,
 ) -> Vec<NodeIndex> {
     let mut succ: HashMap<NodeIndex, NodeIndex> = HashMap::new();
     let (cut_edges, cut_edge_canonical_direction, cut_edge_to_cut_index) = collect_cut_edges(mesh, cutting_plan);
@@ -499,8 +505,30 @@ pub fn calculate_boundary_loop(
         }
     }
 
-    // Start from an arbitrary cut endpoint left copy when possible.
-    let start = if let Some(first_cut) = cutting_plan.cuts.first() {
+    // Determine the canonical start node for the boundary walk.
+    //
+    // Priority order:
+    // 1. `phase_anchor_edge` (from RegionCoordination): use the *left* copy of that midpoint.
+    //    This is the Phase F fix that synchronises both sides to the same start.
+    // 2. First cut's start endpoint (legacy fallback, should not be reached when coordination
+    //    is wired in correctly).
+    // 3. Any boundary midpoint (degree-1 regions that have no cuts).
+    let start = if let Some(anchor_edge) = phase_anchor_edge {
+        let anchor_key = resolve_midpoint_edge_id(anchor_edge);
+        match edge_midpoint_ids_to_node_indices.get(&anchor_key) {
+            Some(EdgemidpointToVirtual::CutEndpointPair { left, .. }) => *left,
+            other => panic!(
+                "Phase anchor edge {:?} (resolved {:?}) is not a cut-endpoint pair in the VFG \
+                 (got {:?}). The anchor must correspond to a cut endpoint midpoint.",
+                anchor_edge,
+                anchor_key,
+                other.map(|_| "Some(non-pair)")
+            ),
+        }
+    } else if let Some(first_cut) = cutting_plan.cuts.first() {
+        // Legacy path — used when no coordination is provided (degree-1 has no cuts so
+        // this branch is only hit for degree ≥ 2 without coordination, which should not
+        // happen once phases E-F are fully wired in).
         let start_key = resolve_midpoint_edge_id(first_cut.path.start);
         match edge_midpoint_ids_to_node_indices.get(&start_key) {
             Some(EdgemidpointToVirtual::CutEndpointPair { left, .. }) => *left,

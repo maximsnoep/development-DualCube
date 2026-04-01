@@ -25,7 +25,8 @@ mod harmonic;
 mod internal_edges;
 pub mod virtual_mesh;
 
-use cutting_plan::compute_cutting_plans;
+use coordination::{CutCycleOrder, RegionCoordination};
+use cutting_plan::compute_region_coordination;
 use virtual_mesh::VirtualFlatGeometry;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -395,9 +396,8 @@ fn parameterize_region(
     input_mesh: &Mesh<INPUT>,
     polycube_mesh: &Mesh<INPUT>,
 ) -> RegionParameterization {
-    // Compute cutting plans for both sides. Cut paths are found independently on each side, then boundary
-    // parameterizations are built so that cut endpoints share t-values.
-    let (input_plan, polycube_plan) = compute_cutting_plans(
+    // Compute shared coordination: polycube-first slot assignment with input tie-break.
+    let coordination = compute_region_coordination(
         patch_node_idx,
         input_skeleton,
         polycube_skeleton,
@@ -406,34 +406,36 @@ fn parameterize_region(
     );
 
     // Save cut positions for visualisation.
-    let input_cuts: Vec<Vec<Vector3D>> = input_plan
-        .cuts
+    let input_cuts: Vec<Vec<Vector3D>> = coordination
+        .input_cuts
         .iter()
         .map(|cut| cut.path.to_positions(input_mesh))
         .collect();
-    let polycube_cuts: Vec<Vec<Vector3D>> = polycube_plan
-        .cuts
+    let polycube_cuts: Vec<Vec<Vector3D>> = coordination
+        .polycube_cuts
         .iter()
         .map(|cut| cut.path.to_positions(polycube_mesh))
         .collect();
 
-    // Build VFG and parameterize each side using its cutting plan.
+    // Build VFG and parameterize each side using the shared coordination.
     let (input_vfg, input_uv) = parameterize_side(
         patch_node_idx,
         degree,
         input_skeleton,
         input_mesh,
-        &input_plan,
-        true, // base mesh is strict tri, but in cuts we can introduce quads.
-    ); // resulting VFG should be strictly triangulated as we triangulate inside quads using extra node.
+        true,  // is_input_side
+        true,  // is_tri_mesh: base mesh is strict tri, cuts can introduce quads
+        &coordination,
+    );
     let (polycube_vfg, polycube_uv) = parameterize_side(
         patch_node_idx,
         degree,
         polycube_skeleton,
         polycube_mesh,
-        &polycube_plan,
-        false, // base mesh is quad, cuts split quads into quads.
-    ); // result is mix of quads and tris.
+        false, // is_input_side
+        false, // is_tri_mesh: base mesh is quad, cuts split quads into quads
+        &coordination,
+    );
 
     // Calculate BVHs
     let mut input_faces = extract_faces(&input_vfg, &input_uv);
@@ -610,19 +612,19 @@ fn extract_faces(vfg: &VirtualFlatGeometry, uv_map: &HashMap<NodeIndex, Vector2D
     faces
 }
 
-/// Parameterizes one side (input or polycube) of a region onto the canonical domain, by
-/// building virtual geometry for the cut-open disk and solving the Dirichlet problem with fixed boundary positions.
+/// Parameterizes one side (input or polycube) of a region onto the canonical domain.
 ///
+/// `is_input_side` selects which cut paths and boundary frames from `coordination` to use.
 /// Returns `(vfg, uv_map)` where `uv_map` maps every VFG node index to its
-/// 2D canonical-domain position. Cut positions for visualisation are extracted
-/// by the caller before this function is called.
+/// 2D canonical-domain position.
 fn parameterize_side(
     patch_node_idx: NodeIndex,
     degree: usize,
     skeleton: &LabeledCurveSkeleton,
     mesh: &Mesh<INPUT>,
-    cutting_plan: &CuttingPlan,
+    is_input_side: bool,
     is_tri_mesh: bool,
+    coordination: &RegionCoordination,
 ) -> (VirtualFlatGeometry, HashMap<NodeIndex, Vector2D>) {
     if degree == 0 {
         warn!(
@@ -632,12 +634,56 @@ fn parameterize_side(
         return (VirtualFlatGeometry::empty(), HashMap::new());
     }
 
-    // Build virtual geometry by cutting the mesh open along cut paths,
-    // duplicating vertices and edges along the cut so the result is a topological disk.
-    let vfg = VirtualFlatGeometry::build(patch_node_idx, skeleton, mesh, cutting_plan, is_tri_mesh);
+    // Select the side-appropriate cuts and boundary frames.
+    let cuts = if is_input_side {
+        &coordination.input_cuts
+    } else {
+        &coordination.polycube_cuts
+    };
+    let frames = if is_input_side {
+        &coordination.input_frames
+    } else {
+        &coordination.polycube_frames
+    };
+
+    // Derive the phase-anchor edge from cycle_order.events[0].
+    // Both sides resolve the same anchor spec to their own boundary frame, giving
+    // topologically equivalent starting positions.
+    let phase_anchor_edge: Option<EdgeID> = coordination
+        .cycle_order
+        .events
+        .first()
+        .map(|anchor| {
+            let frame = &frames[&anchor.boundary];
+            let slot_id = if is_input_side {
+                // Proportionally map polycube slot index to input slot index.
+                let pc_total = coordination.polycube_frames[&anchor.boundary].num_slots();
+                let in_total = frame.num_slots();
+                let pos = anchor.slot_id as f64 / pc_total as f64;
+                (pos * in_total as f64).round() as usize % in_total
+            } else {
+                anchor.slot_id
+            };
+            frame.slot_edge(slot_id)
+        });
+
+    // Wrap cuts into a CuttingPlan (VFG builder still uses that type).
+    let cutting_plan = CuttingPlan {
+        cuts: cuts.to_vec(),
+    };
+
+    // Build virtual geometry by cutting the mesh open along cut paths.
+    let vfg = VirtualFlatGeometry::build(
+        patch_node_idx,
+        skeleton,
+        mesh,
+        &cutting_plan,
+        is_tri_mesh,
+        phase_anchor_edge,
+    );
 
     // Assign 2D positions to every node on the disk boundary.
-    let boundary_positions = map_boundary_to_polygon(&vfg, degree);
+    let boundary_positions = map_boundary_to_polygon(&vfg, degree, &coordination.cycle_order);
 
     // Solve the Dirichlet problem on the VFG graph.
     let uv_map = solve_dirichlet(&vfg, &boundary_positions);
@@ -655,10 +701,13 @@ fn parameterize_side(
 ///
 /// The polygon has circumradius 1 with corners at angles `2*pi*k/n_sides` for k'th corner.
 ///
-/// Degree parameter is the degree of the region being parameterized in the skeleton.
+/// `cycle_order` ensures that `segment_index = 0` maps to the arc starting at the phase anchor
+/// (Phase F guarantees the walk starts there), giving identical segment→polygon-side
+/// assignment on both input and polycube sides.
 fn map_boundary_to_polygon(
     vfg: &VirtualFlatGeometry,
     degree: usize,
+    cycle_order: &CutCycleOrder,
 ) -> HashMap<NodeIndex, Vector2D> {
     let boundary = &vfg.boundary_loop;
 
@@ -785,6 +834,19 @@ fn map_boundary_to_polygon(
             degree,
             n_sides,
             endpoint_positions.len()
+        );
+    }
+
+    // Phase G invariant: the boundary walk must start at a cut endpoint (the phase anchor).
+    // If Phase F is correct, boundary[0] is always a CutEndpointMidpointDuplicate,
+    // so endpoint_positions[0] == 0.
+    if !cycle_order.events.is_empty() {
+        assert_eq!(
+            endpoint_positions[0],
+            0,
+            "Phase anchor invariant violated: boundary walk does not start at a cut endpoint \
+             (first endpoint found at position {}, expected 0). Phase F may be broken.",
+            endpoint_positions[0]
         );
     }
 

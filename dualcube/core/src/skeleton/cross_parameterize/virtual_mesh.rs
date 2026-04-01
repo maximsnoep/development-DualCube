@@ -182,12 +182,16 @@ impl VirtualFlatGeometry {
     ///
     /// Works for both strict triangular meshes (`is_tri_mesh = true`) and
     /// strict quad meshes (`is_tri_mesh = false`).
+    /// `phase_anchor_edge` is the boundary edge whose midpoint should be the first node
+    /// in the boundary loop walk (left copy), ensuring both sides start at the same
+    /// canonical position. Pass `None` for degree-1 regions (no cuts).
     pub fn build(
         patch_node_idx: NodeIndex,
         skeleton: &LabeledCurveSkeleton,
         mesh: &Mesh<INPUT>,
         cutting_plan: &CuttingPlan,
         is_tri_mesh: bool,
+        phase_anchor_edge: Option<EdgeID>,
     ) -> Self {
         // Initialize empty structures and fill at each step
         let mut graph: StableUnGraph<VirtualNode, VirtualEdgeWeight> = StableUnGraph::default();
@@ -286,6 +290,7 @@ impl VirtualFlatGeometry {
             cutting_plan,
             &boundary_loop_reverse,
             &patch_vertex_set,
+            phase_anchor_edge,
         );
 
         let mut vfg = VirtualFlatGeometry {
