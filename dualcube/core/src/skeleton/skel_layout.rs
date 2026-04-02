@@ -489,6 +489,7 @@ fn restricted_patch_dijkstra(
     end: VertID,
     patch_vertices: &HashSet<VertID>,
     blocked_edges: &HashSet<(VertID, VertID)>,
+    blocked_vertices: &HashSet<VertID>,
 ) -> Option<Vec<VertID>> {
     if !patch_vertices.contains(&start) || !patch_vertices.contains(&end) {
         return None;
@@ -500,7 +501,11 @@ fn restricted_patch_dijkstra(
         .map(|v| (v, f64::INFINITY))
         .collect::<HashMap<_, _>>();
     let mut prev = HashMap::<VertID, VertID>::new();
-    let mut unvisited = patch_vertices.clone();
+    let mut unvisited = patch_vertices
+        .iter()
+        .copied()
+        .filter(|&v| !blocked_vertices.contains(&v) || v == start || v == end)
+        .collect::<HashSet<_>>();
 
     dist.insert(start, 0.0);
 
@@ -522,6 +527,9 @@ fn restricted_patch_dijkstra(
 
         for neighbor in mesh.neighbors(current) {
             if !patch_vertices.contains(&neighbor) || !unvisited.contains(&neighbor) {
+                continue;
+            }
+            if blocked_vertices.contains(&neighbor) && neighbor != end {
                 continue;
             }
 
@@ -722,6 +730,7 @@ pub fn populate_layout_from_skeleton(
         });
 
         let mut occupied_patch_edges = HashSet::new();
+        let mut occupied_patch_vertices = HashSet::new();
         let mut region_paths = Vec::new();
         for (start_idx, end_idx) in adjacent_corner_pairs {
             let start = corner_vertices[start_idx];
@@ -738,10 +747,20 @@ pub fn populate_layout_from_skeleton(
                 end,
                 &patch_vertices,
                 &occupied_patch_edges,
+                &occupied_patch_vertices,
             ) {
                 for segment in path.windows(2) {
                     occupied_patch_edges.insert(canonical_patch_edge(segment[0], segment[1]));
                 }
+
+                for &interior in path
+                    .iter()
+                    .skip(1)
+                    .take(path.len().saturating_sub(2))
+                {
+                    occupied_patch_vertices.insert(interior);
+                }
+
                 region_paths.push(path);
             }
         }
