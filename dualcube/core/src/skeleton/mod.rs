@@ -10,7 +10,6 @@ use crate::{
     skeleton::{
         connectivity_surgery::extract_skeleton,
         contraction::{contract_mesh, CONTRACTION},
-        cross_parameterize::PolycubeMap,
         curve_skeleton::{CurveSkeleton, CurveSkeletonManipulation, CurveSkeletonSpatial},
         embeddability::make_embedding_possible,
         orthogonalize::{greedy_orthogonalization, LabeledCurveSkeleton},
@@ -22,7 +21,6 @@ use crate::{
     },
 };
 
-pub mod cross_parameterize;
 pub mod curve_skeleton;
 pub mod orthogonalize;
 
@@ -61,9 +59,6 @@ pub struct SkeletonData {
 
     /// A skeleton isomorphic to `labeled_skeleton`, but with node positions and patch vertices updated to match the polycube structure.
     polycube_skeleton: Option<LabeledCurveSkeleton>,
-
-    /// The cross-parameterization map between the input mesh surface and the polycube surface.
-    polycube_map: Option<PolycubeMap>,
 }
 
 impl SkeletonData {
@@ -90,11 +85,6 @@ impl SkeletonData {
     /// Returns a reference to the polycube skeleton if it has been computed.
     pub fn polycube_skeleton(&self) -> Option<&LabeledCurveSkeleton> {
         self.polycube_skeleton.as_ref()
-    }
-
-    /// Returns a reference to the polycube map if it has been computed.
-    pub fn polycube_map(&self) -> Option<&PolycubeMap> {
-        self.polycube_map.as_ref()
     }
 
     /// Reconstructs what a skeleton looked like at a certain point in the volume collapse history, if the history is available.
@@ -126,8 +116,6 @@ impl SkeletonData {
         convexity_merge_threshold: f64,
         omega: usize,
     ) -> (Option<Polycube>, Option<Quad>) {
-        let mesh_ref = Arc::clone(&mesh);
-
         // Reuse contraction
         let (curve_skeleton, mut cleaned_skeleton) =
             surgery_and_simplification(&mesh, &self.contraction_mesh);
@@ -141,38 +129,18 @@ impl SkeletonData {
             omega,
         );
 
-        let (polycube, polycube_skeleton, mut quad) = match polycube_and_skeleton {
+        let (polycube, polycube_skeleton, quad) = match polycube_and_skeleton {
             Some((p, s, q)) => (Some(p), Some(s), Some(q)),
             None => (None, None, None),
         };
 
-        let polycube_map = compute_polycube_map(
-            labeled.as_ref(),
-            polycube_skeleton.as_ref(),
-            &mesh_ref,
-            polycube.as_ref(),
-        );
-
-        // Use cross parameterization to map input vertices onto the polycube surface.
-        if let (Some(pmap), Some(input_skel), Some(poly_skel), Some(poly), Some(quad)) = (
-            &polycube_map,
-            labeled.as_ref(),
-            polycube_skeleton.as_ref(),
-            polycube.as_ref(),
-            quad.as_mut(),
-        ) {
-            let polycube_mesh: Mesh<INPUT> = Mesh::convert(&poly.structure);
-            quad.triangle_mesh_polycube =
-                pmap.to_triangle_mesh_polycube(&mesh_ref, input_skel, poly_skel, &polycube_mesh);
-            quad.map_quad_to_input_surface(&mesh_ref);
-        }
+        // TODO: path based simple mapping
 
         self.raw_curve_skeleton = Some(curve_skeleton); // Not updated now, but we calculate it anyways so might as well save it
         self.cleaned_skeleton = Some(cleaned_skeleton);
         self.collapse_history = Some(history);
         self.labeled_skeleton = labeled;
         self.polycube_skeleton = polycube_skeleton;
-        self.polycube_map = polycube_map;
 
         (polycube, quad)
     }
@@ -188,7 +156,6 @@ pub fn get_skeleton_based_mapping(
 ) -> (SkeletonData, Option<Polycube>, Option<Quad>) {
     // Start by doing contraction
     let contracted_mesh = contract_mesh(&mesh, 50);
-    let mesh_ref = Arc::clone(&mesh);
 
     let (raw_curve_skeleton, mut cleaned_skeleton) =
         surgery_and_simplification(&mesh, &contracted_mesh);
@@ -201,31 +168,12 @@ pub fn get_skeleton_based_mapping(
         omega,
     );
 
-    let (polycube, polycube_skeleton, mut quad) = match polycube_and_skeleton {
+    let (polycube, polycube_skeleton, quad) = match polycube_and_skeleton {
         Some((p, s, q)) => (Some(p), Some(s), Some(q)),
         None => (None, None, None),
     };
 
-    let polycube_map = compute_polycube_map(
-        labeled.as_ref(),
-        polycube_skeleton.as_ref(),
-        &mesh_ref,
-        polycube.as_ref(),
-    );
-
-    // Use cross-parameterization to map input vertices onto the polycube surface.
-    if let (Some(pmap), Some(input_skel), Some(poly_skel), Some(poly), Some(quad)) = (
-        &polycube_map,
-        labeled.as_ref(),
-        polycube_skeleton.as_ref(),
-        polycube.as_ref(),
-        quad.as_mut(),
-    ) {
-        let polycube_mesh: Mesh<INPUT> = Mesh::convert(&poly.structure);
-        quad.triangle_mesh_polycube =
-            pmap.to_triangle_mesh_polycube(&mesh_ref, input_skel, poly_skel, &polycube_mesh);
-        quad.map_quad_to_input_surface(&mesh_ref);
-    }
+    // TODO: path based simple mapping
 
     (
         SkeletonData {
@@ -235,43 +183,10 @@ pub fn get_skeleton_based_mapping(
             collapse_history: Some(history),
             labeled_skeleton: labeled,
             polycube_skeleton,
-            polycube_map,
         },
         polycube,
         quad,
     )
-}
-
-/// Computes the polycube map if all required data is available.
-fn compute_polycube_map(
-    input_skeleton: Option<&LabeledCurveSkeleton>,
-    polycube_skeleton: Option<&LabeledCurveSkeleton>,
-    input_mesh: &Mesh<INPUT>,
-    polycube: Option<&Polycube>,
-) -> Option<PolycubeMap> {
-    log::info!(
-        "compute_polycube_map: input_skeleton={}, polycube_skeleton={}, polycube={}",
-        input_skeleton.is_some(),
-        polycube_skeleton.is_some(),
-        polycube.is_some()
-    );
-    match (input_skeleton, polycube_skeleton, polycube) {
-        (Some(input_skel), Some(poly_skel), Some(poly)) => {
-            let polycube_mesh: Mesh<INPUT> = Mesh::convert(&poly.structure);
-            let pmap = cross_parameterize::cross_parameterize(
-                input_skel,
-                poly_skel,
-                input_mesh,
-                &polycube_mesh,
-            );
-            log::info!("compute_polycube_map: success, {} regions", pmap.regions.len());
-            Some(pmap)
-        }
-        _ => {
-            log::warn!("compute_polycube_map: insufficient data");
-            None
-        }
-    }
 }
 
 fn surgery_and_simplification(

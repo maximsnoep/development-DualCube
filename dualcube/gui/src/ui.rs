@@ -1,7 +1,6 @@
 use crate::controls::InteractiveMode;
 use crate::jobs::{Job, JobRequest, JobState};
-use crate::render::{CameraFor, Objects, RenderObjectSetting, RenderObjectSettingStore, uv_domain_region_count};
-use crate::render_skeleton::get_region_color;
+use crate::render::{CameraFor, Objects, RenderObjectSetting, RenderObjectSettingStore};
 use crate::{
     colors, CameraHandles, Configuration, InputResource, Perspective, Phase, PrincipalDirection,
     SolutionResource,
@@ -31,7 +30,6 @@ use std::sync::Mutex;
 static PENDING_FILE_LOAD: Mutex<Option<(PathBuf, Configuration)>> = Mutex::new(None);
 static PENDING_FILE_EXPORT: Mutex<Option<(Solution, PathBuf, ExportType)>> = Mutex::new(None);
 
-
 /// Internal ECS message used to forward tracing/log events into the UI layer.
 ///
 /// This exists so the footer can show the most recent `info!/warn!/error!` line
@@ -41,7 +39,6 @@ pub struct UiLogMessage {
     pub message: String,
     pub level: Level,
 }
-
 
 /// Stores the most recent log line for display in the footer/status bar.
 ///
@@ -187,9 +184,14 @@ impl Default for UiResource {
                 let _right3 =
                     tree.main_surface_mut()
                         .split_right(right1, 0.5, vec![Objects::PolycubeMap])[1];
-                let _right2 =
-                    tree.main_surface_mut()
-                        .split_below(right1, 0.4, vec![Objects::UvDomain, Objects::ContractedMesh, Objects::QuadMesh])[1];
+                let _right2 = tree.main_surface_mut().split_below(
+                    right1,
+                    0.4,
+                    vec![
+                        Objects::ContractedMesh,
+                        Objects::QuadMesh,
+                    ],
+                )[1];
 
                 tree
             },
@@ -296,10 +298,9 @@ impl egui_dock::TabViewer for TabViewer {
                     _ => {
                         let egui_handle = match tab {
                             Objects::PolycubeMap => self.egui_handles[0],
-                            Objects::UvDomain => self.egui_handles[1],
-                            Objects::QuadMesh => self.egui_handles[2],
-                            Objects::Polycube => self.egui_handles[3],
-                            Objects::ContractedMesh => self.egui_handles[4],
+                            Objects::QuadMesh => self.egui_handles[1],
+                            Objects::Polycube => self.egui_handles[2],
+                            Objects::ContractedMesh => self.egui_handles[3],
                             _ => unreachable!(),
                         };
                         let [w, h] = ui.available_size().into();
@@ -491,7 +492,11 @@ fn header(
                         let solution_clone = solution.current_solution.clone();
                         std::thread::spawn(move || {
                             if let Some(path) = rfd::FileDialog::new().save_file() {
-                                PENDING_FILE_EXPORT.lock().unwrap().replace((solution_clone, path, ExportType::Default));
+                                PENDING_FILE_EXPORT.lock().unwrap().replace((
+                                    solution_clone,
+                                    path,
+                                    ExportType::Default,
+                                ));
                             }
                         });
                     }
@@ -500,7 +505,11 @@ fn header(
                         let solution_clone = solution.current_solution.clone();
                         std::thread::spawn(move || {
                             if let Some(path) = rfd::FileDialog::new().save_file() {
-                                PENDING_FILE_EXPORT.lock().unwrap().replace((solution_clone, path, ExportType::NLR));
+                                PENDING_FILE_EXPORT.lock().unwrap().replace((
+                                    solution_clone,
+                                    path,
+                                    ExportType::NLR,
+                                ));
                             }
                         });
                     }
@@ -509,7 +518,11 @@ fn header(
                         let solution_clone = solution.current_solution.clone();
                         std::thread::spawn(move || {
                             if let Some(path) = rfd::FileDialog::new().save_file() {
-                                PENDING_FILE_EXPORT.lock().unwrap().replace((solution_clone, path, ExportType::Dotgraph));
+                                PENDING_FILE_EXPORT.lock().unwrap().replace((
+                                    solution_clone,
+                                    path,
+                                    ExportType::Dotgraph,
+                                ));
                             }
                         });
                     }
@@ -537,7 +550,6 @@ fn header(
                                 Objects::InputMesh => vec!["gray", "wireframe"],
                                 Objects::Polycube => vec!["gray", "paths", "flat paths"],
                                 Objects::PolycubeMap => vec!["colored", "triangles"],
-                                Objects::UvDomain => vec!["input edges", "polycube edges", "boundary", "uv background"],
                                 Objects::QuadMesh => vec!["gray", "wireframe"],
                                 Objects::ContractedMesh => vec!["gray", "wireframe"],
                             };
@@ -557,7 +569,6 @@ fn header(
                                 }
                                 Objects::Polycube => vec!["black", "x-loops", "y-loops", "z-loops"],
                                 Objects::PolycubeMap => vec!["colored", "triangles"],
-                                Objects::UvDomain => vec!["input edges", "polycube edges", "boundary", "uv background"],
                                 Objects::QuadMesh => vec!["gray", "paths", "flat paths"],
                                 Objects::ContractedMesh => vec!["gray", "wireframe"],
                             };
@@ -577,10 +588,9 @@ fn header(
                                 }
                                 Objects::Polycube => vec!["colored", "paths", "flat paths"],
                                 Objects::PolycubeMap => vec!["colored", "triangles"],
-                                Objects::UvDomain => vec!["input edges", "polycube edges", "boundary", "uv background"],
                                 Objects::QuadMesh => {
                                     vec!["colored", "wireframe", "paths", "flat paths"]
-                                },
+                                }
                                 Objects::ContractedMesh => vec!["gray", "wireframe"],
                             };
                             for (label, setting) in settings.settings.iter_mut() {
@@ -965,7 +975,11 @@ fn footer(
                                 text_format(size, color),
                             );
                         } else {
-                            job.append(&latest_log.text, 0.0, text_format(size, Color32::LIGHT_GRAY));
+                            job.append(
+                                &latest_log.text,
+                                0.0,
+                                text_format(size, Color32::LIGHT_GRAY),
+                            );
                         }
                     }
 
@@ -1010,13 +1024,31 @@ pub fn update(
 ) -> Result<(), BevyError> {
     // Poll for async file dialog results
     if let Some((path, configuration)) = PENDING_FILE_LOAD.lock().unwrap().take() {
-        jobs.write(JobRequest::Run(Box::new(Job::Import { path, configuration })));
+        jobs.write(JobRequest::Run(Box::new(Job::Import {
+            path,
+            configuration,
+        })));
     }
     if let Some((sol, path, export_type)) = PENDING_FILE_EXPORT.lock().unwrap().take() {
         match export_type {
-            ExportType::Default => { jobs.write(JobRequest::Run(Box::new(Job::Export { solution: sol, path }))); },
-            ExportType::NLR => { jobs.write(JobRequest::Run(Box::new(Job::ExportNLR { solution: sol, path }))); },
-            ExportType::Dotgraph => { jobs.write(JobRequest::Run(Box::new(Job::ExportDotgraph { solution: sol, path }))); },
+            ExportType::Default => {
+                jobs.write(JobRequest::Run(Box::new(Job::Export {
+                    solution: sol,
+                    path,
+                })));
+            }
+            ExportType::NLR => {
+                jobs.write(JobRequest::Run(Box::new(Job::ExportNLR {
+                    solution: sol,
+                    path,
+                })));
+            }
+            ExportType::Dotgraph => {
+                jobs.write(JobRequest::Run(Box::new(Job::ExportDotgraph {
+                    solution: sol,
+                    path,
+                })));
+            }
         }
     }
 
@@ -1101,23 +1133,41 @@ pub fn update(
                                     }
 
                                     // allow tweaking convexity parameters before running skeleton
-                                    slider(ui, "convexity", &mut conf.convexity_threshold, 0.0..=1.0);
-                                    slider(ui, "merge slack", &mut conf.convexity_merge_slack, 0.0..=1.0);
+                                    slider(
+                                        ui,
+                                        "convexity",
+                                        &mut conf.convexity_threshold,
+                                        0.0..=1.0,
+                                    );
+                                    slider(
+                                        ui,
+                                        "merge slack",
+                                        &mut conf.convexity_merge_slack,
+                                        0.0..=1.0,
+                                    );
 
                                     // Skeleton controls
-                                    if let Some(skeleton_data) = &solution.current_solution.skeleton {
+                                    if let Some(skeleton_data) = &solution.current_solution.skeleton
+                                    {
                                         // Collapse history controls
                                         if let Some(history_size) = skeleton_data.history_size() {
                                             if history_size > 0 {
                                                 sep(ui);
                                                 label(ui, "Collapse history", 12., Color32::WHITE);
                                                 space(ui);
-                                                slider(ui, "step", &mut conf.collapse_history_step, 0..=history_size);
+                                                slider(
+                                                    ui,
+                                                    "step",
+                                                    &mut conf.collapse_history_step,
+                                                    0..=history_size,
+                                                );
                                                 space(ui);
                                                 if sleek_button(ui, "reconstruct") {
                                                     jobs.write(JobRequest::Run(Box::new(
                                                         Job::Refresh {
-                                                            solution: solution.current_solution.clone(),
+                                                            solution: solution
+                                                                .current_solution
+                                                                .clone(),
                                                             configuration: conf.clone(),
                                                         },
                                                     )));
@@ -1129,49 +1179,15 @@ pub fn update(
                                 });
                                 let status = match &solution.current_solution.skeleton {
                                     Some(s) => {
-                                        let count = s.cleaned_skeleton().map(|sk| sk.node_count()).unwrap_or(0);
+                                        let count = s
+                                            .cleaned_skeleton()
+                                            .map(|sk| sk.node_count())
+                                            .unwrap_or(0);
                                         format!("({})", count)
                                     }
                                     None => "(-)".to_string(),
                                 };
                                 label(ui, &status, text_size, Color32::GRAY);
-
-                                // UV domain region selector — inline so ComboBox popup
-                                // doesn't conflict with any menu popup.
-                                let n_regions = uv_domain_region_count(&solution.current_solution);
-                                if n_regions > 0 {
-                                    let prev_region = conf.uv_domain_region;
-                                    ComboBox::from_id_salt("uv_region_selector")
-                                        .width(120.0)
-                                        .selected_text({
-                                            let idx = conf.uv_domain_region.min(n_regions - 1);
-                                            let c = get_region_color(idx);
-                                            let rc = Color32::from_rgb(
-                                                (c[0] * 255.0) as u8,
-                                                (c[1] * 255.0) as u8,
-                                                (c[2] * 255.0) as u8,
-                                            );
-                                            RichText::new(format!("Region {}", idx)).color(rc).size(12.)
-                                        })
-                                        .show_ui(ui, |ui: &mut Ui| {
-                                            for i in 0..n_regions {
-                                                let c = get_region_color(i);
-                                                let rc = Color32::from_rgb(
-                                                    (c[0] * 255.0) as u8,
-                                                    (c[1] * 255.0) as u8,
-                                                    (c[2] * 255.0) as u8,
-                                                );
-                                                let text = RichText::new(format!("Region {}", i)).color(rc).size(12.);
-                                                ui.selectable_value(&mut conf.uv_domain_region, i, text);
-                                            }
-                                        });
-                                    if conf.uv_domain_region != prev_region {
-                                        jobs.write(JobRequest::Run(Box::new(Job::Refresh {
-                                            solution: solution.current_solution.clone(),
-                                            configuration: conf.clone(),
-                                        })));
-                                    }
-                                }
                             }
 
                             if conf.stop == Phase::Skeleton {
