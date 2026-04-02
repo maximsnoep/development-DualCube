@@ -1,6 +1,7 @@
 use crate::layout::LayoutError;
 use crate::polycube::POLYCUBE;
 use crate::prelude::*;
+use crate::skeleton::skel_layout::populate_layout_from_skeleton;
 use crate::skeleton::{
     SkeletonData,
     generate_loops,
@@ -172,6 +173,9 @@ impl Solution {
             let (polycube, quad) = data.update_convexity(mesh, convexity_threshold, convexity_merge_threshold, omega);
             self.polycube = polycube;
             self.quad = quad;
+
+            let skeleton_data = data.clone();
+            self.layout = populate_layout_from_skeleton(&skeleton_data);
         } else {
             let (skeleton, polycube, quad) = get_skeleton_based_mapping(
                 mesh,
@@ -179,12 +183,16 @@ impl Solution {
                 convexity_merge_threshold,
                 omega,
             );
+
+            self.layout = populate_layout_from_skeleton(&skeleton);
             self.skeleton = Some(skeleton);
             self.polycube = polycube;
             self.quad = quad;
         }
         generate_loops();
     }
+
+
 
     // Initialize loop structure
     pub fn initialize(&mut self, flow_graphs: &[grapff::fixed::FixedGraph<EdgeID, f64>; 3]) {

@@ -23,6 +23,7 @@ use crate::{
 
 pub mod curve_skeleton;
 pub mod orthogonalize;
+pub mod skel_layout;
 
 mod boundary_loop;
 mod connectivity_surgery;
