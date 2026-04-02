@@ -1,7 +1,7 @@
 use crate::layout::LayoutError;
 use crate::polycube::POLYCUBE;
 use crate::prelude::*;
-use crate::skeleton::skel_layout::populate_layout_from_skeleton;
+use crate::skeleton::skel_layout::{PartialLayout, populate_layout_from_skeleton};
 use crate::skeleton::{
     SkeletonData,
     generate_loops,
@@ -125,6 +125,7 @@ pub struct Solution {
     pub dual: Result<Dual, PropertyViolationError>,
     pub polycube: Option<Polycube>,
     pub layout: Option<Layout>,
+    pub partial_layout: Option<PartialLayout>,
     pub quad: Option<Quad>,
 
     pub fields: Option<crate::field::Fields<INPUT>>,
@@ -137,6 +138,7 @@ impl Solution {
         self.dual = Err(PropertyViolationError::default());
         self.polycube = None;
         self.layout = None;
+        self.partial_layout = None;
         // Note: skeleton is NOT cleared here as it's independent of the loop-based solution // TODO: is this still correct?
     }
 
@@ -154,6 +156,7 @@ impl Solution {
             dual: Err(PropertyViolationError::default()),
             polycube: None,
             layout: None,
+            partial_layout: None,
             quad: None,
             external_flag: None,
             last_loop: None,
@@ -175,7 +178,10 @@ impl Solution {
             self.quad = quad;
 
             let skeleton_data = data.clone();
-            self.layout = populate_layout_from_skeleton(&skeleton_data);
+            let (layout, partial_layout) =
+                populate_layout_from_skeleton(&skeleton_data, self.mesh_ref.as_ref());
+            self.layout = layout;
+            self.partial_layout = partial_layout;
         } else {
             let (skeleton, polycube, quad) = get_skeleton_based_mapping(
                 mesh,
@@ -184,7 +190,10 @@ impl Solution {
                 omega,
             );
 
-            self.layout = populate_layout_from_skeleton(&skeleton);
+            let (layout, partial_layout) =
+                populate_layout_from_skeleton(&skeleton, self.mesh_ref.as_ref());
+            self.layout = layout;
+            self.partial_layout = partial_layout;
             self.skeleton = Some(skeleton);
             self.polycube = polycube;
             self.quad = quad;

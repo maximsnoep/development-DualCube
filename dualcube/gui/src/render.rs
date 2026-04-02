@@ -384,6 +384,7 @@ pub fn update_render_settings(
             (Objects::InputMesh, "wireframe")
                 | (Objects::InputMesh, "patches")
                 | (Objects::InputMesh, "cuts")
+                | (Objects::InputMesh, "partial layout")
                 // | (Objects::InputMesh, "virtual mesh debug")
                 | (Objects::InputMesh, "uv long edges")
                 // | (Objects::InputMesh, "uv patches")
@@ -1038,6 +1039,7 @@ pub fn refresh(solution: &Solution, configuration: &Configuration) -> RenderObje
                 let features =
                     dualcube::feature::feature_extraction(input, std::f64::consts::FRAC_PI_3, 1);
                 let mut gizmos_features = GizmoAsset::new();
+                let mut gizmos_partial_layout = GizmoAsset::new();
                 let cs = [
                     colors::to_bevy(colors::from_direction(PrincipalDirection::X, None, None)),
                     colors::to_bevy(colors::from_direction(PrincipalDirection::Y, None, None)),
@@ -1055,6 +1057,41 @@ pub fn refresh(solution: &Solution, configuration: &Configuration) -> RenderObje
                         let u_transformed = world_to_view(u, translation, scale);
                         let v_transformed = world_to_view(v, translation, scale);
                         gizmos_features.line(u_transformed, v_transformed, color);
+                    }
+                }
+
+                if let Some(partial_layout) = &solution.partial_layout {
+                    let corner_color = bevy::color::Color::srgb(1.0, 0.5, 0.1);
+                    let path_color = bevy::color::Color::srgb(0.1, 0.9, 0.95);
+
+                    let mut emitted_corners = HashSet::new();
+                    for corners in partial_layout.corner_vertices.values() {
+                        for &corner in corners {
+                            if !emitted_corners.insert(corner) {
+                                continue;
+                            }
+
+                            let corner_pos = input.position(corner);
+                            gizmos_partial_layout.sphere(
+                                Isometry3d::from_translation(world_to_view(
+                                    corner_pos,
+                                    translation,
+                                    scale,
+                                )),
+                                0.3,
+                                corner_color,
+                            );
+                        }
+                    }
+
+                    for paths in partial_layout.corner_paths.values() {
+                        for path in paths {
+                            for segment in path.windows(2) {
+                                let u = world_to_view(input.position(segment[0]), translation, scale);
+                                let v = world_to_view(input.position(segment[1]), translation, scale);
+                                gizmos_partial_layout.line(u, v, path_color);
+                            }
+                        }
                     }
                 }
 
@@ -1327,6 +1364,7 @@ pub fn refresh(solution: &Solution, configuration: &Configuration) -> RenderObje
                     .gizmo(gizmos_zloops, 3., -0.000111, "z-loops")
                     .gizmo(gizmos_paths, 4., -0.0001, "paths")
                     .gizmo(gizmos_flat_paths, 2., -0.00011, "flat paths")
+                    .gizmo(gizmos_partial_layout, 4., -0.000115, "partial layout")
                     // .mesh(input, &color_map_flag, "flag")
                     // .gizmo(gizmos_flag_paths, 2., -1e-4, "flag paths")
                     .gizmo(gizmos_features, 5., -0.00012, "features")

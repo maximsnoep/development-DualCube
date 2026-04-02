@@ -547,7 +547,9 @@ fn header(
                     if sleek_button(ui, "> Grayscale") {
                         for (object, settings) in render_object_settings_store.objects.iter_mut() {
                             let show = match object {
-                                Objects::InputMesh => vec!["gray", "wireframe"],
+                                Objects::InputMesh => {
+                                    vec!["gray", "wireframe", "partial layout"]
+                                }
                                 Objects::Polycube => vec!["gray", "paths", "flat paths"],
                                 Objects::PolycubeMap => vec!["colored", "triangles"],
                                 Objects::QuadMesh => vec!["gray", "wireframe"],
@@ -565,7 +567,13 @@ fn header(
                         for (object, settings) in render_object_settings_store.objects.iter_mut() {
                             let show = match object {
                                 Objects::InputMesh => {
-                                    vec!["black", "x-loops", "y-loops", "z-loops"]
+                                    vec![
+                                        "black",
+                                        "x-loops",
+                                        "y-loops",
+                                        "z-loops",
+                                        "partial layout",
+                                    ]
                                 }
                                 Objects::Polycube => vec!["black", "x-loops", "y-loops", "z-loops"],
                                 Objects::PolycubeMap => vec!["colored", "triangles"],
@@ -584,7 +592,13 @@ fn header(
                         for (object, settings) in render_object_settings_store.objects.iter_mut() {
                             let show = match object {
                                 Objects::InputMesh => {
-                                    vec!["segmentation", "paths", "flat paths", "wireframe"]
+                                    vec![
+                                        "segmentation",
+                                        "paths",
+                                        "flat paths",
+                                        "wireframe",
+                                        "partial layout",
+                                    ]
                                 }
                                 Objects::Polycube => vec!["colored", "paths", "flat paths"],
                                 Objects::PolycubeMap => vec!["colored", "triangles"],
