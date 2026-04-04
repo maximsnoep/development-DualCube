@@ -1,7 +1,7 @@
 use crate::layout::LayoutError;
 use crate::polycube::POLYCUBE;
 use crate::prelude::*;
-use crate::skeleton::generate_loops::generate_loops;
+use crate::skeleton::generate_loops::{CrossingMap, generate_loops};
 use crate::skeleton::{get_skeleton_based_mapping, SkeletonData};
 use crate::{
     dual::{Dual, PropertyViolationError},
@@ -117,6 +117,11 @@ pub struct Solution {
     pub last_loop: Option<LoopID>,
 
     pub skeleton: Option<SkeletonData>,
+    /// Crossing points per boundary loop, keyed by (orthogonal direction, sign).
+    /// Not serialized — recomputed from the skeleton on load.
+    /// Only used for visualisation. TODO: remove later
+    #[serde(skip, default)]
+    pub loop_crossings: Option<CrossingMap>,
 
     pub dual: Result<Dual, PropertyViolationError>,
     pub polycube: Option<Polycube>,
@@ -147,6 +152,7 @@ impl Solution {
             loops: SlotMap::with_key(),
             occupied: ids::SecMap::new(),
             skeleton: None,
+            loop_crossings: None,
             dual: Err(PropertyViolationError::default()),
             polycube: None,
             layout: None,
@@ -182,8 +188,9 @@ impl Solution {
             self.quad = quad;
         }
         let loops = generate_loops(self.skeleton.as_ref().unwrap(), &self.mesh_ref);
-        if let Ok(loops) = loops {
+        if let Ok((loops, crossings)) = loops {
             self.loops = loops;
+            self.loop_crossings = Some(crossings);
             self.recompute_occupied();
             if self.reconstruct_solution(false, 1).is_err() {
                 log::warn!("Failed to reconstruct solution after skeleton update.");

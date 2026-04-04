@@ -41,7 +41,7 @@ pub enum LoopGenerationError {
 pub fn generate_loops(
     skeleton_data: &SkeletonData,
     mesh: &Mesh<INPUT>,
-) -> Result<SlotMap<LoopID, Loop>, LoopGenerationError> {
+) -> Result<(SlotMap<LoopID, Loop>, CrossingMap), LoopGenerationError> {
     let mut map: SlotMap<LoopID, Loop> = SlotMap::with_key();
 
     // Use ortho-skeleton, for each patch boundary assign 4 points that will host loop (paths).
@@ -59,7 +59,7 @@ pub fn generate_loops(
     // Trace paths between boundaries and points to create the loops
     // TODO: restricted Dijkstra's or something. Can be somewhat smart about ordering and having the second loop of each pair be as far as possible from the first to nicely divide the surface.
 
-    Ok(map)
+    Ok((map, crossings))
 }
 
 /// Calculates for each patch-patch boundary the appropriate loop and crossing points for the other two loop types.

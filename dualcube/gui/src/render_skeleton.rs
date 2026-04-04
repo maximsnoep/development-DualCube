@@ -4,7 +4,8 @@ use bevy::prelude::{Color, *};
 use dualcube::polycube::POLYCUBE;
 use dualcube::prelude::*;
 use dualcube::skeleton::curve_skeleton::CurveSkeletonSpatial;
-use dualcube::skeleton::orthogonalize::LabeledCurveSkeleton;
+use dualcube::skeleton::generate_loops::CrossingMap;
+use dualcube::skeleton::orthogonalize::{AxisSign, LabeledCurveSkeleton};
 use itertools::Itertools;
 use mehsh::integrations::bevy::MeshBuilder;
 use mehsh::prelude::*;
@@ -555,6 +556,40 @@ fn boundary_gizmos_from_regions<T: Tag>(
 
         if boundary_midpoints.len() == 2 {
             gizmos.line(boundary_midpoints[0], boundary_midpoints[1], boundary_color);
+        }
+    }
+
+    gizmos
+}
+
+// TODO: remove later
+/// Creates gizmos for boundary loop crossing points as spheres on the input mesh.
+///
+/// For each boundary loop, draws 4 spheres at the edge midpoints that are most extreme
+/// in each orthogonal (direction, sign). Sphere color matches the crossing loop direction.
+/// Positive-sign crossings use a larger sphere; negative-sign crossings use a smaller one.
+pub fn create_crossing_point_gizmos(
+    crossings: &CrossingMap,
+    mesh: &mehsh::prelude::Mesh<INPUT>,
+    translation: Vector3D,
+    scale: f64,
+) -> GizmoAsset {
+    let mut gizmos = GizmoAsset::new();
+    const RADIUS_POSITIVE: f32 = 0.35;
+    const RADIUS_NEGATIVE: f32 = 0.18;
+
+    for (_loop_id, per_dir) in crossings {
+        for ((ortho_dir, sign), &edge_id) in per_dir {
+            let pos = mesh.position(edge_id);
+            let center = world_to_view(pos, translation, scale);
+
+            let color = colors::to_bevy(colors::from_direction(*ortho_dir, None, None));
+            let radius = match sign {
+                AxisSign::Positive => RADIUS_POSITIVE,
+                AxisSign::Negative => RADIUS_NEGATIVE,
+            };
+
+            gizmos.sphere(Isometry3d::from_translation(center), radius, color);
         }
     }
 

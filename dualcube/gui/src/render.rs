@@ -1,7 +1,7 @@
 use crate::render_skeleton::{
-    create_labeled_skeleton_gizmos, create_patch_boundary_gizmos, create_patch_convexity_mesh,
-    create_patch_mesh, create_polycube_patch_boundary_gizmos, create_polycube_patch_mesh,
-    create_skeleton_gizmos,
+    create_crossing_point_gizmos, create_labeled_skeleton_gizmos, create_patch_boundary_gizmos,
+    create_patch_convexity_mesh, create_patch_mesh, create_polycube_patch_boundary_gizmos,
+    create_polycube_patch_mesh, create_skeleton_gizmos,
 };
 use crate::ui::UiResource;
 use crate::{colors, MainMesh, PerpetualGizmos};
@@ -1333,6 +1333,13 @@ pub fn refresh(solution: &Solution, configuration: &Configuration) -> RenderObje
                     .gizmo(granulated_mesh_gizmos, 0.5, -0.00001, "refined wireframe")
                     .gizmo(gizmos_raw_skeleton, 25., -0.00014, "raw skeleton")
                     .gizmo(gizmos_cleaned_skeleton, 25., -0.00015, "cleaned skeleton");
+
+                // TODO: remove later
+                if let Some(crossings) = &solution.loop_crossings {
+                    let crossing_gizmos =
+                        create_crossing_point_gizmos(crossings, input, translation, scale);
+                    render_obj.gizmo(crossing_gizmos, 25., -0.00016, "loop crossings");
+                }
 
                 let mut patch_convexity_mesh: Option<bevy::mesh::Mesh> = None;
                 let mut collapse_history_mesh: Option<bevy::mesh::Mesh> = None;
