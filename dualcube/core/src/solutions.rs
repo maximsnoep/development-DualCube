@@ -1,7 +1,8 @@
 use crate::layout::LayoutError;
 use crate::polycube::POLYCUBE;
 use crate::prelude::*;
-use crate::skeleton::{generate_loops, get_skeleton_based_mapping, SkeletonData};
+use crate::skeleton::generate_loops::generate_loops;
+use crate::skeleton::{get_skeleton_based_mapping, SkeletonData};
 use crate::{
     dual::{Dual, PropertyViolationError},
     layout::Layout,

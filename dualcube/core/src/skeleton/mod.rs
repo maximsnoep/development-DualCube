@@ -3,7 +3,6 @@ use std::sync::Arc;
 use log::{info, warn};
 use mehsh::prelude::Mesh;
 use serde::{Deserialize, Serialize};
-use slotmap::SlotMap;
 
 use crate::{
     prelude::{INPUT, Polycube},
@@ -19,11 +18,12 @@ use crate::{
             VolumeCollapseHistory, construct_skeleton_from_history, volume_based_collapse
         },
         voxelize::generate_polycube,
-    }, solutions::{Loop, LoopID},
+    },
 };
 
 pub mod curve_skeleton;
 pub mod orthogonalize;
+pub mod generate_loops;
 
 mod boundary_loop;
 mod connectivity_surgery;
@@ -258,11 +258,4 @@ fn post_simplification_stage(
     (labeled, history, polycube)
 }
 
-/// Generates surface-embedded loops from a polycube and polycube map.
-pub fn generate_loops(skeleton: &SkeletonData, mesh: &Mesh<INPUT>) -> SlotMap<LoopID, Loop> {
-    let slots : SlotMap<LoopID, Loop> = SlotMap::with_key();
 
-    // TODO
-
-    slots
-}
