@@ -34,10 +34,10 @@ pub fn generate_loops(
 
     // For each patch, for each side that does not correspond to a boundary,
     // find a point on the surface that represents the center of that face.
-    // TODO
+    // TODO: from the skeleton node, we will have 6 vectors that are ideally all equally spaced angle-wise. For each direction that does not have a boundary, we can find an ideal direction, then find a point far in that direction on the surface.
 
     // Trace paths between boundaries and points to create the loops
-    // TODO
+    // TODO: restricted Dijkstra's or something. Can be somewhat smart about ordering and having the second loop of each pair be as far as possible from the first to nicely divide the surface.
 
     Ok(map)
 }
