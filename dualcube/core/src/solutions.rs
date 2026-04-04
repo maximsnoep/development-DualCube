@@ -181,10 +181,13 @@ impl Solution {
             self.polycube = polycube;
             self.quad = quad;
         }
-        self.loops = generate_loops(self.skeleton.as_ref().unwrap(), &self.mesh_ref);
-        self.recompute_occupied();
-        if self.reconstruct_solution(false, 1).is_err() {
-            log::warn!("Failed to reconstruct solution after skeleton update.");
+        let loops = generate_loops(self.skeleton.as_ref().unwrap(), &self.mesh_ref);
+        if let Ok(loops) = loops {
+            self.loops = loops;
+            self.recompute_occupied();
+            if self.reconstruct_solution(false, 1).is_err() {
+                log::warn!("Failed to reconstruct solution after skeleton update.");
+            }
         }
     }
 
