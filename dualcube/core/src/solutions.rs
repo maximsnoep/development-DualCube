@@ -1,11 +1,7 @@
 use crate::layout::LayoutError;
 use crate::polycube::POLYCUBE;
 use crate::prelude::*;
-use crate::skeleton::{
-    SkeletonData,
-    generate_loops,
-    get_skeleton_based_mapping,
-};
+use crate::skeleton::{generate_loops, get_skeleton_based_mapping, SkeletonData};
 use crate::{
     dual::{Dual, PropertyViolationError},
     layout::Layout,
@@ -169,7 +165,8 @@ impl Solution {
     ) {
         let mesh = self.mesh_ref.clone();
         if let Some(data) = &mut self.skeleton {
-            let (polycube, quad) = data.update_convexity(mesh, convexity_threshold, convexity_merge_threshold, omega);
+            let (polycube, quad) =
+                data.update_convexity(mesh, convexity_threshold, convexity_merge_threshold, omega);
             self.polycube = polycube;
             self.quad = quad;
         } else {
@@ -183,7 +180,11 @@ impl Solution {
             self.polycube = polycube;
             self.quad = quad;
         }
-        generate_loops();
+        self.loops = generate_loops(self.skeleton.as_ref().unwrap(), &self.mesh_ref);
+        self.recompute_occupied();
+        if self.reconstruct_solution(false, 1).is_err() {
+            log::warn!("Failed to reconstruct solution after skeleton update.");
+        }
     }
 
     // Initialize loop structure
