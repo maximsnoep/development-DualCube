@@ -99,11 +99,17 @@ fn get_boundaries_and_crossing_points(
         let target_dirs = &node_directions[&edge.target()];
 
         let mut loop_crossings = HashMap::new();
-        for &ortho_dir in ALL_DIRS.iter().filter(|&&d| d != direction) {
+        let ortho: Vec<_> = ALL_DIRS.iter().copied().filter(|&d| d != direction).collect();
+        // ortho has exactly 2 entries, e.g. [Y, Z] for an X-boundary.
+        // A loop of type ortho[0] (Y) runs perpendicular to Y, so it crosses at
+        // the point most extreme in the *other* orthogonal direction (Z), and vice versa.
+        // search_dir is the direction we search extremes in; crossing_dir is the loop type.
+        for i in 0..2 {
+            let search_dir = ortho[i];
+            let crossing_dir = ortho[1 - i];
             for sign in ALL_SIGNS {
-                // Average direction vectors from both endpoint nodes
-                let dir_src = source_dirs[&(ortho_dir, sign)];
-                let dir_tgt = target_dirs[&(ortho_dir, sign)];
+                let dir_src = source_dirs[&(search_dir, sign)];
+                let dir_tgt = target_dirs[&(search_dir, sign)];
                 let dir_vec = ((dir_src + dir_tgt) / 2.0).normalize();
 
                 let &best_edge = boundary
@@ -118,7 +124,7 @@ fn get_boundaries_and_crossing_points(
                     })
                     .expect("boundary loop should not be empty");
 
-                loop_crossings.insert((ortho_dir, sign), best_edge);
+                loop_crossings.insert((crossing_dir, sign), best_edge);
             }
         }
         crossings.insert(loop_id, loop_crossings);
