@@ -1,7 +1,7 @@
 use crate::layout::LayoutError;
 use crate::polycube::POLYCUBE;
 use crate::prelude::*;
-use crate::skeleton::generate_loops::{CrossingMap, generate_loops};
+use crate::skeleton::generate_loops::{CrossingMap, FacePointMap, generate_loops};
 use crate::skeleton::{get_skeleton_based_mapping, SkeletonData};
 use crate::{
     dual::{Dual, PropertyViolationError},
@@ -123,6 +123,12 @@ pub struct Solution {
     #[serde(skip, default)]
     pub loop_crossings: Option<CrossingMap>,
 
+    /// Face points per node, keyed by (direction, sign). Boundary directions store the loop
+    /// centroid; directions without a neighbor store an interior mesh-edge midpoint.
+    /// Not serialized — recomputed from the skeleton on load.
+    #[serde(skip, default)]
+    pub face_points: Option<FacePointMap>,
+
     pub dual: Result<Dual, PropertyViolationError>,
     pub polycube: Option<Polycube>,
     pub layout: Option<Layout>,
@@ -153,6 +159,7 @@ impl Solution {
             occupied: ids::SecMap::new(),
             skeleton: None,
             loop_crossings: None,
+            face_points: None,
             dual: Err(PropertyViolationError::default()),
             polycube: None,
             layout: None,
@@ -188,9 +195,10 @@ impl Solution {
             self.quad = quad;
         }
         let loops = generate_loops(self.skeleton.as_ref().unwrap(), &self.mesh_ref);
-        if let Ok((loops, crossings)) = loops {
+        if let Ok((loops, crossings, face_points)) = loops {
             self.loops = loops;
             self.loop_crossings = Some(crossings);
+            self.face_points = Some(face_points);
             self.recompute_occupied();
             if self.reconstruct_solution(false, 1).is_err() {
                 log::warn!("Failed to reconstruct solution after skeleton update.");

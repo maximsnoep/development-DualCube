@@ -1,14 +1,15 @@
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
-use mehsh::prelude::{HasPosition, Mesh, Vector3D};
+use log::warn;
+use mehsh::prelude::{HasFaces, HasPosition, HasVertices, Mesh, Vector3D};
 use petgraph::{
-    graph::EdgeIndex,
-    visit::{EdgeRef, IntoEdgeReferences},
+    graph::{EdgeIndex, NodeIndex},
+    visit::{EdgeRef, IntoEdgeReferences, IntoNodeReferences},
 };
 use slotmap::SlotMap;
 
 use crate::{
-    prelude::{EdgeID, PrincipalDirection, INPUT},
+    prelude::{EdgeID, PrincipalDirection, VertID, INPUT},
     skeleton::{
         boundary_loop::BoundaryLoop,
         orthogonalize::{AxisSign, LabeledCurveSkeleton},
@@ -27,6 +28,10 @@ const ALL_SIGNS: [AxisSign; 2] = [AxisSign::Positive, AxisSign::Negative];
 /// Per boundary loop, the crossing points for each orthogonal (direction, sign).
 pub type CrossingMap = HashMap<LoopID, HashMap<(PrincipalDirection, AxisSign), EdgeID>>;
 
+/// Per node, a face point for each (direction, sign) slot that has no neighboring patch.
+/// Each face point is an interior mesh edge midpoint on the patch surface.
+pub type FacePointMap = HashMap<NodeIndex, HashMap<(PrincipalDirection, AxisSign), EdgeID>>;
+
 // custom error
 pub enum LoopGenerationError {
     MissingLabeledSkeleton,
@@ -37,25 +42,20 @@ pub enum LoopGenerationError {
 pub fn generate_loops(
     skeleton_data: &SkeletonData,
     mesh: &Mesh<INPUT>,
-) -> Result<(SlotMap<LoopID, Loop>, CrossingMap), LoopGenerationError> {
+) -> Result<(SlotMap<LoopID, Loop>, CrossingMap, FacePointMap), LoopGenerationError> {
     let mut map: SlotMap<LoopID, Loop> = SlotMap::with_key();
 
-    // Use ortho-skeleton, for each patch boundary assign 4 points that will host loop (paths).
-    // throw warn and return if not there
     let skeleton: &LabeledCurveSkeleton = skeleton_data
         .labeled_skeleton
         .as_ref()
         .ok_or_else(|| LoopGenerationError::MissingLabeledSkeleton)?;
     let (boundary_map, crossings) = get_boundaries_and_crossing_points(skeleton, mesh, &mut map);
-
-    // For each patch, for each side that does not correspond to a boundary,
-    // find a point on the surface that represents the center of that face.
-    // TODO: from the skeleton node, we will have 6 vectors that are ideally all equally spaced angle-wise. For each direction that does not have a boundary, we can find an ideal direction, then find a point far in that direction on the surface.
+    let face_points = compute_face_points(skeleton, mesh);
 
     // Trace paths between boundaries and points to create the loops
     // TODO: restricted Dijkstra's or something. Can be somewhat smart about ordering and having the second loop of each pair be as far as possible from the first to nicely divide the surface.
 
-    Ok((map, crossings))
+    Ok((map, crossings, face_points))
 }
 
 /// Calculates for each patch-patch boundary the appropriate loop and crossing points for the other two loop types.
@@ -154,6 +154,152 @@ fn get_boundaries_and_crossing_points(
     }
 
     (boundary_map, crossings)
+}
+
+/// For each skeleton node, finds an interior mesh edge midpoint for every (direction, sign)
+/// slot that does not already have a neighboring patch (skeleton edge).
+///
+/// Boundary centroids from existing edges are used internally as direction constraints:
+/// if the opposite sign of the same direction has a boundary, the face point is placed
+/// directly opposite it. Otherwise falls back to the global axis direction.
+pub fn compute_face_points(skeleton: &LabeledCurveSkeleton, mesh: &Mesh<INPUT>) -> FacePointMap {
+    let mut result: FacePointMap = HashMap::new();
+
+    for (node_idx, node_weight) in skeleton.node_references() {
+        let node_pos = node_weight.skeleton_node.position;
+        let patch_set: HashSet<VertID> = node_weight
+            .skeleton_node
+            .patch_vertices
+            .iter()
+            .copied()
+            .collect();
+
+        // --- Step 1: record boundary centroids and their directions ---
+        // These are NOT stored in the output, only used to guide placement of missing slots.
+        let mut occupied: HashSet<(PrincipalDirection, AxisSign)> = HashSet::new();
+        let mut boundary_centroids: HashMap<(PrincipalDirection, AxisSign), Vector3D> =
+            HashMap::new();
+        let mut known_dirs: Vec<Vector3D> = Vec::new();
+
+        for edge_ref in skeleton.edges(node_idx) {
+            let ew = edge_ref.weight();
+            let dir = ew.direction;
+            let sign = if edge_ref.source() == node_idx {
+                ew.sign
+            } else {
+                ew.sign.flipped()
+            };
+
+            let boundary = &ew.boundary_loop;
+            let n = boundary.edge_midpoints.len() as f64;
+            let centroid: Vector3D = boundary
+                .edge_midpoints
+                .iter()
+                .fold(Vector3D::zeros(), |acc, &e| acc + mesh.position(e))
+                / n;
+
+            let dir_vec = (centroid - node_pos).normalize();
+            known_dirs.push(dir_vec);
+            occupied.insert((dir, sign));
+            boundary_centroids.insert((dir, sign), centroid);
+        }
+
+        // --- Step 2: collect candidate interior edge midpoints ---
+        let mut seen: HashSet<(VertID, VertID)> = HashSet::new();
+        let mut candidates: Vec<EdgeID> = Vec::new();
+
+        for &v in &node_weight.skeleton_node.patch_vertices {
+            for face in mesh.faces(v) {
+                let verts: Vec<VertID> = mesh.vertices(face).collect();
+                for i in 0..verts.len() {
+                    let a = verts[i];
+                    let b = verts[(i + 1) % verts.len()];
+                    if !patch_set.contains(&a) || !patch_set.contains(&b) {
+                        continue;
+                    }
+                    let key = if a < b { (a, b) } else { (b, a) };
+                    if seen.insert(key) {
+                        if let Some((e, _)) = mesh.edge_between_verts(a, b) {
+                            candidates.push(e);
+                        }
+                    }
+                }
+            }
+        }
+
+        if candidates.is_empty() {
+            warn!(
+                "Node {:?} has no interior edge candidates for missing face points.",
+                node_idx
+            );
+        }
+
+        // --- Step 3: fill missing slots (only directions without a skeleton edge) ---
+        let mut interior_points: HashMap<(PrincipalDirection, AxisSign), EdgeID> = HashMap::new();
+
+        for dir in ALL_DIRS {
+            for sign in ALL_SIGNS {
+                if occupied.contains(&(dir, sign)) {
+                    continue;
+                }
+                if candidates.is_empty() {
+                    continue;
+                }
+
+                let opposite_sign = sign.flipped();
+                let target_dir = if let Some(&centroid) =
+                    boundary_centroids.get(&(dir, opposite_sign))
+                {
+                    // Opposite side has a boundary: place directly opposite its centroid
+                    -(centroid - node_pos).normalize()
+                } else if let Some(&edge) = interior_points.get(&(dir, opposite_sign)) {
+                    // Opposite side was already placed as an interior point: go opposite
+                    -(edge_midpoint_pos(edge, mesh) - node_pos).normalize()
+                } else {
+                    // No opposite exists yet: use global axis direction
+                    match sign {
+                        AxisSign::Positive => Vector3D::from(dir),
+                        AxisSign::Negative => -Vector3D::from(dir),
+                    }
+                };
+
+                let best = *candidates
+                    .iter()
+                    .max_by(|&&e1, &&e2| {
+                        let v1 = (edge_midpoint_pos(e1, mesh) - node_pos).normalize();
+                        let v2 = (edge_midpoint_pos(e2, mesh) - node_pos).normalize();
+                        let dot1 = v1.dot(&target_dir);
+                        let dot2 = v2.dot(&target_dir);
+                        dot1.partial_cmp(&dot2)
+                            .unwrap_or(std::cmp::Ordering::Equal)
+                    })
+                    .expect("candidates is non-empty");
+
+                let best_pos = edge_midpoint_pos(best, mesh);
+                known_dirs.push((best_pos - node_pos).normalize());
+                interior_points.insert((dir, sign), best);
+            }
+        }
+
+        result.insert(node_idx, interior_points);
+    }
+
+    result
+}
+
+/// Position of an edge's midpoint.
+fn edge_midpoint_pos(e: EdgeID, mesh: &Mesh<INPUT>) -> Vector3D {
+    let a = mesh.position(mesh.root(e));
+    let b = mesh.position(mesh.toor(e));
+    (a + b) * 0.5
+}
+
+/// Minimum angle (radians) between `v` and any vector in `others`. Returns π if `others` is empty.
+fn min_angle_to(v: &Vector3D, others: &[Vector3D]) -> f64 {
+    others
+        .iter()
+        .map(|d| d.dot(v).clamp(-1.0, 1.0).acos())
+        .fold(std::f64::consts::PI, f64::min)
 }
 
 /// Shortest angular distance between two angles in radians.

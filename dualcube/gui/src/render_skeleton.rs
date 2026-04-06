@@ -4,7 +4,7 @@ use bevy::prelude::{Color, *};
 use dualcube::polycube::POLYCUBE;
 use dualcube::prelude::*;
 use dualcube::skeleton::curve_skeleton::CurveSkeletonSpatial;
-use dualcube::skeleton::generate_loops::CrossingMap;
+use dualcube::skeleton::generate_loops::{CrossingMap, FacePointMap};
 use dualcube::skeleton::orthogonalize::{AxisSign, LabeledCurveSkeleton};
 use itertools::Itertools;
 use mehsh::integrations::bevy::MeshBuilder;
@@ -556,6 +556,34 @@ fn boundary_gizmos_from_regions<T: Tag>(
 
         if boundary_midpoints.len() == 2 {
             gizmos.line(boundary_midpoints[0], boundary_midpoints[1], boundary_color);
+        }
+    }
+
+    gizmos
+}
+
+// TODO: remove later
+/// Creates gizmos for face points as spheres on the input mesh.
+///
+/// For each node, draws 6 spheres (one per direction/sign slot). Color matches the direction.
+/// Boundary face points (loop centroid) use a larger sphere; interior edge midpoints use a smaller one.
+pub fn create_face_point_gizmos(
+    face_points: &FacePointMap,
+    mesh: &mehsh::prelude::Mesh<INPUT>,
+    translation: Vector3D,
+    scale: f64,
+) -> GizmoAsset {
+    let mut gizmos = GizmoAsset::new();
+    const RADIUS: f32 = 0.25;
+
+    for (_node_idx, per_dir) in face_points {
+        for ((dir, _sign), &edge_id) in per_dir {
+            let a = mesh.position(mesh.root(edge_id));
+            let b = mesh.position(mesh.toor(edge_id));
+            let pos = (a + b) * 0.5;
+            let center = world_to_view(pos, translation, scale);
+            let color = colors::to_bevy(colors::from_direction(*dir, None, None));
+            gizmos.sphere(Isometry3d::from_translation(center), RADIUS, color);
         }
     }
 

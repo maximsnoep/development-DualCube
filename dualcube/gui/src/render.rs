@@ -1,5 +1,5 @@
 use crate::render_skeleton::{
-    create_crossing_point_gizmos, create_labeled_skeleton_gizmos, create_patch_boundary_gizmos,
+    create_crossing_point_gizmos, create_face_point_gizmos, create_labeled_skeleton_gizmos, create_patch_boundary_gizmos,
     create_patch_convexity_mesh, create_patch_mesh, create_polycube_patch_boundary_gizmos,
     create_polycube_patch_mesh, create_skeleton_gizmos,
 };
@@ -1339,6 +1339,13 @@ pub fn refresh(solution: &Solution, configuration: &Configuration) -> RenderObje
                     let crossing_gizmos =
                         create_crossing_point_gizmos(crossings, input, translation, scale);
                     render_obj.gizmo(crossing_gizmos, 25., -0.00016, "loop crossings");
+                }
+
+                // TODO: remove later
+                if let Some(face_points) = &solution.face_points {
+                    let face_point_gizmos =
+                        create_face_point_gizmos(face_points, input, translation, scale);
+                    render_obj.gizmo(face_point_gizmos, 25., -0.00017, "face points");
                 }
 
                 let mut patch_convexity_mesh: Option<bevy::mesh::Mesh> = None;
