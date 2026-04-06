@@ -21,6 +21,7 @@ use std::str::FromStr;
 pub struct CliFlags {
     pub load: Option<PathBuf>,
     pub quit_after: Option<JobType>,
+    pub auto_start: Option<JobType>,
 }
 
 impl CliFlags {
@@ -56,6 +57,17 @@ impl CliFlags {
                         print_usage_and_exit(2, Some(&err))
                     }));
                 }
+                "--auto-start" | "auto-start" => {
+                    let value = inline_value
+                        .map(str::to_owned)
+                        .or_else(|| args.next())
+                        .unwrap_or_else(|| {
+                            print_usage_and_exit(2, Some("missing value for --auto-start"))
+                        });
+                    cli.auto_start = Some(JobType::from_str(&value).unwrap_or_else(|err| {
+                        print_usage_and_exit(2, Some(&err))
+                    }));
+                }
                 _ => {
                     if arg.starts_with('-') {
                         let message = format!("unknown argument: {arg}");
@@ -74,12 +86,13 @@ fn print_usage_and_exit(exit_code: i32, error: Option<&str>) -> ! {
         eprintln!("error: {err}");
     }
     eprintln!(
-        "Usage: cargo run -- [--load <path>] [--quit-after <job>]\n\n\
+        "Usage: cargo run -- [--load <path>] [--quit-after <job>] [--auto-start <job>]\n\n\
          Flags:\n\
            --load <path>                 Load a model immediately at startup\n\
            --quit-after <job>            Exit once the specified job finishes\n\
+           --auto-start <job>            Queue a job automatically after the model is loaded\n\
            --help                         Show this help\n\n\
-         Accepted job names for --quit-after:\n\
+         Accepted job names:\n\
            {}",
         JobType::accepted_cli_values().join(", ")
     );
@@ -576,6 +589,45 @@ fn poll_jobs(
                     solution_resource.next[0] = HashMap::new();
                     solution_resource.next[1] = HashMap::new();
                     solution_resource.next[2] = HashMap::new();
+
+                    let auto_job = match &cli_flags.auto_start {
+                        Some(JobType::CalculateSkeleton) => Some(Box::new(Job::CalculateSkeleton {
+                            solution: solution_resource.current_solution.clone(),
+                            configuration: configuration.clone(),
+                        })),
+                        Some(JobType::InitializeLoops) => Some(Box::new(Job::InitializeLoops {
+                            solution: solution_resource.current_solution.clone(),
+                            flowgraphs: input_resource.flow_graphs.clone(),
+                            configuration: configuration.clone(),
+                        })),
+                        Some(JobType::Evolve) => Some(Box::new(Job::Evolve {
+                            solution: solution_resource.current_solution.clone(),
+                            flowgraphs: input_resource.flow_graphs.clone(),
+                            configuration: configuration.clone(),
+                        })),
+                        Some(JobType::ComputeDual) => Some(Box::new(Job::ComputeDual {
+                            solution: solution_resource.current_solution.clone(),
+                            configuration: configuration.clone(),
+                        })),
+                        Some(JobType::ComputePolycube) => Some(Box::new(Job::ComputePolycube {
+                            solution: solution_resource.current_solution.clone(),
+                            configuration: configuration.clone(),
+                        })),
+                        Some(JobType::ComputeQuad) => Some(Box::new(Job::ComputeQuad {
+                            solution: solution_resource.current_solution.clone(),
+                            configuration: configuration.clone(),
+                        })),
+                        Some(other) => {
+                            warn!("--auto-start {:?}: not supported after load, ignoring", other);
+                            None
+                        }
+                        None => None,
+                    };
+
+                    if let Some(job) = auto_job {
+                        info!("Auto-starting job after load: {}", job.to_type());
+                        jobs.write(JobRequest::Run(job));
+                    }
 
                     jobs.write(JobRequest::Run(Box::new(Job::Refresh {
                         solution: solution_resource.current_solution.clone(),
