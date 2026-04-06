@@ -181,14 +181,30 @@ pub fn compute_face_points(skeleton: &LabeledCurveSkeleton, mesh: &Mesh<INPUT>) 
             HashMap::new();
         let mut known_dirs: Vec<Vector3D> = Vec::new();
 
+        let degree = skeleton.edges(node_idx).count();
+
         for edge_ref in skeleton.edges(node_idx) {
             let ew = edge_ref.weight();
             let dir = ew.direction;
-            let sign = if edge_ref.source() == node_idx {
+            // edge_ref.source() on StableUnGraph returns the stored first endpoint,
+            // NOT necessarily the querying node. Use edge_endpoints to check correctly.
+            let (stored_a, _) = skeleton
+                .edge_endpoints(edge_ref.id())
+                .expect("edge must exist");
+            let sign = if stored_a == node_idx {
                 ew.sign
             } else {
                 ew.sign.flipped()
             };
+
+            if occupied.contains(&(dir, sign)) {
+                warn!(
+                    "Node {:?} (degree {}): duplicate slot ({:?}, {:?}) — edge {:?} \
+                     (stored sign {:?}, stored_source={:?}, this node={:?})",
+                    node_idx, degree, dir, sign, edge_ref.id(),
+                    ew.sign, stored_a, node_idx
+                );
+            }
 
             let boundary = &ew.boundary_loop;
             let n = boundary.edge_midpoints.len() as f64;
@@ -294,6 +310,18 @@ pub fn compute_face_points(skeleton: &LabeledCurveSkeleton, mesh: &Mesh<INPUT>) 
                 interior_points.insert((dir, sign), best);
             }
         }
+
+        assert_eq!(
+            occupied.len(), degree,
+            "Node {:?} (degree {}): only {} unique (dir, sign) slots — \
+             upstream orthogonalization assigned duplicate slots. Occupied: {:?}",
+            node_idx, degree, occupied.len(), occupied
+        );
+        debug_assert_eq!(
+            degree + interior_points.len(), 6,
+            "Node {:?}: degree ({}) + face_points ({}) != 6",
+            node_idx, degree, interior_points.len()
+        );
 
         result.insert(node_idx, interior_points);
     }
