@@ -569,6 +569,7 @@ fn boundary_gizmos_from_regions<T: Tag>(
 /// Boundary face points (loop centroid) use a larger sphere; interior edge midpoints use a smaller one.
 pub fn create_face_point_gizmos(
     face_points: &FacePointMap,
+    skeleton: &LabeledCurveSkeleton,
     mesh: &mehsh::prelude::Mesh<INPUT>,
     translation: Vector3D,
     scale: f64,
@@ -576,7 +577,13 @@ pub fn create_face_point_gizmos(
     let mut gizmos = GizmoAsset::new();
     const RADIUS: f32 = 0.25;
 
-    for (_node_idx, per_dir) in face_points {
+    for (&node_idx, per_dir) in face_points {
+        let node_pos = world_to_view(
+            skeleton[node_idx].skeleton_node.position,
+            translation,
+            scale,
+        );
+
         for ((dir, _sign), &edge_id) in per_dir {
             let a = mesh.position(mesh.root(edge_id));
             let b = mesh.position(mesh.toor(edge_id));
@@ -584,6 +591,7 @@ pub fn create_face_point_gizmos(
             let center = world_to_view(pos, translation, scale);
             let color = colors::to_bevy(colors::from_direction(*dir, None, None));
             gizmos.sphere(Isometry3d::from_translation(center), RADIUS, color);
+            gizmos.line(node_pos, center, color);
         }
     }
 

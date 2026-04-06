@@ -1343,9 +1343,18 @@ pub fn refresh(solution: &Solution, configuration: &Configuration) -> RenderObje
 
                 // TODO: remove later
                 if let Some(face_points) = &solution.face_points {
-                    let face_point_gizmos =
-                        create_face_point_gizmos(face_points, input, translation, scale);
-                    render_obj.gizmo(face_point_gizmos, 25., -0.00017, "face points");
+                    if let Some(skeleton_data) = &solution.skeleton {
+                        if let Some(labeled_skeleton) = skeleton_data.labeled_skeleton() {
+                            let face_point_gizmos = create_face_point_gizmos(
+                                face_points,
+                                labeled_skeleton,
+                                input,
+                                translation,
+                                scale,
+                            );
+                            render_obj.gizmo(face_point_gizmos, 25., -0.00017, "face points");
+                        }
+                    }
                 }
 
                 let mut patch_convexity_mesh: Option<bevy::mesh::Mesh> = None;

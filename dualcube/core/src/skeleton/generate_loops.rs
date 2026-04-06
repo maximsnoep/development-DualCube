@@ -205,6 +205,17 @@ pub fn compute_face_points(skeleton: &LabeledCurveSkeleton, mesh: &Mesh<INPUT>) 
         }
 
         // --- Step 2: collect candidate interior edge midpoints ---
+        // Exclude edges that lie on any boundary loop (those are near patch borders).
+        let mut boundary_edges: HashSet<(VertID, VertID)> = HashSet::new();
+        for edge_ref in skeleton.edges(node_idx) {
+            for &e in &edge_ref.weight().boundary_loop.edge_midpoints {
+                let a = mesh.root(e);
+                let b = mesh.toor(e);
+                let key = if a < b { (a, b) } else { (b, a) };
+                boundary_edges.insert(key);
+            }
+        }
+
         let mut seen: HashSet<(VertID, VertID)> = HashSet::new();
         let mut candidates: Vec<EdgeID> = Vec::new();
 
@@ -218,6 +229,9 @@ pub fn compute_face_points(skeleton: &LabeledCurveSkeleton, mesh: &Mesh<INPUT>) 
                         continue;
                     }
                     let key = if a < b { (a, b) } else { (b, a) };
+                    if boundary_edges.contains(&key) {
+                        continue;
+                    }
                     if seen.insert(key) {
                         if let Some((e, _)) = mesh.edge_between_verts(a, b) {
                             candidates.push(e);
