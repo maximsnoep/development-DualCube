@@ -581,11 +581,6 @@ fn poll_jobs(
                         solution: solution_resource.current_solution.clone(),
                         configuration: configuration.clone(),
                     })));
-                    info! ("Import completed, starting skeletonization");
-                    jobs.write(JobRequest::Run(Box::new(Job::CalculateSkeleton {
-                        solution: solution_resource.current_solution.clone(),
-                        configuration,
-                    })));
                 }
 
                 Some(JobResult::AddedLoop((anchors, direction, maybe))) => {

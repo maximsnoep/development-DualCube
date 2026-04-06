@@ -1,10 +1,9 @@
 use std::collections::HashMap;
 
-use log::warn;
 use mehsh::prelude::{HasPosition, Mesh, Vector3D};
 use petgraph::{
-    graph::{EdgeIndex, NodeIndex},
-    visit::{EdgeRef, IntoEdgeReferences, IntoNodeReferences},
+    graph::EdgeIndex,
+    visit::{EdgeRef, IntoEdgeReferences},
 };
 use slotmap::SlotMap;
 
@@ -12,7 +11,7 @@ use crate::{
     prelude::{EdgeID, PrincipalDirection, INPUT},
     skeleton::{
         boundary_loop::BoundaryLoop,
-        orthogonalize::{AxisSign, LabeledCurveSkeleton, LabeledSkeletonSignExt},
+        orthogonalize::{AxisSign, LabeledCurveSkeleton},
         SkeletonData,
     },
     solutions::{Loop, LoopID},
@@ -24,9 +23,6 @@ const ALL_DIRS: [PrincipalDirection; 3] = [
     PrincipalDirection::Z,
 ];
 const ALL_SIGNS: [AxisSign; 2] = [AxisSign::Positive, AxisSign::Negative];
-
-/// Per-node resolved direction vectors for each (PrincipalDirection, AxisSign).
-type NodeDirectionMap = HashMap<NodeIndex, HashMap<(PrincipalDirection, AxisSign), Vector3D>>;
 
 /// Per boundary loop, the crossing points for each orthogonal (direction, sign).
 pub type CrossingMap = HashMap<LoopID, HashMap<(PrincipalDirection, AxisSign), EdgeID>>;
@@ -63,6 +59,15 @@ pub fn generate_loops(
 }
 
 /// Calculates for each patch-patch boundary the appropriate loop and crossing points for the other two loop types.
+///
+/// For each boundary loop, places 4 crossings by:
+/// 1. Projecting the boundary points onto the loop's plane (perpendicular to the skeleton edge).
+/// 2. Computing angles from the centroid in that plane.
+/// 3. For each orthogonal (direction, sign), projecting the axis direction onto the plane to
+///    get a target angle, then picking the boundary point closest to that target angle.
+///
+/// This ensures crossings are naturally spread around the loop (~90° apart for axis-aligned geometry)
+/// without needing direction propagation between nodes.
 fn get_boundaries_and_crossing_points(
     skeleton: &LabeledCurveSkeleton,
     mesh: &Mesh<INPUT>,
@@ -71,10 +76,6 @@ fn get_boundaries_and_crossing_points(
     let mut crossings: CrossingMap = HashMap::new();
     let mut boundary_map = HashMap::new();
 
-    // Precompute direction vectors per node, starting from high-degree nodes and propagating to neighbors.
-    let node_directions = compute_node_directions(skeleton);
-
-    // Find each patch-patch boundary (which corresponds to skeleton edge)
     for edge in skeleton.edge_references() {
         let weight = edge.weight();
         let direction = weight.direction;
@@ -92,137 +93,76 @@ fn get_boundaries_and_crossing_points(
             .fold(Vector3D::zeros(), |acc, &e| acc + mesh.position(e))
             / n;
 
-        // For each orthogonal direction and sign, find the boundary edge midpoint maximal in that direction
-        // relative to the centroid. Always 4 crossings: 2 per other loop type
-        // (e.g. for an X loop there are 2 Y crossings and 2 Z crossings).
-        let source_dirs = &node_directions[&edge.source()];
-        let target_dirs = &node_directions[&edge.target()];
+        // Loop plane normal from skeleton edge geometry
+        let source_pos = skeleton[edge.source()].skeleton_node.position;
+        let target_pos = skeleton[edge.target()].skeleton_node.position;
+        let normal = (target_pos - source_pos).normalize();
 
-        let mut loop_crossings = HashMap::new();
+        // Build orthonormal basis (u, v) on the plane perpendicular to the normal
+        let arbitrary = if normal.x.abs() < 0.9 {
+            Vector3D::new(1.0, 0.0, 0.0)
+        } else {
+            Vector3D::new(0.0, 1.0, 0.0)
+        };
+        let u = normal.cross(&arbitrary).normalize();
+        let v = normal.cross(&u); // already unit length
+
+        // Compute angle of each boundary point relative to centroid in the loop plane
+        let point_angles: Vec<(usize, f64)> = boundary
+            .edge_midpoints
+            .iter()
+            .enumerate()
+            .map(|(i, &e)| {
+                let offset = mesh.position(e) - centroid;
+                let proj_u = offset.dot(&u);
+                let proj_v = offset.dot(&v);
+                (i, proj_v.atan2(proj_u))
+            })
+            .collect();
+
+        // For each orthogonal (direction, sign), project the axis direction onto the loop plane
+        // to get a target angle, then pick the boundary point closest in angle.
         let ortho: Vec<_> = ALL_DIRS.iter().copied().filter(|&d| d != direction).collect();
-        // ortho has exactly 2 entries, e.g. [Y, Z] for an X-boundary.
-        // A loop of type ortho[0] (Y) runs perpendicular to Y, so it crosses at
-        // the point most extreme in the *other* orthogonal direction (Z), and vice versa.
-        // search_dir is the direction we search extremes in; crossing_dir is the loop type.
-        for i in 0..2 {
-            let search_dir = ortho[i];
-            let crossing_dir = ortho[1 - i];
-            for sign in ALL_SIGNS {
-                let dir_src = source_dirs[&(search_dir, sign)];
-                let dir_tgt = target_dirs[&(search_dir, sign)];
-                let dir_vec = ((dir_src + dir_tgt) / 2.0).normalize();
+        let mut loop_crossings = HashMap::new();
 
-                let &best_edge = boundary
-                    .edge_midpoints
+        for &dir in &ortho {
+            for sign in ALL_SIGNS {
+                let axis_vec = match sign {
+                    AxisSign::Positive => Vector3D::from(dir),
+                    AxisSign::Negative => -Vector3D::from(dir),
+                };
+                let target_angle = axis_vec.dot(&v).atan2(axis_vec.dot(&u));
+
+                let &(best_idx, _) = point_angles
                     .iter()
-                    .max_by(|&&a, &&b| {
-                        let dot_a = (mesh.position(a) - centroid).dot(&dir_vec);
-                        let dot_b = (mesh.position(b) - centroid).dot(&dir_vec);
-                        dot_a
-                            .partial_cmp(&dot_b)
+                    .min_by(|(_, a), (_, b)| {
+                        let diff_a = angle_distance(*a, target_angle);
+                        let diff_b = angle_distance(*b, target_angle);
+                        diff_a
+                            .partial_cmp(&diff_b)
                             .unwrap_or(std::cmp::Ordering::Equal)
                     })
                     .expect("boundary loop should not be empty");
 
-                loop_crossings.insert((crossing_dir, sign), best_edge);
+                loop_crossings.insert((dir, sign), boundary.edge_midpoints[best_idx]);
             }
         }
+
         crossings.insert(loop_id, loop_crossings);
     }
 
     (boundary_map, crossings)
 }
 
-/// Computes per-node direction vectors by propagating from high-degree nodes to low-degree ones.
-///
-/// For each node, resolves what the actual 3D direction is for each (PrincipalDirection, AxisSign):
-/// 1. From edges: use the displacement to the neighbor as the direction vector.
-/// 2. Extrapolate: if only one sign of a direction is known, negate it for the other.
-/// 3. Propagate: inherit missing directions from already-resolved neighbors.
-/// 4. Fallback: use global axis directions.
-fn compute_node_directions(skeleton: &LabeledCurveSkeleton) -> NodeDirectionMap {
-    let mut node_directions: NodeDirectionMap = HashMap::new();
-
-    // Sort nodes by degree descending: high-degree nodes have more edge constraints
-    let mut nodes_by_degree: Vec<_> = skeleton.node_references().collect();
-    nodes_by_degree.sort_by_key(|n| std::cmp::Reverse(skeleton.neighbors(n.0).count()));
-
-    for (node_idx, node_weight) in &nodes_by_degree {
-        let node_idx = *node_idx;
-        let node_pos = node_weight.skeleton_node.position;
-        let mut directions: HashMap<(PrincipalDirection, AxisSign), Vector3D> = HashMap::new();
-
-        // Step 1: From edges incident to this node, compute actual displacement direction vectors
-        for edge_ref in skeleton.edges(node_idx) {
-            let edge_weight = edge_ref.weight();
-            let dir = edge_weight.direction;
-            let sign = skeleton
-                .edge_sign_from(edge_ref.id(), node_idx)
-                .expect("node should be endpoint of its own edge");
-
-            let other = if edge_ref.source() == node_idx {
-                edge_ref.target()
-            } else {
-                edge_ref.source()
-            };
-            let other_pos = skeleton[other].skeleton_node.position;
-            let displacement = (other_pos - node_pos).normalize();
-
-            directions.insert((dir, sign), displacement);
-        }
-
-        // Step 2: For directions with one sign but not the other, extrapolate by negating
-        for dir in ALL_DIRS {
-            let has_pos = directions.contains_key(&(dir, AxisSign::Positive));
-            let has_neg = directions.contains_key(&(dir, AxisSign::Negative));
-            if has_pos && !has_neg {
-                let v = directions[&(dir, AxisSign::Positive)];
-                directions.insert((dir, AxisSign::Negative), -v);
-            } else if has_neg && !has_pos {
-                let v = directions[&(dir, AxisSign::Negative)];
-                directions.insert((dir, AxisSign::Positive), -v);
-            }
-        }
-
-        // Step 3: Check already-resolved neighbors for missing directions (propagation)
-        for dir in ALL_DIRS {
-            for sign in ALL_SIGNS {
-                if directions.contains_key(&(dir, sign)) {
-                    continue;
-                }
-                for edge_ref in skeleton.edges(node_idx) {
-                    let other = if edge_ref.source() == node_idx {
-                        edge_ref.target()
-                    } else {
-                        edge_ref.source()
-                    };
-                    if let Some(neighbor_dirs) = node_directions.get(&other) {
-                        if let Some(&v) = neighbor_dirs.get(&(dir, sign)) {
-                            directions.insert((dir, sign), v);
-                            break;
-                        }
-                    }
-                }
-            }
-        }
-
-        // Step 4: Fallback to global axis directions
-        for dir in ALL_DIRS {
-            for sign in ALL_SIGNS {
-                directions.entry((dir, sign)).or_insert_with(|| {
-                    let v = Vector3D::from(dir);
-                    match sign {
-                        AxisSign::Positive => v,
-                        AxisSign::Negative => -v,
-                    }
-                });
-            }
-        }
-
-        node_directions.insert(node_idx, directions);
+/// Shortest angular distance between two angles in radians.
+fn angle_distance(a: f64, b: f64) -> f64 {
+    let mut d = (a - b) % (2.0 * std::f64::consts::PI);
+    if d > std::f64::consts::PI {
+        d -= 2.0 * std::f64::consts::PI;
+    } else if d < -std::f64::consts::PI {
+        d += 2.0 * std::f64::consts::PI;
     }
-
-    node_directions
+    d.abs()
 }
 
 fn get_loop(boundary: BoundaryLoop, direction: PrincipalDirection) -> Loop {
