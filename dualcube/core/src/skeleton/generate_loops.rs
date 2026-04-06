@@ -127,9 +127,11 @@ fn get_boundaries_and_crossing_points(
 
         for &dir in &ortho {
             for sign in ALL_SIGNS {
+                // A loop labeled `dir` lies in the plane perpendicular to `dir`,
+                // so its crossings are *opposite* the axis direction.
                 let axis_vec = match sign {
-                    AxisSign::Positive => Vector3D::from(dir),
-                    AxisSign::Negative => -Vector3D::from(dir),
+                    AxisSign::Positive => -Vector3D::from(dir),
+                    AxisSign::Negative => Vector3D::from(dir),
                 };
                 let target_angle = axis_vec.dot(&v).atan2(axis_vec.dot(&u));
 
