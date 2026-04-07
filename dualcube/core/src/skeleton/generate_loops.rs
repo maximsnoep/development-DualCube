@@ -3,8 +3,9 @@ use std::{
     f64::consts::PI,
 };
 
+use bimap::BiHashMap;
 use log::warn;
-use mehsh::prelude::{HasFaces, HasPosition, HasVertices, Mesh, Vector3D};
+use mehsh::{mesh::algo::location::face, prelude::{HasFaces, HasPosition, HasVertices, Mesh, Vector3D}};
 use petgraph::{
     graph::{EdgeIndex, NodeIndex},
     visit::{EdgeRef, IntoEdgeReferences, IntoNodeReferences},
@@ -54,7 +55,7 @@ pub fn generate_loops(
     let (boundary_map, crossings) = get_boundaries_and_crossing_points(skeleton, mesh, &mut map);
     let face_points = compute_face_points(skeleton, mesh);
 
-    // Trace paths between boundaries and points to create the loops
+    // Trace paths between boundary points and face points to create the loops
     pathing_for_loops(
         boundary_map,
         crossings.clone(), // TODO: later we can simply consume as we no longer need to return it
@@ -81,9 +82,9 @@ fn get_boundaries_and_crossing_points(
     skeleton: &LabeledCurveSkeleton,
     mesh: &Mesh<INPUT>,
     map: &mut SlotMap<LoopID, Loop>,
-) -> (HashMap<EdgeIndex, LoopID>, CrossingMap) {
+) -> (BiHashMap<EdgeIndex, LoopID>, CrossingMap) {
     let mut crossings: CrossingMap = HashMap::new();
-    let mut boundary_map = HashMap::new();
+    let mut boundary_map = BiHashMap::new();
 
     for edge in skeleton.edge_references() {
         let weight = edge.weight();
@@ -387,7 +388,7 @@ fn get_loop(boundary: BoundaryLoop, direction: PrincipalDirection) -> Loop {
 }
 
 fn pathing_for_loops(
-    boundary_map: HashMap<EdgeIndex, LoopID>,
+    boundary_map: BiHashMap<EdgeIndex, LoopID>,
     crossings: CrossingMap,
     face_points: FacePointMap,
     skeleton: &LabeledCurveSkeleton,
@@ -414,4 +415,70 @@ fn pathing_for_loops(
     // Construct loops from the paths of the regions, simply append them together.
     // Since we agree on the crossing points, these should line up nicely.
     // TODO
+}
+
+enum NextPoint {
+    Crossing { loop_id: LoopID, dir_sign: (PrincipalDirection, AxisSign) },
+    FacePoint { patch: NodeIndex, dir_sign: (PrincipalDirection, AxisSign) },
+}
+
+/// Given a crossing point or face point, gives back the neighbors in the loop.
+fn next_point(
+    current: NextPoint,
+    loop_type: (PrincipalDirection, AxisSign),
+    skeleton: &LabeledCurveSkeleton,
+    boundary_map: BiHashMap<EdgeIndex, LoopID>,
+    crossings: &CrossingMap,
+    face_points: &FacePointMap,
+) -> Option<(NextPoint, NextPoint)> { // TODO: should not be option in the future
+    
+    match current {
+        NextPoint::Crossing { loop_id, dir_sign } => {
+            // We are on a cube that represent an edge. The next point is always a face point of the same sign or a crossing of another sign on a next boundary.
+
+            // Get skeleton edge
+            let skel_edge = boundary_map.get_by_right(&loop_id).unwrap();
+
+            // Get the patches on either side of the skeleton edge
+            let (source, target) = skeleton.edge_endpoints(*skel_edge).unwrap();
+
+            // For both, get the face point/edge for that direction and sign.
+            let next_from_source  = get_next(skeleton, face_points, dir_sign, source,);
+            let next_from_target = get_next(skeleton, face_points, dir_sign, target);
+            
+            // TODO: return
+        }
+        NextPoint::FacePoint { patch, dir_sign } => {
+            // Next point is either a crossing of the same dir_sign, or a face point with a different dir_sign.
+        }
+    }
+
+
+    // TODO: remove later when it fully works.
+    None
+}
+
+fn get_next(
+    skeleton: &LabeledCurveSkeleton,
+    face_points: &FacePointMap,
+    dir_sign: (PrincipalDirection, AxisSign),
+    start: NodeIndex,
+) -> Option<NextPoint> 
+{
+    // Check for edge on source side
+    let edge = skeleton.edges(start).filter( |e| {
+        let ew = e.weight();
+        ew.direction == dir_sign.0 && ew.sign == dir_sign.1
+    }).next();
+    if let Some(edge_ref) = edge {
+        // Next point is crossing on the next boundary loop.
+        // TODO implement
+        return None
+    } else {
+        // Next point is simply the next face point. Should always exist as we will these out earlier.
+        let face_point = face_points.get(&start).and_then(|m| m.get(&dir_sign));
+        
+        // TODO implement
+        return None
+    }
 }
