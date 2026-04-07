@@ -1,4 +1,7 @@
-use std::collections::{HashMap, HashSet};
+use std::{
+    collections::{HashMap, HashSet},
+    f64::consts::PI,
+};
 
 use log::warn;
 use mehsh::prelude::{HasFaces, HasPosition, HasVertices, Mesh, Vector3D};
@@ -32,7 +35,6 @@ pub type CrossingMap = HashMap<LoopID, HashMap<(PrincipalDirection, AxisSign), E
 /// Each face point is an interior mesh edge midpoint on the patch surface.
 pub type FacePointMap = HashMap<NodeIndex, HashMap<(PrincipalDirection, AxisSign), EdgeID>>;
 
-// custom error
 pub enum LoopGenerationError {
     MissingLabeledSkeleton,
     // todo other error variants
@@ -53,7 +55,14 @@ pub fn generate_loops(
     let face_points = compute_face_points(skeleton, mesh);
 
     // Trace paths between boundaries and points to create the loops
-    // TODO: restricted Dijkstra's or something. Can be somewhat smart about ordering and having the second loop of each pair be as far as possible from the first to nicely divide the surface.
+    pathing_for_loops(
+        boundary_map,
+        crossings.clone(), // TODO: later we can simply consume as we no longer need to return it
+        face_points.clone(), // TODO: same here
+        skeleton,
+        mesh,
+        &mut map,
+    );
 
     Ok((map, crossings, face_points))
 }
@@ -122,7 +131,11 @@ fn get_boundaries_and_crossing_points(
 
         // For each orthogonal (direction, sign), project the axis direction onto the loop plane
         // to get a target angle, then pick the boundary point closest in angle.
-        let ortho: Vec<_> = ALL_DIRS.iter().copied().filter(|&d| d != direction).collect();
+        let ortho: Vec<_> = ALL_DIRS
+            .iter()
+            .copied()
+            .filter(|&d| d != direction)
+            .collect();
         let mut loop_crossings = HashMap::new();
 
         for &dir in &ortho {
@@ -174,7 +187,7 @@ pub fn compute_face_points(skeleton: &LabeledCurveSkeleton, mesh: &Mesh<INPUT>) 
             .copied()
             .collect();
 
-        // --- Step 1: record boundary centroids and their directions ---
+        // Record boundary centroids and their directions.
         // These are NOT stored in the output, only used to guide placement of missing slots.
         let mut occupied: HashSet<(PrincipalDirection, AxisSign)> = HashSet::new();
         let mut boundary_centroids: HashMap<(PrincipalDirection, AxisSign), Vector3D> =
@@ -201,8 +214,14 @@ pub fn compute_face_points(skeleton: &LabeledCurveSkeleton, mesh: &Mesh<INPUT>) 
                 warn!(
                     "Node {:?} (degree {}): duplicate slot ({:?}, {:?}) — edge {:?} \
                      (stored sign {:?}, stored_source={:?}, this node={:?})",
-                    node_idx, degree, dir, sign, edge_ref.id(),
-                    ew.sign, stored_a, node_idx
+                    node_idx,
+                    degree,
+                    dir,
+                    sign,
+                    edge_ref.id(),
+                    ew.sign,
+                    stored_a,
+                    node_idx
                 );
             }
 
@@ -220,7 +239,7 @@ pub fn compute_face_points(skeleton: &LabeledCurveSkeleton, mesh: &Mesh<INPUT>) 
             boundary_centroids.insert((dir, sign), centroid);
         }
 
-        // --- Step 2: collect candidate interior edge midpoints ---
+        // Collect candidate interior edge midpoints
         // Exclude edges that lie on any boundary loop (those are near patch borders).
         let mut boundary_edges: HashSet<(VertID, VertID)> = HashSet::new();
         for edge_ref in skeleton.edges(node_idx) {
@@ -264,7 +283,7 @@ pub fn compute_face_points(skeleton: &LabeledCurveSkeleton, mesh: &Mesh<INPUT>) 
             );
         }
 
-        // --- Step 3: fill missing slots (only directions without a skeleton edge) ---
+        // Fill missing slots (only directions without a skeleton edge)
         let mut interior_points: HashMap<(PrincipalDirection, AxisSign), EdgeID> = HashMap::new();
 
         for dir in ALL_DIRS {
@@ -277,21 +296,20 @@ pub fn compute_face_points(skeleton: &LabeledCurveSkeleton, mesh: &Mesh<INPUT>) 
                 }
 
                 let opposite_sign = sign.flipped();
-                let target_dir = if let Some(&centroid) =
-                    boundary_centroids.get(&(dir, opposite_sign))
-                {
-                    // Opposite side has a boundary: place directly opposite its centroid
-                    -(centroid - node_pos).normalize()
-                } else if let Some(&edge) = interior_points.get(&(dir, opposite_sign)) {
-                    // Opposite side was already placed as an interior point: go opposite
-                    -(edge_midpoint_pos(edge, mesh) - node_pos).normalize()
-                } else {
-                    // No opposite exists yet: use global axis direction
-                    match sign {
-                        AxisSign::Positive => Vector3D::from(dir),
-                        AxisSign::Negative => -Vector3D::from(dir),
-                    }
-                };
+                let target_dir =
+                    if let Some(&centroid) = boundary_centroids.get(&(dir, opposite_sign)) {
+                        // Opposite side has a boundary: place directly opposite its centroid
+                        -(centroid - node_pos).normalize()
+                    } else if let Some(&edge) = interior_points.get(&(dir, opposite_sign)) {
+                        // Opposite side was already placed as an interior point: go opposite
+                        -(edge_midpoint_pos(edge, mesh) - node_pos).normalize()
+                    } else {
+                        // No opposite exists yet: use global axis direction
+                        match sign {
+                            AxisSign::Positive => Vector3D::from(dir),
+                            AxisSign::Negative => -Vector3D::from(dir),
+                        }
+                    };
 
                 let best = *candidates
                     .iter()
@@ -300,8 +318,7 @@ pub fn compute_face_points(skeleton: &LabeledCurveSkeleton, mesh: &Mesh<INPUT>) 
                         let v2 = (edge_midpoint_pos(e2, mesh) - node_pos).normalize();
                         let dot1 = v1.dot(&target_dir);
                         let dot2 = v2.dot(&target_dir);
-                        dot1.partial_cmp(&dot2)
-                            .unwrap_or(std::cmp::Ordering::Equal)
+                        dot1.partial_cmp(&dot2).unwrap_or(std::cmp::Ordering::Equal)
                     })
                     .expect("candidates is non-empty");
 
@@ -312,15 +329,22 @@ pub fn compute_face_points(skeleton: &LabeledCurveSkeleton, mesh: &Mesh<INPUT>) 
         }
 
         assert_eq!(
-            occupied.len(), degree,
+            occupied.len(),
+            degree,
             "Node {:?} (degree {}): only {} unique (dir, sign) slots — \
              upstream orthogonalization assigned duplicate slots. Occupied: {:?}",
-            node_idx, degree, occupied.len(), occupied
+            node_idx,
+            degree,
+            occupied.len(),
+            occupied
         );
         debug_assert_eq!(
-            degree + interior_points.len(), 6,
+            degree + interior_points.len(),
+            6,
             "Node {:?}: degree ({}) + face_points ({}) != 6",
-            node_idx, degree, interior_points.len()
+            node_idx,
+            degree,
+            interior_points.len()
         );
 
         result.insert(node_idx, interior_points);
@@ -341,16 +365,16 @@ fn min_angle_to(v: &Vector3D, others: &[Vector3D]) -> f64 {
     others
         .iter()
         .map(|d| d.dot(v).clamp(-1.0, 1.0).acos())
-        .fold(std::f64::consts::PI, f64::min)
+        .fold(PI, f64::min)
 }
 
 /// Shortest angular distance between two angles in radians.
 fn angle_distance(a: f64, b: f64) -> f64 {
-    let mut d = (a - b) % (2.0 * std::f64::consts::PI);
-    if d > std::f64::consts::PI {
-        d -= 2.0 * std::f64::consts::PI;
-    } else if d < -std::f64::consts::PI {
-        d += 2.0 * std::f64::consts::PI;
+    let mut d = (a - b) % (2.0 * PI);
+    if d > PI {
+        d -= 2.0 * PI;
+    } else if d < -PI {
+        d += 2.0 * PI;
     }
     d.abs()
 }
@@ -360,4 +384,34 @@ fn get_loop(boundary: BoundaryLoop, direction: PrincipalDirection) -> Loop {
         edges: boundary.edge_midpoints,
         direction,
     }
+}
+
+fn pathing_for_loops(
+    boundary_map: HashMap<EdgeIndex, LoopID>,
+    crossings: CrossingMap,
+    face_points: FacePointMap,
+    skeleton: &LabeledCurveSkeleton,
+    mesh: &Mesh<INPUT>,
+    map: &mut SlotMap<LoopID, Loop>,
+) {
+    // 0-boundary case is special since we have no predefined crossings to align with.
+    if skeleton.node_count() == 1 {
+        // TODO: three times, start in a face point and traverse until we hit the starting point again. Should be straightforward since we have no branching.
+        return;
+    }
+
+    // Do paths per region, per boundary positive direction start point.
+    for patch in skeleton.node_indices(){
+        let weight = skeleton.node_weight(patch).unwrap();
+
+
+        // 
+    }
+
+    // TODO: restricted Dijkstra's or something. 
+    // TODO: Can be somewhat smart about ordering and having the second loop of each pair be as far as possible from the first to nicely divide the surface.
+
+    // Construct loops from the paths of the regions, simply append them together.
+    // Since we agree on the crossing points, these should line up nicely.
+    // TODO
 }
