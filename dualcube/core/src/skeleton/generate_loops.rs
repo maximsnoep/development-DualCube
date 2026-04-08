@@ -418,16 +418,123 @@ fn pathing_for_loops(
 
 /// A point on the surface that lies on a loop.
 ///
-/// - `Crossing`: on a boundary between two patches. `dir_sign = (loop_dir, sign)` is the key
-///   into `CrossingMap[loop_id]` that identifies which of the two crossings of this loop type
-///   on this boundary we are at.
-/// - `FacePoint`: on a node patch. `dir_sign = (face_dir, sign)` is the key into `FacePointMap[patch]`.
+/// - `Crossing`: on a boundary between two patches.
+///   `dir_sign = (A, s)` is the CrossingMap key, where `A = third(loop_axis, boundary_dir)`
+///   and `s` is the sign of the slot the loop was at *before* crossing this boundary.
+///   An L-loop only visits crossings whose `dir_sign` direction ≠ L.
+/// - `FacePoint`: on a node patch. `dir_sign = (A, s)` is the key into `FacePointMap[patch]`,
+///   representing the face the loop is currently sitting on.
+///   An L-loop only visits face points whose `dir_sign` direction ≠ L.
 #[derive(Copy, Clone, Debug)]
 enum NextPoint {
     Crossing { loop_id: LoopID, dir_sign: (PrincipalDirection, AxisSign) },
     FacePoint { patch: NodeIndex, dir_sign: (PrincipalDirection, AxisSign) },
 }
 
+/// Returns the next `(direction, sign)` slot in CCW order for an `L`-loop currently at `(dir, sign)`.
+///
+/// CCW is defined as: when viewed from the `+L` direction, rotation goes from one orthogonal
+/// axis to the next via the right-hand cross product: `L × (dir * sign)`.
+/// This always maps between the two non-L directions, cycling through 4 slots.
+fn ccw_next(
+    loop_axis: PrincipalDirection,
+    dir: PrincipalDirection,
+    sign: AxisSign,
+) -> (PrincipalDirection, AxisSign) {
+    // Compute loop_axis × (dir_vec * sign_scalar) using the pure axis cross-product table.
+    // X×Y=Z, X×Z=-Y, Y×Z=X, Y×X=-Z, Z×X=Y, Z×Y=-X (and sign flips with sign scalar).
+    todo!("implement cross product on PrincipalDirection + AxisSign")
+}
+
+/// Core traversal step: given a node and the slot `(A, s)` the loop is currently at,
+/// returns the next `NextPoint` for `loop_axis`.
+///
+/// - Computes `next_slot = ccw_next(loop_axis, A, s)`.
+/// - If the node has an edge in the `next_slot` direction+sign: we cross that boundary →
+///   returns `Crossing` with `dir_sign = (A, s)` (the slot we departed from).
+/// - Otherwise: we stay on the same patch → returns `FacePoint` with `dir_sign = next_slot`.
+fn next_from_node_slot(
+    node: NodeIndex,
+    slot: (PrincipalDirection, AxisSign),
+    loop_axis: PrincipalDirection,
+    skeleton: &LabeledCurveSkeleton,
+    boundary_map: &bimap::BiHashMap<EdgeIndex, LoopID>,
+) -> NextPoint {
+    let (a, s) = slot;
+    let next_slot = ccw_next(loop_axis, a, s);
+    let (next_dir, next_sign) = next_slot;
+
+    // Check whether this node has a skeleton edge in the next_slot direction.
+    let edge_in_next_dir: Option<EdgeIndex> = skeleton
+        .edges(node)
+        .find(|e| {
+            let sign_from_node = skeleton
+                .edge_sign_from(e.id(), node)
+                .expect("node must be endpoint");
+            e.weight().direction == next_dir && sign_from_node == next_sign
+        })
+        .map(|e| e.id());
+
+    match edge_in_next_dir {
+        Some(edge_idx) => {
+            // Cross the boundary: crossing key = slot we departed from.
+            let &loop_id = boundary_map.get_by_left(&edge_idx).expect("edge must have a loop");
+            NextPoint::Crossing { loop_id, dir_sign: slot }
+        }
+        None => {
+            // Rotate within the same patch.
+            NextPoint::FacePoint { patch: node, dir_sign: next_slot }
+        }
+    }
+}
+
+/// Given a `current` surface point and the `loop_axis`, returns the unique next point
+/// in CCW traversal order.
+///
+/// Two cases:
+///
+/// **FacePoint** — delegate directly to `next_from_node_slot`.
+///
+/// **Crossing** — determine which endpoint node we enter (via `ccw_next` on the crossing slot,
+/// which gives the direction+sign we move through the boundary), compute the incoming slot
+/// on that node (boundary direction with flipped sign), then delegate to `next_from_node_slot`.
+fn next_point(
+    current: NextPoint,
+    loop_axis: PrincipalDirection,
+    skeleton: &LabeledCurveSkeleton,
+    boundary_map: &bimap::BiHashMap<EdgeIndex, LoopID>,
+) -> NextPoint {
+    match current {
+        NextPoint::FacePoint { patch, dir_sign } => {
+            next_from_node_slot(patch, dir_sign, loop_axis, skeleton, boundary_map)
+        }
+
+        NextPoint::Crossing { loop_id, dir_sign: (a, s) } => {
+            // The boundary direction D = third(loop_axis, a).
+            // ccw_next tells us which direction+sign we move through the boundary.
+            let (move_dir, move_sign) = ccw_next(loop_axis, a, s);
+            // move_dir == third(loop_axis, a) == the boundary's direction.
+
+            // Find the boundary edge and determine which endpoint node we enter.
+            let &edge_idx = boundary_map.get_by_right(&loop_id).expect("loop must have an edge");
+            let (src, tgt) = skeleton.edge_endpoints(edge_idx).expect("edge must exist");
+
+            // The edge is stored with a sign from src→tgt. Compare to move_sign to pick the node.
+            let edge_sign_from_src = skeleton
+                .edge_sign_from(edge_idx, src)
+                .expect("src is an endpoint");
+            let entered_node = if move_sign == edge_sign_from_src {
+                tgt  // moving in the same direction as src→tgt means we enter tgt
+            } else {
+                src
+            };
+
+            // We entered through the face opposite to move_sign.
+            let incoming_slot = (move_dir, move_sign.flipped());
+            next_from_node_slot(entered_node, incoming_slot, loop_axis, skeleton, boundary_map)
+        }
+    }
+}
 
 /// Returns the unique direction that is neither `a` nor `b`.
 fn third(a: PrincipalDirection, b: PrincipalDirection) -> PrincipalDirection {
