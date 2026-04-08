@@ -200,8 +200,8 @@ impl Solution {
             self.loop_crossings = Some(crossings);
             self.face_points = Some(face_points);
             self.recompute_occupied();
-            if self.reconstruct_solution(false, 1).is_err() {
-                log::warn!("Failed to reconstruct solution after skeleton update.");
+            if let Err(e) = self.reconstruct_solution(false, 1) {
+                log::warn!("Failed to reconstruct solution after skeleton update: {e}");
             }
         }
     }
