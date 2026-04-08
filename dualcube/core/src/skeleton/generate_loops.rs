@@ -16,7 +16,7 @@ use crate::{
     prelude::{EdgeID, PrincipalDirection, VertID, INPUT},
     skeleton::{
         boundary_loop::BoundaryLoop,
-        orthogonalize::{AxisSign, IVector3D, LabeledCurveSkeleton},
+        orthogonalize::{AxisSign, IVector3D, LabeledCurveSkeleton, LabeledSkeletonSignExt},
         SkeletonData,
     },
     solutions::{Loop, LoopID},
@@ -55,20 +55,12 @@ pub fn generate_loops(
     let (boundary_map, crossings) = get_boundaries_and_crossing_points(skeleton, mesh, &mut map);
     let face_points = compute_face_points(skeleton, mesh);
 
-    // Build a coordinate → node lookup from the grid positions assigned during orthogonalization.
-    let grid: HashMap<IVector3D, NodeIndex> = skeleton
-        .node_references()
-        .map(|(idx, w)| (w.grid_position, idx))
-        .collect();
-
     // Trace paths between boundary points and face points to create the loops
     pathing_for_loops(
         boundary_map,
         crossings.clone(), // TODO: later we can simply consume as we no longer need to return it
         face_points.clone(), // TODO: same here
         skeleton,
-        &grid,
-        mesh,
         &mut map,
     );
 
@@ -398,22 +390,83 @@ fn get_loop(boundary: BoundaryLoop, direction: PrincipalDirection) -> Loop {
 }
 
 fn pathing_for_loops(
-    _boundary_map: BiHashMap<EdgeIndex, LoopID>,
-    _crossings: CrossingMap,
-    _face_points: FacePointMap,
-    _skeleton: &LabeledCurveSkeleton,
-    _grid: &HashMap<IVector3D, NodeIndex>,
-    _mesh: &Mesh<INPUT>,
-    _map: &mut SlotMap<LoopID, Loop>,
+    boundary_map: BiHashMap<EdgeIndex, LoopID>,
+    crossings: CrossingMap,
+    face_points: FacePointMap,
+    skeleton: &LabeledCurveSkeleton,
+    map: &mut SlotMap<LoopID, Loop>,
 ) {
-    // TODO: implement coordinate-based loop tracing using the grid map.
+    for &loop_axis in &ALL_DIRS {
+        // Crossings visited by this loop axis: a crossing on a boundary with direction D and
+        // dir_sign (A, s) is visited by loops with axis third(D, A), so filter by that.
+        let mut unvisited_crossings: HashSet<(LoopID, (PrincipalDirection, AxisSign))> = crossings
+            .iter()
+            .flat_map(|(&loop_id, dir_sign_map)| {
+                let &edge_idx = boundary_map
+                    .get_by_right(&loop_id)
+                    .expect("every loop has a boundary edge");
+                let boundary_dir = skeleton
+                    .edge_weight(edge_idx)
+                    .expect("edge must exist")
+                    .direction;
+                dir_sign_map
+                    .keys()
+                    .filter(|(a, _)| third(boundary_dir, *a) == loop_axis)
+                    .map(|&ds| (loop_id, ds))
+                    .collect::<Vec<_>>()
+            })
+            .collect();
 
-    // Print all coordinates
-    for (coord, node_idx) in _grid {
-        println!("Node {:?} at grid position {:?}", node_idx, coord);
+        // Face points visited by this loop axis: any face point whose dir_sign direction ≠ loop_axis.
+        // (Each face point is visited once per orthogonal loop type, so we rebuild per axis.)
+        let mut unvisited_face_points: HashSet<(NodeIndex, (PrincipalDirection, AxisSign))> =
+            face_points
+                .iter()
+                .flat_map(|(&node, dir_sign_map)| {
+                    dir_sign_map
+                        .keys()
+                        .filter(|(dir, _)| *dir != loop_axis)
+                        .map(|&ds| (node, ds))
+                        .collect::<Vec<_>>()
+                })
+                .collect();
+
+        // Repeatedly pick any unvisited point and trace the full loop it belongs to.
+        while !unvisited_crossings.is_empty() || !unvisited_face_points.is_empty() {
+            let start = if let Some(&(loop_id, dir_sign)) = unvisited_crossings.iter().next() {
+                NextPoint::Crossing { loop_id, dir_sign }
+            } else {
+                let &(patch, dir_sign) = unvisited_face_points.iter().next().unwrap();
+                NextPoint::FacePoint { patch, dir_sign }
+            };
+
+            let mut current = start;
+            let mut edges = Vec::new();
+            loop {
+                let edge_id = match current {
+                    NextPoint::Crossing { loop_id, dir_sign } => crossings[&loop_id][&dir_sign],
+                    NextPoint::FacePoint { patch, dir_sign } => face_points[&patch][&dir_sign],
+                };
+                edges.push(edge_id);
+
+                match current {
+                    NextPoint::Crossing { loop_id, dir_sign } => {
+                        unvisited_crossings.remove(&(loop_id, dir_sign));
+                    }
+                    NextPoint::FacePoint { patch, dir_sign } => {
+                        unvisited_face_points.remove(&(patch, dir_sign));
+                    }
+                }
+
+                current = next_point(current, loop_axis, skeleton, &boundary_map);
+                if current == start {
+                    break;
+                }
+            }
+
+            map.insert(Loop { edges, direction: loop_axis });
+        }
     }
-
-    // Account for 'edges' !!! Grid positions do not account for cubes. Maybe scale manually first...
 }
 
 /// A point on the surface that lies on a loop.
@@ -425,7 +478,7 @@ fn pathing_for_loops(
 /// - `FacePoint`: on a node patch. `dir_sign = (A, s)` is the key into `FacePointMap[patch]`,
 ///   representing the face the loop is currently sitting on.
 ///   An L-loop only visits face points whose `dir_sign` direction ≠ L.
-#[derive(Copy, Clone, Debug)]
+#[derive(Copy, Clone, Debug, PartialEq, Eq)]
 enum NextPoint {
     Crossing { loop_id: LoopID, dir_sign: (PrincipalDirection, AxisSign) },
     FacePoint { patch: NodeIndex, dir_sign: (PrincipalDirection, AxisSign) },
@@ -441,9 +494,13 @@ fn ccw_next(
     dir: PrincipalDirection,
     sign: AxisSign,
 ) -> (PrincipalDirection, AxisSign) {
-    // Compute loop_axis × (dir_vec * sign_scalar) using the pure axis cross-product table.
-    // X×Y=Z, X×Z=-Y, Y×Z=X, Y×X=-Z, Z×X=Y, Z×Y=-X (and sign flips with sign scalar).
-    todo!("implement cross product on PrincipalDirection + AxisSign")
+    use PrincipalDirection::{X, Y, Z};
+    // Cross product table (positive results): X×Y=+Z, Y×Z=+X, Z×X=+Y.
+    // Swapping operands negates: X×Z=-Y, Y×X=-Z, Z×Y=-X.
+    let cross_positive = matches!((loop_axis, dir), (X, Y) | (Y, Z) | (Z, X));
+    let res_dir = third(loop_axis, dir);
+    let res_sign = if cross_positive { sign } else { sign.flipped() };
+    (res_dir, res_sign)
 }
 
 /// Core traversal step: given a node and the slot `(A, s)` the loop is currently at,
