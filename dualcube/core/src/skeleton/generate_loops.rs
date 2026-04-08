@@ -38,7 +38,7 @@ pub type FacePointMap = HashMap<NodeIndex, HashMap<(PrincipalDirection, AxisSign
 
 pub enum LoopGenerationError {
     MissingLabeledSkeleton,
-    // todo other error variants
+    // TODO other error variants
 }
 
 /// Generates surface-embedded loops from a polycube and polycube map.
@@ -407,6 +407,13 @@ fn pathing_for_loops(
     _map: &mut SlotMap<LoopID, Loop>,
 ) {
     // TODO: implement coordinate-based loop tracing using the grid map.
+
+    // Print all coordinates
+    for (coord, node_idx) in _grid {
+        println!("Node {:?} at grid position {:?}", node_idx, coord);
+    }
+
+    // Account for 'edges' !!! Grid positions do not account for cubes. Maybe scale manually first...
 }
 
 /// Returns the unique direction that is neither `a` nor `b`.
