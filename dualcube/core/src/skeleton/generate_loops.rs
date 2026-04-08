@@ -5,7 +5,7 @@ use std::{
 
 use bimap::BiHashMap;
 use log::warn;
-use mehsh::{mesh::algo::location::face, prelude::{HasFaces, HasPosition, HasVertices, Mesh, Vector3D}};
+use mehsh::prelude::{HasFaces, HasPosition, HasVertices, Mesh, Vector3D};
 use petgraph::{
     graph::{EdgeIndex, NodeIndex},
     visit::{EdgeRef, IntoEdgeReferences, IntoNodeReferences},
@@ -16,7 +16,7 @@ use crate::{
     prelude::{EdgeID, PrincipalDirection, VertID, INPUT},
     skeleton::{
         boundary_loop::BoundaryLoop,
-        orthogonalize::{AxisSign, LabeledCurveSkeleton, LabeledSkeletonSignExt},
+        orthogonalize::{AxisSign, IVector3D, LabeledCurveSkeleton},
         SkeletonData,
     },
     solutions::{Loop, LoopID},
@@ -55,12 +55,19 @@ pub fn generate_loops(
     let (boundary_map, crossings) = get_boundaries_and_crossing_points(skeleton, mesh, &mut map);
     let face_points = compute_face_points(skeleton, mesh);
 
+    // Build a coordinate → node lookup from the grid positions assigned during orthogonalization.
+    let grid: HashMap<IVector3D, NodeIndex> = skeleton
+        .node_references()
+        .map(|(idx, w)| (w.grid_position, idx))
+        .collect();
+
     // Trace paths between boundary points and face points to create the loops
     pathing_for_loops(
         boundary_map,
         crossings.clone(), // TODO: later we can simply consume as we no longer need to return it
         face_points.clone(), // TODO: same here
         skeleton,
+        &grid,
         mesh,
         &mut map,
     );
@@ -140,12 +147,15 @@ fn get_boundaries_and_crossing_points(
         let mut loop_crossings = HashMap::new();
 
         for &dir in &ortho {
+            // A `dir`-type loop crosses this boundary at positions spread along the
+            // THIRD direction T = third(dir, boundary_dir).  Keying by (T, sign)
+            // means crossing (T,+) is at the +T side and (T,-) at the -T side,
+            // matching the face-point sign convention on adjacent nodes.
+            let t_dir = third(dir, direction);
             for sign in ALL_SIGNS {
-                // A loop labeled `dir` lies in the plane perpendicular to `dir`,
-                // so its crossings are *opposite* the axis direction.
                 let axis_vec = match sign {
-                    AxisSign::Positive => -Vector3D::from(dir),
-                    AxisSign::Negative => Vector3D::from(dir),
+                    AxisSign::Positive => Vector3D::from(t_dir),
+                    AxisSign::Negative => -Vector3D::from(t_dir),
                 };
                 let target_angle = axis_vec.dot(&v).atan2(axis_vec.dot(&u));
 
@@ -160,7 +170,7 @@ fn get_boundaries_and_crossing_points(
                     })
                     .expect("boundary loop should not be empty");
 
-                loop_crossings.insert((dir, sign), boundary.edge_midpoints[best_idx]);
+                loop_crossings.insert((t_dir, sign), boundary.edge_midpoints[best_idx]);
             }
         }
 
@@ -388,28 +398,15 @@ fn get_loop(boundary: BoundaryLoop, direction: PrincipalDirection) -> Loop {
 }
 
 fn pathing_for_loops(
-    boundary_map: BiHashMap<EdgeIndex, LoopID>,
-    crossings: CrossingMap,
-    face_points: FacePointMap,
-    skeleton: &LabeledCurveSkeleton,
-    mesh: &Mesh<INPUT>,
-    map: &mut SlotMap<LoopID, Loop>,
+    _boundary_map: BiHashMap<EdgeIndex, LoopID>,
+    _crossings: CrossingMap,
+    _face_points: FacePointMap,
+    _skeleton: &LabeledCurveSkeleton,
+    _grid: &HashMap<IVector3D, NodeIndex>,
+    _mesh: &Mesh<INPUT>,
+    _map: &mut SlotMap<LoopID, Loop>,
 ) {
-    // 0-boundary case is special since we have no predefined crossings to align with.
-    if skeleton.node_count() == 1 {
-        // TODO: three times, start in a face point and traverse until we hit the starting point again. Should be straightforward since we have no branching.
-        return;
-    }
-
-    // Get a set of all nodes and face points we to visit
-    // TODO
-
-    // Start at some point, continue tracing until back at the start. Do this until all points are in some loop.
-    // TODO
-    // Do Dijkstra's (but disallowing crossing any already placed path/loop) between consecutive points.
-    // TODO: restricted Dijkstra's or something.
-    // After returning back to start point, save as loop.
-    // TODO
+    // TODO: implement coordinate-based loop tracing using the grid map.
 }
 
 /// Returns the unique direction that is neither `a` nor `b`.
@@ -421,90 +418,3 @@ fn third(a: PrincipalDirection, b: PrincipalDirection) -> PrincipalDirection {
         .expect("two distinct principal directions always have a unique third")
 }
 
-/// A point on the surface that lies on a loop.
-///
-/// - `Crossing`: on a boundary between two patches. `dir_sign = (loop_dir, sign)` is the key
-///   into `CrossingMap[loop_id]` that identifies which of the two crossings of this loop type
-///   on this boundary we are at.
-/// - `FacePoint`: on a node patch. `dir_sign = (face_dir, sign)` is the key into
-///   `FacePointMap[patch]`, where `face_dir` is one of the two directions perpendicular to the
-///   loop (e.g. Y or Z for an X loop).
-#[derive(Copy, Clone, Debug)]
-enum NextPoint {
-    Crossing { loop_id: LoopID, dir_sign: (PrincipalDirection, AxisSign) },
-    FacePoint { patch: NodeIndex, dir_sign: (PrincipalDirection, AxisSign) },
-}
-
-/// Returns the two neighbors of `current` along a loop of direction `loop_type`.
-///
-/// Sign convention: the sign component of a point's `dir_sign` propagates unchanged through
-/// every step of the traversal. Face-point `(D, s)` -> navigate in both `(O, +)` and `(O, -)`
-/// where `O = third(loop_type, D)`. Crossing `(L, s)` -> navigate in `(third(L, B), s)` from
-/// each of the two endpoint patches, where `B` is the boundary direction.
-fn next_point(
-    current: NextPoint,
-    loop_type: PrincipalDirection,
-    skeleton: &LabeledCurveSkeleton,
-    boundary_map: &BiHashMap<EdgeIndex, LoopID>,
-    face_points: &FacePointMap,
-) -> Option<(NextPoint, NextPoint)> {
-    match current {
-        NextPoint::Crossing { loop_id, dir_sign: (_, s) } => {
-            // On a boundary between two patches. Navigate from each endpoint patch in the
-            // direction perpendicular to both the loop and the boundary.
-            let skel_edge = *boundary_map.get_by_right(&loop_id)?;
-            let boundary_dir = skeleton.edge_weight(skel_edge)?.direction;
-            let (n1, n2) = skeleton.edge_endpoints(skel_edge)?;
-            let nav = (third(loop_type, boundary_dir), s);
-            let nb1 = get_next(skeleton, boundary_map, face_points, loop_type, nav, n1)?;
-            let nb2 = get_next(skeleton, boundary_map, face_points, loop_type, nav, n2)?;
-            Some((nb1, nb2))
-        }
-        NextPoint::FacePoint { patch, dir_sign: (d, _) } => {
-            // On a node patch. The two neighbors are in both signs of the other perpendicular
-            // direction (the one that's not the loop direction and not d).
-            let other = third(loop_type, d);
-            let nb1 = get_next(skeleton, boundary_map, face_points, loop_type, (other, AxisSign::Positive), patch)?;
-            let nb2 = get_next(skeleton, boundary_map, face_points, loop_type, (other, AxisSign::Negative), patch)?;
-            Some((nb1, nb2))
-        }
-    }
-}
-
-/// From `node`, navigate toward the slot `nav = (nav_dir, nav_sign)` and return the next loop
-/// point for a loop of direction `loop_dir`.
-///
-/// If there is a skeleton edge from `node` in direction `nav`, the next point is the crossing
-/// on that boundary keyed `(loop_dir, nav_sign)`. Otherwise it is the face point at `nav` on
-/// `node`.
-fn get_next(
-    skeleton: &LabeledCurveSkeleton,
-    boundary_map: &BiHashMap<EdgeIndex, LoopID>,
-    face_points: &FacePointMap,
-    loop_dir: PrincipalDirection,
-    nav: (PrincipalDirection, AxisSign),
-    node: NodeIndex,
-) -> Option<NextPoint> {
-    let edge_ref = skeleton.edges(node).find(|e| {
-        let ew = e.weight();
-        let sign_from_node = skeleton
-            .edge_sign_from(e.id(), node)
-            .expect("edge must be incident to node");
-        ew.direction == nav.0 && sign_from_node == nav.1
-    });
-
-    if let Some(e) = edge_ref {
-        let loop_id = *boundary_map.get_by_left(&e.id())?;
-        Some(NextPoint::Crossing {
-            loop_id,
-            dir_sign: (loop_dir, nav.1),
-        })
-    } else {
-        // The face point must exist: compute_face_points fills every unoccupied slot.
-        face_points.get(&node)?.get(&nav)?;
-        Some(NextPoint::FacePoint {
-            patch: node,
-            dir_sign: nav,
-        })
-    }
-}
