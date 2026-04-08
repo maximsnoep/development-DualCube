@@ -1,10 +1,10 @@
 use std::{
-    collections::{HashMap, HashSet},
+    collections::{HashMap, HashSet, VecDeque},
     f64::consts::PI,
 };
 
 use bimap::BiHashMap;
-use log::warn;
+use log::{error, warn};
 use mehsh::prelude::{HasFaces, HasPosition, HasVertices, Mesh, Vector3D};
 use petgraph::{
     graph::{EdgeIndex, NodeIndex},
@@ -13,7 +13,7 @@ use petgraph::{
 use slotmap::SlotMap;
 
 use crate::{
-    prelude::{EdgeID, PrincipalDirection, VertID, INPUT},
+    prelude::{EdgeID, FaceID, PrincipalDirection, VertID, INPUT},
     skeleton::{
         boundary_loop::BoundaryLoop,
         orthogonalize::{AxisSign, IVector3D, LabeledCurveSkeleton, LabeledSkeletonSignExt},
@@ -61,6 +61,7 @@ pub fn generate_loops(
         crossings.clone(), // TODO: later we can simply consume as we no longer need to return it
         face_points.clone(), // TODO: same here
         skeleton,
+        mesh,
         &mut map,
     );
 
@@ -389,11 +390,102 @@ fn get_loop(boundary: BoundaryLoop, direction: PrincipalDirection) -> Loop {
     }
 }
 
+/// BFS on the mesh dual graph to find intermediate edges between two control-point edges.
+///
+/// Returns the mesh edges crossed between `source` and `target`, **exclusive** of both.
+/// The caller is responsible for pushing `source` before and `target` after this list.
+///
+/// Blocked edges (other loops) act as walls: the path may not cross them.
+/// Returns `None` if no path exists.
+fn surface_path_intermediates(
+    source: EdgeID,
+    target: EdgeID,
+    blocked: &HashSet<EdgeID>,
+    mesh: &Mesh<INPUT>,
+) -> Option<Vec<EdgeID>> {
+    let faces_of = |e: EdgeID| -> Vec<FaceID> {
+        let a = mesh.root(e);
+        let b = mesh.toor(e);
+        let set_a: HashSet<FaceID> = mesh.faces(a).collect();
+        mesh.faces(b).filter(|f| set_a.contains(f)).collect()
+    };
+
+    let source_faces = faces_of(source);
+    let target_face_set: HashSet<FaceID> = faces_of(target).into_iter().collect();
+
+    // If source and target already share a face, no intermediate edges are needed.
+    if source_faces.iter().any(|f| target_face_set.contains(f)) {
+        return Some(vec![]);
+    }
+
+    // BFS. visited: face → (parent_face, edge_used_to_reach_it).
+    // Start faces have no crossing edge (None); all others carry the edge they came through.
+    let mut visited: HashMap<FaceID, (FaceID, Option<EdgeID>)> = HashMap::new();
+    let mut queue: VecDeque<FaceID> = VecDeque::new();
+
+    for sf in &source_faces {
+        visited.insert(*sf, (*sf, None));
+        queue.push_back(*sf);
+    }
+
+    let mut found: Option<FaceID> = None;
+
+    'bfs: while let Some(face) = queue.pop_front() {
+        let face_verts: Vec<VertID> = mesh.vertices(face).collect();
+        let n = face_verts.len();
+        for i in 0..n {
+            let a = face_verts[i];
+            let b = face_verts[(i + 1) % n];
+            let Some((edge, _)) = mesh.edge_between_verts(a, b) else { continue };
+
+            if blocked.contains(&edge) {
+                continue;
+            }
+
+            // The adjacent face across this edge.
+            let set_a: HashSet<FaceID> = mesh.faces(a).collect();
+            let Some(next_face) = mesh.faces(b).find(|&f| set_a.contains(&f) && f != face)
+            else {
+                continue;
+            };
+
+            if visited.contains_key(&next_face) {
+                continue;
+            }
+
+            visited.insert(next_face, (face, Some(edge)));
+
+            if target_face_set.contains(&next_face) {
+                found = Some(next_face);
+                break 'bfs;
+            }
+
+            queue.push_back(next_face);
+        }
+    }
+
+    // Reconstruct intermediate edges (source and target excluded).
+    let end_face = found?;
+    let mut path: Vec<EdgeID> = Vec::new();
+    let mut current = end_face;
+    loop {
+        let (parent, edge_opt) = visited[&current];
+        match edge_opt {
+            None => break, // reached a start face
+            Some(edge) => path.push(edge),
+        }
+        current = parent;
+    }
+    path.reverse();
+    Some(path)
+}
+
 fn pathing_for_loops(
     boundary_map: BiHashMap<EdgeIndex, LoopID>,
     crossings: CrossingMap,
     face_points: FacePointMap,
     skeleton: &LabeledCurveSkeleton,
+    mesh: &Mesh<INPUT>,
     map: &mut SlotMap<LoopID, Loop>,
 ) {
     for &loop_axis in &ALL_DIRS {
@@ -431,6 +523,12 @@ fn pathing_for_loops(
                 })
                 .collect();
 
+        // Blocked edges: all edges in loops established before this direction.
+        // These act as walls in the dual-graph Dijkstra (other loops must not be crossed).
+        let blocked: HashSet<EdgeID> = map.values()
+            .flat_map(|l| l.edges.iter().copied())
+            .collect();
+
         // Repeatedly pick any unvisited point and trace the full loop it belongs to.
         while !unvisited_crossings.is_empty() || !unvisited_face_points.is_empty() {
             let start = if let Some(&(loop_id, dir_sign)) = unvisited_crossings.iter().next() {
@@ -440,15 +538,14 @@ fn pathing_for_loops(
                 NextPoint::FacePoint { patch, dir_sign }
             };
 
+            // First pass: collect control-point edges in order.
             let mut current = start;
-            let mut edges = Vec::new();
+            let mut control_points: Vec<EdgeID> = Vec::new();
             loop {
                 let edge_id = match current {
                     NextPoint::Crossing { loop_id, dir_sign } => crossings[&loop_id][&dir_sign],
                     NextPoint::FacePoint { patch, dir_sign } => face_points[&patch][&dir_sign],
                 };
-                edges.push(edge_id);
-
                 match current {
                     NextPoint::Crossing { loop_id, dir_sign } => {
                         unvisited_crossings.remove(&(loop_id, dir_sign));
@@ -457,14 +554,36 @@ fn pathing_for_loops(
                         unvisited_face_points.remove(&(patch, dir_sign));
                     }
                 }
-
+                control_points.push(edge_id);
                 current = next_point(current, loop_axis, skeleton, &boundary_map);
                 if current == start {
                     break;
                 }
             }
 
-            map.insert(Loop { edges, direction: loop_axis });
+            // Second pass: connect consecutive control points via surface path.
+            let n = control_points.len();
+            let mut loop_edges = Vec::new();
+            let mut path_ok = true;
+            for i in 0..n {
+                let src = control_points[i];
+                let tgt = control_points[(i + 1) % n];
+                loop_edges.push(src);
+                match surface_path_intermediates(src, tgt, &blocked, mesh) {
+                    Some(inter) => loop_edges.extend(inter),
+                    None => {
+                        error!(
+                            "No surface path from {:?} to {:?} for {:?}-loop (control point {}/{})",
+                            src, tgt, loop_axis, i + 1, n
+                        );
+                        path_ok = false;
+                    }
+                }
+            }
+
+            if path_ok {
+                map.insert(Loop { edges: loop_edges, direction: loop_axis });
+            }
         }
     }
 }
