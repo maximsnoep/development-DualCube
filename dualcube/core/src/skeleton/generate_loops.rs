@@ -416,12 +416,28 @@ fn pathing_for_loops(
     // Account for 'edges' !!! Grid positions do not account for cubes. Maybe scale manually first...
 }
 
-/// Returns the unique direction that is neither `a` nor `b`.
-fn third(a: PrincipalDirection, b: PrincipalDirection) -> PrincipalDirection {
-    ALL_DIRS
-        .iter()
-        .copied()
-        .find(|&d| d != a && d != b)
-        .expect("two distinct principal directions always have a unique third")
+/// A point on the surface that lies on a loop.
+///
+/// - `Crossing`: on a boundary between two patches. `dir_sign = (loop_dir, sign)` is the key
+///   into `CrossingMap[loop_id]` that identifies which of the two crossings of this loop type
+///   on this boundary we are at.
+/// - `FacePoint`: on a node patch. `dir_sign = (face_dir, sign)` is the key into `FacePointMap[patch]`.
+#[derive(Copy, Clone, Debug)]
+enum NextPoint {
+    Crossing { loop_id: LoopID, dir_sign: (PrincipalDirection, AxisSign) },
+    FacePoint { patch: NodeIndex, dir_sign: (PrincipalDirection, AxisSign) },
 }
 
+
+/// Returns the unique direction that is neither `a` nor `b`.
+fn third(a: PrincipalDirection, b: PrincipalDirection) -> PrincipalDirection {
+    match (a, b) {
+        (PrincipalDirection::X, PrincipalDirection::Y)
+        | (PrincipalDirection::Y, PrincipalDirection::X) => PrincipalDirection::Z,
+        (PrincipalDirection::X, PrincipalDirection::Z)
+        | (PrincipalDirection::Z, PrincipalDirection::X) => PrincipalDirection::Y,
+        (PrincipalDirection::Y, PrincipalDirection::Z)
+        | (PrincipalDirection::Z, PrincipalDirection::Y) => PrincipalDirection::X,
+        _ => panic!("directions must be different"),
+    }
+}
