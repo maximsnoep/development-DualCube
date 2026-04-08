@@ -1,9 +1,10 @@
 use std::{
-    collections::{HashMap, HashSet, VecDeque},
+    collections::{BinaryHeap, HashMap, HashSet},
     f64::consts::PI,
 };
 
 use bimap::BiHashMap;
+use ordered_float::OrderedFloat;
 use log::{error, warn};
 use mehsh::prelude::{HasFaces, HasPosition, HasVertices, Mesh, Vector3D};
 use petgraph::{
@@ -16,7 +17,7 @@ use crate::{
     prelude::{EdgeID, FaceID, PrincipalDirection, VertID, INPUT},
     skeleton::{
         boundary_loop::BoundaryLoop,
-        orthogonalize::{AxisSign, IVector3D, LabeledCurveSkeleton, LabeledSkeletonSignExt},
+        orthogonalize::{AxisSign, LabeledCurveSkeleton, LabeledSkeletonSignExt},
         SkeletonData,
     },
     solutions::{Loop, LoopID},
@@ -390,12 +391,19 @@ fn get_loop(boundary: BoundaryLoop, direction: PrincipalDirection) -> Loop {
     }
 }
 
-/// BFS on the mesh dual graph to find intermediate edges between two control-point edges.
+/// Cost multiplier applied when entering or leaving a face that has at least one blocked edge.
+/// Applied symmetrically on both sides, so two adjacent-to-loop faces incur 4x total.
+const SHARED_EDGE_MULTIPLIER: f64 = 2.0;
+
+/// Dijkstra's on the mesh dual graph to find the shortest intermediate path between two
+/// control-point edges, using geodesic (face-centroid -> edge-midpoint -> face-centroid) cost.
 ///
 /// Returns the mesh edges crossed between `source` and `target`, **exclusive** of both.
 /// The caller is responsible for pushing `source` before and `target` after this list.
 ///
-/// Blocked edges (other loops) act as walls: the path may not cross them.
+/// Blocked edges (other loops) act as hard walls: the path may not cross them.
+/// Faces adjacent to blocked edges incur a `SHARED_EDGE_MULTIPLIER` cost penalty when
+/// entering or leaving, encouraging paths to stay away from existing loops.
 /// Returns `None` if no path exists.
 fn surface_path_intermediates(
     source: EdgeID,
@@ -410,6 +418,28 @@ fn surface_path_intermediates(
         mesh.faces(b).filter(|f| set_a.contains(f)).collect()
     };
 
+    let face_centroid = |f: FaceID| -> Vector3D {
+        let verts: Vec<VertID> = mesh.vertices(f).collect();
+        let n = verts.len() as f64;
+        verts.iter().fold(Vector3D::zeros(), |acc, &v| acc + mesh.position(v)) / n
+    };
+
+    // Returns true if the face has at least one edge in `blocked` (other than `except`).
+    let face_touches_blocked = |f: FaceID, except: EdgeID| -> bool {
+        let verts: Vec<VertID> = mesh.vertices(f).collect();
+        let n = verts.len();
+        for i in 0..n {
+            let a = verts[i];
+            let b = verts[(i + 1) % n];
+            if let Some((e, _)) = mesh.edge_between_verts(a, b) {
+                if e != except && blocked.contains(&e) {
+                    return true;
+                }
+            }
+        }
+        false
+    };
+
     let source_faces = faces_of(source);
     let target_face_set: HashSet<FaceID> = faces_of(target).into_iter().collect();
 
@@ -418,21 +448,30 @@ fn surface_path_intermediates(
         return Some(vec![]);
     }
 
-    // BFS. visited: face → (parent_face, edge_used_to_reach_it).
-    // Start faces have no crossing edge (None); all others carry the edge they came through.
-    let mut visited: HashMap<FaceID, (FaceID, Option<EdgeID>)> = HashMap::new();
-    let mut queue: VecDeque<FaceID> = VecDeque::new();
+    // Dijkstra. dist: best known cost to reach a face.
+    // prev: face -> (parent_face, edge_used_to_reach_it).
+    // Heap entries: (Reverse(cost), face).
+    let mut dist: HashMap<FaceID, f64> = HashMap::new();
+    let mut prev: HashMap<FaceID, (FaceID, Option<EdgeID>)> = HashMap::new();
+    let mut heap: BinaryHeap<(std::cmp::Reverse<OrderedFloat<f64>>, FaceID)> = BinaryHeap::new();
 
-    for sf in &source_faces {
-        visited.insert(*sf, (*sf, None));
-        queue.push_back(*sf);
+    for &sf in &source_faces {
+        dist.insert(sf, 0.0);
+        prev.insert(sf, (sf, None));
+        heap.push((std::cmp::Reverse(OrderedFloat(0.0)), sf));
     }
 
     let mut found: Option<FaceID> = None;
 
-    'bfs: while let Some(face) = queue.pop_front() {
+    'dijkstra: while let Some((std::cmp::Reverse(OrderedFloat(cost)), face)) = heap.pop() {
+        if dist.get(&face).copied().unwrap_or(f64::INFINITY) < cost {
+            continue; // stale entry
+        }
+
         let face_verts: Vec<VertID> = mesh.vertices(face).collect();
         let n = face_verts.len();
+        let centroid_a = face_centroid(face);
+
         for i in 0..n {
             let a = face_verts[i];
             let b = face_verts[(i + 1) % n];
@@ -449,18 +488,31 @@ fn surface_path_intermediates(
                 continue;
             };
 
-            if visited.contains_key(&next_face) {
-                continue;
+            let edge_mid = edge_midpoint_pos(edge, mesh);
+            let centroid_b = face_centroid(next_face);
+            let mut step_cost = (centroid_a - edge_mid).norm() + (edge_mid - centroid_b).norm();
+
+            // Penalize leaving a face adjacent to blocked edges.
+            if face_touches_blocked(face, edge) {
+                step_cost *= SHARED_EDGE_MULTIPLIER;
+            }
+            // Penalize entering a face adjacent to blocked edges.
+            if face_touches_blocked(next_face, edge) {
+                step_cost *= SHARED_EDGE_MULTIPLIER;
             }
 
-            visited.insert(next_face, (face, Some(edge)));
+            let new_cost = cost + step_cost;
+            if new_cost < dist.get(&next_face).copied().unwrap_or(f64::INFINITY) {
+                dist.insert(next_face, new_cost);
+                prev.insert(next_face, (face, Some(edge)));
 
-            if target_face_set.contains(&next_face) {
-                found = Some(next_face);
-                break 'bfs;
+                if target_face_set.contains(&next_face) {
+                    found = Some(next_face);
+                    break 'dijkstra;
+                }
+
+                heap.push((std::cmp::Reverse(OrderedFloat(new_cost)), next_face));
             }
-
-            queue.push_back(next_face);
         }
     }
 
@@ -469,7 +521,7 @@ fn surface_path_intermediates(
     let mut path: Vec<EdgeID> = Vec::new();
     let mut current = end_face;
     loop {
-        let (parent, edge_opt) = visited[&current];
+        let (parent, edge_opt) = prev[&current];
         match edge_opt {
             None => break, // reached a start face
             Some(edge) => path.push(edge),
@@ -626,9 +678,9 @@ fn ccw_next(
 /// returns the next `NextPoint` for `loop_axis`.
 ///
 /// - Computes `next_slot = ccw_next(loop_axis, A, s)`.
-/// - If the node has an edge in the `next_slot` direction+sign: we cross that boundary →
+/// - If the node has an edge in the `next_slot` direction+sign: we cross that boundary ->
 ///   returns `Crossing` with `dir_sign = (A, s)` (the slot we departed from).
-/// - Otherwise: we stay on the same patch → returns `FacePoint` with `dir_sign = next_slot`.
+/// - Otherwise: we stay on the same patch -> returns `FacePoint` with `dir_sign = next_slot`.
 fn next_from_node_slot(
     node: NodeIndex,
     slot: (PrincipalDirection, AxisSign),
@@ -695,12 +747,12 @@ fn next_point(
             let &edge_idx = boundary_map.get_by_right(&loop_id).expect("loop must have an edge");
             let (src, tgt) = skeleton.edge_endpoints(edge_idx).expect("edge must exist");
 
-            // The edge is stored with a sign from src→tgt. Compare to move_sign to pick the node.
+            // The edge is stored with a sign from src->tgt. Compare to move_sign to pick the node.
             let edge_sign_from_src = skeleton
                 .edge_sign_from(edge_idx, src)
                 .expect("src is an endpoint");
             let entered_node = if move_sign == edge_sign_from_src {
-                tgt  // moving in the same direction as src→tgt means we enter tgt
+                tgt  // moving in the same direction as src->tgt means we enter tgt
             } else {
                 src
             };
