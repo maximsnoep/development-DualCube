@@ -404,13 +404,20 @@ const SHARED_EDGE_MULTIPLIER: f64 = 8.0;
 /// `blocked` contains the reverse half-edges of existing loops (twin of each traversed edge).
 /// A path cannot traverse a half-edge that is in `blocked`, which prevents crossing an existing
 /// loop in the opposite direction while still allowing parallel (same-direction) traversal.
-/// Faces adjacent to blocked edges incur a `SHARED_EDGE_MULTIPLIER` cost penalty,
+///
+/// `used` contains half-edges already traversed by the current loop being traced. This prevents
+/// self-intersection: a loop cannot reuse an edge it already traversed (even in the same direction).
+/// Unlike `blocked`, `used` is scoped to a single loop and discarded afterward so that later loops
+/// can still share those edges in parallel.
+///
+/// Faces adjacent to blocked/used edges incur a `SHARED_EDGE_MULTIPLIER` cost penalty,
 /// encouraging paths to stay away from existing loops even when parallel traversal is allowed.
 /// Returns `None` if no path exists.
 fn surface_path_intermediates(
     source: EdgeID,
     target: EdgeID,
     blocked: &HashSet<EdgeID>,
+    used: &HashSet<EdgeID>,
     mesh: &Mesh<INPUT>,
 ) -> Option<Vec<EdgeID>> {
     let faces_of = |e: EdgeID| -> Vec<FaceID> {
@@ -426,7 +433,7 @@ fn surface_path_intermediates(
         verts.iter().fold(Vector3D::zeros(), |acc, &v| acc + mesh.position(v)) / n
     };
 
-    // Returns true if the face has at least one edge in `blocked` (other than `except`).
+    // Returns true if the face has at least one edge in `blocked` or `used` (other than `except`).
     // Checks both half-edges of each geometric edge: with directional blocking only one
     // half-edge per geometric edge is in `blocked`, depending on which direction was traversed.
     // `except` is from the source face's perspective; its twin is this face's view of the same
@@ -439,10 +446,13 @@ fn surface_path_intermediates(
             let a = verts[i];
             let b = verts[(i + 1) % n];
             if let Some((e, _)) = mesh.edge_between_verts(a, b) {
-                if e != except && e != except_twin
-                    && (blocked.contains(&e) || blocked.contains(&mesh.twin(e)))
-                {
-                    return true;
+                if e != except && e != except_twin {
+                    let twin = mesh.twin(e);
+                    if blocked.contains(&e) || blocked.contains(&twin)
+                        || used.contains(&e) || used.contains(&twin)
+                    {
+                        return true;
+                    }
                 }
             }
         }
@@ -486,7 +496,7 @@ fn surface_path_intermediates(
             let b = face_verts[(i + 1) % n];
             let Some((edge, _)) = mesh.edge_between_verts(a, b) else { continue };
 
-            if blocked.contains(&edge) {
+            if blocked.contains(&edge) || used.contains(&edge) {
                 continue;
             }
 
@@ -625,14 +635,17 @@ fn pathing_for_loops(
             // Second pass: connect consecutive control points via surface path.
             let n = control_points.len();
             let mut loop_edges = Vec::new();
+            let mut used_in_loop: HashSet<EdgeID> = HashSet::new();
             let mut path_ok = true;
             for i in 0..n {
                 let src = control_points[i];
                 let tgt = control_points[(i + 1) % n];
                 loop_edges.push(src);
-                match surface_path_intermediates(src, tgt, &blocked, mesh) {
+                used_in_loop.insert(src);
+                match surface_path_intermediates(src, tgt, &blocked, &used_in_loop, mesh) {
                     Some(inter) => {
                         blocked.extend(inter.iter().map(|&e| mesh.twin(e)));
+                        used_in_loop.extend(inter.iter().copied());
                         loop_edges.extend(inter);
                     }
                     None => {
