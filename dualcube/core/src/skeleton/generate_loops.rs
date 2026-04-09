@@ -574,8 +574,11 @@ fn pathing_for_loops(
         // Blocked edges: all edges in loops established before this direction.
         // These act as walls in the dual-graph Dijkstra (other loops must not be crossed).
         // Updated after each loop is traced so loops of the same axis cannot cross each other.
+        // Both half-edges of each geometric edge are added: edge_between_verts returns a directed
+        // half-edge, so the twin must also be blocked or the wall only exists in one direction.
         let mut blocked: HashSet<EdgeID> = map.values()
             .flat_map(|l| l.edges.iter().copied())
+            .flat_map(|e| [e, mesh.twin(e)])
             .collect();
 
         // Repeatedly pick any unvisited point and trace the full loop it belongs to.
@@ -620,7 +623,7 @@ fn pathing_for_loops(
                 loop_edges.push(src);
                 match surface_path_intermediates(src, tgt, &blocked, mesh) {
                     Some(inter) => {
-                        blocked.extend(inter.iter().copied());
+                        blocked.extend(inter.iter().flat_map(|&e| [e, mesh.twin(e)]));
                         loop_edges.extend(inter);
                     }
                     None => {
@@ -634,7 +637,7 @@ fn pathing_for_loops(
             }
 
             if path_ok {
-                blocked.extend(loop_edges.iter().copied());
+                blocked.extend(loop_edges.iter().flat_map(|&e| [e, mesh.twin(e)]));
                 map.insert(Loop { edges: loop_edges, direction: loop_axis });
             }
         }
