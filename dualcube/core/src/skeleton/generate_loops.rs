@@ -401,9 +401,11 @@ const SHARED_EDGE_MULTIPLIER: f64 = 8.0;
 /// Returns the mesh edges crossed between `source` and `target`, **exclusive** of both.
 /// The caller is responsible for pushing `source` before and `target` after this list.
 ///
-/// Blocked edges (other loops) act as hard walls: the path may not cross them.
-/// Faces adjacent to blocked edges incur a `SHARED_EDGE_MULTIPLIER` cost penalty when
-/// entering or leaving, encouraging paths to stay away from existing loops.
+/// `blocked` contains the reverse half-edges of existing loops (twin of each traversed edge).
+/// A path cannot traverse a half-edge that is in `blocked`, which prevents crossing an existing
+/// loop in the opposite direction while still allowing parallel (same-direction) traversal.
+/// Faces adjacent to blocked edges incur a `SHARED_EDGE_MULTIPLIER` cost penalty,
+/// encouraging paths to stay away from existing loops even when parallel traversal is allowed.
 /// Returns `None` if no path exists.
 fn surface_path_intermediates(
     source: EdgeID,
@@ -425,14 +427,21 @@ fn surface_path_intermediates(
     };
 
     // Returns true if the face has at least one edge in `blocked` (other than `except`).
+    // Checks both half-edges of each geometric edge: with directional blocking only one
+    // half-edge per geometric edge is in `blocked`, depending on which direction was traversed.
+    // `except` is from the source face's perspective; its twin is this face's view of the same
+    // geometric edge, so both are excluded to avoid counting the entry edge as a blocked neighbor.
     let face_touches_blocked = |f: FaceID, except: EdgeID| -> bool {
+        let except_twin = mesh.twin(except);
         let verts: Vec<VertID> = mesh.vertices(f).collect();
         let n = verts.len();
         for i in 0..n {
             let a = verts[i];
             let b = verts[(i + 1) % n];
             if let Some((e, _)) = mesh.edge_between_verts(a, b) {
-                if e != except && blocked.contains(&e) {
+                if e != except && e != except_twin
+                    && (blocked.contains(&e) || blocked.contains(&mesh.twin(e)))
+                {
                     return true;
                 }
             }
@@ -571,14 +580,14 @@ fn pathing_for_loops(
                 })
                 .collect();
 
-        // Blocked edges: all edges in loops established before this direction.
-        // These act as walls in the dual-graph Dijkstra (other loops must not be crossed).
-        // Updated after each loop is traced so loops of the same axis cannot cross each other.
-        // Both half-edges of each geometric edge are added: edge_between_verts returns a directed
-        // half-edge, so the twin must also be blocked or the wall only exists in one direction.
+        // Blocked edges: reverse half-edges of all loops established before this direction.
+        // Only the twin (reverse direction) of each loop edge is blocked. This prevents crossing
+        // (a new path cannot traverse the same geometric edge in the opposite direction to an
+        // existing loop) while allowing parallel traversal (same direction is still open).
+        // Updated after each loop/segment is traced so same-axis loops cannot cross each other.
         let mut blocked: HashSet<EdgeID> = map.values()
             .flat_map(|l| l.edges.iter().copied())
-            .flat_map(|e| [e, mesh.twin(e)])
+            .map(|e| mesh.twin(e))
             .collect();
 
         // Repeatedly pick any unvisited point and trace the full loop it belongs to.
@@ -623,7 +632,7 @@ fn pathing_for_loops(
                 loop_edges.push(src);
                 match surface_path_intermediates(src, tgt, &blocked, mesh) {
                     Some(inter) => {
-                        blocked.extend(inter.iter().flat_map(|&e| [e, mesh.twin(e)]));
+                        blocked.extend(inter.iter().map(|&e| mesh.twin(e)));
                         loop_edges.extend(inter);
                     }
                     None => {
@@ -637,7 +646,7 @@ fn pathing_for_loops(
             }
 
             if path_ok {
-                blocked.extend(loop_edges.iter().flat_map(|&e| [e, mesh.twin(e)]));
+                blocked.extend(loop_edges.iter().map(|&e| mesh.twin(e)));
                 map.insert(Loop { edges: loop_edges, direction: loop_axis });
             }
         }
