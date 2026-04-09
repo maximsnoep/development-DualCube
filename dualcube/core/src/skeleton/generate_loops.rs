@@ -393,7 +393,7 @@ fn get_loop(boundary: BoundaryLoop, direction: PrincipalDirection) -> Loop {
 
 /// Cost multiplier applied when entering or leaving a face that has at least one blocked edge.
 /// Applied symmetrically on both sides, so two adjacent-to-loop faces incur 4x total.
-const SHARED_EDGE_MULTIPLIER: f64 = 2.0;
+const SHARED_EDGE_MULTIPLIER: f64 = 8.0;
 
 /// Dijkstra's on the mesh dual graph to find the shortest intermediate path between two
 /// control-point edges, using geodesic (face-centroid -> edge-midpoint -> face-centroid) cost.
@@ -492,10 +492,6 @@ fn surface_path_intermediates(
             let centroid_b = face_centroid(next_face);
             let mut step_cost = (centroid_a - edge_mid).norm() + (edge_mid - centroid_b).norm();
 
-            // Penalize leaving a face adjacent to blocked edges.
-            if face_touches_blocked(face, edge) {
-                step_cost *= SHARED_EDGE_MULTIPLIER;
-            }
             // Penalize entering a face adjacent to blocked edges.
             if face_touches_blocked(next_face, edge) {
                 step_cost *= SHARED_EDGE_MULTIPLIER;
@@ -577,7 +573,8 @@ fn pathing_for_loops(
 
         // Blocked edges: all edges in loops established before this direction.
         // These act as walls in the dual-graph Dijkstra (other loops must not be crossed).
-        let blocked: HashSet<EdgeID> = map.values()
+        // Updated after each loop is traced so loops of the same axis cannot cross each other.
+        let mut blocked: HashSet<EdgeID> = map.values()
             .flat_map(|l| l.edges.iter().copied())
             .collect();
 
@@ -622,7 +619,10 @@ fn pathing_for_loops(
                 let tgt = control_points[(i + 1) % n];
                 loop_edges.push(src);
                 match surface_path_intermediates(src, tgt, &blocked, mesh) {
-                    Some(inter) => loop_edges.extend(inter),
+                    Some(inter) => {
+                        blocked.extend(inter.iter().copied());
+                        loop_edges.extend(inter);
+                    }
                     None => {
                         error!(
                             "No surface path from {:?} to {:?} for {:?}-loop (control point {}/{})",
@@ -634,6 +634,7 @@ fn pathing_for_loops(
             }
 
             if path_ok {
+                blocked.extend(loop_edges.iter().copied());
                 map.insert(Loop { edges: loop_edges, direction: loop_axis });
             }
         }
