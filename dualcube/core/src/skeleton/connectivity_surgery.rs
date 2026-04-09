@@ -254,6 +254,67 @@ impl SurgeryContext {
         true
     }
 
+    /// Returns whether directed collapse u -> v is currently legal.
+    fn is_legal_collapse_candidate(&self, u: VIdx, v: VIdx) -> bool {
+        if self.is_dead.contains(&u) || self.is_dead.contains(&v) {
+            return false;
+        }
+
+        if !self
+            .neighbors
+            .get(&u)
+            .is_some_and(|neighbor_set| neighbor_set.contains(&v))
+        {
+            return false;
+        }
+
+        if !self.edge_has_faces(u, v) {
+            return false;
+        }
+
+        if !self.check_link_condition(u, v) {
+            return false;
+        }
+
+        true
+    }
+
+    /// Counts all currently legal directed collapse candidates.
+    fn count_legal_collapse_candidates(&self) -> usize {
+        let mut count = 0;
+
+        for (&u, neighbor_set) in &self.neighbors {
+            if self.is_dead.contains(&u) {
+                continue;
+            }
+
+            for &v in neighbor_set {
+                if self.is_legal_collapse_candidate(u, v) {
+                    count += 1;
+                }
+            }
+        }
+
+        count
+    }
+
+    /// Returns a one-line diagnostic summary for directed edge u -> v.
+    fn edge_diagnostic_summary(&self, u: VIdx, v: VIdx) -> String {
+        let u_dead = self.is_dead.contains(&u);
+        let v_dead = self.is_dead.contains(&v);
+        let adjacent = self
+            .neighbors
+            .get(&u)
+            .is_some_and(|neighbor_set| neighbor_set.contains(&v));
+        let has_faces = adjacent && !u_dead && !v_dead && self.edge_has_faces(u, v);
+        let link_ok = has_faces && self.check_link_condition(u, v);
+
+        format!(
+            "{:?}->{:?}[u_dead={}, v_dead={}, adjacent={}, has_faces={}, link_ok={}]",
+            u, v, u_dead, v_dead, adjacent, has_faces, link_ok
+        )
+    }
+
     /// Performs edge collapse: u merges into v.
     fn collapse_edge(&mut self, u: VIdx, v: VIdx) {
         // Merge quadrics
@@ -417,37 +478,49 @@ pub fn extract_skeleton(
     // Greedy collapse loop
     while !ctx.active_faces.is_empty() {
         let Some(candidate) = heap.pop() else {
+            let legal_candidates = ctx.count_legal_collapse_candidates();
+            let remaining_faces = ctx.active_faces.len();
             warn!(
-                "No more collapse candidates but {} faces remain.",
-                ctx.active_faces.len()
+                "No more collapse candidates but {} faces remain. Legal directed candidates now: {}.",
+                remaining_faces,
+                legal_candidates
             );
+
+            if legal_candidates > 0 {
+                warn!(
+                    "Heap is empty despite legal collapse candidates; this indicates candidate starvation from stale-entry dropping."
+                );
+            }
+
+            if let Some(face) = ctx.active_faces.iter().copied().next() {
+                let [a, b, c] = face;
+                warn!(
+                    "Sample remaining face {:?} diagnostics: {}, {}, {}, {}, {}, {}",
+                    face,
+                    ctx.edge_diagnostic_summary(a, b),
+                    ctx.edge_diagnostic_summary(b, a),
+                    ctx.edge_diagnostic_summary(b, c),
+                    ctx.edge_diagnostic_summary(c, b),
+                    ctx.edge_diagnostic_summary(c, a),
+                    ctx.edge_diagnostic_summary(a, c)
+                );
+            }
             break;
         };
 
-        // Skip stale entries (cost changed since insertion)
+        if !ctx.is_legal_collapse_candidate(candidate.u, candidate.v) {
+            continue;
+        }
+
+        // Refresh stale entries (cost changed since insertion) instead of dropping them.
         let real_cost = ctx.compute_collapse_cost(candidate.u, candidate.v);
         const COST_EPSILON: f64 = 1e-8;
         if (candidate.cost - real_cost).abs() > COST_EPSILON {
-            continue;
-        }
-
-        // Skip if either vertex is dead
-        if ctx.is_dead.contains(&candidate.u) || ctx.is_dead.contains(&candidate.v) {
-            continue;
-        }
-
-        // Check if edge still exists
-        if !ctx.neighbors[&candidate.u].contains(&candidate.v) {
-            continue;
-        }
-
-        // Edge might have lost its last face - skip if so
-        if !ctx.edge_has_faces(candidate.u, candidate.v) {
-            continue;
-        }
-
-        // Check link condition for manifold preservation
-        if !ctx.check_link_condition(candidate.u, candidate.v) {
+            heap.push(CollapseCandidate {
+                u: candidate.u,
+                v: candidate.v,
+                cost: real_cost,
+            });
             continue;
         }
 

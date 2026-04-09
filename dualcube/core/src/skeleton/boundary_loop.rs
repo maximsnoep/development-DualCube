@@ -115,6 +115,12 @@ impl BoundaryLoop {
                 .copied()
                 .filter(|&x| set_b.contains(&x))
                 .collect();
+
+            assert!(
+                (a_vs.len() == 1 && b_vs.len() == 2) || (a_vs.len() == 2 && b_vs.len() == 1),
+                "Boundary face does not have correct vertex labeling. Were all faces removed?"
+            );
+
             let (min, maj_a, maj_b) = if a_vs.len() == 1 {
                 (a_vs[0], b_vs[0], b_vs[1])
             } else {
