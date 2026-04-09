@@ -538,6 +538,31 @@ fn surface_path_intermediates(
     Some(path)
 }
 
+/// Fully blocks edges adjacent to a control point within a loop's edge sequence.
+/// Both `e` and `twin(e)` are inserted, preventing any future loop from using those
+/// edges in either direction. This guarantees 4 distinct arms at each intersection.
+/// Adjacent edges that are themselves control points are skipped (they stay accessible
+/// as Dijkstra start/end points for other loops).
+fn block_adjacent_to_control_points(
+    loop_edges: &[EdgeID],
+    all_control_points: &HashSet<EdgeID>,
+    blocked: &mut HashSet<EdgeID>,
+    mesh: &Mesh<INPUT>,
+) {
+    let len = loop_edges.len();
+    for i in 0..len {
+        if all_control_points.contains(&loop_edges[i]) {
+            for &adj_i in &[(i + len - 1) % len, (i + 1) % len] {
+                let adj = loop_edges[adj_i];
+                if !all_control_points.contains(&adj) {
+                    blocked.insert(adj);
+                    blocked.insert(mesh.twin(adj));
+                }
+            }
+        }
+    }
+}
+
 fn pathing_for_loops(
     boundary_map: BiHashMap<EdgeIndex, LoopID>,
     crossings: CrossingMap,
@@ -546,6 +571,15 @@ fn pathing_for_loops(
     mesh: &Mesh<INPUT>,
     map: &mut SlotMap<LoopID, Loop>,
 ) {
+    // All edges that serve as intersection points between loops of different axis types.
+    // Edges adjacent to these in a completed loop's path are fully blocked (both directions)
+    // to guarantee 4 distinct arms at every intersection as required by the dual structure.
+    let all_control_points: HashSet<EdgeID> = crossings
+        .values()
+        .flat_map(|m| m.values().copied())
+        .chain(face_points.values().flat_map(|m| m.values().copied()))
+        .collect();
+
     for &loop_axis in &ALL_DIRS {
         // Crossings visited by this loop axis: a crossing on a boundary with direction D and
         // dir_sign (A, s) is visited by loops with axis third(D, A), so filter by that.
@@ -585,11 +619,15 @@ fn pathing_for_loops(
         // Only the twin (reverse direction) of each loop edge is blocked. This prevents crossing
         // (a new path cannot traverse the same geometric edge in the opposite direction to an
         // existing loop) while allowing parallel traversal (same direction is still open).
-        // Updated after each loop/segment is traced so same-axis loops cannot cross each other.
+        // Additionally, edges adjacent to control points are fully blocked (both directions)
+        // to guarantee 4 distinct arms at every intersection.
         let mut blocked: HashSet<EdgeID> = map.values()
             .flat_map(|l| l.edges.iter().copied())
             .map(|e| mesh.twin(e))
             .collect();
+        for l in map.values() {
+            block_adjacent_to_control_points(&l.edges, &all_control_points, &mut blocked, mesh);
+        }
 
         // Repeatedly pick any unvisited point and trace the full loop it belongs to.
         while !unvisited_crossings.is_empty() || !unvisited_face_points.is_empty() {
@@ -635,7 +673,6 @@ fn pathing_for_loops(
                 used_in_loop.insert(src);
                 match surface_path_intermediates(src, tgt, &blocked, &used_in_loop, mesh) {
                     Some(inter) => {
-                        blocked.extend(inter.iter().map(|&e| mesh.twin(e)));
                         used_in_loop.extend(inter.iter().copied());
                         loop_edges.extend(inter);
                     }
@@ -650,9 +687,13 @@ fn pathing_for_loops(
             }
 
             if path_ok {
+                // Directional blocking: prevent future loops from crossing this one.
                 blocked.extend(loop_edges.iter().map(|&e| mesh.twin(e)));
+                // 4-arm guarantee: fully block edges adjacent to control points.
+                block_adjacent_to_control_points(&loop_edges, &all_control_points, &mut blocked, mesh);
                 map.insert(Loop { edges: loop_edges, direction: loop_axis });
             }
+            // On failure: blocked is untouched — the dropped loop leaves no trace.
         }
     }
 }
