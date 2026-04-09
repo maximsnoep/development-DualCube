@@ -365,14 +365,6 @@ fn edge_midpoint_pos(e: EdgeID, mesh: &Mesh<INPUT>) -> Vector3D {
     (a + b) * 0.5
 }
 
-/// Minimum angle (radians) between `v` and any vector in `others`. Returns π if `others` is empty.
-fn min_angle_to(v: &Vector3D, others: &[Vector3D]) -> f64 {
-    others
-        .iter()
-        .map(|d| d.dot(v).clamp(-1.0, 1.0).acos())
-        .fold(PI, f64::min)
-}
-
 /// Shortest angular distance between two angles in radians.
 fn angle_distance(a: f64, b: f64) -> f64 {
     let mut d = (a - b) % (2.0 * PI);
