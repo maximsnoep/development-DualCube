@@ -384,7 +384,6 @@ fn get_loop(boundary: BoundaryLoop, direction: PrincipalDirection) -> Loop {
 }
 
 /// Cost multiplier applied when entering or leaving a face that has at least one blocked edge.
-/// Applied symmetrically on both sides, so two adjacent-to-loop faces incur 4x total.
 const SHARED_EDGE_MULTIPLIER: f64 = 8.0;
 
 /// Dijkstra's on the mesh dual graph to find the shortest intermediate path between two
