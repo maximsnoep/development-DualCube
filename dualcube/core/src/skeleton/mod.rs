@@ -202,7 +202,8 @@ fn surgery_and_simplification(
     simplify_skeleton(&mut cleaned_skeleton, mesh);
 
     // Smooth region boundaries
-    cleaned_skeleton.smooth_boundaries(mesh);
+    // cleaned_skeleton.smooth_boundaries(mesh); // This is not really necessary...
+
     (curve_skeleton, cleaned_skeleton)
 }
 
