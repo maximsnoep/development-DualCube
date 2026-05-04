@@ -262,16 +262,6 @@ impl egui_dock::TabViewer for TabViewer {
         false
     }
 
-    fn context_menu(
-        &mut self,
-        _ui: &mut Ui,
-        _tab: &mut Self::Tab,
-        _surface: egui_dock::SurfaceIndex,
-        _node: NodeIndex,
-    ) {
-        // Handled in on_tab_button with CloseOnClickOutside behavior.
-    }
-
     fn ui(&mut self, ui: &mut bevy_egui::egui::Ui, tab: &mut Self::Tab) {
         bevy_egui::egui::Frame {
             stroke: bevy_egui::egui::epaint::Stroke {
@@ -1076,7 +1066,6 @@ pub fn update(
     latest_log: Res<LatestLogLine>,
     mesh_ref: Res<InputResource>,
     axes_texture: Res<bevy_axes_gizmo::AxesGizmoTexture>,
-    mut _commands: Commands,
     mut automatic_rotation: ResMut<AutomaticRotation>,
     mut camera_look: Query<&mut LookTransform, With<Controller>>,
 ) -> Result<(), BevyError> {
@@ -1138,21 +1127,19 @@ pub fn update(
             ui.horizontal(|ui| {
                 ui.with_layout(Layout::top_down(Align::TOP), |ui| {
                     // FIRST ROW
-                    {
-                        let ui_r = &mut *ui_resource;
-                        header(
-                            ui,
-                            &mut solution,
-                            &mut jobs,
-                            &mut conf,
-                            &mut automatic_rotation,
-                            &mut render_setting_store,
-                            camera_eye,
-                            camera_target,
-                            &mut ui_r.camera_import_text,
-                            &mut ui_r.pending_camera_position,
-                        );
-                    }
+                    let ui_r = &mut *ui_resource;
+                    header(
+                        ui,
+                        &mut solution,
+                        &mut jobs,
+                        &mut conf,
+                        &mut automatic_rotation,
+                        &mut render_setting_store,
+                        camera_eye,
+                        camera_target,
+                        &mut ui_r.camera_import_text,
+                        &mut ui_r.pending_camera_position,
+                    );
 
                     ui.add_space(5.);
 
