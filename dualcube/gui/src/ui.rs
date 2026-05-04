@@ -264,20 +264,12 @@ impl egui_dock::TabViewer for TabViewer {
 
     fn context_menu(
         &mut self,
-        ui: &mut Ui,
-        tab: &mut Self::Tab,
+        _ui: &mut Ui,
+        _tab: &mut Self::Tab,
         _surface: egui_dock::SurfaceIndex,
         _node: NodeIndex,
     ) {
-        if let Some(local_copy) = self.render_settings.get_mut(tab) {
-            for label in &local_copy.labels {
-                if let Some(setting) = local_copy.settings.get_mut(label) {
-                    ui.checkbox(&mut setting.visible, label.to_owned());
-                }
-            }
-        } else {
-            ui.label("o_O");
-        }
+        // Handled in on_tab_button with CloseOnClickOutside behavior.
     }
 
     fn ui(&mut self, ui: &mut bevy_egui::egui::Ui, tab: &mut Self::Tab) {
@@ -366,7 +358,19 @@ impl egui_dock::TabViewer for TabViewer {
         Id::new(self.title(tab).text())
     }
 
-    fn on_tab_button(&mut self, _tab: &mut Self::Tab, _response: &bevy_egui::egui::Response) {}
+    fn on_tab_button(&mut self, tab: &mut Self::Tab, response: &bevy_egui::egui::Response) {
+        Popup::context_menu(response)
+            .close_behavior(PopupCloseBehavior::CloseOnClickOutside)
+            .show(|ui| {
+                if let Some(settings) = self.render_settings.get_mut(tab) {
+                    for label in &settings.labels {
+                        if let Some(setting) = settings.settings.get_mut(label) {
+                            ui.checkbox(&mut setting.visible, label.to_owned());
+                        }
+                    }
+                }
+            });
+    }
 
     fn on_close(&mut self, _tab: &mut Self::Tab) -> OnCloseResponse {
         OnCloseResponse::Ignore
@@ -1541,7 +1545,8 @@ pub fn update(
         .show(egui_ctx.ctx_mut()?, |ui| {
             let dock_area = DockArea::new(&mut ui_resource.tree)
                 .show_leaf_collapse_buttons(false)
-                .show_leaf_close_all_buttons(false);
+                .show_leaf_close_all_buttons(false)
+                .tab_context_menus(false);
             let mut dock_area_style = Style::from_egui(ui.style());
             dock_area_style.dock_area_padding = Some(bevy_egui::egui::epaint::Margin::same(20));
             dock_area_style.tab_bar.corner_radius = CornerRadius::same(0);
