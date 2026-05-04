@@ -1,6 +1,6 @@
 use crate::controls::InteractiveMode;
 use crate::jobs::{Job, JobRequest, JobState};
-use crate::render::{CameraFor, Objects, RenderObjectSetting, RenderObjectSettingStore};
+use crate::render::{CameraFor, Objects, RenderObjectSetting, RenderObjectSettingStore, PENDING_SCREENSHOT};
 use crate::{
     colors, CameraHandles, Configuration, InputResource, Perspective, Phase, PrincipalDirection,
     SolutionResource,
@@ -709,6 +709,22 @@ fn header(
                         if let Some(pos) = parse_camera_position(camera_import_text) {
                             *pending_camera_position = Some(pos);
                         }
+                    }
+
+                    sep(ui);
+                    label(ui, "Screenshot", 12., Color32::WHITE);
+                    space(ui);
+
+                    if sleek_button(ui, "Save Screenshot") {
+                        std::thread::spawn(|| {
+                            if let Some(path) = rfd::FileDialog::new()
+                                .add_filter("PNG image", &["png"])
+                                .set_file_name("screenshot.png")
+                                .save_file()
+                            {
+                                *PENDING_SCREENSHOT.lock().unwrap() = Some(path);
+                            }
+                        });
                     }
 
                     space(ui);

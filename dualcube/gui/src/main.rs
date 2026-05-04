@@ -320,6 +320,7 @@ fn main() {
         .add_systems(Update, render::update_render_settings)
         .add_systems(Update, controls::system)
         .add_systems(Update, update_field)
+        .add_systems(Update, render::take_screenshot)
         .run();
 }
 

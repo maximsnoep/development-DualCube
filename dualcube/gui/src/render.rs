@@ -18,6 +18,7 @@ use bevy::prelude::*;
 use bevy::render::render_resource::{
     Extent3d, TextureDescriptor, TextureDimension, TextureFormat, TextureUsages,
 };
+use bevy::render::view::screenshot::{Screenshot, ScreenshotCaptured};
 use bevy_axes_gizmo::AxesGizmoSyncCamera;
 use bevy_egui::EguiGlobalSettings;
 use bevy_egui::PrimaryEguiContext;
@@ -31,7 +32,17 @@ use itertools::Itertools;
 use mehsh::prelude::*;
 use std::collections::{HashMap, HashSet};
 use std::ops::Index;
+use std::path::PathBuf;
+use std::sync::Mutex;
 use wgpu_types::BlendState;
+
+pub static PENDING_SCREENSHOT: Mutex<Option<PathBuf>> = Mutex::new(None);
+
+#[derive(Component)]
+pub struct ScreenshotCamera;
+
+#[derive(Resource)]
+pub struct ScreenshotHandle(pub Handle<Image>);
 
 const DEFAULT_CAMERA_EYE: Vec3 = Vec3::new(25.0, 25.0, 25.0);
 const DEFAULT_CAMERA_TARGET: Vec3 = Vec3::new(0., 0., 0.);
@@ -346,6 +357,41 @@ pub fn reset(
             CameraFor(object),
         ));
     }
+
+    // Off-screen camera for transparent-background screenshots.
+    let mut screenshot_image = Image {
+        texture_descriptor: TextureDescriptor {
+            label: None,
+            size: Extent3d {
+                width: 2048,
+                height: 2048,
+                ..default()
+            },
+            dimension: TextureDimension::D2,
+            format: TextureFormat::Rgba8UnormSrgb,
+            mip_level_count: 1,
+            sample_count: 1,
+            usage: TextureUsages::TEXTURE_BINDING
+                | TextureUsages::COPY_DST
+                | TextureUsages::RENDER_ATTACHMENT,
+            view_formats: &[],
+        },
+        ..default()
+    };
+    screenshot_image.resize(screenshot_image.texture_descriptor.size);
+    let screenshot_handle = images.add(screenshot_image);
+    commands.insert_resource(ScreenshotHandle(screenshot_handle.clone()));
+    commands.spawn((
+        Camera3d::default(),
+        RenderTarget::Image(screenshot_handle.into()),
+        bevy_blossom::CameraMarker,
+        Camera {
+            clear_color: ClearColorConfig::Custom(bevy::prelude::Color::NONE),
+            ..Default::default()
+        },
+        Tonemapping::None,
+        ScreenshotCamera,
+    ));
 }
 
 pub fn setup(
@@ -564,8 +610,9 @@ pub fn update(
     mut main_camera: Query<(&LookTransform, &Transform, &mut Camera), With<Controller>>,
     mut other_cameras: Query<
         (&mut Transform, &mut Projection, &mut Camera, &CameraFor),
-        Without<Controller>,
+        (Without<Controller>, Without<ScreenshotCamera>),
     >,
+    mut screenshot_cameras: Query<&mut Transform, (With<ScreenshotCamera>, Without<Controller>)>,
 ) {
     let (_, main_transform, mut main_camera) = main_camera.single_mut().unwrap();
 
@@ -626,6 +673,11 @@ pub fn update(
                 viewport_height: distance,
             };
         }
+    }
+
+    for mut transform in &mut screenshot_cameras {
+        transform.translation = normalized_translation;
+        transform.rotation = normalized_rotation;
     }
 
     for material in custom_materials.iter_mut() {
@@ -1497,4 +1549,28 @@ pub fn world_to_view(v: Vector3D, translation: Vector3D, scale: f64) -> Vec3 {
 pub fn view_to_world(v: Vec3, translation: Vector3D, scale: f64) -> Vector3D {
     let v_world = Vector3D::new(v.x as f64, v.y as f64, v.z as f64);
     invert_transform_coordinates(v_world, translation, scale)
+}
+
+pub fn take_screenshot(mut commands: Commands, handle: Option<Res<ScreenshotHandle>>) {
+    let Some(path) = PENDING_SCREENSHOT.lock().unwrap().take() else {
+        return;
+    };
+    let Some(handle) = handle else {
+        return;
+    };
+    commands
+        .spawn(Screenshot::image(handle.0.clone()))
+        .observe(move |screenshot: On<ScreenshotCaptured>| {
+            let img = screenshot.image.clone();
+            match img.try_into_dynamic() {
+                Ok(dyn_img) => {
+                    let rgba = dyn_img.to_rgba8();
+                    match rgba.save(&path) {
+                        Ok(()) => info!("Screenshot saved to {}", path.display()),
+                        Err(e) => error!("Failed to save screenshot: {e}"),
+                    }
+                }
+                Err(e) => error!("Failed to convert screenshot image: {e:?}"),
+            }
+        });
 }
