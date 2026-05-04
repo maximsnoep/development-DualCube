@@ -1670,12 +1670,18 @@ pub fn text_format(size: f32, color: Color32) -> TextFormat {
 }
 
 pub fn menu_button(ui: &mut Ui, label: &str, f: impl FnOnce(&mut Ui)) {
-    ui.menu_button(RichText::new(label).color(Color32::WHITE).size(12.), f);
+    let response = ui.button(RichText::new(label).color(Color32::WHITE).size(12.));
+    Popup::menu(&response)
+        .close_behavior(PopupCloseBehavior::CloseOnClickOutside)
+        .show(|ui| f(ui));
 }
 
 #[allow(dead_code)]
 pub fn menu_button_unfocused(ui: &mut Ui, label: &str, f: impl FnOnce(&mut Ui)) {
-    ui.menu_button(RichText::new(label).color(Color32::GRAY).size(12.), f);
+    let response = ui.button(RichText::new(label).color(Color32::GRAY).size(12.));
+    Popup::menu(&response)
+        .close_behavior(PopupCloseBehavior::CloseOnClickOutside)
+        .show(|ui| f(ui));
 }
 
 pub fn sleek_button(ui: &mut Ui, label: &str) -> bool {
