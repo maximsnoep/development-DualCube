@@ -18,6 +18,7 @@ use bevy_egui::egui::FontFamily::Proportional;
 use bevy_egui::egui::*;
 use bevy_egui::PrimaryEguiContext;
 use bevy_orbit_camera::automatic::AutomaticRotation;
+use bevy_orbit_camera::{Controller, LookTransform};
 use dualcube::prelude::Solution;
 use egui_dock::tab_viewer::OnCloseResponse;
 use egui_dock::{DockArea, DockState, NodeIndex, Style};
@@ -150,6 +151,8 @@ enum ExportType {
 #[derive(Resource)]
 pub struct UiResource {
     pub tree: DockState<Objects>,
+    pub camera_import_text: String,
+    pub pending_camera_position: Option<(Vec3, Vec3)>,
 }
 
 const RED: Color32 = Color32::from_rgb(
@@ -172,6 +175,8 @@ const BLUE: Color32 = Color32::from_rgb(
 impl Default for UiResource {
     fn default() -> Self {
         UiResource {
+            camera_import_text: String::new(),
+            pending_camera_position: None,
             tree: {
                 let mut tree = DockState::new(vec![Objects::InputMesh]);
 
@@ -460,6 +465,10 @@ fn header(
     configuration: &mut ResMut<Configuration>,
     automatic_rotation: &mut ResMut<AutomaticRotation>,
     render_object_settings_store: &mut ResMut<RenderObjectSettingStore>,
+    eye: Vec3,
+    target: Vec3,
+    camera_import_text: &mut String,
+    pending_camera_position: &mut Option<(Vec3, Vec3)>,
 ) {
     ui.with_layout(Layout::left_to_right(Align::TOP), |ui| {
         Frame {
@@ -661,6 +670,51 @@ fn header(
                         configuration.camera_rotate_sensitivity = 0.2;
                         configuration.camera_translate_sensitivity = 2.0;
                         configuration.camera_zoom_sensitivity = 0.2;
+                    }
+
+                    sep(ui);
+
+                    label(ui, "Camera position", 12., Color32::WHITE);
+
+                    space(ui);
+
+                    label(
+                        ui,
+                        &format!("eye:    ({:.3}, {:.3}, {:.3})", eye.x, eye.y, eye.z),
+                        11.,
+                        Color32::LIGHT_GRAY,
+                    );
+                    label(
+                        ui,
+                        &format!("target: ({:.3}, {:.3}, {:.3})", target.x, target.y, target.z),
+                        11.,
+                        Color32::LIGHT_GRAY,
+                    );
+
+                    space(ui);
+
+                    let copy_text = format!(
+                        "eye=({:.3},{:.3},{:.3}) target=({:.3},{:.3},{:.3})",
+                        eye.x, eye.y, eye.z, target.x, target.y, target.z
+                    );
+                    if sleek_button(ui, "Copy") {
+                        ui.ctx().copy_text(copy_text);
+                    }
+
+                    sep(ui);
+
+                    ui.add(
+                        TextEdit::singleline(camera_import_text)
+                            .hint_text("eye=(x,y,z) target=(x,y,z)")
+                            .desired_width(f32::INFINITY),
+                    );
+
+                    space(ui);
+
+                    if sleek_button(ui, "Paste") {
+                        if let Some(pos) = parse_camera_position(camera_import_text) {
+                            *pending_camera_position = Some(pos);
+                        }
                     }
 
                     space(ui);
@@ -1018,10 +1072,23 @@ pub fn update(
     latest_log: Res<LatestLogLine>,
     mesh_ref: Res<InputResource>,
     axes_texture: Res<bevy_axes_gizmo::AxesGizmoTexture>,
-    mut _gizmo_assets: ResMut<Assets<GizmoAsset>>,
     mut _commands: Commands,
     mut automatic_rotation: ResMut<AutomaticRotation>,
+    mut camera_look: Query<&mut LookTransform, With<Controller>>,
 ) -> Result<(), BevyError> {
+    // Apply pending camera position set from the UI
+    if let Some((new_eye, new_target)) = ui_resource.pending_camera_position.take() {
+        if let Ok(mut lt) = camera_look.single_mut() {
+            lt.eye = new_eye;
+            lt.target = new_target;
+        }
+    }
+
+    let (camera_eye, camera_target) = camera_look
+        .single()
+        .map(|lt| (lt.eye, lt.target))
+        .unwrap_or((Vec3::ZERO, Vec3::ZERO));
+
     // Poll for async file dialog results
     if let Some((path, configuration)) = PENDING_FILE_LOAD.lock().unwrap().take() {
         jobs.write(JobRequest::Run(Box::new(Job::Import {
@@ -1067,14 +1134,21 @@ pub fn update(
             ui.horizontal(|ui| {
                 ui.with_layout(Layout::top_down(Align::TOP), |ui| {
                     // FIRST ROW
-                    header(
-                        ui,
-                        &mut solution,
-                        &mut jobs,
-                        &mut conf,
-                        &mut automatic_rotation,
-                        &mut render_setting_store,
-                    );
+                    {
+                        let ui_r = &mut *ui_resource;
+                        header(
+                            ui,
+                            &mut solution,
+                            &mut jobs,
+                            &mut conf,
+                            &mut automatic_rotation,
+                            &mut render_setting_store,
+                            camera_eye,
+                            camera_target,
+                            &mut ui_r.camera_import_text,
+                            &mut ui_r.pending_camera_position,
+                        );
+                    }
 
                     ui.add_space(5.);
 
@@ -1498,6 +1572,27 @@ pub fn update(
             }
         });
     Ok(())
+}
+
+fn parse_vec3(s: &str) -> Option<Vec3> {
+    let parts: Vec<&str> = s.split(',').collect();
+    if parts.len() != 3 {
+        return None;
+    }
+    let x = parts[0].trim().parse::<f32>().ok()?;
+    let y = parts[1].trim().parse::<f32>().ok()?;
+    let z = parts[2].trim().parse::<f32>().ok()?;
+    Some(Vec3::new(x, y, z))
+}
+
+fn parse_camera_position(s: &str) -> Option<(Vec3, Vec3)> {
+    let eye_start = s.find("eye=(")? + 5;
+    let eye_end = eye_start + s[eye_start..].find(')')?;
+    let target_start = s.find("target=(")? + 8;
+    let target_end = target_start + s[target_start..].find(')')?;
+    let eye = parse_vec3(&s[eye_start..eye_end])?;
+    let target = parse_vec3(&s[target_start..target_end])?;
+    Some((eye, target))
 }
 
 fn slider<T: emath::Numeric>(
