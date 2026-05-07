@@ -383,6 +383,7 @@ pub fn reset(
     commands.insert_resource(ScreenshotHandle(screenshot_handle.clone()));
     commands.spawn((
         Camera3d::default(),
+        Projection::default(),
         RenderTarget::Image(screenshot_handle.into()),
         bevy_blossom::CameraMarker,
         Camera {
@@ -612,7 +613,10 @@ pub fn update(
         (&mut Transform, &mut Projection, &mut Camera, &CameraFor),
         (Without<Controller>, Without<ScreenshotCamera>),
     >,
-    mut screenshot_cameras: Query<&mut Transform, (With<ScreenshotCamera>, Without<Controller>)>,
+    mut screenshot_cameras: Query<
+        (&mut Transform, &mut Projection),
+        (With<ScreenshotCamera>, Without<Controller>),
+    >,
 ) {
     let (_, main_transform, mut main_camera) = main_camera.single_mut().unwrap();
 
@@ -675,9 +679,36 @@ pub fn update(
         }
     }
 
-    for mut transform in &mut screenshot_cameras {
-        transform.translation = normalized_translation;
+    // Find which object the largest panel is currently showing.
+    let largest_object = {
+        let mut best = Objects::InputMesh;
+        let mut best_area: f32 = 0.0;
+        for node in ui_resource.tree.main_surface().iter() {
+            if let egui_dock::Node::Leaf(leaf) = node {
+                let area = leaf.viewport.width() * leaf.viewport.height();
+                if area > best_area {
+                    best_area = area;
+                    if let Some(tab) = leaf.tabs.get(leaf.active.0) {
+                        best = *tab;
+                    }
+                }
+            }
+        }
+        best
+    };
+
+    for (mut transform, mut projection) in &mut screenshot_cameras {
+        transform.translation = normalized_translation + Vec3::from(largest_object);
         transform.rotation = normalized_rotation;
+        if matches!(largest_object, Objects::PolycubeMap | Objects::Polycube) {
+            let mut proj = OrthographicProjection::default_3d();
+            proj.scaling_mode = ScalingMode::FixedVertical {
+                viewport_height: distance,
+            };
+            *projection = Projection::Orthographic(proj);
+        } else {
+            *projection = Projection::default();
+        }
     }
 
     for material in custom_materials.iter_mut() {
