@@ -24,6 +24,66 @@ use crate::{
     },
 };
 
+/// Removes a node from the skeleton, merging its patch into the most appropriate neighbor.
+///
+/// Target selection: lowest degree neighbor, then smallest patch if equal.
+/// For degree-2 nodes whose neighbors are not yet connected, delegates to
+/// `dissolve_subdivision` which correctly reconnects them. All other cases
+/// move patches to the chosen target and rewire non-target neighbors to it.
+pub fn remove_skeleton_node(skeleton: &mut CurveSkeleton, node_index: NodeIndex, mesh: &Mesh<INPUT>) {
+    let neighbors: Vec<NodeIndex> = skeleton.neighbors(node_index).collect();
+
+    if neighbors.is_empty() {
+        skeleton.remove_node(node_index);
+        return;
+    }
+
+    if neighbors.len() == 1 {
+        let target = neighbors[0];
+        let mut patch = std::mem::take(&mut skeleton.node_weight_mut(node_index).unwrap().patch_vertices);
+        skeleton.node_weight_mut(target).unwrap().patch_vertices.append(&mut patch);
+        skeleton.remove_node(node_index);
+        return;
+    }
+
+    if neighbors.len() == 2 && skeleton.find_edge(neighbors[0], neighbors[1]).is_none() {
+        skeleton.dissolve_subdivision(node_index, mesh);
+        return;
+    }
+
+    // General case: pick target, move patches, rewire non-target neighbors
+    let target = pick_removal_target(skeleton, &neighbors);
+
+    let mut patch = std::mem::take(&mut skeleton.node_weight_mut(node_index).unwrap().patch_vertices);
+    skeleton.node_weight_mut(target).unwrap().patch_vertices.append(&mut patch);
+
+    let other_neighbors: Vec<NodeIndex> = neighbors.iter()
+        .filter(|&&n| n != target)
+        .copied()
+        .collect();
+
+    for nbr in other_neighbors {
+        if skeleton.find_edge(target, nbr).is_none() {
+            let target_patch = skeleton.node_weight(target).unwrap().patch_vertices.clone();
+            let nbr_patch = skeleton.node_weight(nbr).unwrap().patch_vertices.clone();
+            let bl = BoundaryLoop::new(&target_patch, &nbr_patch, mesh);
+            skeleton.add_edge(target, nbr, bl);
+        }
+    }
+
+    skeleton.remove_node(node_index);
+}
+
+fn pick_removal_target(skeleton: &CurveSkeleton, neighbors: &[NodeIndex]) -> NodeIndex {
+    neighbors.iter().copied().min_by(|&a, &b| {
+        let deg_a = skeleton.neighbors(a).count();
+        let deg_b = skeleton.neighbors(b).count();
+        let patch_a = skeleton.node_weight(a).unwrap().patch_vertices.len();
+        let patch_b = skeleton.node_weight(b).unwrap().patch_vertices.len();
+        deg_a.cmp(&deg_b).then(patch_a.cmp(&patch_b))
+    }).unwrap()
+}
+
 impl CurveSkeletonManipulation for CurveSkeleton {
     fn dissolve_subdivision(&mut self, node_index: NodeIndex, mesh: &Mesh<INPUT>) {
         let neighbors: Vec<NodeIndex> = self.neighbors(node_index).collect();

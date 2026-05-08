@@ -2,6 +2,7 @@ use std::sync::Arc;
 
 use log::{info, warn};
 use mehsh::prelude::Mesh;
+use petgraph::graph::NodeIndex;
 use serde::{Deserialize, Serialize};
 
 use crate::{
@@ -10,8 +11,9 @@ use crate::{
     skeleton::{
         connectivity_surgery::extract_skeleton,
         contraction::{CONTRACTION, contract_mesh},
-        curve_skeleton::{CurveSkeleton, CurveSkeletonManipulation, CurveSkeletonSpatial},
+        curve_skeleton::{CurveSkeleton, CurveSkeletonSpatial},
         embeddability::make_embedding_possible,
+        manipulation::remove_skeleton_node,
         orthogonalize::{LabeledCurveSkeleton, greedy_orthogonalization},
         simplify::{convexify, simplify_skeleton},
         volume_collapse::{
@@ -139,6 +141,50 @@ impl SkeletonData {
 
         self.raw_curve_skeleton = Some(curve_skeleton); // Not updated now, but we calculate it anyways so might as well save it
         self.cleaned_skeleton = Some(cleaned_skeleton);
+        self.collapse_history = Some(history);
+        self.labeled_skeleton = labeled;
+        self.polycube_skeleton = polycube_skeleton;
+
+        (polycube, quad)
+    }
+
+    /// Removes the specified skeleton nodes (by raw `NodeIndex` value) from the cleaned
+    /// skeleton and reruns everything from convexification onwards.
+    pub fn manually_remove_nodes(
+        &mut self,
+        nodes_to_remove: &[usize],
+        mesh: Arc<Mesh<INPUT>>,
+        convexity_threshold: f64,
+        convexity_merge_threshold: f64,
+        omega: usize,
+    ) -> (Option<Polycube>, Option<Quad>) {
+        let Some(cleaned) = &self.cleaned_skeleton else {
+            return (None, None);
+        };
+
+        let mut skeleton = cleaned.clone();
+
+        for &raw_idx in nodes_to_remove {
+            let node_index = NodeIndex::new(raw_idx);
+            if skeleton.node_weight(node_index).is_some() {
+                remove_skeleton_node(&mut skeleton, node_index, &mesh);
+            }
+        }
+
+        let (labeled, history, polycube_and_skeleton) = post_simplification_stage(
+            mesh,
+            convexity_threshold,
+            convexity_merge_threshold,
+            &mut skeleton,
+            omega,
+        );
+
+        let (polycube, polycube_skeleton, quad) = match polycube_and_skeleton {
+            Some((p, s, q)) => (Some(p), Some(s), Some(q)),
+            None => (None, None, None),
+        };
+
+        self.cleaned_skeleton = Some(skeleton);
         self.collapse_history = Some(history);
         self.labeled_skeleton = labeled;
         self.polycube_skeleton = polycube_skeleton;

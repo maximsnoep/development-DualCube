@@ -54,6 +54,9 @@ pub struct Configuration {
 
     pub loop_anchors: Vec<[EdgeID; 2]>,
 
+    /// NodeIndex raw values of skeleton nodes marked for removal in SkeletonNodeModification mode.
+    pub skeleton_nodes_to_remove: Vec<usize>,
+
     pub automatic: bool,
 
     pub interactive_mode: InteractiveMode,
@@ -92,6 +95,7 @@ impl Default for Configuration {
             pool2: 30,
 
             loop_anchors: vec![],
+            skeleton_nodes_to_remove: vec![],
 
             stop: Phase::None,
 

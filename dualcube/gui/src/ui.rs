@@ -455,7 +455,7 @@ fn space(ui: &mut Ui) {
 fn header(
     ui: &mut Ui,
     solution: &mut SolutionResource,
-    _jobs: &mut MessageWriter<JobRequest>,
+    jobs: &mut MessageWriter<JobRequest>,
     configuration: &mut ResMut<Configuration>,
     automatic_rotation: &mut ResMut<AutomaticRotation>,
     render_object_settings_store: &mut ResMut<RenderObjectSettingStore>,
@@ -816,6 +816,25 @@ fn header(
                         configuration.interactive_mode = InteractiveMode::SegmentationModification;
                     }
 
+                    sep(ui);
+
+                    if configuration.interactive_mode == InteractiveMode::SkeletonNodeModification {
+                        if sleek_button(ui, "Modify skeleton [active]") {
+                            if !configuration.skeleton_nodes_to_remove.is_empty() {
+                                jobs.write(JobRequest::Run(Box::new(Job::ModifySkeletonNodes {
+                                    solution: solution.current_solution.clone(),
+                                    nodes_to_remove: configuration.skeleton_nodes_to_remove.clone(),
+                                    configuration: configuration.clone(),
+                                })));
+                                configuration.skeleton_nodes_to_remove.clear();
+                            }
+                            configuration.interactive_mode = InteractiveMode::None;
+                        }
+                    } else if sleek_button_unfocused(ui, "Modify skeleton [not active]") {
+                        configuration.skeleton_nodes_to_remove.clear();
+                        configuration.interactive_mode = InteractiveMode::SkeletonNodeModification;
+                    }
+
                     space(ui);
                 });
             });
@@ -1004,6 +1023,7 @@ fn footer(
                         InteractiveMode::None => "automatic",
                         InteractiveMode::LoopModification => "manual loops",
                         InteractiveMode::SegmentationModification => "manual seg",
+                        InteractiveMode::SkeletonNodeModification => "manual skeleton",
                     };
                     job.append(
                         &format!("{}", mode),

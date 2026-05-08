@@ -321,6 +321,20 @@ async fn run_job(job: Job) -> Option<JobResult> {
             }
             None
         }
+        Job::ModifySkeletonNodes {
+            mut solution,
+            nodes_to_remove,
+            configuration,
+        } => {
+            solution.manually_remove_skeleton_nodes(
+                nodes_to_remove,
+                configuration.convexity_threshold,
+                configuration.convexity_merge_slack,
+                configuration.omega,
+            );
+            Some(JobResult::SkeletonCalculated((solution, configuration)))
+        }
+
         Job::PathStraightening {
             solution,
             configuration,
@@ -816,11 +830,16 @@ pub enum Job {
         _force: bool,
         configuration: Configuration,
     },
+    ModifySkeletonNodes {
+        solution: Solution,
+        nodes_to_remove: Vec<usize>,
+        configuration: Configuration,
+    },
     // HEX MESHING
     _Hex {
         solution: Solution,
     },
-    // PATH STRAIGTHENING
+    // PATH STRAIGHTENING
     PathStraightening {
         solution: Solution,
         configuration: Configuration,
@@ -850,6 +869,7 @@ pub enum JobType {
     PlacePaths,
     ComputeQuad,
     PathStraightening,
+    ModifySkeletonNodes,
 }
 
 impl JobType {
@@ -875,6 +895,7 @@ impl JobType {
             "PlacePaths",
             "ComputeQuad",
             "PathStraightening",
+            "ModifySkeletonNodes",
         ]
     }
 }
@@ -910,6 +931,7 @@ impl FromStr for JobType {
             "placepaths" => Ok(JobType::PlacePaths),
             "computequad" => Ok(JobType::ComputeQuad),
             "pathstraightening" => Ok(JobType::PathStraightening),
+            "modifyskeletonnodes" => Ok(JobType::ModifySkeletonNodes),
             _ => Err(format!(
                 "invalid job type '{value}'. expected one of: {}",
                 JobType::accepted_cli_values().join(", ")
@@ -941,6 +963,7 @@ impl std::fmt::Display for JobType {
             JobType::ComputePolycube => write!(f, "computing polycube"),
             JobType::ExportDotgraph => write!(f, "exporting (Dotgraph)"),
             JobType::PathStraightening => write!(f, "path straightening"),
+            JobType::ModifySkeletonNodes => write!(f, "modifying skeleton nodes"),
         }
     }
 }
@@ -967,6 +990,7 @@ impl Job {
             Job::ComputePolycube { .. } => JobType::ComputePolycube,
             Job::ExportDotgraph { .. } => JobType::ExportDotgraph,
             Job::PathStraightening { .. } => JobType::PathStraightening,
+            Job::ModifySkeletonNodes { .. } => JobType::ModifySkeletonNodes,
         }
     }
 }

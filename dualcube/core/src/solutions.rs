@@ -206,6 +206,41 @@ impl Solution {
         }
     }
 
+    /// Removes the given skeleton nodes (by raw NodeIndex) from the cleaned skeleton
+    /// and reruns convexification and all downstream stages.
+    pub fn manually_remove_skeleton_nodes(
+        &mut self,
+        nodes_to_remove: Vec<usize>,
+        convexity_threshold: f64,
+        convexity_merge_threshold: f64,
+        omega: usize,
+    ) {
+        let mesh = self.mesh_ref.clone();
+        if let Some(data) = &mut self.skeleton {
+            let (polycube, quad) = data.manually_remove_nodes(
+                &nodes_to_remove,
+                mesh,
+                convexity_threshold,
+                convexity_merge_threshold,
+                omega,
+            );
+            self.polycube = polycube;
+            self.quad = quad;
+        }
+        if let Some(skeleton_data) = self.skeleton.as_ref() {
+            let loops = generate_loops(skeleton_data, &self.mesh_ref);
+            if let Ok((loops, crossings, face_points)) = loops {
+                self.loops = loops;
+                self.loop_crossings = Some(crossings);
+                self.face_points = Some(face_points);
+                self.recompute_occupied();
+                if let Err(e) = self.reconstruct_solution(false, 1) {
+                    log::warn!("Failed to reconstruct solution after manual skeleton edit: {e}");
+                }
+            }
+        }
+    }
+
     // Initialize loop structure
     pub fn initialize(&mut self, flow_graphs: &[grapff::fixed::FixedGraph<EdgeID, f64>; 3]) {
         // Basic initialization: sample some loops in each direction

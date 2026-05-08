@@ -16,6 +16,7 @@ pub enum InteractiveMode {
     None,
     LoopModification,
     SegmentationModification,
+    SkeletonNodeModification,
 }
 
 pub fn segmentation_modification_system(
@@ -386,6 +387,94 @@ pub fn loop_modification_system(
     Ok(())
 }
 
+pub fn skeleton_node_modification_system(
+    mouse: Res<ButtonInput<MouseButton>>,
+    mesh_resmut: Res<InputResource>,
+    solution: ResMut<SolutionResource>,
+    mut gizmos: Gizmos<PerpetualGizmos>,
+    mut configuration: ResMut<Configuration>,
+    ray: Option<Ray3d>,
+) -> Result<(), BevyError> {
+    let Some(skeleton_data) = &solution.current_solution.skeleton else {
+        return Ok(());
+    };
+    let Some(cleaned_skeleton) = skeleton_data.cleaned_skeleton() else {
+        return Ok(());
+    };
+    if cleaned_skeleton.node_count() == 0 {
+        return Ok(());
+    }
+
+    // Draw all edges
+    for edge in cleaned_skeleton.edge_indices() {
+        let (a, b) = cleaned_skeleton.edge_endpoints(edge).unwrap();
+        let a_view = world_to_view(
+            cleaned_skeleton[a].position,
+            mesh_resmut.properties.translation,
+            mesh_resmut.properties.scale,
+        );
+        let b_view = world_to_view(
+            cleaned_skeleton[b].position,
+            mesh_resmut.properties.translation,
+            mesh_resmut.properties.scale,
+        );
+        gizmos.line(a_view, b_view, colors::to_bevy(colors::LIGHT_GRAY));
+    }
+
+    // Find nearest skeleton node by perpendicular distance to the cursor ray (Bevy world space).
+    // This works without any mesh entity being present under the cursor.
+    let nearest_node = ray.map(|r| {
+        cleaned_skeleton
+            .node_indices()
+            .min_by_key(|&idx| {
+                let node_world = world_to_view(
+                    cleaned_skeleton[idx].position,
+                    mesh_resmut.properties.translation,
+                    mesh_resmut.properties.scale,
+                );
+                let to_node = node_world - r.origin;
+                let along = to_node.dot(*r.direction);
+                let perp = to_node - *r.direction * along;
+                OrderedFloat(perp.length())
+            })
+            .unwrap()
+    });
+
+    // Draw all nodes — red if marked for removal, white otherwise; larger if hovered
+    for node_idx in cleaned_skeleton.node_indices() {
+        let center = world_to_view(
+            cleaned_skeleton[node_idx].position,
+            mesh_resmut.properties.translation,
+            mesh_resmut.properties.scale,
+        );
+        let is_marked = configuration.skeleton_nodes_to_remove.contains(&node_idx.index());
+        let is_hovered = nearest_node == Some(node_idx);
+        let radius = if is_hovered { 0.38 } else { 0.3 };
+        let color = if is_marked {
+            colors::to_bevy(colors::SNOEP_RED)
+        } else if is_hovered {
+            colors::to_bevy(colors::WHITE)
+        } else {
+            colors::to_bevy(colors::LIGHT_GRAY)
+        };
+        gizmos.sphere(Isometry3d::from_translation(center), radius, color);
+    }
+
+    // Toggle on click
+    if mouse.just_pressed(MouseButton::Left) {
+        if let Some(node) = nearest_node {
+            let idx = node.index();
+            if let Some(pos) = configuration.skeleton_nodes_to_remove.iter().position(|&x| x == idx) {
+                configuration.skeleton_nodes_to_remove.remove(pos);
+            } else {
+                configuration.skeleton_nodes_to_remove.push(idx);
+            }
+        }
+    }
+
+    Ok(())
+}
+
 pub fn system(
     ray_map: Res<RayMap>,
     mut ray_cast: MeshRayCast,
@@ -414,15 +503,21 @@ pub fn system(
     let filter = |entity| foo_query.contains(entity);
     let settings = MeshRayCastSettings::default().with_filter(&filter);
 
-    let Some(&(_, intersection)) = ray_map
+    let hit = ray_map
         .iter()
-        .filter_map(|(_, ray)| {
+        .find_map(|(_, ray)| {
             let (_, hit) = ray_cast.cast_ray(*ray, &settings).first()?;
-            Some((*ray, hit.point))
-        })
-        .collect_vec()
-        .first()
-    else {
+            Some(hit.point)
+        });
+
+    // Skeleton node modification uses ray-to-node distance, so it works without a mesh surface hit.
+    // The raw cursor ray is passed; hover/click target the node geometrically nearest the ray.
+    if configuration.interactive_mode == InteractiveMode::SkeletonNodeModification {
+        let ray = ray_map.iter().next().map(|(_, r)| *r);
+        return skeleton_node_modification_system(mouse, mesh_resmut, solution, gizmos, configuration, ray);
+    }
+
+    let Some(intersection) = hit else {
         return Ok(());
     };
 
@@ -445,6 +540,7 @@ pub fn system(
 
     match configuration.interactive_mode {
         InteractiveMode::None => Ok(()),
+        InteractiveMode::SkeletonNodeModification => unreachable!(),
         InteractiveMode::LoopModification => loop_modification_system(
             mouse,
             keyboard,
