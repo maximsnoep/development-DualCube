@@ -1250,6 +1250,17 @@ pub fn update(
                                     // Skeleton controls
                                     if let Some(skeleton_data) = &solution.current_solution.skeleton
                                     {
+                                        // Slow exhaustive labelling for when greedy failed.
+                                        if sleek_button(ui, "calculate (backtracking)") {
+                                            jobs.write(JobRequest::Run(Box::new(
+                                                Job::RetrySkeletonBacktracking {
+                                                    solution: solution.current_solution.clone(),
+                                                    configuration: conf.clone(),
+                                                },
+                                            )));
+                                            ui.close();
+                                        }
+
                                         // Collapse history controls
                                         if let Some(history_size) = skeleton_data.history_size() {
                                             if history_size > 0 {

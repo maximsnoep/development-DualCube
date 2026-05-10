@@ -206,6 +206,30 @@ impl Solution {
         }
     }
 
+    /// Re-runs orthogonalization with the slow backtracking search on the existing cleaned
+    /// skeleton, then refreshes loops, dual, and polycube downstream. No-op if no skeleton
+    /// has been computed yet.
+    pub fn retry_skeleton_with_backtracking(&mut self, omega: usize) {
+        let mesh = self.mesh_ref.clone();
+        let Some(data) = &mut self.skeleton else {
+            return;
+        };
+        let (polycube, quad) = data.retry_orthogonalization_backtracking(mesh, omega);
+        self.polycube = polycube;
+        self.quad = quad;
+
+        let loops = generate_loops(self.skeleton.as_ref().unwrap(), &self.mesh_ref);
+        if let Ok((loops, crossings, face_points)) = loops {
+            self.loops = loops;
+            self.loop_crossings = Some(crossings);
+            self.face_points = Some(face_points);
+            self.recompute_occupied();
+            if let Err(e) = self.reconstruct_solution(false, 1) {
+                log::warn!("Failed to reconstruct solution after backtracking retry: {e}");
+            }
+        }
+    }
+
     /// Removes the given skeleton nodes (by raw NodeIndex) from the cleaned skeleton
     /// and reruns convexification and all downstream stages.
     pub fn manually_remove_skeleton_nodes(

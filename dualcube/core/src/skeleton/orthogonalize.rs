@@ -1,4 +1,4 @@
-use log::{error, warn};
+use log::{error, info};
 use mehsh::prelude::{EPS, HasPosition, Mesh};
 use petgraph::graph::{EdgeIndex, NodeIndex, UnGraph};
 use petgraph::prelude::StableUnGraph;
@@ -507,13 +507,13 @@ fn finalize_partial_to_realized(
 /// Global search for labelings that maximize preferred-axis matches.
 ///
 /// Edge priority is weighted by patch size and directional confidence.
-fn backtracking_orthogonalization(
+pub fn backtracking_orthogonalization(
     curve_skeleton: &CurveSkeleton,
     mesh: &Mesh<INPUT>,
 ) -> Option<LabeledCurveSkeleton> {
     let (mut partial, node_map, boundary_loops) = build_unlabeled_partial(curve_skeleton);
 
-    warn!("Greedy orthogonalization failed, falling back to backtracking search.");
+    info!("Running backtracking orthogonalization.");
 
     #[derive(Clone)]
     struct EdgePlan {
@@ -970,9 +970,7 @@ pub fn realize(s: &EdgeLabeledCurveSkeleton) -> Option<LabeledCurveSkeleton> {
 /// For each unlabeled edge, we estimate a boundary-loop plane and use its normal as the
 /// preferred direction; the axis most aligned with that normal is tried first and the other
 /// two axes are fallbacks. The first choice that keeps the partial labeling consistent is
-/// accepted.
-///
-/// If greedy gets stuck, a global backtracking search is used.
+/// accepted. Returns `None` if no consistent assignment is found for some edge.
 pub fn greedy_orthogonalization(
     curve_skeleton: &CurveSkeleton,
     mesh: &Mesh<INPUT>,
@@ -1129,8 +1127,7 @@ pub fn greedy_orthogonalization(
                 }
 
                 if !assigned {
-                    // Fall back to global search from scratch, maximizing preferred directions.
-                    return backtracking_orthogonalization(curve_skeleton, mesh);
+                    return None;
                 }
 
                 if visited.insert(v) {

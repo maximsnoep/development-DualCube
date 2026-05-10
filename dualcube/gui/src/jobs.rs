@@ -122,6 +122,14 @@ async fn run_job(job: Job) -> Option<JobResult> {
             Some(JobResult::SkeletonCalculated((solution, configuration)))
         }
 
+        Job::RetrySkeletonBacktracking {
+            mut solution,
+            configuration,
+        } => {
+            solution.retry_skeleton_with_backtracking(configuration.omega);
+            Some(JobResult::SkeletonCalculated((solution, configuration)))
+        }
+
         Job::InitializeLoops {
             mut solution,
             flowgraphs,
@@ -609,6 +617,12 @@ fn poll_jobs(
                             solution: solution_resource.current_solution.clone(),
                             configuration: configuration.clone(),
                         })),
+                        Some(JobType::RetrySkeletonBacktracking) => {
+                            Some(Box::new(Job::RetrySkeletonBacktracking {
+                                solution: solution_resource.current_solution.clone(),
+                                configuration: configuration.clone(),
+                            }))
+                        }
                         Some(JobType::InitializeLoops) => Some(Box::new(Job::InitializeLoops {
                             solution: solution_resource.current_solution.clone(),
                             flowgraphs: input_resource.flow_graphs.clone(),
@@ -760,6 +774,10 @@ pub enum Job {
         solution: Solution,
         configuration: Configuration,
     },
+    RetrySkeletonBacktracking {
+        solution: Solution,
+        configuration: Configuration,
+    },
     InitializeLoops {
         solution: Solution,
         configuration: Configuration,
@@ -857,6 +875,7 @@ pub enum JobType {
     Evolve,
     ComputePolycube,
     CalculateSkeleton,
+    RetrySkeletonBacktracking,
     InitializeLoops,
     AddLoop,
     RemoveLoop,
@@ -883,6 +902,7 @@ impl JobType {
             "Evolve",
             "ComputePolycube",
             "CalculateSkeleton",
+            "RetrySkeletonBacktracking",
             "InitializeLoops",
             "AddLoop",
             "RemoveLoop",
@@ -919,6 +939,9 @@ impl FromStr for JobType {
             "evolve" => Ok(JobType::Evolve),
             "computepolycube" => Ok(JobType::ComputePolycube),
             "calculateskeleton" | "skeleton" => Ok(JobType::CalculateSkeleton),
+            "retryskeletonbacktracking" | "backtrackskeleton" | "backtracking" => {
+                Ok(JobType::RetrySkeletonBacktracking)
+            }
             "initializeloops" => Ok(JobType::InitializeLoops),
             "addloop" => Ok(JobType::AddLoop),
             "removeloop" => Ok(JobType::RemoveLoop),
@@ -954,6 +977,9 @@ impl std::fmt::Display for JobType {
             JobType::RemoveLoop => write!(f, "removing loop"),
             JobType::SmoothenLayout => write!(f, "smoothening layout"),
             JobType::CalculateSkeleton => write!(f, "calculating skeleton"),
+            JobType::RetrySkeletonBacktracking => {
+                write!(f, "retrying skeleton (backtracking)")
+            }
             JobType::InitializeLoops => write!(f, "initializing loops"),
             JobType::ComputeDual => write!(f, "computing dual"),
             JobType::PlaceCorners => write!(f, "placing corners"),
@@ -981,6 +1007,7 @@ impl Job {
             Job::RemoveLoop { .. } => JobType::RemoveLoop,
             Job::SmoothenLayout { .. } => JobType::SmoothenLayout,
             Job::CalculateSkeleton { .. } => JobType::CalculateSkeleton,
+            Job::RetrySkeletonBacktracking { .. } => JobType::RetrySkeletonBacktracking,
             Job::InitializeLoops { .. } => JobType::InitializeLoops,
             Job::ComputeDual { .. } => JobType::ComputeDual,
             Job::PlaceCorners { .. } => JobType::PlaceCorners,
