@@ -383,7 +383,7 @@ fn compress_components_from_oriented_edges(
         }
     }
 
-    // Topological order
+    // Pass 1 — early-start: each component gets the smallest coord satisfying its in-edge constraints.
     let mut q: BinaryHeap<std::cmp::Reverse<usize>> = BinaryHeap::new();
     for c in 0..nr_components {
         if indegree[c] == 0 {
@@ -392,9 +392,11 @@ fn compress_components_from_oriented_edges(
     }
 
     let mut coord_per_comp = vec![0i32; nr_components];
+    let mut topo_order: Vec<usize> = Vec::with_capacity(nr_components);
     let mut processed = 0usize;
     while let Some(std::cmp::Reverse(c)) = q.pop() {
         processed += 1;
+        topo_order.push(c);
         let base = coord_per_comp[c];
         for &n in &adjacency[c] {
             coord_per_comp[n] = coord_per_comp[n].max(base + 1);
@@ -406,6 +408,20 @@ fn compress_components_from_oriented_edges(
     }
     if processed != nr_components {
         return None;
+    }
+
+    // Pass 2 — late-start with sinks held at their early value. Each non-sink is pulled up
+    // to (min out-neighbor coord) - 1, shrinking edges from under-constrained components
+    // (e.g. a source with a single direct edge to a component that a longer parallel chain
+    // pushed up) without changing the makespan.
+    for &c in topo_order.iter().rev() {
+        if !adjacency[c].is_empty() {
+            coord_per_comp[c] = adjacency[c]
+                .iter()
+                .map(|&w| coord_per_comp[w] - 1)
+                .min()
+                .unwrap();
+        }
     }
 
     Some(comps.iter().map(|&cid| coord_per_comp[cid]).collect())
