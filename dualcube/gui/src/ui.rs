@@ -1261,6 +1261,21 @@ pub fn update(
                                             ui.close();
                                         }
 
+                                        // Capped backtracking that subdivides one edge per
+                                        // cycle between rounds when the search times out.
+                                        if sleek_button(
+                                            ui,
+                                            "calculate (backtracking + subdivide)",
+                                        ) {
+                                            jobs.write(JobRequest::Run(Box::new(
+                                                Job::RetrySkeletonWithSubdivisions {
+                                                    solution: solution.current_solution.clone(),
+                                                    configuration: conf.clone(),
+                                                },
+                                            )));
+                                            ui.close();
+                                        }
+
                                         // Collapse history controls
                                         if let Some(history_size) = skeleton_data.history_size() {
                                             if history_size > 0 {

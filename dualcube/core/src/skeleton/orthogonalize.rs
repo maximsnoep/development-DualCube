@@ -10,7 +10,10 @@ use std::collections::{BinaryHeap, HashMap, HashSet, VecDeque};
 
 use crate::{
     prelude::{CurveSkeleton, INPUT, PrincipalDirection, VertID},
-    skeleton::{boundary_loop::BoundaryLoop, curve_skeleton::SkeletonNode},
+    skeleton::{
+        boundary_loop::BoundaryLoop,
+        curve_skeleton::{CurveSkeletonManipulation, SkeletonNode},
+    },
 };
 
 /// A 3-dimensional integer vector.
@@ -524,6 +527,17 @@ pub fn backtracking_orthogonalization(
     curve_skeleton: &CurveSkeleton,
     mesh: &Mesh<INPUT>,
 ) -> Option<LabeledCurveSkeleton> {
+    backtracking_orthogonalization_capped(curve_skeleton, mesh, u64::MAX)
+}
+
+/// Same as [`backtracking_orthogonalization`] but aborts the DFS once `max_dfs_calls`
+/// recursive calls have fired. Returns `None` on either exhaustion or cap-hit; the caller
+/// can't tell which from the return alone (subdivide-then-retry handles both the same way).
+pub fn backtracking_orthogonalization_capped(
+    curve_skeleton: &CurveSkeleton,
+    mesh: &Mesh<INPUT>,
+    max_dfs_calls: u64,
+) -> Option<LabeledCurveSkeleton> {
     let (mut partial, node_map, boundary_loops) = build_unlabeled_partial(curve_skeleton);
 
     let cycles = compute_fundamental_cycles(&partial);
@@ -604,6 +618,7 @@ pub fn backtracking_orthogonalization(
     let mut best_score = i64::MIN;
     let mut best_labels: Option<HashMap<EdgeIndex, SignedAxis>> = None;
     let mut cycle_unlabeled: Vec<usize> = cycles.iter().map(|c| c.len()).collect();
+    let mut budget = max_dfs_calls;
 
     dfs_cycle_edges(
         0,
@@ -616,7 +631,15 @@ pub fn backtracking_orthogonalization(
         &mut best_score,
         &mut best_labels,
         &suffix_max_possible,
+        &mut budget,
     );
+
+    if budget == 0 && best_labels.is_none() {
+        info!(
+            "Backtracking orthogonalization: hit DFS-call cap ({}) without finding a labeling.",
+            max_dfs_calls
+        );
+    }
 
     let labels = best_labels?;
     for (edge, signed) in labels {
@@ -643,6 +666,186 @@ pub fn backtracking_orthogonalization(
     finalize_partial_to_realized(&partial, &boundary_loops)
 }
 
+/// Capped backtracking with subdivisions on failure: try [`backtracking_orthogonalization_capped`]
+/// up to `max_rounds` times, subdividing one edge per cycle (largest combined patch size in
+/// each cycle) between rounds. Each subdivision stretches every cycle by one edge, expanding
+/// the per-axis sign space so closure becomes feasible. Mutates `cleaned_skeleton` in place.
+pub fn backtracking_orthogonalization_with_subdivisions(
+    cleaned_skeleton: &mut CurveSkeleton,
+    mesh: &Mesh<INPUT>,
+    max_dfs_calls_per_round: u64,
+    max_rounds: usize,
+) -> Option<LabeledCurveSkeleton> {
+    for round in 0..max_rounds {
+        info!(
+            "Backtracking with subdivisions: round {}/{} (skeleton has {} nodes, {} edges).",
+            round + 1,
+            max_rounds,
+            cleaned_skeleton.node_count(),
+            cleaned_skeleton.edge_count(),
+        );
+        if let Some(labeled) = backtracking_orthogonalization_capped(
+            cleaned_skeleton,
+            mesh,
+            max_dfs_calls_per_round,
+        ) {
+            return Some(labeled);
+        }
+
+        let subdivided = subdivide_one_edge_per_cycle(cleaned_skeleton, mesh);
+        if subdivided == 0 {
+            info!(
+                "Backtracking with subdivisions: nothing left to subdivide on round {}; giving up.",
+                round + 1
+            );
+            return None;
+        }
+        info!(
+            "Backtracking with subdivisions: round {} subdivided {} edge(s); retrying.",
+            round + 1,
+            subdivided
+        );
+    }
+    warn!(
+        "Backtracking with subdivisions: hit round limit ({}) without finding a labeling.",
+        max_rounds
+    );
+    None
+}
+
+/// Picks at most one edge per cycle in `skeleton` (the one with the largest combined
+/// endpoint patch size — same heuristic embeddability uses for triangle subdivision) and
+/// runs `subdivide_edge` on each. An edge shared between cycles is only subdivided once.
+/// Returns the number of successful subdivisions.
+fn subdivide_one_edge_per_cycle(skeleton: &mut CurveSkeleton, mesh: &Mesh<INPUT>) -> usize {
+    let cycles = cycles_in_skeleton_edges(skeleton);
+    if cycles.is_empty() {
+        return 0;
+    }
+
+    let edge_score = |e: EdgeIndex, skeleton: &CurveSkeleton| -> usize {
+        let (u, v) = match skeleton.edge_endpoints(e) {
+            Some(p) => p,
+            None => return 0,
+        };
+        let su = skeleton.node_weight(u).map(|w| w.patch_vertices.len()).unwrap_or(0);
+        let sv = skeleton.node_weight(v).map(|w| w.patch_vertices.len()).unwrap_or(0);
+        su + sv
+    };
+
+    let mut chosen: HashSet<EdgeIndex> = HashSet::new();
+    for cycle in &cycles {
+        if let Some(&best) = cycle.iter().max_by_key(|&&e| edge_score(e, skeleton)) {
+            chosen.insert(best);
+        }
+    }
+
+    let mut subdivided = 0;
+    for e in chosen {
+        if skeleton.subdivide_edge(e, mesh) {
+            subdivided += 1;
+        }
+    }
+    subdivided
+}
+
+/// Edge sets of fundamental cycles in a `CurveSkeleton` (untraversal-aware variant of
+/// [`compute_fundamental_cycles`]). Used by subdivision picking, where the traversal
+/// direction doesn't matter.
+fn cycles_in_skeleton_edges(skeleton: &CurveSkeleton) -> Vec<Vec<EdgeIndex>> {
+    let mut node_idx: HashMap<NodeIndex, usize> = HashMap::new();
+    for (i, n) in skeleton.node_indices().enumerate() {
+        node_idx.insert(n, i);
+    }
+    let mut parent: Vec<usize> = (0..node_idx.len()).collect();
+
+    fn find(p: &mut [usize], x: usize) -> usize {
+        let mut r = x;
+        while p[r] != r {
+            r = p[r];
+        }
+        let mut cur = x;
+        while p[cur] != r {
+            let nxt = p[cur];
+            p[cur] = r;
+            cur = nxt;
+        }
+        r
+    }
+
+    let mut tree_edges: Vec<EdgeIndex> = Vec::new();
+    let mut back_edges: Vec<EdgeIndex> = Vec::new();
+    for e in skeleton.edge_indices() {
+        let (u, v) = skeleton.edge_endpoints(e).unwrap();
+        let ru = find(&mut parent, node_idx[&u]);
+        let rv = find(&mut parent, node_idx[&v]);
+        if ru == rv {
+            back_edges.push(e);
+        } else {
+            parent[ru] = rv;
+            tree_edges.push(e);
+        }
+    }
+
+    let mut tree_adj: HashMap<NodeIndex, Vec<(NodeIndex, EdgeIndex)>> = HashMap::new();
+    for &e in &tree_edges {
+        let (a, b) = skeleton.edge_endpoints(e).unwrap();
+        tree_adj.entry(a).or_default().push((b, e));
+        tree_adj.entry(b).or_default().push((a, e));
+    }
+
+    let mut cycles = Vec::with_capacity(back_edges.len());
+    for be in back_edges {
+        let (u, v) = skeleton.edge_endpoints(be).unwrap();
+        let mut edges = tree_path_edges(&tree_adj, u, v);
+        edges.push(be);
+        cycles.push(edges);
+    }
+    cycles
+}
+
+/// Untraversal-aware tree path. Returns the edges along the unique tree path from
+/// `src` to `dst`, ignoring direction.
+fn tree_path_edges(
+    tree_adj: &HashMap<NodeIndex, Vec<(NodeIndex, EdgeIndex)>>,
+    src: NodeIndex,
+    dst: NodeIndex,
+) -> Vec<EdgeIndex> {
+    if src == dst {
+        return Vec::new();
+    }
+    let mut visited: HashMap<NodeIndex, (NodeIndex, EdgeIndex)> = HashMap::new();
+    visited.insert(src, (src, EdgeIndex::end()));
+    let mut queue = VecDeque::from([src]);
+    while let Some(u) = queue.pop_front() {
+        if u == dst {
+            break;
+        }
+        if let Some(neighbors) = tree_adj.get(&u) {
+            for &(w, e) in neighbors {
+                if !visited.contains_key(&w) {
+                    visited.insert(w, (u, e));
+                    if w == dst {
+                        break;
+                    }
+                    queue.push_back(w);
+                }
+            }
+        }
+    }
+    let mut path = Vec::new();
+    let mut cur = dst;
+    while cur != src {
+        let Some(&(prev, e)) = visited.get(&cur) else {
+            return Vec::new();
+        };
+        path.push(e);
+        cur = prev;
+    }
+    path.reverse();
+    path
+}
+
 /// One edge's search plan: the edge id, a primary axis preference, the displacement-style
 /// vector used to pick the preferred sign, and a weight used for ordering / score bound.
 #[derive(Clone)]
@@ -667,7 +870,13 @@ fn dfs_cycle_edges(
     best_score: &mut i64,
     best_labels: &mut Option<HashMap<EdgeIndex, SignedAxis>>,
     suffix_max_possible: &[i64],
+    budget: &mut u64,
 ) {
+    if *budget == 0 {
+        return;
+    }
+    *budget -= 1;
+
     if current_score + suffix_max_possible[depth] < *best_score {
         return;
     }
@@ -739,6 +948,7 @@ fn dfs_cycle_edges(
                     best_score,
                     best_labels,
                     suffix_max_possible,
+                    budget,
                 );
             }
 

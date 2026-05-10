@@ -15,7 +15,8 @@ use crate::{
         embeddability::make_embedding_possible,
         manipulation::remove_skeleton_node,
         orthogonalize::{
-            LabeledCurveSkeleton, backtracking_orthogonalization, greedy_orthogonalization,
+            LabeledCurveSkeleton, backtracking_orthogonalization,
+            backtracking_orthogonalization_with_subdivisions, greedy_orthogonalization,
         },
         simplify::{convexify, simplify_skeleton},
         volume_collapse::{
@@ -144,6 +145,48 @@ impl SkeletonData {
         self.raw_curve_skeleton = Some(curve_skeleton); // Not updated now, but we calculate it anyways so might as well save it
         self.cleaned_skeleton = Some(cleaned_skeleton);
         self.collapse_history = Some(history);
+        self.labeled_skeleton = labeled;
+        self.polycube_skeleton = polycube_skeleton;
+
+        (polycube, quad)
+    }
+
+    /// Like [`retry_orthogonalization_backtracking`](Self::retry_orthogonalization_backtracking)
+    /// but caps the DFS at `max_dfs_calls_per_round` recursive calls. If the round fails,
+    /// subdivides one edge per cycle in the cleaned skeleton (mutating it) and retries, up
+    /// to `max_rounds` times. Useful when straight backtracking would time out on a tangled
+    /// skeleton — subdividing relaxes per-cycle constraints by adding edges.
+    pub fn retry_orthogonalization_with_subdivisions(
+        &mut self,
+        mesh: Arc<Mesh<INPUT>>,
+        omega: usize,
+        max_dfs_calls_per_round: u64,
+        max_rounds: usize,
+    ) -> (Option<Polycube>, Option<Quad>) {
+        let Some(cleaned) = self.cleaned_skeleton.as_mut() else {
+            return (None, None);
+        };
+
+        let labeled = backtracking_orthogonalization_with_subdivisions(
+            cleaned,
+            &mesh,
+            max_dfs_calls_per_round,
+            max_rounds,
+        );
+        match &labeled {
+            Some(_) => info!("Backtracking with subdivisions: orthogonalization successful."),
+            None => warn!("Backtracking with subdivisions: orthogonalization failed."),
+        }
+
+        let polycube_and_skeleton = labeled
+            .as_ref()
+            .map(|labeled| generate_polycube(labeled, omega));
+
+        let (polycube, polycube_skeleton, quad) = match polycube_and_skeleton {
+            Some((p, s, q)) => (Some(p), Some(s), Some(q)),
+            None => (None, None, None),
+        };
+
         self.labeled_skeleton = labeled;
         self.polycube_skeleton = polycube_skeleton;
 

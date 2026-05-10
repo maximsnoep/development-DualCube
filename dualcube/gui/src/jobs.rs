@@ -17,6 +17,14 @@ use std::io::Write;
 use std::path::PathBuf;
 use std::str::FromStr;
 
+/// DFS-call cap for one round of `RetrySkeletonWithSubdivisions`. ~1M typically
+/// runs in well under a second; if it doesn't find a labeling we subdivide and
+/// retry rather than searching longer.
+const SUBDIVISION_DFS_CALLS_PER_ROUND: u64 = 1_000_000;
+
+/// Maximum number of subdivide-then-retry rounds before the job gives up.
+const SUBDIVISION_MAX_ROUNDS: usize = 5;
+
 #[derive(Resource, Debug, Clone, Default)]
 pub struct CliFlags {
     pub load: Option<PathBuf>,
@@ -130,6 +138,20 @@ async fn run_job(job: Job) -> Option<JobResult> {
                 configuration.convexity_threshold,
                 configuration.convexity_merge_slack,
                 configuration.omega,
+            );
+            Some(JobResult::SkeletonCalculated((solution, configuration)))
+        }
+
+        Job::RetrySkeletonWithSubdivisions {
+            mut solution,
+            configuration,
+        } => {
+            solution.retry_skeleton_with_subdivisions(
+                configuration.convexity_threshold,
+                configuration.convexity_merge_slack,
+                configuration.omega,
+                SUBDIVISION_DFS_CALLS_PER_ROUND,
+                SUBDIVISION_MAX_ROUNDS,
             );
             Some(JobResult::SkeletonCalculated((solution, configuration)))
         }
@@ -627,6 +649,12 @@ fn poll_jobs(
                                 configuration: configuration.clone(),
                             }))
                         }
+                        Some(JobType::RetrySkeletonWithSubdivisions) => {
+                            Some(Box::new(Job::RetrySkeletonWithSubdivisions {
+                                solution: solution_resource.current_solution.clone(),
+                                configuration: configuration.clone(),
+                            }))
+                        }
                         Some(JobType::InitializeLoops) => Some(Box::new(Job::InitializeLoops {
                             solution: solution_resource.current_solution.clone(),
                             flowgraphs: input_resource.flow_graphs.clone(),
@@ -782,6 +810,10 @@ pub enum Job {
         solution: Solution,
         configuration: Configuration,
     },
+    RetrySkeletonWithSubdivisions {
+        solution: Solution,
+        configuration: Configuration,
+    },
     InitializeLoops {
         solution: Solution,
         configuration: Configuration,
@@ -880,6 +912,7 @@ pub enum JobType {
     ComputePolycube,
     CalculateSkeleton,
     RetrySkeletonBacktracking,
+    RetrySkeletonWithSubdivisions,
     InitializeLoops,
     AddLoop,
     RemoveLoop,
@@ -907,6 +940,7 @@ impl JobType {
             "ComputePolycube",
             "CalculateSkeleton",
             "RetrySkeletonBacktracking",
+            "RetrySkeletonWithSubdivisions",
             "InitializeLoops",
             "AddLoop",
             "RemoveLoop",
@@ -946,6 +980,10 @@ impl FromStr for JobType {
             "retryskeletonbacktracking" | "backtrackskeleton" | "backtracking" => {
                 Ok(JobType::RetrySkeletonBacktracking)
             }
+            "retryskeletonwithsubdivisions"
+            | "subdivideskeleton"
+            | "backtrackskeletonsubdivide"
+            | "subdivisions" => Ok(JobType::RetrySkeletonWithSubdivisions),
             "initializeloops" => Ok(JobType::InitializeLoops),
             "addloop" => Ok(JobType::AddLoop),
             "removeloop" => Ok(JobType::RemoveLoop),
@@ -984,6 +1022,9 @@ impl std::fmt::Display for JobType {
             JobType::RetrySkeletonBacktracking => {
                 write!(f, "retrying skeleton (backtracking)")
             }
+            JobType::RetrySkeletonWithSubdivisions => {
+                write!(f, "retrying skeleton (backtracking + subdivisions)")
+            }
             JobType::InitializeLoops => write!(f, "initializing loops"),
             JobType::ComputeDual => write!(f, "computing dual"),
             JobType::PlaceCorners => write!(f, "placing corners"),
@@ -1012,6 +1053,7 @@ impl Job {
             Job::SmoothenLayout { .. } => JobType::SmoothenLayout,
             Job::CalculateSkeleton { .. } => JobType::CalculateSkeleton,
             Job::RetrySkeletonBacktracking { .. } => JobType::RetrySkeletonBacktracking,
+            Job::RetrySkeletonWithSubdivisions { .. } => JobType::RetrySkeletonWithSubdivisions,
             Job::InitializeLoops { .. } => JobType::InitializeLoops,
             Job::ComputeDual { .. } => JobType::ComputeDual,
             Job::PlaceCorners { .. } => JobType::PlaceCorners,

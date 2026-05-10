@@ -239,6 +239,48 @@ impl Solution {
         }
     }
 
+    /// Like [`retry_skeleton_with_backtracking`](Self::retry_skeleton_with_backtracking) but
+    /// caps each round's DFS at `max_dfs_calls_per_round` and, on failure, subdivides one
+    /// edge per cycle in the cleaned skeleton before retrying (up to `max_rounds` rounds).
+    /// Use when plain backtracking gives up on a skeleton with many or large cycles.
+    pub fn retry_skeleton_with_subdivisions(
+        &mut self,
+        convexity_threshold: f64,
+        convexity_merge_threshold: f64,
+        omega: usize,
+        max_dfs_calls_per_round: u64,
+        max_rounds: usize,
+    ) {
+        if self.skeleton.is_none() {
+            self.calculate_skeleton(convexity_threshold, convexity_merge_threshold, omega);
+        }
+        let mesh = self.mesh_ref.clone();
+        let Some(data) = &mut self.skeleton else {
+            return;
+        };
+        let (polycube, quad) = data.retry_orthogonalization_with_subdivisions(
+            mesh,
+            omega,
+            max_dfs_calls_per_round,
+            max_rounds,
+        );
+        self.polycube = polycube;
+        self.quad = quad;
+
+        let loops = generate_loops(self.skeleton.as_ref().unwrap(), &self.mesh_ref);
+        if let Ok((loops, crossings, face_points)) = loops {
+            self.loops = loops;
+            self.loop_crossings = Some(crossings);
+            self.face_points = Some(face_points);
+            self.recompute_occupied();
+            if let Err(e) = self.reconstruct_solution(false, 1) {
+                log::warn!(
+                    "Failed to reconstruct solution after subdivision retry: {e}"
+                );
+            }
+        }
+    }
+
     /// Removes the given skeleton nodes (by raw NodeIndex) from the cleaned skeleton
     /// and reruns convexification and all downstream stages.
     pub fn manually_remove_skeleton_nodes(
