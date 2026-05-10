@@ -207,9 +207,18 @@ impl Solution {
     }
 
     /// Re-runs orthogonalization with the slow backtracking search on the existing cleaned
-    /// skeleton, then refreshes loops, dual, and polycube downstream. No-op if no skeleton
-    /// has been computed yet.
-    pub fn retry_skeleton_with_backtracking(&mut self, omega: usize) {
+    /// skeleton, then refreshes loops, dual, and polycube downstream. If no skeleton has
+    /// been computed yet, the standard `calculate_skeleton` (greedy) runs first to produce
+    /// `cleaned_skeleton` so that backtracking has something to work on.
+    pub fn retry_skeleton_with_backtracking(
+        &mut self,
+        convexity_threshold: f64,
+        convexity_merge_threshold: f64,
+        omega: usize,
+    ) {
+        if self.skeleton.is_none() {
+            self.calculate_skeleton(convexity_threshold, convexity_merge_threshold, omega);
+        }
         let mesh = self.mesh_ref.clone();
         let Some(data) = &mut self.skeleton else {
             return;

@@ -1,4 +1,4 @@
-use log::{error, info};
+use log::{error, info, warn};
 use mehsh::prelude::{EPS, HasPosition, Mesh};
 use petgraph::graph::{EdgeIndex, NodeIndex, UnGraph};
 use petgraph::prelude::StableUnGraph;
@@ -504,23 +504,62 @@ fn finalize_partial_to_realized(
     realize(&full)
 }
 
-/// Global search for labelings that maximize preferred-axis matches.
+/// Search for an edge labeling consistent with an orthogonal embedding.
 ///
-/// Edge priority is weighted by patch size and directional confidence.
+/// Cycle-aware backtracking: only edges that lie on at least one cycle are searched
+/// exhaustively, with per-cycle closure (sum of signed axis vectors around the loop must
+/// be zero) used as the pruning predicate. As soon as the last unlabeled edge of any
+/// cycle is set, that cycle's closure is checked and the branch is dropped if it fails,
+/// which catches dead ends much earlier than a global realizability check.
+///
+/// Once a labeling for all cycle edges is fixed, the remaining edges are bridges (each
+/// in no cycle) and form trees, so a single greedy pass over them succeeds whenever any
+/// labeling exists.
+///
+/// Within a cycle, edges are tried in axis-preference order (boundary normal, fall back
+/// to displacement) with the matching sign first. Cycle edges are queued smallest-cycle
+/// first so closure pruning fires as early as possible. Slow on graphs with many or
+/// large cycles — invoked only when the user explicitly requests it.
 pub fn backtracking_orthogonalization(
     curve_skeleton: &CurveSkeleton,
     mesh: &Mesh<INPUT>,
 ) -> Option<LabeledCurveSkeleton> {
     let (mut partial, node_map, boundary_loops) = build_unlabeled_partial(curve_skeleton);
 
-    info!("Running backtracking orthogonalization.");
+    let cycles = compute_fundamental_cycles(&partial);
+    let mut in_any_cycle: HashSet<EdgeIndex> = HashSet::new();
+    for c in &cycles {
+        for &(e, _) in c {
+            in_any_cycle.insert(e);
+        }
+    }
+    let total_edges = partial.edge_count();
+    info!(
+        "Backtracking orthogonalization: {} cycle(s), {} cycle edge(s), {} bridge edge(s).",
+        cycles.len(),
+        in_any_cycle.len(),
+        total_edges - in_any_cycle.len(),
+    );
 
-    #[derive(Clone)]
-    struct EdgePlan {
-        edge: EdgeIndex,
-        primary: PrincipalDirection,
-        preference_weight: i64,
-        confidence: f64,
+    // Queue cycle edges smallest-cycle-first so closure pruning fires as early as possible.
+    let mut cycle_order: Vec<usize> = (0..cycles.len()).collect();
+    cycle_order.sort_by_key(|&i| cycles[i].len());
+
+    let mut edge_order: Vec<EdgeIndex> = Vec::new();
+    let mut queued: HashSet<EdgeIndex> = HashSet::new();
+    for &ci in &cycle_order {
+        for &(e, _) in &cycles[ci] {
+            if queued.insert(e) {
+                edge_order.push(e);
+            }
+        }
+    }
+
+    let mut edge_to_cycles: HashMap<EdgeIndex, Vec<usize>> = HashMap::new();
+    for (i, c) in cycles.iter().enumerate() {
+        for &(e, _) in c {
+            edge_to_cycles.entry(e).or_default().push(i);
+        }
     }
 
     let boundary_normals: HashMap<EdgeIndex, Option<nalgebra::Vector3<f64>>> = partial
@@ -533,44 +572,29 @@ pub fn backtracking_orthogonalization(
         })
         .collect();
 
-    let mut plans: Vec<EdgePlan> = partial
-        .edge_indices()
-        .map(|edge| {
-            let (u, v) = partial.edge_endpoints(edge).unwrap();
-            let orig_u = *node_map
-                .get_by_right(&u)
-                .expect("Partial node not found in map");
-            let orig_v = *node_map
-                .get_by_right(&v)
-                .expect("Partial node not found in map");
-            let disp = curve_skeleton[orig_v].position - curve_skeleton[orig_u].position;
-            let pref_vector = boundary_normals
-                .get(&edge)
-                .copied()
-                .flatten()
-                .unwrap_or(disp);
-            let pref = preferred_axes_from_displacement(pref_vector);
-            let preference_weight = std::cmp::max(
-                curve_skeleton[orig_u].patch_vertices.len(),
-                curve_skeleton[orig_v].patch_vertices.len(),
-            ) as i64;
-            let confidence = directional_confidence(pref_vector);
-            EdgePlan {
-                edge,
-                primary: pref[0],
-                preference_weight,
-                confidence,
-            }
-        })
-        .collect();
+    let edge_plan = |edge: EdgeIndex, partial: &PartialEdgeLabeledCurveSkeleton| -> EdgePlan {
+        let (u, v) = partial.edge_endpoints(edge).unwrap();
+        let orig_u = *node_map.get_by_right(&u).expect("Partial node not found in map");
+        let orig_v = *node_map.get_by_right(&v).expect("Partial node not found in map");
+        let disp = curve_skeleton[orig_v].position - curve_skeleton[orig_u].position;
+        let pref_vector = boundary_normals.get(&edge).copied().flatten().unwrap_or(disp);
+        let pref = preferred_axes_from_displacement(pref_vector);
+        let preference_weight = std::cmp::max(
+            curve_skeleton[orig_u].patch_vertices.len(),
+            curve_skeleton[orig_v].patch_vertices.len(),
+        ) as i64;
+        EdgePlan {
+            edge,
+            primary: pref[0],
+            preference_weight,
+            pref_vector,
+        }
+    };
 
-    plans.sort_by(|a, b| {
-        b.preference_weight.cmp(&a.preference_weight).then(
-            b.confidence
-                .partial_cmp(&a.confidence)
-                .unwrap_or(std::cmp::Ordering::Equal),
-        )
-    });
+    let plans: Vec<EdgePlan> = edge_order
+        .iter()
+        .map(|&e| edge_plan(e, &partial))
+        .collect();
 
     let mut suffix_max_possible = vec![0i64; plans.len() + 1];
     for i in (0..plans.len()).rev() {
@@ -579,128 +603,311 @@ pub fn backtracking_orthogonalization(
 
     let mut best_score = i64::MIN;
     let mut best_labels: Option<HashMap<EdgeIndex, SignedAxis>> = None;
+    let mut cycle_unlabeled: Vec<usize> = cycles.iter().map(|c| c.len()).collect();
 
-    fn dfs(
-        depth: usize,
-        plans: &[EdgePlan],
-        partial: &mut PartialEdgeLabeledCurveSkeleton,
-        curve_skeleton: &CurveSkeleton,
-        node_map: &BiHashMap<NodeIndex, NodeIndex>,
-        boundary_normals: &HashMap<EdgeIndex, Option<nalgebra::Vector3<f64>>>,
-        current_score: i64,
-        best_score: &mut i64,
-        best_labels: &mut Option<HashMap<EdgeIndex, SignedAxis>>,
-        suffix_max_possible: &[i64],
-    ) {
-        if current_score + suffix_max_possible[depth] < *best_score {
-            return;
-        }
-
-        if depth == plans.len() {
-            if !is_partially_realizable(partial) {
-                return;
-            }
-
-            if current_score > *best_score {
-                let labels = partial
-                    .edge_indices()
-                    .map(|e| (e, partial.edge_weight(e).copied().flatten().unwrap()))
-                    .collect();
-                *best_score = current_score;
-                *best_labels = Some(labels);
-            }
-            return;
-        }
-
-        let plan = &plans[depth];
-        let (u, v) = partial.edge_endpoints(plan.edge).unwrap();
-        let orig_u = *node_map
-            .get_by_right(&u)
-            .expect("Partial node not found in map");
-        let orig_v = *node_map
-            .get_by_right(&v)
-            .expect("Partial node not found in map");
-        let disp = curve_skeleton[orig_v].position - curve_skeleton[orig_u].position;
-        let pref_vector = boundary_normals
-            .get(&plan.edge)
-            .copied()
-            .flatten()
-            .unwrap_or(disp);
-        let candidate_axes = preferred_axes_from_displacement(pref_vector);
-
-        for cand in candidate_axes {
-            // Determine edge endpoint order in the partial graph; sign is stored from a->b.
-            let (a, b) = partial.edge_endpoints(plan.edge).unwrap();
-            let orig_a = *node_map
-                .get_by_right(&a)
-                .expect("Partial node not found in map");
-            let orig_b = *node_map
-                .get_by_right(&b)
-                .expect("Partial node not found in map");
-            let disp_ab = curve_skeleton[orig_b].position - curve_skeleton[orig_a].position;
-            let sign_vector = boundary_normals
-                .get(&plan.edge)
-                .copied()
-                .flatten()
-                .unwrap_or(disp_ab);
-            let preferred_sign = axis_sign_from_value(axis_value(sign_vector, cand));
-            let sign_candidates = [preferred_sign, preferred_sign.flipped()];
-
-            for sign in sign_candidates {
-                if axis_sign_conflict_around_node(partial, a, a, cand, sign)
-                    || axis_sign_conflict_around_node(partial, b, a, cand, sign)
-                {
-                    continue;
-                }
-
-                let signed = SignedAxis { axis: cand, sign };
-                *partial.edge_weight_mut(plan.edge).unwrap() = Some(signed);
-                if is_partially_realizable(partial) {
-                    let next_score = current_score
-                        + if cand == plan.primary {
-                            plan.preference_weight
-                        } else {
-                            0
-                        };
-                    dfs(
-                        depth + 1,
-                        plans,
-                        partial,
-                        curve_skeleton,
-                        node_map,
-                        boundary_normals,
-                        next_score,
-                        best_score,
-                        best_labels,
-                        suffix_max_possible,
-                    );
-                }
-                *partial.edge_weight_mut(plan.edge).unwrap() = None;
-            }
-        }
-    }
-
-    dfs(
+    dfs_cycle_edges(
         0,
         &plans,
         &mut partial,
-        curve_skeleton,
-        &node_map,
-        &boundary_normals,
+        &cycles,
+        &edge_to_cycles,
+        &mut cycle_unlabeled,
         0,
         &mut best_score,
         &mut best_labels,
         &suffix_max_possible,
     );
 
-    if let Some(labels) = best_labels {
-        for (edge, dir) in labels {
-            *partial.edge_weight_mut(edge).unwrap() = Some(dir);
-        }
-        finalize_partial_to_realized(&partial, &boundary_loops)
-    } else {
-        None
+    let labels = best_labels?;
+    for (edge, signed) in labels {
+        *partial.edge_weight_mut(edge).unwrap() = Some(signed);
     }
+
+    // Greedy on bridge edges. They form a forest (no cycles to close), so any labeling
+    // satisfying the local per-node (axis, sign) capacity is a valid completion.
+    let bridge_edges: Vec<EdgeIndex> = partial
+        .edge_indices()
+        .filter(|e| !in_any_cycle.contains(e))
+        .collect();
+    for edge in bridge_edges {
+        let plan = edge_plan(edge, &partial);
+        if !greedy_label_bridge(&mut partial, edge, &plan) {
+            warn!(
+                "Backtracking orthogonalization: greedy labeling of bridge edge {:?} failed.",
+                edge
+            );
+            return None;
+        }
+    }
+
+    finalize_partial_to_realized(&partial, &boundary_loops)
+}
+
+/// One edge's search plan: the edge id, a primary axis preference, the displacement-style
+/// vector used to pick the preferred sign, and a weight used for ordering / score bound.
+#[derive(Clone)]
+struct EdgePlan {
+    edge: EdgeIndex,
+    primary: PrincipalDirection,
+    preference_weight: i64,
+    pref_vector: nalgebra::Vector3<f64>,
+}
+
+/// Backtracking over cycle edges only. Cycle closure is checked the moment the last edge
+/// of any cycle is set; failure prunes the branch immediately.
+#[allow(clippy::too_many_arguments)]
+fn dfs_cycle_edges(
+    depth: usize,
+    plans: &[EdgePlan],
+    partial: &mut PartialEdgeLabeledCurveSkeleton,
+    cycles: &[Vec<(EdgeIndex, bool)>],
+    edge_to_cycles: &HashMap<EdgeIndex, Vec<usize>>,
+    cycle_unlabeled: &mut [usize],
+    current_score: i64,
+    best_score: &mut i64,
+    best_labels: &mut Option<HashMap<EdgeIndex, SignedAxis>>,
+    suffix_max_possible: &[i64],
+) {
+    if current_score + suffix_max_possible[depth] < *best_score {
+        return;
+    }
+
+    if depth == plans.len() {
+        // All cycles closed; verify the (cycle-only) partial labeling against the global
+        // realizability conditions (per-axis acyclicity over signed edges, triple
+        // uniqueness across nodes). Bridges are still unlabeled and don't participate.
+        if !is_partially_realizable(partial) {
+            return;
+        }
+        if current_score > *best_score {
+            let labels = plans
+                .iter()
+                .map(|p| (p.edge, partial.edge_weight(p.edge).copied().flatten().unwrap()))
+                .collect();
+            *best_score = current_score;
+            *best_labels = Some(labels);
+        }
+        return;
+    }
+
+    let plan = &plans[depth];
+    let (a, b) = partial.edge_endpoints(plan.edge).unwrap();
+    let candidate_axes = preferred_axes_from_displacement(plan.pref_vector);
+    let empty_cycles: Vec<usize> = Vec::new();
+    let cycles_for_edge = edge_to_cycles.get(&plan.edge).unwrap_or(&empty_cycles);
+
+    for cand in candidate_axes {
+        let preferred_sign = axis_sign_from_value(axis_value(plan.pref_vector, cand));
+        for sign in [preferred_sign, preferred_sign.flipped()] {
+            if axis_sign_conflict_around_node(partial, a, a, cand, sign)
+                || axis_sign_conflict_around_node(partial, b, a, cand, sign)
+            {
+                continue;
+            }
+
+            let signed = SignedAxis { axis: cand, sign };
+            *partial.edge_weight_mut(plan.edge).unwrap() = Some(signed);
+
+            for &ci in cycles_for_edge {
+                cycle_unlabeled[ci] -= 1;
+            }
+
+            // Any cycle that just hit zero unlabeled edges must close.
+            let mut closed_ok = true;
+            for &ci in cycles_for_edge {
+                if cycle_unlabeled[ci] == 0 && !cycle_closes(&cycles[ci], partial) {
+                    closed_ok = false;
+                    break;
+                }
+            }
+
+            if closed_ok {
+                let next_score = current_score
+                    + if cand == plan.primary {
+                        plan.preference_weight
+                    } else {
+                        0
+                    };
+                dfs_cycle_edges(
+                    depth + 1,
+                    plans,
+                    partial,
+                    cycles,
+                    edge_to_cycles,
+                    cycle_unlabeled,
+                    next_score,
+                    best_score,
+                    best_labels,
+                    suffix_max_possible,
+                );
+            }
+
+            for &ci in cycles_for_edge {
+                cycle_unlabeled[ci] += 1;
+            }
+            *partial.edge_weight_mut(plan.edge).unwrap() = None;
+        }
+    }
+}
+
+/// Fundamental cycles of `partial` via union-find spanning forest. Returns one cycle per
+/// non-tree edge: the tree path between its endpoints plus the non-tree edge itself, each
+/// element annotated with whether traversal matches the edge's stored `(source, target)`
+/// orientation (`true`) or runs against it (`false`).
+fn compute_fundamental_cycles(
+    partial: &PartialEdgeLabeledCurveSkeleton,
+) -> Vec<Vec<(EdgeIndex, bool)>> {
+    let mut node_idx: HashMap<NodeIndex, usize> = HashMap::new();
+    for (i, n) in partial.node_indices().enumerate() {
+        node_idx.insert(n, i);
+    }
+    let mut parent: Vec<usize> = (0..node_idx.len()).collect();
+
+    fn find(p: &mut [usize], x: usize) -> usize {
+        let mut r = x;
+        while p[r] != r {
+            r = p[r];
+        }
+        let mut cur = x;
+        while p[cur] != r {
+            let nxt = p[cur];
+            p[cur] = r;
+            cur = nxt;
+        }
+        r
+    }
+
+    let mut tree_edges: Vec<EdgeIndex> = Vec::new();
+    let mut back_edges: Vec<EdgeIndex> = Vec::new();
+    for e in partial.edge_indices() {
+        let (u, v) = partial.edge_endpoints(e).unwrap();
+        let ru = find(&mut parent, node_idx[&u]);
+        let rv = find(&mut parent, node_idx[&v]);
+        if ru == rv {
+            back_edges.push(e);
+        } else {
+            parent[ru] = rv;
+            tree_edges.push(e);
+        }
+    }
+
+    let mut tree_adj: HashMap<NodeIndex, Vec<(NodeIndex, EdgeIndex, bool)>> = HashMap::new();
+    for &e in &tree_edges {
+        let (a, b) = partial.edge_endpoints(e).unwrap();
+        tree_adj.entry(a).or_default().push((b, e, true));
+        tree_adj.entry(b).or_default().push((a, e, false));
+    }
+
+    let mut cycles = Vec::with_capacity(back_edges.len());
+    for be in back_edges {
+        let (u, v) = partial.edge_endpoints(be).unwrap();
+        let mut path = bfs_tree_path(&tree_adj, u, v);
+        // Close the loop by traversing the back-edge from v back to u (against its stored direction).
+        path.push((be, false));
+        cycles.push(path);
+    }
+    cycles
+}
+
+/// Tree path from `src` to `dst` as a sequence of `(edge, forward)` steps where `forward`
+/// is `true` iff traversal matches the edge's stored `(source, target)` order. Returns an
+/// empty path if `src == dst` or no path exists (the latter shouldn't happen for a tree).
+fn bfs_tree_path(
+    tree_adj: &HashMap<NodeIndex, Vec<(NodeIndex, EdgeIndex, bool)>>,
+    src: NodeIndex,
+    dst: NodeIndex,
+) -> Vec<(EdgeIndex, bool)> {
+    if src == dst {
+        return Vec::new();
+    }
+    let mut visited: HashMap<NodeIndex, (NodeIndex, EdgeIndex, bool)> = HashMap::new();
+    visited.insert(src, (src, EdgeIndex::end(), false));
+    let mut queue = VecDeque::from([src]);
+    while let Some(u) = queue.pop_front() {
+        if u == dst {
+            break;
+        }
+        if let Some(neighbors) = tree_adj.get(&u) {
+            for &(w, e, forward) in neighbors {
+                if !visited.contains_key(&w) {
+                    visited.insert(w, (u, e, forward));
+                    if w == dst {
+                        break;
+                    }
+                    queue.push_back(w);
+                }
+            }
+        }
+    }
+    let mut path = Vec::new();
+    let mut cur = dst;
+    while cur != src {
+        let Some(&(prev, e, forward)) = visited.get(&cur) else {
+            return Vec::new();
+        };
+        path.push((e, forward));
+        cur = prev;
+    }
+    path.reverse();
+    path
+}
+
+/// True iff every edge in `cycle` is labeled and the cycle admits a positive-length
+/// orthogonal closure. Per axis we need either no edges of that axis at all, or both a
+/// `+` and a `−` edge (so `realize`'s longest-path step can pick lengths that cancel).
+/// Returns true (non-violating) for any cycle with an unlabeled edge.
+fn cycle_closes(
+    cycle: &[(EdgeIndex, bool)],
+    partial: &PartialEdgeLabeledCurveSkeleton,
+) -> bool {
+    let mut pos_count = [0u32; 3];
+    let mut neg_count = [0u32; 3];
+    for &(e, forward) in cycle {
+        let signed = match partial.edge_weight(e) {
+            Some(Some(s)) => *s,
+            _ => return true,
+        };
+        let axis_idx = signed.axis as usize;
+        let positive_in_traversal = matches!(
+            (signed.sign, forward),
+            (AxisSign::Positive, true) | (AxisSign::Negative, false)
+        );
+        if positive_in_traversal {
+            pos_count[axis_idx] += 1;
+        } else {
+            neg_count[axis_idx] += 1;
+        }
+    }
+    for i in 0..3 {
+        if (pos_count[i] > 0) != (neg_count[i] > 0) {
+            return false;
+        }
+    }
+    true
+}
+
+/// Assigns the first valid (axis, sign) — preference order — to a single edge that
+/// isn't part of any cycle. Returns false only if every (axis, sign) combination
+/// conflicts with an already-labeled neighbor at one of the endpoints.
+fn greedy_label_bridge(
+    partial: &mut PartialEdgeLabeledCurveSkeleton,
+    edge: EdgeIndex,
+    plan: &EdgePlan,
+) -> bool {
+    let (a, b) = partial.edge_endpoints(edge).unwrap();
+    for cand in preferred_axes_from_displacement(plan.pref_vector) {
+        let preferred_sign = axis_sign_from_value(axis_value(plan.pref_vector, cand));
+        for sign in [preferred_sign, preferred_sign.flipped()] {
+            if axis_sign_conflict_around_node(partial, a, a, cand, sign)
+                || axis_sign_conflict_around_node(partial, b, a, cand, sign)
+            {
+                continue;
+            }
+            *partial.edge_weight_mut(edge).unwrap() = Some(SignedAxis { axis: cand, sign });
+            return true;
+        }
+    }
+    false
 }
 
 /// Returns true if the partial edge-labeling is still consistent with some valid orthogonal
