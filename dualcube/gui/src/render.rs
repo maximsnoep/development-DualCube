@@ -562,11 +562,11 @@ pub fn update_render_settings(
     let default = |object: &Objects, label: &str| {
         matches!(
             (object, label),
-            // (Objects::InputMesh, "gray")
-            (Objects::InputMesh, "wireframe")
-                | (Objects::InputMesh, "x-loops")
-                | (Objects::InputMesh, "y-loops")
-                | (Objects::InputMesh, "z-loops")
+            (Objects::InputMesh, "gray")
+            | (Objects::InputMesh, "wireframe")
+                // | (Objects::InputMesh, "x-loops")
+                // | (Objects::InputMesh, "y-loops")
+                // | (Objects::InputMesh, "z-loops")
                 // | (Objects::InputMesh, "patches")
                 | (Objects::InputMesh, "cuts")
                 | (Objects::InputMesh, "routing failures")
