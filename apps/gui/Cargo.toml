@@ -2,26 +2,31 @@
 name = "gui"
 version = "0.1.0"
 edition = "2024"
+license.workspace = true
 
 [features]
+# Color schemes of the axes (the default is Nord). The old ones:
+old = []
 snoep6 = []
 bettina = []
 gray = []
 pastel = []
 light_mode = []
-quad = ["dep:dualcube-quad"]
 hex = ["dep:dualcube-hex"]
+nlr = []
+rgb = []
+# Link Bevy dynamically: faster (re)linking while iterating (`cargo rel`), slower at runtime. Does not link in debug
+# builds on Windows (too many exported symbols).
+dynamic = ["bevy/dynamic_linking"]
 
 [dependencies]
 dualcube = { path = "../../crates/dualcube" }
 dualcube-hex = { path = "../../crates/dualcube-hex", optional = true }
-dualcube-quad = { path = "../../crates/dualcube-quad", optional = true }
 io = { path = "../../crates/dualcube-io" }
 mehsh = { path = "../../crates/mehsh" }
 mehsh-bevy = { path = "../../crates/mehsh-bevy" }
 
-bevy = { version = "0.18.0", default-features = false, features = [
-	"dynamic_linking",
+bevy = { workspace = true, features = [
 
 	# Core
     "std",
@@ -64,22 +69,16 @@ bevy = { version = "0.18.0", default-features = false, features = [
 ] }
 
 # Egui UI
-bevy_egui = "0.39.1"
-egui_dock = "0.18.0"
+bevy_egui = "0.43.0-rc.1"
 # File dialogs
 rfd = { version = "0.17.2", default-features = false }
 
 # Bevy plugins
-bevy-orbit-camera = "0.3.3"
-# bevy-orbit-camera = { path = "../../../bevy-orbit-camera" }
-bevy-axes-gizmo = "0.3.1"
-# bevy-axes-gizmo = { path = "../../../bevy-axes-gizmo" }
-bevy-blossom = "0.2.0"
-# bevy-blossom = { path = "../../../bevy-blossom" }
-bevy-toon = "0.2.0"
-# bevy-toon = { path = "../../../bevy-toon" }
-bevy-wicon = "0.18.1"
-# bevy-wicon = { path = "../../../bevy-wicon" }
+# (Vendored from crates.io and ported along with Bevy, see their manifests.)
+bevy-orbit-camera = { path = "../../crates/bevy-orbit-camera" }
+bevy-axes-gizmo = { path = "../../crates/bevy-axes-gizmo" }
+bevy-toon = { path = "../../crates/bevy-toon" }
+bevy-wicon = { path = "../../crates/bevy-wicon" }
 
 [lints]
 workspace = true

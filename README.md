@@ -66,3 +66,7 @@ cargo run -p cli --release
 ## Status
 
 DualCube is an active research codebase intended for experimentation, visualization, and batch testing. Interfaces, workflows, and file formats may continue to evolve.
+
+## License
+
+DualCube is licensed under the [MIT License](LICENSE). Versions before the switch to MIT were released under the GNU General Public License v3.0.

@@ -1,3 +1,4 @@
+pub mod figure;
 pub mod formats {
     pub mod apg;
     pub mod dc;
@@ -22,55 +23,33 @@ pub use crate::formats::{
 use dualcube::prelude::*;
 use std::{path::Path, sync::Arc};
 
-pub fn import_solution(path: &Path) -> Solution {
-    match path.extension().unwrap().to_str() {
-        Some("obj") => {
-            let mesh = match Mesh::from_obj(path) {
-                Ok(res) => Arc::new(res.0),
-                Err(err) => {
-                    panic!("Error while parsing OBJ file {path:?}: {err:?}");
-                }
-            };
-            Solution::new(mesh.clone())
+fn extension_of(path: &Path) -> anyhow::Result<String> {
+    path.extension()
+        .and_then(|e| e.to_str())
+        .map(str::to_ascii_lowercase)
+        .ok_or_else(|| anyhow::anyhow!("{} has no file extension", path.display()))
+}
+
+pub fn import_solution(path: &Path) -> anyhow::Result<Solution> {
+    match extension_of(path)?.as_str() {
+        "obj" | "stl" => {
+            let (mesh, ..) = Mesh::from_file(path)
+                .map_err(|err| anyhow::anyhow!("reading mesh {}: {err}", path.display()))?;
+            Ok(Solution::new(Arc::new(mesh)))
         }
-        Some("stl") => {
-            let mesh = match Mesh::from_stl(path) {
-                Ok(res) => Arc::new(res.0),
-                Err(err) => {
-                    panic!("Error while parsing STL file {path:?}: {err:?}");
-                }
-            };
-            Solution::new(mesh.clone())
-        }
-        Some("dc") => {
-            if let Ok(sol) = Dc::import(&path) {
-                sol
-            } else {
-                panic!("Error while parsing Dc file {path:?}");
-            }
-        }
-        Some("loops") => {
-            if let Ok(sol) = Loops::import(&path) {
-                sol
-            } else {
-                panic!("Error while parsing loops file {path:?}");
-            }
-        }
-        _ => {
-            panic!("Unsupported file extension for {path:?}");
-        }
+        "dc" | "dsol" => Dc::import(path),
+        "loops" => Loops::import(path),
+        ext => anyhow::bail!("unsupported file extension `{ext}` for {}", path.display()),
     }
 }
 
 pub fn export_solution(sol: &Solution, path: &Path) -> anyhow::Result<()> {
-    match path.extension().and_then(|e| e.to_str()) {
-        Some("obj") => OBJ::export(sol, path),
-        Some("dc") => Dc::export(sol, path),
-        Some("loops") => Loops::export(sol, path),
-        Some("nlr") => NLR::export(sol, path),
-        Some("apg") => APG::export(sol, path),
-        _ => {
-            panic!("Unsupported file extension for {path:?}");
-        }
+    match extension_of(path)?.as_str() {
+        "obj" => OBJ::export(sol, path),
+        "dc" => Dc::export(sol, path),
+        "loops" => Loops::export(sol, path),
+        "nlr" => NLR::export(sol, path),
+        "apg" => APG::export(sol, path),
+        ext => anyhow::bail!("unsupported file extension `{ext}` for {}", path.display()),
     }
 }

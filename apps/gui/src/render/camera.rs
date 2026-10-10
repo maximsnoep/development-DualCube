@@ -1,9 +1,9 @@
 use super::Objects;
 use crate::resources::Configuration;
-use crate::ui::dock::UiResource;
+use crate::ui::viewport::ViewResource;
 use bevy::camera::visibility::RenderLayers;
 use bevy::camera::{CameraOutputMode, RenderTarget, ScalingMode, Viewport};
-use bevy::core_pipeline::tonemapping::Tonemapping;
+use bevy::core_pipeline::tonemapping::{DebandDither, Tonemapping};
 use bevy::prelude::*;
 use bevy::render::render_resource::{
     BlendState, Extent3d, TextureDescriptor, TextureDimension, TextureFormat, TextureUsages,
@@ -13,8 +13,6 @@ use bevy_axes_gizmo::AxesGizmoSyncCamera;
 use bevy_egui::{EguiGlobalSettings, PrimaryEguiContext, egui::Rect};
 use bevy_orbit_camera::*;
 use bevy_toon::ToonMaterial;
-use egui_dock::LeafNode;
-use std::ops::Index;
 
 const DEFAULT_CAMERA_EYE: Vec3 = Vec3::new(25.0, 25.0, 25.0);
 const DEFAULT_CAMERA_TARGET: Vec3 = Vec3::new(0., 0., 0.);
@@ -30,11 +28,11 @@ pub struct CameraHandles {
 
 pub fn setup(
     mut commands: Commands<'_, '_>,
-    mut egui_global_settings: ResMut<EguiGlobalSettings>,
-    mut images: ResMut<Assets<Image>>,
-    mut handles: ResMut<CameraHandles>,
-    cameras: Query<Entity, With<Camera>>,
-    configuration: Res<Configuration>,
+    mut egui_global_settings: ResMut<'_, EguiGlobalSettings>,
+    mut images: ResMut<'_, Assets<Image>>,
+    mut handles: ResMut<'_, CameraHandles>,
+    cameras: Query<'_, '_, Entity, With<Camera>>,
+    configuration: Res<'_, Configuration>,
 ) {
     for camera in cameras.iter() {
         commands.entity(camera).despawn();
@@ -68,8 +66,8 @@ pub fn setup(
         },
         AxesGizmoSyncCamera,
         Tonemapping::None,
-        bevy_blossom::CameraMarker,
-        bevy_orbit_camera::automatic::Marker,
+        DebandDither::Disabled,
+        automatic::Marker,
         OrbitCameraBundle::new(
             Controller {
                 mouse_rotate_sensitivity: Vec2::splat(0.2),
@@ -118,53 +116,61 @@ pub fn setup(
         commands.spawn((
             Camera3d::default(),
             RenderTarget::Image(handle.into()),
-            bevy_blossom::CameraMarker,
             Camera {
                 clear_color: clear_color.clone(),
                 ..Default::default()
             },
             projection,
             Tonemapping::None,
+            DebandDither::Disabled,
             CameraFor(object),
         ));
     }
 }
 
 pub fn update_camera_settings(
-    mut camera_controller: Query<&mut Controller>,
-    configuration: Res<Configuration>,
+    mut camera_controller: Query<'_, '_, &mut Controller>,
+    configuration: Res<'_, Configuration>,
+    egui_input: Res<'_, bevy_egui::input::EguiWantsInput>,
 ) {
     let Ok(mut main_camera) = camera_controller.single_mut() else {
         warn_once!("No main camera controller");
         return;
     };
 
-    main_camera.mouse_rotate_sensitivity = Vec2::splat(configuration.camera_rotate_sensitivity);
+    // The camera does not react to the mouse while it is over the UI (menus, windows).
+    let active = if egui_input.wants_any_pointer_input() {
+        0.
+    } else {
+        1.
+    };
+    main_camera.mouse_rotate_sensitivity =
+        Vec2::splat(active * configuration.camera_rotate_sensitivity);
     main_camera.mouse_translate_sensitivity =
-        Vec2::splat(configuration.camera_translate_sensitivity);
-    main_camera.mouse_wheel_zoom_sensitivity = configuration.camera_zoom_sensitivity;
+        Vec2::splat(active * configuration.camera_translate_sensitivity);
+    main_camera.mouse_wheel_zoom_sensitivity = active * configuration.camera_zoom_sensitivity;
 }
 
 pub fn update(
-    configuration: Res<Configuration>,
-    ui_resource: Res<UiResource>,
-    mut custom_materials: ResMut<Assets<ToonMaterial>>,
-    window: Single<&Window>,
-    mut main_camera: Query<(&mut LookTransform, &Transform, &mut Camera), With<Controller>>,
-    mut other_cameras: Query<(&mut Transform, &mut Projection, &CameraFor), Without<Controller>>,
+    configuration: Res<'_, Configuration>,
+    view: Res<'_, ViewResource>,
+    mut custom_materials: ResMut<'_, Assets<ToonMaterial>>,
+    window: Single<'_, '_, &Window>,
+    mut main_camera: Query<'_, '_, (&mut LookTransform, &Transform, &mut Camera), With<Controller>>,
+    mut other_cameras: Query<
+        '_,
+        '_,
+        (&mut Transform, &mut Projection, &mut Camera, &CameraFor),
+        Without<Controller>,
+    >,
 ) {
     let (mut look, main_transform, mut main_camera) = main_camera.single_mut().unwrap();
 
-    let (_, node_index, _) = ui_resource.tree.find_tab(&Objects::InputMesh).unwrap();
-    let main_surface = ui_resource.tree.main_surface().clone();
-    let main_node = main_surface.index(node_index);
-    let main_surface_viewport = match main_node {
-        egui_dock::Node::Leaf(LeafNode { viewport, .. }) => *viewport,
-        _ => unreachable!(),
-    };
-
     main_camera.is_active = false;
-    if let Some(viewport) = viewport_from_rect(main_surface_viewport, window.physical_size()) {
+    if let Some(viewport) = view
+        .main
+        .and_then(|rect| viewport_from_rect(rect, window.physical_size()))
+    {
         main_camera.is_active = true;
         if viewport_changed(main_camera.viewport.as_ref(), &viewport) {
             main_camera.viewport = Some(viewport);
@@ -178,7 +184,12 @@ pub fn update(
     let normalized_rotation = main_transform.rotation;
     let distance = normalized_translation.length().max(0.001);
 
-    for (mut sub_transform, mut sub_projection, sub_object) in &mut other_cameras {
+    for (mut sub_transform, mut sub_projection, mut sub_camera, sub_object) in &mut other_cameras {
+        // Only render the views whose tab is shown (rendering every view each frame is expensive).
+        let visible = view.shows(sub_object.0);
+        if sub_camera.is_active != visible {
+            sub_camera.is_active = visible;
+        }
         sub_transform.translation = normalized_translation + Vec3::from(sub_object.0);
         sub_transform.rotation = normalized_rotation;
         if let Projection::Orthographic(orthographic) = sub_projection.as_mut() {
@@ -189,9 +200,16 @@ pub fn update(
     }
 
     // Toon shading depends on view direction, so keep materials in sync with the camera.
+    // `Assets::iter_mut` marks every yielded asset as modified (forcing a GPU re-upload), so only
+    // touch the materials when the view direction actually changed.
     if let Some(view_dir) = normalized_translation.try_normalize() {
-        for material in custom_materials.iter_mut() {
-            material.1.view_dir = view_dir;
+        let stale = custom_materials
+            .iter()
+            .any(|(_, material)| material.view_dir.distance_squared(view_dir) > 1e-12);
+        if stale {
+            for (_, material) in custom_materials.iter_mut() {
+                material.view_dir = view_dir;
+            }
         }
     }
 }
@@ -208,14 +226,25 @@ fn orthographic_projection(viewport_height: f32) -> Projection {
 }
 
 fn viewport_from_rect(rect: Rect, window_size: UVec2) -> Option<Viewport> {
-    let size = UVec2::new(
-        valid_viewport_size(rect.max[0] - rect.min[0])?,
-        valid_viewport_size(rect.max[1] - rect.min[1])?,
-    );
-
     // Bevy panics on zero-sized viewports during window minimization/resizing.
-    (window_size.x > 0 && window_size.y > 0).then_some(Viewport {
-        physical_position: UVec2::new(rect.min[0] as u32, rect.min[1] as u32),
+    if window_size.x == 0 || window_size.y == 0 {
+        return None;
+    }
+
+    let pos = UVec2::new(rect.min[0] as u32, rect.min[1] as u32);
+    let end = UVec2::new(rect.max[0] as u32, rect.max[1] as u32);
+
+    // Clamp to the window bounds so the viewport never exceeds the render target.
+    let clamped_pos = pos.min(window_size.saturating_sub(UVec2::ONE));
+    let clamped_end = end.min(window_size);
+
+    let size = clamped_end.saturating_sub(clamped_pos);
+
+    valid_viewport_size(size.x as f32)?;
+    valid_viewport_size(size.y as f32)?;
+
+    Some(Viewport {
+        physical_position: clamped_pos,
         physical_size: size,
         ..Default::default()
     })

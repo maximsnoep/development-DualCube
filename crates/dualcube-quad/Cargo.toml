@@ -2,15 +2,17 @@
 name = "dualcube-quad"
 version = "0.1.0"
 edition = "2024"
+license.workspace = true
 
 [lib]
 name = "dualcube_quad"
 
 [dependencies]
-dualcube = { path = "../dualcube" }
+dualcube-primal = { path = "../dualcube-primal" }
+dualcube-types = { path = "../dualcube-types" }
 bimap = "0.6.3"
 faer = "0.24.0"
-faer_gmres = "0.5.0"
+orx-parallel = "3.4.0"
 
 [lints]
 workspace = true

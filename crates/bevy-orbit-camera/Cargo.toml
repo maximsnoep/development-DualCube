@@ -1,0 +1,15 @@
+# Vendored from crates.io (bevy-orbit-camera 0.3.3, by Snoep; MIT), ported along with the Bevy version of the workspace.
+[package]
+name = "bevy-orbit-camera"
+version = "0.3.3"
+edition = "2024"
+license.workspace = true
+description = "An orbit camera for Bevy."
+publish = false
+
+[lib]
+name = "bevy_orbit_camera"
+
+[dependencies]
+bevy = { workspace = true, features = ["bevy_pbr"] }
+

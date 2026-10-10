@@ -172,7 +172,8 @@ impl<M: Tag> HasNormal<VERT, M> for Mesh<M> {
         self.faces(id)
             .map(|face_id| self.normal(face_id))
             .sum::<Vector3D>()
-            .normalize()
+            .try_normalize(1e-300)
+            .unwrap_or_else(Vector3D::zeros)
     }
 
     fn normal(&self, id: VertKey<M>) -> Vector3D {

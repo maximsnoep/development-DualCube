@@ -123,7 +123,7 @@ impl crate::Import for Loops {
                     path.display()
                 ),
             };
-            solution.add_loop(Loop { edges, direction });
+            solution.add_loop(Loop::new(edges, direction));
         }
 
         Ok(solution)

@@ -53,17 +53,15 @@ impl From<Direction> for Vector3D {
     }
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
-pub enum Side {
-    Upper,
-    Lower,
-}
-
 pub fn to_principal_direction(v: Vector3D) -> (Direction, Sign) {
     let x_is_max = v.x.abs() >= v.y.abs() && v.x.abs() >= v.z.abs();
     let y_is_max = v.y.abs() > v.x.abs() && v.y.abs() >= v.z.abs();
     let z_is_max = v.z.abs() > v.x.abs() && v.z.abs() > v.y.abs();
-    assert!(x_is_max ^ y_is_max ^ z_is_max, "{v:?}");
+    if !(x_is_max || y_is_max || z_is_max) {
+        // Only reachable for NaN components (e.g. a normalized zero-length vector).
+        warn!("to_principal_direction: degenerate vector {v:?}, defaulting to +X");
+        return (Direction::X, Sign::Positive);
+    }
 
     if x_is_max {
         if v.x > 0. {
@@ -121,23 +119,25 @@ impl Serialize for Quad {
 }
 
 impl<'de> Deserialize<'de> for Quad {
-    fn deserialize<D>(_deserializer: D) -> Result<Self, D::Error>
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
     where
         D: Deserializer<'de>,
     {
+        // Consume the unit written by `serialize` so the stream stays aligned.
+        <()>::deserialize(deserializer)?;
         Ok(Quad::default())
     }
 }
 
 pub mod prelude {
     pub use crate::{
-        DIRECTIONS, Direction, EdgeID, FaceID, INPUT, POLYCUBE, Perspective, QUAD, Quad, Side,
-        Sign, VertID, to_principal_direction, to_vector,
+        DIRECTIONS, Direction, EdgeID, FaceID, INPUT, POLYCUBE, Perspective, QUAD, Quad, Sign,
+        VertID, to_principal_direction, to_vector,
     };
     pub use grapff;
     pub use itertools::Itertools;
     pub use mehsh::prelude::*;
     pub use ordered_float::OrderedFloat;
     pub use std::collections::{HashMap, HashSet, VecDeque};
-    pub use tracing::{info, warn};
+    pub use tracing::{debug, info, warn};
 }

@@ -8,19 +8,12 @@ use bevy::prelude::*;
 use bevy_toon::ToonMaterial;
 use mehsh::prelude::*;
 use mehsh_bevy;
-use std::collections::{HashMap, HashSet};
+use std::collections::HashMap;
 
 #[derive(Default, Debug, Clone)]
 pub struct MeshProperties {
-    pub source: String,
     pub scale: f64,
     pub translation: Vector3D,
-}
-
-/// Marks an entity as spawned by [`respawn_renders`] (despawned on respawn).
-#[derive(Component)]
-pub struct Rendered {
-    pub object: Objects,
 }
 
 /// Marks the input mesh, the target for raycasting in the interactive modes.
@@ -28,6 +21,7 @@ pub struct Rendered {
 pub struct MainMesh;
 
 /// A single renderable feature of a [`RenderObject`].
+#[allow(unused_qualifications)]
 #[derive(Clone)]
 pub enum RenderAsset {
     Mesh(bevy::mesh::Mesh),
@@ -114,23 +108,21 @@ pub struct RenderObjectSettingStore {
 /// Syncs the settings store with the object store: every feature gets a
 /// visibility toggle, newly seen features start with their default visibility.
 pub fn update_render_settings(
-    render_object_store: Res<RenderObjectStore>,
-    mut render_settings_store: ResMut<RenderObjectSettingStore>,
+    render_object_store: Res<'_, RenderObjectStore>,
+    mut render_settings_store: ResMut<'_, RenderObjectSettingStore>,
 ) {
     let default = |object: &Objects, label: &str| {
         matches!(
             (object, label),
-            (Objects::InputMesh, "gray")
+            (Objects::InputMesh, "lambert")
                 | (Objects::InputMesh, "wireframe")
-                | (Objects::Polycube, "gray")
+                | (Objects::Polycube, "colored")
                 | (Objects::Polycube, "paths")
                 | (Objects::Polycube, "flat paths")
                 | (Objects::PolycubeMap, "colored")
                 | (Objects::PolycubeMap, "triangles")
                 | (Objects::PolycubeMap, "paths")
                 | (Objects::PolycubeMap, "flat paths")
-                | (Objects::QuadMesh, "gray")
-                | (Objects::QuadMesh, "wireframe")
         )
     };
 
@@ -158,90 +150,156 @@ pub fn update_render_settings(
     }
 }
 
-/// Despawns and respawns rendered entities for objects whose settings changed.
-pub fn respawn_renders(
-    mut commands: Commands,
-    mut meshes: ResMut<Assets<bevy::mesh::Mesh>>,
-    mut gizmos: ResMut<Assets<GizmoAsset>>,
-    mut materials: ResMut<Assets<StandardMaterial>>,
-    mut custom_materials: ResMut<Assets<ToonMaterial>>,
-    configuration: Res<Configuration>,
-    render_object_store: Res<RenderObjectStore>,
-    mut render_settings_store: ResMut<RenderObjectSettingStore>,
-    rendered_mesh_query: Query<(Entity, &Rendered)>,
-) {
-    let mut changed_objects = HashSet::new();
-    if render_object_store.is_changed() {
-        changed_objects.extend(render_object_store.objects.keys().copied());
-    }
-    for (&object, settings) in &render_settings_store.objects {
-        if render_settings_store.last_applied_objects.get(&object) != Some(settings) {
-            changed_objects.insert(object);
-        }
-    }
-    for object in render_settings_store.last_applied_objects.keys() {
-        if !render_settings_store.objects.contains_key(object) {
-            changed_objects.insert(*object);
-        }
-    }
+/// The handles of a spawned feature (its asset is replaced in place when the feature changes).
+#[allow(unused_qualifications)]
+enum SpawnedAsset {
+    Mesh(Handle<bevy::mesh::Mesh>),
+    Gizmo(Handle<GizmoAsset>),
+}
 
-    if changed_objects.is_empty() {
+/// The spawned entities of the visible features and the covers of the objects, and the shared materials.
+#[derive(Default)]
+pub struct Spawned {
+    features: HashMap<(Objects, String), (Entity, SpawnedAsset)>,
+    covers: HashMap<Objects, Entity>,
+    materials: Option<[Handle<StandardMaterial>; 2]>,
+    toon_material: Option<Handle<ToonMaterial>>,
+}
+
+/// Keeps the spawned entities in sync with the object store and the visibility settings. Features that stay visible
+/// keep their entities: on new data their assets are replaced in place, so the view never shows an empty frame
+/// (despawning and respawning everything made the renders flicker on every update, e.g. during an evolution).
+#[allow(unused_qualifications)]
+pub fn sync_renders(
+    mut commands: Commands<'_, '_>,
+    mut meshes: ResMut<'_, Assets<bevy::mesh::Mesh>>,
+    mut gizmos: ResMut<'_, Assets<GizmoAsset>>,
+    mut materials: ResMut<'_, Assets<StandardMaterial>>,
+    mut custom_materials: ResMut<'_, Assets<ToonMaterial>>,
+    configuration: Res<'_, Configuration>,
+    render_object_store: Res<'_, RenderObjectStore>,
+    mut render_settings_store: ResMut<'_, RenderObjectSettingStore>,
+    mut spawned: Local<'_, Spawned>,
+) {
+    let content_changed = render_object_store.is_changed();
+    let settings_changed =
+        render_settings_store.objects != render_settings_store.last_applied_objects;
+    if !content_changed && !settings_changed && !configuration.is_changed() {
         return;
     }
-    info!(
-        ?changed_objects,
-        "Render settings changed; respawning render objects"
-    );
 
-    for (entity, rendered) in rendered_mesh_query.iter() {
-        if changed_objects.contains(&rendered.object) {
-            commands.entity(entity).despawn();
-        }
+    // The shared materials (created once; the background follows the configured color).
+    let [flat_material, background_material] = spawned
+        .materials
+        .get_or_insert_with(|| {
+            [
+                materials.add(StandardMaterial {
+                    unlit: true,
+                    ..default()
+                }),
+                materials.add(StandardMaterial {
+                    unlit: true,
+                    ..default()
+                }),
+            ]
+        })
+        .clone();
+    let background = super::clear_color(&configuration);
+    if let Some(mut material) = materials.get_mut(&background_material)
+        && material.base_color != background
+    {
+        material.base_color = background;
+    }
+    let toon_material = spawned
+        .toon_material
+        .get_or_insert_with(|| {
+            custom_materials.add(ToonMaterial {
+                view_dir: Vec3::new(0.0, 0.0, 1.0),
+            })
+        })
+        .clone();
+    if !content_changed && !settings_changed {
+        return;
     }
 
-    let flat_material = materials.add(StandardMaterial {
-        unlit: true,
-        ..default()
-    });
-    let toon_material = custom_materials.add(ToonMaterial {
-        view_dir: Vec3::new(0.0, 0.0, 1.0),
-    });
-    let background_material = materials.add(StandardMaterial {
-        base_color: super::clear_color(&configuration),
-        unlit: true,
-        ..default()
-    });
-
-    // Go through changed render objects and spawn their visible features.
-    for (&object, render_object) in &render_object_store.objects {
-        if !changed_objects.contains(&object) {
-            continue;
-        }
-        let Some(settings) = render_settings_store
+    let visible = |object: Objects, label: &str| {
+        render_settings_store
             .objects
             .get(&object)
-            .map(|s| &s.settings)
-        else {
-            continue;
-        };
-        let translation = Vec3::from(object);
+            .and_then(|s| s.settings.get(label))
+            .is_some_and(|s| s.visible)
+    };
 
+    // Despawn the features that are gone or hidden, and the covers of the objects that are gone.
+    spawned.features.retain(|(object, label), (entity, _)| {
+        let keep = render_object_store
+            .objects
+            .get(object)
+            .is_some_and(|o| o.features.contains_key(label))
+            && visible(*object, label);
+        if !keep {
+            commands.entity(*entity).despawn();
+        }
+        keep
+    });
+    spawned.covers.retain(|object, entity| {
+        let keep = render_object_store.objects.contains_key(object);
+        if !keep {
+            commands.entity(*entity).despawn();
+        }
+        keep
+    });
+
+    for (&object, render_object) in &render_object_store.objects {
+        let translation = Vec3::from(object);
         for (label, asset) in &render_object.features {
-            if !settings.get(label).unwrap().visible {
+            if !visible(object, label) {
                 continue;
             }
-            match asset {
+            let key = (object, label.clone());
+            // On new data, replace the assets of the spawned features in place.
+            match (spawned.features.get(&key), asset) {
+                (Some((_, SpawnedAsset::Mesh(handle))), RenderAsset::Mesh(mesh)) => {
+                    if content_changed && let Some(mut current) = meshes.get_mut(handle) {
+                        *current = mesh.clone();
+                    }
+                    continue;
+                }
+                (
+                    Some((entity, SpawnedAsset::Gizmo(handle))),
+                    RenderAsset::Gizmo {
+                        asset,
+                        line_width,
+                        depth_bias,
+                    },
+                ) => {
+                    if content_changed {
+                        if let Some(mut current) = gizmos.get_mut(handle) {
+                            *current = asset.clone();
+                        }
+                        commands.entity(*entity).insert(gizmo(
+                            handle.clone(),
+                            *line_width,
+                            *depth_bias,
+                        ));
+                    }
+                    continue;
+                }
+                // A feature of another kind under the same label: respawn it.
+                (Some((entity, _)), _) => {
+                    commands.entity(*entity).despawn();
+                }
+                (None, _) => {}
+            }
+            let spawned_feature = match asset {
                 RenderAsset::Mesh(mesh) => {
+                    let handle = meshes.add(mesh.clone());
                     let mut entity = commands.spawn((
-                        Mesh3d(meshes.add(mesh.clone())),
+                        Mesh3d(handle.clone()),
                         Transform::from_translation(translation),
-                        Rendered { object },
                     ));
-                    // The polycube-like objects are unlit; the surface meshes
-                    // are toon-shaded, except for the pre-shaded input mesh.
-                    let unlit = matches!(object, Objects::Polycube | Objects::PolycubeMap)
-                        || (object == Objects::InputMesh && label == "shaded");
-                    if unlit {
+                    // The polycube-like objects are unlit; the surface meshes are toon-shaded.
+                    if matches!(object, Objects::Polycube | Objects::PolycubeMap) {
                         entity.insert(MeshMaterial3d(flat_material.clone()));
                     } else {
                         entity.insert(MeshMaterial3d(toon_material.clone()));
@@ -249,37 +307,48 @@ pub fn respawn_renders(
                     if object == Objects::InputMesh {
                         entity.insert(MainMesh);
                     }
+                    (entity.id(), SpawnedAsset::Mesh(handle))
                 }
                 RenderAsset::Gizmo {
                     asset,
                     line_width,
                     depth_bias,
                 } => {
-                    commands.spawn((
-                        Gizmo {
-                            handle: gizmos.add(asset.clone()),
-                            line_config: GizmoLineConfig {
-                                width: *line_width,
-                                joints: GizmoLineJoint::Round(4),
-                                ..Default::default()
-                            },
-                            depth_bias: *depth_bias,
-                        },
+                    let handle = gizmos.add(asset.clone());
+                    let entity = commands.spawn((
+                        gizmo(handle.clone(), *line_width, *depth_bias),
                         Transform::from_translation(translation),
-                        Rendered { object },
                     ));
+                    (entity.id(), SpawnedAsset::Gizmo(handle))
                 }
-            }
+            };
+            spawned.features.insert(key, spawned_feature);
         }
 
-        // Spawn a cover such that the object is view-blocked from the others.
-        commands.spawn((
-            Mesh3d(meshes.add(Sphere::new(400.))),
-            MeshMaterial3d(background_material.clone()),
-            Transform::from_translation(translation),
-            Rendered { object },
-        ));
+        // A cover such that the object is view-blocked from the others.
+        if !spawned.covers.contains_key(&object) {
+            let cover = commands
+                .spawn((
+                    Mesh3d(meshes.add(Sphere::new(400.))),
+                    MeshMaterial3d(background_material.clone()),
+                    Transform::from_translation(translation),
+                ))
+                .id();
+            spawned.covers.insert(object, cover);
+        }
     }
 
     render_settings_store.last_applied_objects = render_settings_store.objects.clone();
+}
+
+fn gizmo(handle: Handle<GizmoAsset>, line_width: f32, depth_bias: f32) -> Gizmo {
+    Gizmo {
+        handle,
+        line_config: GizmoLineConfig {
+            width: line_width,
+            joints: GizmoLineJoint::Round(4),
+            ..Default::default()
+        },
+        depth_bias,
+    }
 }

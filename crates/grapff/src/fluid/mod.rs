@@ -14,64 +14,6 @@ impl<'a, T: Eq + Hash + Clone + Copy> FluidGraph<'a, T> {
         }
     }
 
-    pub fn shortest_cycle(
-        &self,
-        a: T,
-        weight_function: impl Fn((T, T)) -> Float,
-    ) -> Option<(Vec<T>, Float)> {
-        (self.neighborhood)(a)
-            .iter()
-            .filter_map(|&neighbor| self.shortest_path(neighbor, a, &weight_function))
-            .sorted_by(|(_, cost1), (_, cost2)| cost1.cmp(cost2))
-            .next()
-            .map(|(path, score)| {
-                let (last, rest) = path.split_last().unwrap();
-                (
-                    [&[*last], rest].concat(),
-                    score + weight_function((a, *path.first().unwrap())),
-                )
-            })
-    }
-
-    // Should do this for each connected component (degree of freedom!)
-    pub fn two_color(&self, nodes: &[T]) -> Option<(HashSet<T>, HashSet<T>)> {
-        let mut pool = nodes.to_vec();
-        let mut color1 = HashSet::new();
-        let mut color2 = HashSet::new();
-
-        while let Some(s) = pool.pop() {
-            let mut queue = vec![s];
-
-            while let Some(node) = queue.pop() {
-                pool.retain(|x| x != &node);
-                if color1.contains(&node) || color2.contains(&node) {
-                    continue;
-                }
-
-                let neighbors = (self.neighborhood)(node);
-
-                if neighbors.iter().any(|x| color1.contains(x)) {
-                    if neighbors.iter().any(|x| color2.contains(x)) {
-                        return None;
-                    }
-                    color2.insert(node);
-                } else if neighbors.iter().any(|x| color2.contains(x)) {
-                    if neighbors.iter().any(|x| color1.contains(x)) {
-                        return None;
-                    }
-
-                    color1.insert(node);
-                } else {
-                    // Degree of freedom.
-                    color2.insert(node);
-                }
-
-                queue.extend(neighbors);
-            }
-        }
-        Some((color1, color2))
-    }
-
     pub fn topological_sort(&self, nodes: &[T]) -> Option<Vec<T>> {
         pathfinding::directed::topological_sort::topological_sort(nodes, |&x| {
             (self.neighborhood)(x)

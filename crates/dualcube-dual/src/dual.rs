@@ -1,10 +1,12 @@
+use crate::arrangement::Arrangement;
 use crate::loops::*;
 use dualcube_types::prelude::*;
 use grapff::Grapff;
+use rand::seq::SliceRandom;
 use serde::{Deserialize, Serialize};
 use slotmap::SlotMap;
 use std::{
-    collections::{HashMap, HashSet},
+    collections::{HashMap, HashSet, VecDeque},
     sync::Arc,
 };
 use thiserror::Error;
@@ -33,6 +35,20 @@ pub struct LoopSegment {
 pub struct LoopRegion {
     // A loop region has a corresponding surface, in this implementation, the surface is defined by a set of mesh vertices
     pub verts: HashSet<VertID>,
+    // Since multiple loops can pass through the same faces, a loop region does not necessarily contain mesh vertices.
+    // Therefore, we also store a point for every part of a face (that is crossed by loops) that belongs to the loop region.
+    #[serde(default)]
+    pub points: Vec<(FaceID, Vector3D)>,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct LoopIntersection {
+    // The two loops that intersect
+    pub loops: [LoopID; 2],
+    // The face of the mesh in which the loops intersect
+    pub face: FaceID,
+    // The position of the intersection
+    pub position: Vector3D,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -71,8 +87,12 @@ pub struct Dual {
 
     pub level_graphs: LevelGraphs,
 
-    // intersections to edges
-    intersection_to_edge: HashMap<LoopIntersectionID, EdgeID>,
+    #[serde(default)]
+    intersections: HashMap<LoopIntersectionID, LoopIntersection>,
+
+    // Locates the loop region of points on the mesh (not serialized; rebuilt with the dual structure).
+    #[serde(skip)]
+    locator: Option<Arc<RegionLocator>>,
     loop_segments: HashMap<LoopSegmentID, LoopSegment>,
     loop_regions: HashMap<LoopRegionID, LoopRegion>,
 }
@@ -94,6 +114,37 @@ pub enum PropertyViolationError {
     PathEmpty,
     #[error("Loop has too few intersections")]
     LoopHasTooFewIntersections,
+    #[error("Loop region is not a disk")]
+    RegionNotDisk,
+}
+
+/// Euler characteristic (V - E + F) of a closed mesh in half-edge representation.
+fn euler_characteristic<T: Tag>(mesh: &Mesh<T>) -> i64 {
+    mesh.nr_verts() as i64 - (mesh.nr_edges() / 2) as i64 + mesh.nr_faces() as i64
+}
+
+/// The input mesh refined along the loops (every face lies in a single loop region; loops run along edges), see
+/// `Dual::refined_mesh`.
+#[derive(Clone, Debug)]
+pub struct RefinedMesh {
+    pub mesh: Mesh<INPUT>,
+    /// The loop region of every face.
+    pub face_regions: HashMap<FaceID, LoopRegionID>,
+    /// The vertices that lie on loops.
+    pub on_loop: HashSet<VertID>,
+    /// The vertex of the refined mesh of every vertex of the input mesh.
+    pub vertex_map: HashMap<VertID, VertID>,
+    /// The faces of the refined mesh that every face of the input mesh is split into.
+    pub face_pieces: HashMap<FaceID, Vec<FaceID>>,
+}
+
+// The arrangement of the loops on the mesh, with the loop region of every cell.
+#[derive(Debug)]
+struct RegionLocator {
+    arrangement: Arrangement,
+    cell_regions: Vec<Option<LoopRegionID>>,
+    // The refined mesh (see `Dual::refined_mesh`), computed once (shared by all clones of the dual structure).
+    refined: std::sync::OnceLock<Option<RefinedMesh>>,
 }
 
 impl Dual {
@@ -106,16 +157,25 @@ impl Dual {
             loops_ref: loops_ref.clone(),
             loop_structure: Mesh::default(),
             level_graphs: LevelGraphs::default(),
-            intersection_to_edge: HashMap::new(),
+            intersections: HashMap::new(),
+            locator: None,
             loop_segments: HashMap::new(),
             loop_regions: HashMap::new(),
         };
 
+        // Compute the arrangement of the loops on the mesh (multiple loops may pass through the same faces)
+        let arrangement = Arrangement::new(&dual.mesh_ref, &dual.loops_ref)?;
+
         // Find all intersections and loop regions induced by the loops, and compute the loop structure
-        dual.assign_loop_structure()?;
+        let crossing_to_intersection = dual.assign_loop_structure(&arrangement)?;
 
         // For each loop region, find its actual subsurface (on the mesh)
-        dual.assign_subsurfaces()?;
+        let cell_regions = dual.assign_subsurfaces(&arrangement, &crossing_to_intersection)?;
+        dual.locator = Some(Arc::new(RegionLocator {
+            arrangement,
+            cell_regions,
+            refined: std::sync::OnceLock::new(),
+        }));
 
         // Find the zones and construct the level graphs
         dual.assign_level_graphs();
@@ -130,8 +190,8 @@ impl Dual {
     }
 
     #[must_use]
-    pub fn intersection_to_edge(&self, intersection: LoopIntersectionID) -> EdgeID {
-        *self.intersection_to_edge.get(&intersection).unwrap()
+    pub fn intersection(&self, intersection: LoopIntersectionID) -> &LoopIntersection {
+        &self.intersections[&intersection]
     }
 
     #[must_use]
@@ -145,14 +205,14 @@ impl Dual {
     }
 
     #[must_use]
-    pub fn segment_to_endpoints(&self, segment: LoopSegmentID) -> (EdgeID, EdgeID) {
+    pub fn segment_to_endpoints(
+        &self,
+        segment: LoopSegmentID,
+    ) -> (LoopIntersectionID, LoopIntersectionID) {
         let Some([start, end]) = self.loop_structure.vertices(segment).collect_array::<2>() else {
             panic!("Expecting segment {segment:?} to have exactly two endpoints");
         };
-        (
-            self.intersection_to_edge(start),
-            self.intersection_to_edge(end),
-        )
+        (start, end)
     }
 
     #[must_use]
@@ -161,17 +221,8 @@ impl Dual {
     }
 
     #[must_use]
-    pub fn vert_to_region(&self, vert: VertID) -> LoopRegionID {
-        self.loop_regions
-            .iter()
-            .find_map(|(region_id, region)| {
-                if region.verts.contains(&vert) {
-                    Some(*region_id)
-                } else {
-                    None
-                }
-            })
-            .unwrap()
+    pub fn region_to_points(&self, region: LoopRegionID) -> Vec<(FaceID, Vector3D)> {
+        self.loop_regions[&region].points.clone()
     }
 
     #[must_use]
@@ -180,286 +231,106 @@ impl Dual {
     }
 
     #[must_use]
-    pub fn segment_to_edges_excl(&self, segment: LoopSegmentID) -> Vec<EdgeID> {
-        let inclusive_edges = self.segment_to_edges_incl(segment);
-        inclusive_edges[2..inclusive_edges.len() - 2].to_vec()
-    }
-
-    #[must_use]
-    pub fn segment_to_edges_incl(&self, segment: LoopSegmentID) -> Vec<EdgeID> {
-        let (start, end) = self.segment_to_endpoints(segment);
-        let (start_twin, end_twin) = (self.mesh_ref.twin(start), self.mesh_ref.twin(end));
-        let loop_id = self.segment_to_loop(segment);
-        if self.segment_to_orientation(segment) == Sign::Positive {
-            let mut edges = self.loops_ref[loop_id].between(start, end);
-            if !edges.contains(&start_twin) {
-                edges.insert(0, start_twin);
-            }
-            if !edges.contains(&end_twin) {
-                edges.push(end_twin);
-            }
-            edges
-        } else {
-            let mut edges = self.loops_ref[loop_id].between(end, start);
-            if !edges.contains(&start_twin) {
-                edges.push(start_twin);
-            }
-            if !edges.contains(&end_twin) {
-                edges.insert(0, end_twin);
-            }
-            edges
-        }
-    }
-
-    #[must_use]
-    pub fn segment_to_edges(&self, segment: LoopSegmentID) -> Vec<EdgeID> {
-        let edges = self.segment_to_edges_incl(segment);
-
-        let mut fixed_edges = vec![];
-
-        for edge_pair in edges.windows(2) {
-            let (from, to) = (edge_pair[0], edge_pair[1]);
-
-            // they are either twins, or they share a face
-            let they_are_twins = self.mesh_ref.twin(from) == to;
-            let they_share_face = self.mesh_ref.face(from) == self.mesh_ref.face(to);
-
-            if they_are_twins || they_share_face {
-                fixed_edges.push(from);
-            } else {
-                // there is an edge missing between them.
-                // this missing edge is either the twin of from or the twin of to.
-                let candidate_missing1 = self.mesh_ref.twin(from);
-                let candidate_missing2 = self.mesh_ref.twin(to);
-
-                // the true missing edge is the one that is twin to one and shares face with the other.
-                let candidate_missing1_is_true =
-                    self.mesh_ref.face(candidate_missing1) == self.mesh_ref.face(to);
-                let candidate_missing2_is_true =
-                    self.mesh_ref.face(candidate_missing2) == self.mesh_ref.face(from);
-                assert!(candidate_missing1_is_true ^ candidate_missing2_is_true);
-
-                let missing = if candidate_missing1_is_true {
-                    candidate_missing1
-                } else {
-                    candidate_missing2
-                };
-
-                fixed_edges.push(from);
-                fixed_edges.push(missing);
-            }
-        }
-        fixed_edges.push(edges[edges.len() - 1]);
-
-        fixed_edges
-    }
-
-    #[must_use]
     pub fn segment_to_direction(&self, segment: LoopSegmentID) -> Direction {
         let loop_id = self.segment_to_loop(segment);
         self.loops_ref[loop_id].direction
-    }
-
-    #[must_use]
-    fn pos<T: PartialEq>(list: &[T], needle: &T) -> usize {
-        list.iter().position(|x| x == needle).unwrap()
-    }
-
-    #[must_use]
-    fn next<T: PartialEq + Copy>(list: &[T], needle: T) -> T {
-        let pos = Self::pos(list, &needle);
-        list[(pos + 1) % list.len()]
-    }
-
-    #[must_use]
-    fn prev<T: PartialEq + Copy>(list: &[T], needle: T) -> T {
-        let pos = Self::pos(list, &needle);
-        list[(pos + list.len() - 1) % list.len()]
     }
 
     // Returns error if:
     //    1. A loop has less than 4 intersections.
     //    2. A face has more than 6 edges (we know the face degree is at most 6, so we can early stop, and we also want to prevent infinite loops / malformed faces)
     //    3. Invalid intersection.
-    fn assign_loop_structure(&mut self) -> Result<(), PropertyViolationError> {
-        // For each edge, we store the loops that pass it
-        let mut occupied: HashMap<EdgeID, Vec<LoopID>> = HashMap::new();
-        for loop_id in self.loops_ref.keys() {
-            for &edge in &self.loops_ref[loop_id].edges {
-                occupied.entry(edge).or_default().push(loop_id);
-            }
-        }
-
-        // Intersections are edges that are occupied exactly twice. It is not possible for an edge to be occupied more than twice.
-        // NOTE: An intersection exists on two half-edges, we only store the intersection at the lower ID half-edge
-        if occupied.values().any(|x| x.len() >= 3) {
-            info!("Invalid intersection: an edge is occupied by more than two loops.");
-            return Err(PropertyViolationError::UnknownError);
-        }
-
-        let intersection_markers: HashMap<EdgeID, [LoopID; 2]> = occupied
-            .into_iter()
-            .filter_map(|(edge, loops)| {
-                assert!(loops.len() <= 2);
-                if loops.len() == 2 && edge > self.mesh_ref.twin(edge) {
-                    Some((edge, [loops[0], loops[1]]))
-                } else {
-                    None
-                }
-            })
-            .collect();
-
-        // For each loop we find its intersections
-        let loop_to_intersection_markers: HashMap<LoopID, Vec<EdgeID>> = self
-            .loops_ref
-            .iter()
-            .map(|(loop_id, lewp)| {
-                (
-                    loop_id,
-                    lewp.edges
-                        .iter()
-                        .filter(|edge| intersection_markers.contains_key(edge))
-                        .copied()
-                        .collect_vec(),
-                )
-            })
-            .collect();
+    // Returns the loop structure vertex (intersection) of every crossing in the arrangement.
+    fn assign_loop_structure(
+        &mut self,
+        arrangement: &Arrangement,
+    ) -> Result<Vec<LoopIntersectionID>, PropertyViolationError> {
+        // Intersections are crossings of two loops inside a face. Multiple loops may pass through the same face,
+        // and loops are ordered along the edges they share. Thus, no three loops intersect at a single point.
+        let crossings = &arrangement.crossings;
 
         // If any loop has too few intersections (less than 4), we return an error
-        if loop_to_intersection_markers.values().any(|x| x.len() < 4) {
+        if arrangement.loop_crossings.values().any(|x| x.len() < 4) {
             return Err(PropertyViolationError::LoopHasTooFewIntersections);
         }
 
-        // For each intersection we find its adjacent intersections (should be 4, by following its associated (two) loops in all (two) directions.
-        let mut intersections = HashMap::new();
-        for (intersection_id, [l1, l2]) in intersection_markers {
-            let this_edge = intersection_id;
-            let twin_edge = self.mesh_ref.twin(this_edge);
-            let quad = self.mesh_ref.quad(this_edge);
+        // For each intersection we find its adjacent intersections (should be 4, by following its associated (two) loops in all (two) directions).
+        let mut intersections = Vec::with_capacity(crossings.len());
+        for (crossing_id, crossing) in crossings.iter().enumerate() {
+            let face = &arrangement.faces[&crossing.face];
+            let [a, b] = crossing.chords.map(|c| &face.chords[c]);
 
-            // Find the adjacent intersections in l1
-            let l1_next_intersection = Self::next(&loop_to_intersection_markers[&l1], this_edge);
-            let l1_prev_intersection = Self::prev(&loop_to_intersection_markers[&l1], this_edge);
+            let neighbors = |loop_id: LoopID| {
+                let list = &arrangement.loop_crossings[&loop_id];
+                let pos = list.iter().position(|&c| c == crossing_id).unwrap();
+                (
+                    list[(pos + 1) % list.len()],
+                    list[(pos + list.len() - 1) % list.len()],
+                )
+            };
+            let (a_next, a_prev) = neighbors(a.loop_id);
+            let (b_next, b_prev) = neighbors(b.loop_id);
 
-            // Find the adjacent intersections in l2
-            let l2_next_intersection = Self::next(&loop_to_intersection_markers[&l2], this_edge);
-            let l2_prev_intersection = Self::prev(&loop_to_intersection_markers[&l2], this_edge);
+            // We can order the intersections (counter-clockwise) based on the directions of the loops in the face
+            let da = [a.to[0] - a.from[0], a.to[1] - a.from[1]];
+            let db = [b.to[0] - b.from[0], b.to[1] - b.from[1]];
+            let ordered_adjacent_intersections = if da[0] * db[1] - da[1] * db[0] > 0. {
+                [
+                    (a.loop_id, a_next, Sign::Positive),
+                    (b.loop_id, b_next, Sign::Positive),
+                    (a.loop_id, a_prev, Sign::Negative),
+                    (b.loop_id, b_prev, Sign::Negative),
+                ]
+            } else {
+                [
+                    (a.loop_id, a_next, Sign::Positive),
+                    (b.loop_id, b_prev, Sign::Negative),
+                    (a.loop_id, a_prev, Sign::Negative),
+                    (b.loop_id, b_next, Sign::Positive),
+                ]
+            };
 
-            let mut l1_edges_prev = Self::prev(&self.loops_ref[l1].edges, this_edge);
-            let mut l1_edges_next = Self::next(&self.loops_ref[l1].edges, this_edge);
-            // Either the prev or next is the twin edge, go one step further.
-            if l1_edges_prev == twin_edge {
-                l1_edges_prev = Self::prev(&self.loops_ref[l1].edges, l1_edges_prev);
-            } else if l1_edges_next == twin_edge {
-                l1_edges_next = Self::next(&self.loops_ref[l1].edges, l1_edges_next);
-            }
-
-            let mut l2_edges_prev = Self::prev(&self.loops_ref[l2].edges, this_edge);
-            let mut l2_edges_next = Self::next(&self.loops_ref[l2].edges, this_edge);
-            // Either the prev or next is the twin edge, go one step further.
-            if l2_edges_prev == twin_edge {
-                l2_edges_prev = Self::prev(&self.loops_ref[l2].edges, l2_edges_prev);
-            } else if l2_edges_next == twin_edge {
-                l2_edges_next = Self::next(&self.loops_ref[l2].edges, l2_edges_next);
-            }
-
-            // We can order the intersections based on the local ordering of the edges in the loops
-            let ordered_adjacent_intersections = quad
+            if ordered_adjacent_intersections
                 .iter()
-                .filter_map(|&x| match x {
-                    x if x == l1_edges_next => Some((l1, l1_next_intersection, Sign::Positive)),
-                    x if x == l1_edges_prev => Some((l1, l1_prev_intersection, Sign::Negative)),
-                    x if x == l2_edges_next => Some((l2, l2_next_intersection, Sign::Positive)),
-                    x if x == l2_edges_prev => Some((l2, l2_prev_intersection, Sign::Negative)),
-                    _ => None,
-                })
-                .collect_vec();
-            if (ordered_adjacent_intersections.len() != 4)
-                || (ordered_adjacent_intersections
-                    .iter()
-                    .map(|x| x.1)
-                    .collect::<HashSet<_>>()
-                    .len()
-                    != 4)
+                .map(|x| x.1)
+                .collect::<HashSet<_>>()
+                .len()
+                != 4
             {
-                info!(
-                    "Invalid intersection: ordered adjacent intersections are not unique or not 4. {:?} ({:?})",
-                    ordered_adjacent_intersections, quad
+                debug!(
+                    "Invalid intersection: adjacent intersections are not unique. {:?}",
+                    ordered_adjacent_intersections
                 );
                 return Err(PropertyViolationError::UnknownError);
             }
 
-            assert!(ordered_adjacent_intersections.len() == 4);
-            assert!(
-                ordered_adjacent_intersections
-                    .iter()
-                    .map(|x| x.1)
-                    .collect::<HashSet<_>>()
-                    .len()
-                    == 4
-            );
-
-            if ordered_adjacent_intersections[0].0 == ordered_adjacent_intersections[1].0 {
-                warn!("[0].0 == [1].0: {:?}", ordered_adjacent_intersections[0].0);
-                return Err(PropertyViolationError::UnknownError);
-            }
-            assert!(ordered_adjacent_intersections[0].0 != ordered_adjacent_intersections[1].0);
-
-            if ordered_adjacent_intersections[1].0 == ordered_adjacent_intersections[2].0 {
-                warn!("[1].0 == [2].0: {:?}", ordered_adjacent_intersections[1].0);
-                return Err(PropertyViolationError::UnknownError);
-            }
-            assert!(ordered_adjacent_intersections[1].0 != ordered_adjacent_intersections[2].0);
-
-            if ordered_adjacent_intersections[2].0 == ordered_adjacent_intersections[3].0 {
-                warn!("[2].0 == [3].0: {:?}", ordered_adjacent_intersections[2].0);
-                return Err(PropertyViolationError::UnknownError);
-            }
-            assert!(ordered_adjacent_intersections[2].0 != ordered_adjacent_intersections[3].0);
-
-            if ordered_adjacent_intersections[3].0 == ordered_adjacent_intersections[0].0 {
-                warn!("[3].0 == [0].0: {:?}", ordered_adjacent_intersections[3].0);
-                return Err(PropertyViolationError::UnknownError);
-            }
-            assert!(ordered_adjacent_intersections[3].0 != ordered_adjacent_intersections[0].0);
-
-            // Add the four adjacent intersections
-            intersections.insert(
-                this_edge,
-                [
-                    ordered_adjacent_intersections[0],
-                    ordered_adjacent_intersections[1],
-                    ordered_adjacent_intersections[2],
-                    ordered_adjacent_intersections[3],
-                ],
-            );
+            intersections.push(ordered_adjacent_intersections);
         }
 
         // Create DCEL based on the intersections and loop regions
         // Construct all faces
-        let edge_id_to_index: HashMap<EdgeID, usize> = intersections
-            .keys()
-            .enumerate()
-            .map(|(i, &e)| (e, i))
-            .collect();
-
         let mut edges = intersections
             .iter()
-            .flat_map(|(&this, nexts)| nexts.iter().map(move |next| (this, next.1)))
+            .enumerate()
+            .flat_map(|(this, nexts)| nexts.iter().map(move |next| (this, next.1)))
             .collect_vec();
+        let mut remaining = edges.iter().copied().collect::<HashSet<_>>();
 
         let mut faces = vec![];
         while let Some(start) = edges.pop() {
+            if !remaining.remove(&start) {
+                continue;
+            }
             let mut counter = 0;
             let mut face = vec![start.0, start.1];
             loop {
                 let u = face[face.len() - 2];
                 let v = face[face.len() - 1];
                 // get all intersections that are adjacent to v
-                let adj = intersections[&v];
+                let adj = intersections[v];
                 let u_index = adj.iter().position(|&(_, x, _)| x == u).unwrap();
                 let w = adj[(u_index + 4 - 1) % 4].1;
-                edges.retain(|e| !(e.0 == v && e.1 == w));
+                remaining.remove(&(v, w));
                 if w == face[0] {
                     break;
                 }
@@ -469,111 +340,118 @@ impl Dual {
                 }
                 face.push(w);
             }
-            faces.push(face.iter().map(|&x| edge_id_to_index[&x]).collect_vec());
+            faces.push(face);
         }
 
-        if let Ok((douconel, vmap, _)) = LoopStructure::from(
+        let Ok((douconel, vmap, _)) = LoopStructure::from(
             &faces,
             &vec![Vector3D::new(0., 0., 0.); intersections.len()],
-        ) {
-            assert!(4 * douconel.vert_ids().len() == douconel.edge_ids().len());
-
-            let intersection_ids = intersections.keys().copied().collect_vec();
-            let vert_ids = douconel.vert_ids();
-            for vertex_id in vert_ids {
-                self.intersection_to_edge.insert(
-                    vertex_id,
-                    intersection_ids[vmap.id(&vertex_id).unwrap().to_owned()],
-                );
-            }
-            for edge_id in douconel.edge_ids() {
-                let Some([this, next]) = douconel.vertices(edge_id).collect_array::<2>() else {
-                    panic!("Expecting edge {edge_id:?} to have exactly two vertices");
-                };
-                let this = self.intersection_to_edge(this);
-                let next = self.intersection_to_edge(next);
-
-                let (loop_id, _, orientation) = intersections[&this]
-                    .iter()
-                    .find(|&(_, x, _)| *x == next)
-                    .unwrap()
-                    .to_owned();
-
-                self.loop_segments.insert(
-                    edge_id,
-                    LoopSegment {
-                        loop_id,
-                        orientation,
-                    },
-                );
-            }
-
-            self.loop_structure = douconel;
-        } else {
+        ) else {
             warn!("Failed to create loop structure from faces.");
             return Err(PropertyViolationError::UnknownError);
+        };
+        assert!(4 * douconel.vert_ids().len() == douconel.edge_ids().len());
+
+        let mut crossing_to_intersection = vec![LoopIntersectionID::default(); crossings.len()];
+        for vertex_id in douconel.vert_ids() {
+            let crossing_id = vmap.id(&vertex_id).unwrap().to_owned();
+            crossing_to_intersection[crossing_id] = vertex_id;
+            let crossing = &crossings[crossing_id];
+            let face = &arrangement.faces[&crossing.face];
+            self.intersections.insert(
+                vertex_id,
+                LoopIntersection {
+                    loops: crossing.chords.map(|c| face.chords[c].loop_id),
+                    face: crossing.face,
+                    position: Arrangement::to_3d(&self.mesh_ref, &face.sides, crossing.point),
+                },
+            );
+        }
+        for edge_id in douconel.edge_ids() {
+            let Some([this, next]) = douconel.vertices(edge_id).collect_array::<2>() else {
+                panic!("Expecting edge {edge_id:?} to have exactly two vertices");
+            };
+            let this = vmap.id(&this).unwrap().to_owned();
+            let next = vmap.id(&next).unwrap().to_owned();
+
+            let (loop_id, _, orientation) = intersections[this]
+                .iter()
+                .find(|&(_, x, _)| *x == next)
+                .unwrap()
+                .to_owned();
+
+            self.loop_segments.insert(
+                edge_id,
+                LoopSegment {
+                    loop_id,
+                    orientation,
+                },
+            );
         }
 
-        Ok(())
+        self.loop_structure = douconel;
+
+        Ok(crossing_to_intersection)
     }
 
-    fn assign_subsurfaces(&mut self) -> Result<(), PropertyViolationError> {
-        // All edges contained in loops can be considered blocked
-        let blocked = self
-            .loops_ref
-            .values()
-            .flat_map(|lewp| lewp.edges.iter().copied())
-            .collect::<HashSet<_>>();
-        // Then all connected components of the mesh that are not blocked are loop regions
-
-        let loop_regions = grapff::fluid::FluidGraph::new(|vertex: VertKey<INPUT>| {
-            self.mesh_ref
-                .neighbors(vertex)
-                .filter(|&neighbor| {
-                    !blocked.contains(
-                        &self
-                            .mesh_ref
-                            .edge_between_verts(vertex, neighbor)
-                            .unwrap()
-                            .0,
-                    )
-                })
-                .collect_vec()
-        })
-        .connected_components(&self.mesh_ref.vert_ids());
+    // Returns the loop region of every cell of the arrangement.
+    fn assign_subsurfaces(
+        &mut self,
+        arrangement: &Arrangement,
+        crossing_to_intersection: &[LoopIntersectionID],
+    ) -> Result<Vec<Option<LoopRegionID>>, PropertyViolationError> {
+        // The loops cut the faces of the mesh into cells. All connected components of cells are loop regions.
+        let (cell_components, component_count, vert_components) =
+            arrangement.components(&self.mesh_ref)?;
 
         // This number should be equal to the number of faces in the loop structure
-        if loop_regions.len() != self.loop_structure.face_ids().len() {
-            // warn!(
-            //     "Invalid number of loop regions: expected {}, got {}",
-            //     self.loop_structure.face_ids().len(),
-            //     loop_regions.len()
-            // );
+        if component_count != self.loop_structure.face_ids().len() {
             return Err(PropertyViolationError::UnknownError);
         }
+
+        let intersection_to_crossing: HashMap<LoopIntersectionID, usize> = crossing_to_intersection
+            .iter()
+            .enumerate()
+            .map(|(crossing, &intersection)| (intersection, crossing))
+            .collect();
 
         // Every loop segment should be part of exactly TWO connected components (on both sides)
         let mut segment_to_components: HashMap<LoopSegmentID, [usize; 2]> = HashMap::new();
         for &segment_id in &self.loop_structure.edge_ids() {
             // Loop segment should simply have only two connected components (one for each side)
-            // We do not check all its edges, but only the first one (since they should all be the same)
-            let arbitrary_edge = self.segment_to_edges_excl(segment_id)[0];
-            let Some([start, end]) = self.mesh_ref.vertices(arbitrary_edge).collect_array::<2>()
-            else {
-                panic!("Expecting edge {arbitrary_edge:?} to have exactly two vertices");
+            // We do not check all its parts, but only the first one (since they should all be the same)
+            let (start, end) = self.segment_to_endpoints(segment_id);
+            let first = match self.segment_to_orientation(segment_id) {
+                Sign::Positive => start,
+                Sign::Negative => end,
             };
-            let component1 = loop_regions
-                .iter()
-                .position(|cc| cc.contains(&start))
-                .unwrap();
-            let component2 = loop_regions
-                .iter()
-                .position(|cc| cc.contains(&end))
-                .unwrap();
-            segment_to_components.insert(segment_id, [component1, component2]);
+            let [cell1, cell2] = arrangement
+                .cells_after_crossing(
+                    self.segment_to_loop(segment_id),
+                    intersection_to_crossing[&first],
+                )
+                .ok_or(PropertyViolationError::UnknownError)?;
+            segment_to_components
+                .insert(segment_id, [cell_components[cell1], cell_components[cell2]]);
+        }
+
+        let mut component_to_verts: HashMap<usize, HashSet<VertID>> = HashMap::new();
+        for (vert, component) in vert_components {
+            component_to_verts
+                .entry(component)
+                .or_default()
+                .insert(vert);
+        }
+        let mut component_to_points: HashMap<usize, Vec<(FaceID, Vector3D)>> = HashMap::new();
+        for (cell, face, point) in arrangement.cell_centroids(&self.mesh_ref) {
+            component_to_points
+                .entry(cell_components[cell])
+                .or_default()
+                .push((face, point));
         }
 
         // For every loop region, get the connected component that is shared among its loop segments
+        let mut component_to_region = HashMap::new();
         for &face_id in &self.loop_structure.face_ids() {
             let mut loop_segments = self.loop_structure.edges(face_id);
             // Select an arbitrary loop segment
@@ -582,20 +460,26 @@ impl Dual {
             // Check whether all loop segments share the same connected component
             let component1_is_shared =
                 loop_segments.all(|segment| segment_to_components[&segment].contains(&component1));
+            let component = if component1_is_shared {
+                component1
+            } else {
+                component2
+            };
 
+            component_to_region.insert(component, face_id);
             self.loop_regions.insert(
                 face_id,
                 LoopRegion {
-                    verts: if component1_is_shared {
-                        loop_regions[component1].clone()
-                    } else {
-                        loop_regions[component2].clone()
-                    },
+                    verts: component_to_verts.remove(&component).unwrap_or_default(),
+                    points: component_to_points.remove(&component).unwrap_or_default(),
                 },
             );
         }
 
-        Ok(())
+        Ok(cell_components
+            .iter()
+            .map(|component| component_to_region.get(component).copied())
+            .collect())
     }
 
     fn assign_level_graphs(&mut self) {
@@ -703,7 +587,7 @@ impl Dual {
             let graph = &self.level_graphs.graphs[direction as usize];
             let mut topo_sort = graph.topological_sort().unwrap();
 
-            info!(
+            debug!(
                 "assign_levels: {direction} topological order over {} zones: {topo_sort:?}",
                 topo_sort.len()
             );
@@ -711,7 +595,7 @@ impl Dual {
             levels.insert(topo_sort.first().unwrap().to_owned(), 100_000usize);
 
             for node in topo_sort.clone() {
-                info!("assign_levels: forward pass visiting zone {node:?}");
+                debug!("assign_levels: forward pass visiting zone {node:?}");
                 if let Some(node_level) = levels.get(&node).cloned() {
                     for neighbor in graph.neighbors_undirected(node) {
                         match (
@@ -745,7 +629,7 @@ impl Dual {
             topo_sort.reverse();
 
             for node in topo_sort {
-                info!("assign_levels: backward pass visiting zone {node:?}");
+                debug!("assign_levels: backward pass visiting zone {node:?}");
                 if let Some(node_level) = levels.get(&node).cloned() {
                     for neighbor in graph.neighbors_undirected(node) {
                         match (
@@ -789,6 +673,456 @@ impl Dual {
         }
     }
 
+    /// Check whether removing the given loop results in a valid polycube loop structure, without rebuilding the
+    /// dual structure. Removing a loop merges the regions on both sides of each of its segments, and fuses the two
+    /// segments of every other loop that meet at one of its intersections. Following the paper, only the merged
+    /// regions have to be checked for conditions 1-4, and only the level graph of the axis of the loop for
+    /// condition 5. Runs in time linear in the size of the regions along the loop (plus a search in one level graph).
+    pub fn check_removal(&self, loop_id: LoopID) -> Result<(), PropertyViolationError> {
+        let structure = &self.loop_structure;
+        let on_loop = |segment: LoopSegmentID| self.segment_to_loop(segment) == loop_id;
+        let segments = structure
+            .edge_ids_iter()
+            .filter(|&segment| on_loop(segment))
+            .collect_vec();
+        if segments.is_empty() {
+            return Err(PropertyViolationError::UnknownError);
+        }
+
+        // Every other loop must keep enough intersections (as required when constructing the dual structure).
+        let mut intersection_count: HashMap<LoopID, usize> = HashMap::new();
+        let mut lost_count: HashMap<LoopID, usize> = HashMap::new();
+        for intersection in self.intersections.values() {
+            for other in intersection.loops {
+                *intersection_count.entry(other).or_default() += 1;
+            }
+            if intersection.loops.contains(&loop_id) {
+                for other in intersection.loops {
+                    if other != loop_id {
+                        *lost_count.entry(other).or_default() += 1;
+                    }
+                }
+            }
+        }
+        for (other, lost) in lost_count {
+            if intersection_count[&other] - lost < 4 {
+                return Err(PropertyViolationError::LoopHasTooFewIntersections);
+            }
+        }
+
+        // Condition 4. The k segments of the loop each merge two regions. The intersections on the loop disappear
+        // (V' = V - k), its segments disappear and the two segments of the other loop at each of its intersections
+        // are fused (E' = E - 2k). So V' - E' + F' = chi(M) holds if and only if F' = F - k, i.e., if no segment merges
+        // two regions that were already merged by other segments (otherwise the merged region is not a disk).
+        let faces = structure.face_ids();
+        let index: HashMap<LoopRegionID, usize> =
+            faces.iter().enumerate().map(|(i, &f)| (f, i)).collect();
+        let mut parent = (0..faces.len()).collect_vec();
+        fn find(parent: &mut [usize], mut x: usize) -> usize {
+            while parent[x] != x {
+                parent[x] = parent[parent[x]];
+                x = parent[x];
+            }
+            x
+        }
+        for &segment in &segments {
+            let twin = structure.twin(segment);
+            if segment.raw() > twin.raw() {
+                continue;
+            }
+            let a = find(&mut parent, index[&structure.face(segment)]);
+            let b = find(&mut parent, index[&structure.face(twin)]);
+            if a == b {
+                return Err(PropertyViolationError::RegionNotDisk);
+            }
+            parent[a] = b;
+        }
+
+        // Conditions 2 and 3, for every merged region: walk along its boundary, skipping the segments of the loop
+        // (continuing in the region on the other side), and fuse consecutive segments of the same loop.
+        let mut visited = HashSet::new();
+        for &segment in &segments {
+            let face = structure.face(segment);
+            let Some(start) = structure.edges(face).find(|&s| !on_loop(s)) else {
+                return Err(PropertyViolationError::FaceWithDegreeLessThanThree);
+            };
+            if visited.contains(&start) {
+                continue;
+            }
+            let mut boundary = vec![];
+            let mut current = start;
+            loop {
+                visited.insert(current);
+                boundary.push(current);
+                let mut next = structure.next(current);
+                while on_loop(next) {
+                    next = structure.next(structure.twin(next));
+                }
+                if next == start {
+                    break;
+                }
+                if boundary.len() > structure.nr_edges() {
+                    return Err(PropertyViolationError::UnknownError);
+                }
+                current = next;
+            }
+
+            // Fuse consecutive segments of the same loop (they meet at an intersection with the removed loop).
+            let mut labels = boundary
+                .iter()
+                .map(|&s| {
+                    (
+                        self.segment_to_loop(s),
+                        self.segment_to_direction(s),
+                        self.segment_to_orientation(s),
+                    )
+                })
+                .collect_vec();
+            labels.dedup_by_key(|label| label.0);
+            if labels.len() > 1 && labels.first().map(|l| l.0) == labels.last().map(|l| l.0) {
+                labels.pop();
+            }
+            if labels.len() < 3 {
+                return Err(PropertyViolationError::FaceWithDegreeLessThanThree);
+            }
+            let mut seen = HashSet::new();
+            if labels
+                .iter()
+                .any(|&(_, direction, orientation)| !seen.insert((direction, orientation)))
+            {
+                return Err(PropertyViolationError::InvalidFaceBoundary);
+            }
+        }
+
+        // Condition 5. Only the zones of the axis of the loop change: the zones on both sides of the loop merge, i.e.,
+        // the edge(s) of the loop in the level graph are contracted. This creates a cycle if and only if there is
+        // another path between the two zones (the graph is acyclic, so only from the negative to the positive side).
+        let direction = self.loops_ref[loop_id].direction;
+        let graph = &self.level_graphs.graphs[direction as usize];
+        let Some(&(from, to, _)) = graph.edges_ref().iter().find(|&&(_, _, l)| l == loop_id) else {
+            return Err(PropertyViolationError::UnknownError);
+        };
+        let mut stack = vec![from];
+        let mut reached = HashSet::from([from]);
+        while let Some(zone) = stack.pop() {
+            for (next, l) in graph.outgoing(zone) {
+                if l == loop_id {
+                    continue;
+                }
+                if next == to {
+                    return Err(PropertyViolationError::CyclicDependency);
+                }
+                if reached.insert(next) {
+                    stack.push(next);
+                }
+            }
+        }
+
+        Ok(())
+    }
+
+    /// The loop region containing the point at parameter `t` (from root to tip) along the half-edge, on the side of
+    /// its face. The point must not lie on a loop.
+    #[must_use]
+    pub fn region_on_edge(&self, edge: EdgeID, t: f64) -> Option<LoopRegionID> {
+        let locator = self.locator.as_ref()?;
+        let cell = locator
+            .arrangement
+            .locate_on_edge(&self.mesh_ref, edge, t)?;
+        locator.cell_regions.get(cell).copied().flatten()
+    }
+
+    /// The input mesh refined along the loops (see `RefinedMesh`), or `None` if not available (no locator, e.g., after
+    /// deserialization) or in degenerate configurations.
+    #[must_use]
+    pub fn refined_mesh(&self) -> Option<RefinedMesh> {
+        let locator = self.locator.as_ref()?;
+        locator
+            .refined
+            .get_or_init(|| self.build_refined_mesh())
+            .clone()
+    }
+
+    /// Drop the cached refined mesh (to save memory, e.g., for the many solutions of an evolution).
+    pub fn release_refined_mesh(&mut self) {
+        if let Some(locator) = &self.locator
+            && locator.refined.get().is_some()
+        {
+            self.locator = Some(Arc::new(RegionLocator {
+                arrangement: locator.arrangement.clone(),
+                cell_regions: locator.cell_regions.clone(),
+                refined: std::sync::OnceLock::new(),
+            }));
+        }
+    }
+
+    fn build_refined_mesh(&self) -> Option<RefinedMesh> {
+        let locator = self.locator.as_ref()?;
+        let Some(refinement) = locator.arrangement.refine(&self.mesh_ref) else {
+            warn!("refined_mesh: the faces cannot be split into their cells");
+            return None;
+        };
+        let (mesh, vmap, fmap) = Mesh::<INPUT>::from(&refinement.faces, &refinement.positions)
+            .inspect_err(|e| warn!("refined_mesh: the refined mesh is invalid: {e:?}"))
+            .ok()?;
+        let vertex = |i: usize| vmap.key(i).copied();
+        let mut face_regions = HashMap::new();
+        let mut face_pieces: HashMap<FaceID, Vec<FaceID>> = HashMap::new();
+        for (i, (&cell, &input)) in refinement
+            .face_cells
+            .iter()
+            .zip(&refinement.face_input)
+            .enumerate()
+        {
+            let face = *fmap.key(i)?;
+            let Some(region) = locator.cell_regions.get(cell).copied().flatten() else {
+                warn!("refined_mesh: cell {cell} is not in a loop region");
+                return None;
+            };
+            face_regions.insert(face, region);
+            face_pieces.entry(input).or_default().push(face);
+        }
+        let on_loop = (0..refinement.positions.len())
+            .filter(|&i| refinement.on_loop[i])
+            .filter_map(vertex)
+            .collect();
+        let vertex_map = (0..refinement.positions.len())
+            .filter_map(|i| Some((refinement.vertex_input[i]?, vertex(i)?)))
+            .collect();
+        Some(RefinedMesh {
+            mesh,
+            face_regions,
+            on_loop,
+            vertex_map,
+            face_pieces,
+        })
+    }
+
+    /// Whether the dual structure can locate points in loop regions (not available after deserialization).
+    #[must_use]
+    pub fn has_locator(&self) -> bool {
+        self.locator.is_some()
+    }
+
+    /// Whether a new loop of the given axis may enter the loop region of `entry` through (the segment of) `entry`
+    /// and leave it through `exit` (both loop-segment half-edges of the region), such that the two parts of the
+    /// region satisfy conditions 2 and 3 (the paper's filtered graph G^V). Loops of the same axis cannot be crossed.
+    /// The region lies to the left of its half-edges (counter-clockwise). The loop splits it into a part to the right
+    /// of the loop (the boundary from `entry` to `exit`), and a part to the left of the loop (from `exit` to `entry`).
+    /// A part to the left of a loop lies on its negative side (it gets label (axis, positive), as for the existing
+    /// loops), the part to the right on its positive side.
+    #[must_use]
+    pub fn valid_exit(&self, entry: LoopSegmentID, exit: LoopSegmentID, axis: Direction) -> bool {
+        let structure = &self.loop_structure;
+        if entry == exit
+            || structure.face(entry) != structure.face(exit)
+            || self.segment_to_direction(entry) == axis
+            || self.segment_to_direction(exit) == axis
+        {
+            return false;
+        }
+        let label = |segment| {
+            (
+                self.segment_to_direction(segment),
+                self.segment_to_orientation(segment),
+            )
+        };
+        // Walk from `from` to `to` (inclusive) along the boundary, and check that no segment has the given label.
+        let arc_avoids = |from: LoopSegmentID, to: LoopSegmentID, forbidden: (Direction, Sign)| {
+            let mut current = from;
+            for _ in 0..=structure.nr_edges() {
+                if label(current) == forbidden {
+                    return false;
+                }
+                if current == to {
+                    return true;
+                }
+                current = structure.next(current);
+            }
+            false
+        };
+        arc_avoids(entry, exit, (axis, Sign::Negative))
+            && arc_avoids(exit, entry, (axis, Sign::Positive))
+    }
+
+    // The nodes reachable by a new loop of the given axis after entering a region through `entry`: the twins of the
+    // valid exits.
+    fn valid_successors(&self, entry: LoopSegmentID, axis: Direction) -> Vec<LoopSegmentID> {
+        let structure = &self.loop_structure;
+        structure
+            .edges(structure.face(entry))
+            .filter(|&exit| self.valid_exit(entry, exit, axis))
+            .map(|exit| structure.twin(exit))
+            .collect()
+    }
+
+    // Breadth-first search over the valid transitions from `start` (excluding nodes in `forbidden` regions), returns
+    // the predecessor of every reached node.
+    fn valid_bfs(
+        &self,
+        start: LoopSegmentID,
+        axis: Direction,
+        forbidden: &HashSet<LoopRegionID>,
+        stop: impl Fn(LoopSegmentID) -> bool,
+        cache: &mut HashMap<LoopSegmentID, Vec<LoopSegmentID>>,
+    ) -> (HashMap<LoopSegmentID, LoopSegmentID>, Option<LoopSegmentID>) {
+        let structure = &self.loop_structure;
+        let mut previous = HashMap::new();
+        let mut queue = VecDeque::from([start]);
+        let mut seen = HashSet::from([start]);
+        while let Some(node) = queue.pop_front() {
+            let successors = cache
+                .entry(node)
+                .or_insert_with(|| self.valid_successors(node, axis))
+                .clone();
+            for next in successors {
+                if stop(next) {
+                    previous.insert(next, node);
+                    return (previous, Some(next));
+                }
+                if forbidden.contains(&structure.face(next)) {
+                    continue;
+                }
+                if seen.insert(next) {
+                    previous.insert(next, node);
+                    queue.push_back(next);
+                }
+            }
+        }
+        (previous, None)
+    }
+
+    /// Topological structures of valid new loops of the given axis that start in the given region (the paper's
+    /// strategy, Section 4.1): for other regions R, the cycle through the start region and R that visits as few
+    /// regions as possible. A cycle is given by the loop-segment half-edges through which it enters its regions (in
+    /// order; it starts by leaving the start region, and ends by entering it again). Every region is visited at most
+    /// once, and every cycle crosses at least four segments. At most `limit` cycles are returned, for regions R chosen
+    /// uniformly at random (not the shortest cycles: loops around long features need long cycles).
+    #[must_use]
+    pub fn valid_cycles(
+        &self,
+        start: LoopRegionID,
+        axis: Direction,
+        limit: usize,
+    ) -> Vec<Vec<LoopSegmentID>> {
+        let structure = &self.loop_structure;
+        let mut cycles: Vec<Vec<LoopSegmentID>> = vec![];
+        let mut seen = HashSet::new();
+        let path_to = |previous: &HashMap<LoopSegmentID, LoopSegmentID>,
+                       from: LoopSegmentID,
+                       to: LoopSegmentID| {
+            let mut path = vec![to];
+            let mut current = to;
+            while current != from {
+                current = previous[&current];
+                path.push(current);
+            }
+            path.reverse();
+            path
+        };
+        // Shortest paths from (having entered the start region through) every entry to all regions.
+        let mut cache = HashMap::new();
+        let mut candidates = vec![];
+        let mut searches = vec![];
+        for entry in structure.edges(start).collect_vec() {
+            if self.segment_to_direction(entry) == axis {
+                continue;
+            }
+            let (previous, _) =
+                self.valid_bfs(entry, axis, &HashSet::from([start]), |_| false, &mut cache);
+            let mut targets: HashMap<LoopRegionID, LoopSegmentID> = HashMap::new();
+            // BFS order is not kept by the map; pick the node with the shortest path for every region.
+            let mut lengths: HashMap<LoopSegmentID, usize> = HashMap::from([(entry, 0)]);
+            fn depth(
+                node: LoopSegmentID,
+                previous: &HashMap<LoopSegmentID, LoopSegmentID>,
+                lengths: &mut HashMap<LoopSegmentID, usize>,
+            ) -> usize {
+                if let Some(&d) = lengths.get(&node) {
+                    return d;
+                }
+                let d = depth(previous[&node], previous, lengths) + 1;
+                lengths.insert(node, d);
+                d
+            }
+            for &node in previous.keys() {
+                let length = depth(node, &previous, &mut lengths);
+                let region = structure.face(node);
+                if targets
+                    .get(&region)
+                    .is_none_or(|&best| lengths[&best] > length)
+                {
+                    targets.insert(region, node);
+                }
+            }
+            for (&region, &node) in &targets {
+                if region != start {
+                    candidates.push((searches.len(), node));
+                }
+            }
+            searches.push((entry, previous));
+        }
+        candidates.shuffle(&mut rand::rng());
+        for (search, node) in candidates {
+            if cycles.len() >= limit {
+                break;
+            }
+            let (entry, previous) = &searches[search];
+            let (entry, region) = (*entry, structure.face(node));
+            {
+                let there = path_to(previous, entry, node);
+                // Back to the start region (entering it through `entry`), avoiding the regions visited so far.
+                let forbidden = there
+                    .iter()
+                    .map(|&n| structure.face(n))
+                    .filter(|&r| r != start)
+                    .collect::<HashSet<_>>();
+                let mut forbidden_back = forbidden.clone();
+                forbidden_back.remove(&region);
+                forbidden_back.insert(start);
+                let (back_previous, found) =
+                    self.valid_bfs(node, axis, &forbidden_back, |n| n == entry, &mut cache);
+                if found.is_none() {
+                    continue;
+                }
+                let back = path_to(&back_previous, node, entry);
+                // The cycle: entry, ..., node, ..., (entry again, omitted).
+                let mut cycle = there;
+                cycle.extend_from_slice(&back[1..back.len() - 1]);
+                let regions = cycle.iter().map(|&n| structure.face(n)).collect_vec();
+                if cycle.len() < 4 || regions.iter().unique().count() != regions.len() {
+                    continue;
+                }
+                if seen.insert(cycle.clone()) {
+                    cycles.push(cycle);
+                }
+            }
+        }
+        cycles
+    }
+
+    /// All loops that can be removed (see `check_removal`).
+    /// The intersections of the given loop: the mesh face of every intersection, and the loop it crosses there.
+    #[must_use]
+    pub fn intersections_of(&self, loop_id: LoopID) -> Vec<(FaceID, LoopID)> {
+        self.intersections
+            .values()
+            .filter_map(|intersection| match intersection.loops {
+                [a, b] if a == loop_id => Some((intersection.face, b)),
+                [a, b] if b == loop_id => Some((intersection.face, a)),
+                _ => None,
+            })
+            .collect()
+    }
+
+    #[must_use]
+    pub fn removable_loops(&self) -> Vec<LoopID> {
+        self.loops_ref
+            .keys()
+            .filter(|&loop_id| self.check_removal(loop_id).is_ok())
+            .collect()
+    }
+
     fn verify_properties(&self) -> Result<(), PropertyViolationError> {
         // Definition 3.2. An oriented loop structure L is a polycube loop structure if:
         // 1. No three loops intersect at a single point.
@@ -825,7 +1159,15 @@ impl Dual {
             }
         }
 
-        // 4. must be verified: TODO
+        // Verify 4.
+        // The loops form a graph embedded on the surface (intersections and segments) that cuts the surface into the
+        // loop regions. By additivity of the Euler characteristic, chi(M) = V - E + sum of chi(R) over all regions R.
+        // Every region (a connected surface with at least one boundary curve) has chi(R) <= 1, with equality if and
+        // only if it is a disk. So all regions are disks if and only if V - E + F = chi(M). Every loop is part of the
+        // graph, as loops with too few intersections were already rejected.
+        if euler_characteristic(&self.loop_structure) != euler_characteristic(&self.mesh_ref) {
+            return Err(PropertyViolationError::RegionNotDisk);
+        }
 
         // Verify 5.
         for graph in &self.level_graphs.graphs {

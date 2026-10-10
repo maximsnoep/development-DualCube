@@ -1,13 +1,18 @@
 use crate::{Float, Grapff, ZERO};
 use core::hash::Hash;
-use itertools::Itertools;
 use petgraph::algo::tarjan_scc;
 use petgraph::{Directed, Graph, graph::NodeIndex};
+use rustc_hash::FxHashMap as HashMap;
 use serde::{Deserialize, Serialize};
-use std::collections::HashMap;
+use std::sync::{Arc, OnceLock};
 
-// Graph struct, that builds an underlying Petgraph with helper functions for various graph algorithms, such as, shortest path, shortest cycle, connected components, etc.
-// Also contains functionality to transform a graph into a modified graph. (e.g., filtering edges or vertices)
+mod landmarks;
+pub use landmarks::Landmarks;
+
+// Number of landmarks for the A* lower bounds (see `FixedGraph::landmarks`).
+const LANDMARKS: usize = 8;
+
+// Graph struct, that builds an underlying Petgraph with helper functions for various graph algorithms, such as, shortest path, connected components, etc.
 #[derive(Default, Clone, Debug, Serialize, Deserialize)]
 pub struct FixedGraph<V: Eq + PartialEq + Hash, E> {
     petgraph: Graph<V, E, Directed>,
@@ -15,6 +20,19 @@ pub struct FixedGraph<V: Eq + PartialEq + Hash, E> {
     edge_to_weight: HashMap<(V, V), E>,
     nodes: Vec<V>,
     edges: Vec<(V, V, E)>,
+    // Lazily computed landmark distance tables (see `landmarks`).
+    #[serde(skip)]
+    landmarks: OnceLock<Arc<Landmarks>>,
+}
+
+impl<V: Eq + PartialEq + Hash + Default + Copy, E: Copy + Into<f64>> FixedGraph<V, E> {
+    /// Landmark lower bounds on the shortest-path distances in this graph (edge weights must be non-negative).
+    /// Computed once (on first use) and shared by clones of the graph.
+    pub fn landmarks(&self) -> Arc<Landmarks> {
+        self.landmarks
+            .get_or_init(|| Arc::new(Landmarks::new(&self.petgraph, LANDMARKS)))
+            .clone()
+    }
 }
 
 impl<V: Eq + PartialEq + Hash + Default + Copy, E: Copy> FixedGraph<V, E> {
@@ -39,7 +57,14 @@ impl<V: Eq + PartialEq + Hash + Default + Copy, E: Copy> FixedGraph<V, E> {
             edge_to_weight,
             nodes,
             edges,
+            landmarks: OnceLock::new(),
         }
+    }
+
+    /// Dense index of a node (as used by `Landmarks`).
+    #[must_use]
+    pub fn node_index(&self, node: &V) -> Option<usize> {
+        self.node_to_index.get(node).map(|index| index.index())
     }
 
     #[must_use]
@@ -52,50 +77,19 @@ impl<V: Eq + PartialEq + Hash + Default + Copy, E: Copy> FixedGraph<V, E> {
         self.edges.clone()
     }
 
+    /// Borrowed view of all edges (avoids the clone in [`Self::edges`]).
     #[must_use]
-    pub fn filter_edges(&self, predicate: impl Fn((&V, &V)) -> bool) -> Self {
-        let nodes = self.nodes.clone();
-        let edges = self
-            .edges
-            .iter()
-            .filter(|(from, to, _)| predicate((from, to)))
-            .copied()
-            .collect_vec();
-        Self::from(nodes, edges)
+    pub fn edges_ref(&self) -> &[(V, V, E)] {
+        &self.edges
     }
 
-    #[must_use]
-    pub fn filter_nodes(&self, predicate: impl Fn(&V) -> bool) -> Self {
-        let nodes = self
-            .nodes
-            .iter()
-            .filter(|&&node| predicate(&node))
-            .copied()
-            .collect_vec();
-        let edges = self
-            .edges
-            .iter()
-            .filter(|(from, to, _)| predicate(from) && predicate(to))
-            .copied()
-            .collect_vec();
-        Self::from(nodes, edges)
-    }
-
-    pub fn extend(&mut self, nodes: &[V], edges: &[(V, V, E)]) {
-        let extra_node_to_index: HashMap<V, NodeIndex> = nodes
-            .iter()
-            .map(|&node| (node, self.petgraph.add_node(node)))
-            .collect();
-        self.node_to_index.extend(extra_node_to_index);
-
-        let extra_edges_indexed = edges
-            .iter()
-            .map(|(from, to, w)| (self.node_to_index[from], self.node_to_index[to], w));
-        self.petgraph.extend_with_edges(extra_edges_indexed);
-
-        self.edges.extend_from_slice(edges);
-        self.edge_to_weight
-            .extend(edges.iter().map(|&(from, to, weight)| ((from, to), weight)));
+    /// Outgoing neighbors of `a` together with the edge weight, without allocating and without
+    /// an extra hash lookup per neighbor (the weight is read from the petgraph edge).
+    pub fn outgoing(&self, a: V) -> impl Iterator<Item = (V, E)> + '_ {
+        use petgraph::visit::EdgeRef;
+        self.petgraph
+            .edges(self.node_to_index[&a])
+            .map(|e| (self.petgraph[e.target()], *e.weight()))
     }
 
     #[must_use]
@@ -116,10 +110,6 @@ impl<V: Eq + PartialEq + Hash + Default + Copy, E: Copy> FixedGraph<V, E> {
         self.node_to_index.contains_key(&a)
     }
 
-    pub fn edge_exists(&self, a: V, b: V) -> bool {
-        self.directed_edge_exists(a, b) || self.directed_edge_exists(b, a)
-    }
-
     pub fn neighbors(&self, a: V) -> Vec<V> {
         self.petgraph
             .neighbors(self.node_to_index[&a])
@@ -132,35 +122,6 @@ impl<V: Eq + PartialEq + Hash + Default + Copy, E: Copy> FixedGraph<V, E> {
             .neighbors_undirected(self.node_to_index[&a])
             .map(|index| self.index_to_node(index).unwrap().to_owned())
             .collect()
-    }
-
-    // pub fn shortest_cycle<W: Measure + Copy + FloatCore, F: Fn(E) -> W>(&self, a: NodeIndex, measure: &F) -> Option<Vec<NodeIndex>> {
-    //     self.petgraph
-    //         .neighbors(a)
-    //         .map(|b| (a, b))
-    //         .filter_map(|(a, b)| {
-    //             let extra = measure(self.get_weight(a, b));
-    //             let path = self.shortest_path(b, a, measure);
-    //             path.map(|(cost, path)| (path, cost + extra))
-    //         })
-    //         .min_by_key(|(_, cost)| OrderedFloat(cost.to_owned()))
-    //         .map(|(path, _)| path)
-    // }
-
-    pub fn shortest_cycle_edge<F: Fn(E) -> Float>(
-        &self,
-        (a, b): (V, V),
-        measure: &F,
-    ) -> Option<(Float, Vec<V>)> {
-        let path = self.shortest_path(b, a, measure);
-        path.map(|(cost, path)| (path, cost))
-    }
-
-    #[must_use]
-    pub fn get_weight(&self, a: NodeIndex, b: NodeIndex) -> E {
-        let from = *self.index_to_node(a).unwrap();
-        let to = *self.index_to_node(b).unwrap();
-        self.get_directed_weight(from, to).unwrap()
     }
 
     #[must_use]
@@ -218,8 +179,18 @@ impl<T: Eq + Hash + Clone + Copy + Default, E: Copy> Grapff<T, E> for FixedGraph
         Some((path_nodes, cost))
     }
 
-    fn connected_component(&self, _v: T) -> std::collections::HashSet<T> {
-        todo!()
+    // The nodes reachable from `v` along the edges (breadth-first).
+    fn connected_component(&self, v: T) -> std::collections::HashSet<T> {
+        let mut seen = std::collections::HashSet::from([v]);
+        let mut queue = std::collections::VecDeque::from([v]);
+        while let Some(node) = queue.pop_front() {
+            for next in self.neighbors(node) {
+                if seen.insert(next) {
+                    queue.push_back(next);
+                }
+            }
+        }
+        seen
     }
 
     fn connected_components(&self, _: &[T]) -> Vec<std::collections::HashSet<T>> {

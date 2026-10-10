@@ -1,4 +1,5 @@
 use bimap::BiHashMap;
+use rustc_hash::FxBuildHasher;
 use serde::{Deserialize, Serialize};
 use slotmap::DefaultKey;
 use slotmap::SecondaryMap;
@@ -33,6 +34,14 @@ impl<K, M> PartialOrd for Key<K, M> {
 impl<K, M> std::fmt::Debug for Key<K, M> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(f, "Idx({:?})", self.raw)
+    }
+}
+
+// (For messages: the index of the element, e.g., "#12".)
+impl<K, M> std::fmt::Display for Key<K, M> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        use slotmap::Key as _;
+        write!(f, "#{}", self.raw.data().as_ffi() & 0xffff_ffff)
     }
 }
 
@@ -188,7 +197,7 @@ where
     K: Eq + Hash,
     M: Eq + Hash,
 {
-    map: BiHashMap<usize, Key<K, M>>,
+    map: BiHashMap<usize, Key<K, M>, FxBuildHasher, FxBuildHasher>,
     _marker: PhantomData<(K, M)>,
 }
 impl<K, M> IdMap<K, M>
@@ -199,7 +208,7 @@ where
     #[must_use]
     pub fn new() -> Self {
         Self {
-            map: BiHashMap::new(),
+            map: BiHashMap::with_hashers(FxBuildHasher, FxBuildHasher),
             _marker: PhantomData,
         }
     }

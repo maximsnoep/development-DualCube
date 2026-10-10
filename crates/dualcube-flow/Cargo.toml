@@ -2,6 +2,7 @@
 name = "dualcube-flow"
 version = "0.1.0"
 edition = "2024"
+license.workspace = true
 
 [lib]
 name = "dualcube_flow"
@@ -10,9 +11,6 @@ name = "dualcube_flow"
 dualcube-types = { path = "../dualcube-types" }
 grapff = { path = "../grapff" }
 mehsh = { path = "../mehsh" }
-num-complex = "0.4"
-orx-parallel = "3.4.0"
-rand = "0.10.1"
 slotmap = "1.0.7"
 
 [lints]

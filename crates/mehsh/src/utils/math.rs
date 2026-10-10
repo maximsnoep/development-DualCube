@@ -19,5 +19,9 @@ where
     let (sum, count) = list.fold((T::default(), 0.0), |(sum, count), elem| {
         (sum + elem, count + 1.0)
     });
-    sum / count
+    if count == 0.0 {
+        T::default()
+    } else {
+        sum / count
+    }
 }

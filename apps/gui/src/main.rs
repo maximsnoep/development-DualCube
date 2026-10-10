@@ -29,6 +29,7 @@ fn main() {
         .init_resource::<SolutionResource>()
         .insert_resource(UiScale(1.0)) // no UI scaling
         .insert_resource(GlobalAmbientLight {
+            #[allow(unused_qualifications)]
             color: bevy::color::Color::WHITE,
             brightness: 1.0,
             ..Default::default()
@@ -47,7 +48,13 @@ fn main() {
                 })
                 .set(LogPlugin {
                     level: Level::TRACE,
-                    filter: "info,dualcube=debug".to_string(),
+                    // Quiet in release builds (`RUST_LOG` overrides this).
+                    filter: if cfg!(debug_assertions) {
+                        "info,dualcube=debug"
+                    } else {
+                        "warn"
+                    }
+                    .to_string(),
                     ..default()
                 }),
         )
@@ -78,5 +85,11 @@ fn main() {
             controls::ControlsPlugin,
             render::RenderPlugin,
         ))
+        .add_systems(Startup, maximize)
         .run();
+}
+
+// Start maximized (a regular window with its borders, filling the screen).
+fn maximize(mut window: Single<'_, '_, &mut Window>) {
+    window.set_maximized(true);
 }

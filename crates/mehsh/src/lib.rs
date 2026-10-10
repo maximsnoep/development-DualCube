@@ -10,6 +10,7 @@ pub mod mesh {
     pub mod algo {
         pub mod projection;
         pub mod refinement;
+        pub mod remesh;
         pub mod triangulate;
         pub mod location {
             pub mod face;
@@ -19,6 +20,8 @@ pub mod mesh {
 }
 
 pub mod integrations {
+    pub mod file;
+    pub mod input;
     #[cfg(feature = "obj")]
     pub mod obj;
     #[cfg(feature = "stl")]
@@ -35,6 +38,7 @@ pub mod utils {
 pub mod prelude {
     pub use crate::define_tag;
     pub use crate::mesh::algo::location::{face::FaceLocation, vert::VertLocation};
+    pub use crate::mesh::algo::remesh::{RemeshParams, RemeshReport};
     pub use crate::mesh::connectivity::{
         EDGE, EdgeKey, FACE, FaceKey, HasEdges, HasFaces, HasNeighbors, HasNormal, HasPosition,
         HasRing, HasSize, HasVertices, Mesh, MeshError, SetPosition, Tag, VERT, VertKey,

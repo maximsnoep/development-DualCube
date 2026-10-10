@@ -6,17 +6,8 @@ use crate::render::Objects;
 use crate::render::store::MeshProperties;
 use bevy::prelude::*;
 use dualcube::prelude::*;
+use std::collections::BTreeSet;
 use std::sync::Arc;
-
-/// The phases of the polycube pipeline (used to stop the pipeline early).
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum Phase {
-    None,
-    Loops,
-    Dual,
-    Layout,
-    Polycube,
-}
 
 #[derive(Resource, Debug, Clone)]
 pub struct Configuration {
@@ -24,39 +15,42 @@ pub struct Configuration {
 
     pub unit: bool,
     pub omega: usize,
-    pub iterations: usize,
-    pub pool1: usize,
-    pub pool2: usize,
+    /// Show the paths of the layout smoothed (see `render::refresh`).
+    pub smooth_paths: bool,
+    /// The width of the loops (drawn as bands on the model), as a fraction of the diagonal of its bounding box.
+    pub loop_width: f64,
 
-    pub raycasted: Option<[EdgeID; 2]>,
-    pub selected: Option<[EdgeID; 2]>,
+    /// The format of the exported figures, and whether they are labelled (see `Job::export_figures`).
+    pub figure_format: FigureFormat,
+    pub figure_label: bool,
+
+    /// The criterion used to compare solutions (initialization, evolution, corner optimization).
+    pub quality: QualityParams,
+    /// The parameters of the evolutions: of the loops with the mutations switched on per phase (see
+    /// `EvolutionParams::enabled`); of the layout with all mutations on, and the switched-off ones listed separately (by
+    /// name, see `LiveSettings`). Both can be changed while an evolution runs.
+    pub evolution: EvolutionParams,
+    pub layout_evolution: LayoutEvolutionParams,
+    pub layout_disabled: BTreeSet<String>,
+    /// The optimization (see `Solution::optimize`): generations per cycle of the loops and of the layout, and after how
+    /// many generations without improvement it moves on to the next phase (see `LiveSettings::advance_after`).
+    pub loop_generations: usize,
+    pub layout_generations: usize,
+    pub advance_after: usize,
 
     pub loop_anchors: Vec<[EdgeID; 2]>,
 
-    /// Reserved (currently unused).
-    #[allow(dead_code)]
-    pub automatic: bool,
-
     pub interactive_mode: InteractiveMode,
 
-    pub window_shows_object: [Objects; 3],
+    pub window_shows_object: [Objects; 2],
 
     pub camera_rotate_sensitivity: f32,
     pub camera_translate_sensitivity: f32,
     pub camera_zoom_sensitivity: f32,
-    /// Reserved (currently unused).
-    #[allow(dead_code)]
-    pub automatic_rotation_camera: bool,
 
     pub camera_up: Vec3,
 
-    pub stop: Phase,
-
     pub clear_color: [u8; 3],
-
-    pub fields_params: FieldParams,
-    pub graph_params: GraphParams,
-    pub flow_graph_top_percent: f32,
 }
 
 impl Default for Configuration {
@@ -64,23 +58,33 @@ impl Default for Configuration {
         Self {
             direction: Direction::X,
 
-            unit: true,
+            unit: false,
             omega: 5,
-            iterations: 10,
-            pool1: 10,
-            pool2: 30,
+            smooth_paths: false,
+            loop_width: 0.006,
+
+            figure_format: FigureFormat::Pdf,
+            figure_label: false,
+
+            quality: QualityParams::default(),
+            // Starts with initialization (see `LoopPhase`).
+            evolution: EvolutionParams {
+                phase: LoopPhase::Initialization,
+                ..EvolutionParams::default()
+            },
+            // All mutations of the layout on (the adaptive selection chooses among them).
+            layout_evolution: LayoutEvolutionParams::default(),
+            layout_disabled: BTreeSet::new(),
+            loop_generations: CoupledParams::default().loop_generations,
+            layout_generations: CoupledParams::default().layout_generations,
+            advance_after: 20,
 
             loop_anchors: vec![],
 
             camera_up: Vec3::Y,
 
-            stop: Phase::None,
-
-            raycasted: None,
-            selected: None,
-            automatic: false,
             interactive_mode: InteractiveMode::None,
-            window_shows_object: [Objects::PolycubeMap, Objects::QuadMesh, Objects::Polycube],
+            window_shows_object: [Objects::Polycube, Objects::PolycubeMap],
             clear_color: if cfg!(feature = "light_mode") {
                 [255, 255, 255]
             } else {
@@ -89,22 +93,43 @@ impl Default for Configuration {
             camera_rotate_sensitivity: 0.2,
             camera_translate_sensitivity: 2.,
             camera_zoom_sensitivity: 0.2,
-            automatic_rotation_camera: true,
-
-            fields_params: FieldParams::default(),
-            graph_params: GraphParams::default(),
-            flow_graph_top_percent: 20.0,
         }
+    }
+}
+
+/// The format of the exported figures.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum FigureFormat {
+    Pdf,
+    Svg,
+    Png,
+}
+
+impl FigureFormat {
+    pub const ALL: [Self; 3] = [Self::Pdf, Self::Svg, Self::Png];
+
+    pub const fn extension(self) -> &'static str {
+        match self {
+            Self::Pdf => "pdf",
+            Self::Svg => "svg",
+            Self::Png => "png",
+        }
+    }
+}
+
+impl std::fmt::Display for FigureFormat {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}", self.extension())
     }
 }
 
 /// The input mesh with its lookup structures and per-axis flow graphs.
 #[derive(Default, Debug, Clone, Resource)]
 pub struct InputResource {
+    /// The name of the model (its file name, without the extension).
+    pub name: String,
     pub mesh: Arc<mehsh::prelude::Mesh<INPUT>>,
     pub properties: MeshProperties,
-    #[allow(dead_code)]
-    pub vertex_lookup: VertLocation<INPUT>,
     pub triangle_lookup: FaceLocation<INPUT>,
 }
 
@@ -113,17 +138,15 @@ impl InputResource {
         if mesh.nr_verts() == 0 {
             return InputResource::default();
         }
-        let vertex_lookup = mesh.kdtree();
         let triangle_lookup = mesh.bvh();
 
         let mut properties = MeshProperties::default();
         (properties.scale, properties.translation) = mesh.scale_translation();
-        properties.source = String::from("im blue dabadee dabada");
 
         Self {
+            name: String::new(),
             mesh,
             properties,
-            vertex_lookup,
             triangle_lookup,
         }
     }
@@ -133,7 +156,6 @@ impl InputResource {
 #[derive(Debug, Clone, Resource)]
 pub struct SolutionResource {
     pub current_solution: Solution,
-    pub next: [HashMap<[EdgeID; 2], Option<Solution>>; 3],
     pub selected_corner: Option<VertKey<POLYCUBE>>,
 }
 
@@ -141,7 +163,6 @@ impl Default for SolutionResource {
     fn default() -> Self {
         Self {
             current_solution: Solution::new(Arc::new(mehsh::mesh::connectivity::Mesh::default())),
-            next: [HashMap::new(), HashMap::new(), HashMap::new()],
             selected_corner: None,
         }
     }

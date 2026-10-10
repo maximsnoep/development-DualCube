@@ -77,11 +77,8 @@ impl<M: Tag> Mesh<M> {
     // Get vector of a given edge.
     #[must_use]
     pub fn vector(&self, id: EdgeKey<M>) -> Vector3D {
-        if let Some([u, v]) = self.vertices(id).collect_array::<2>() {
-            self.position(v) - self.position(u)
-        } else {
-            panic!("Expected exactly two vertices for edge {id:?}");
-        }
+        // Direct lookups: this is called in hot loops (edge midpoints in A* heuristics, loop placement).
+        self.position(self.toor(id)) - self.position(self.root(id))
     }
 
     // Get angle (in radians) between two edges `u` and `v`.

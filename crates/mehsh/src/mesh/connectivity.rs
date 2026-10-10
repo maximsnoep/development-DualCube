@@ -17,14 +17,18 @@ pub type EdgeKey<M> = ids::Key<EDGE, M>;
 
 #[derive(Error, Debug, Clone)]
 pub enum MeshError<M> {
-    #[error("({0}, {1}) does not have a twin (mesh is not a closed 2-manifold)")]
+    #[error("the edge from {0} to {1} has no twin: the surface is not closed")]
     NoTwin(VertKey<M>, VertKey<M>),
-    #[error("({0}, {1}) exists multiple times (mesh is not a closed 2-manifold)")]
+    #[error(
+        "the edge from {0} to {1} is used twice: the faces are not consistently oriented, or the surface is not manifold"
+    )]
     DuplicateEdge(VertKey<M>, VertKey<M>),
-    #[error("Mesh is not orientable")]
+    #[error("the surface is not orientable")]
     NotOrientable,
-    #[error("Mesh is not connected")]
-    NotConnected,
+    #[error("the surface consists of {0} separate parts; it must be a single connected surface")]
+    NotConnected(usize),
+    #[error("{0}")]
+    Invalid(String),
     #[error("{0} is not a polygon (less than 3 vertices)")]
     FaceNotPolygon(FaceKey<M>),
     #[error("{0} is not a triangle")]
@@ -175,16 +179,6 @@ impl<M: Tag> Mesh<M> {
     // TODO: make this more ergonamic
     pub fn neighbor_function_edgegraph(&self) -> impl Fn(EdgeKey<M>) -> Vec<EdgeKey<M>> + '_ {
         |e_id| vec![self.next(e_id), self.next(self.next(e_id)), self.twin(e_id)]
-    }
-
-    // TODO: make this more ergonamic
-    pub fn neighbor_function_edgepairgraph(
-        &self,
-    ) -> impl Fn([EdgeKey<M>; 2]) -> Vec<[EdgeKey<M>; 2]> + '_ {
-        |[_, to]| {
-            let next = self.twin(to);
-            vec![[self.next(next), self.next(self.next(next))]]
-        }
     }
 
     // List of all edges in the mesh (positions of endpoints)

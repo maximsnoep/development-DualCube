@@ -7,14 +7,14 @@ use bevy::prelude::*;
 use dualcube::prelude::*;
 
 pub fn segmentation_modification_system(
-    mouse: Res<ButtonInput<MouseButton>>,
-    keyboard: Res<ButtonInput<KeyCode>>,
-    mesh_resmut: Res<InputResource>,
-    mut solution: ResMut<SolutionResource>,
-    _cache: ResMut<CacheResource>,
-    mut gizmos: Gizmos<PerpetualGizmos>,
-    configuration: ResMut<Configuration>,
-    mut jobs: MessageWriter<Job>,
+    mouse: Res<'_, ButtonInput<MouseButton>>,
+    keyboard: Res<'_, ButtonInput<KeyCode>>,
+    mesh_resmut: Res<'_, InputResource>,
+    mut solution: ResMut<'_, SolutionResource>,
+    mut cache: ResMut<'_, CacheResource>,
+    mut gizmos: Gizmos<'_, '_, PerpetualGizmos>,
+    configuration: ResMut<'_, Configuration>,
+    mut jobs: MessageWriter<'_, Job>,
     position: Vector3D,
     _nearest_face: FaceID,
 ) -> Result<(), BevyError> {
@@ -23,7 +23,20 @@ pub fn segmentation_modification_system(
     }
 
     if let Some(layout) = &solution.current_solution.layout {
-        let granulated_vert_lookup = layout.granulated_mesh.kdtree();
+        let key = (
+            layout.granulated_mesh.nr_verts(),
+            layout.granulated_mesh.nr_faces(),
+            layout.alignment.unwrap_or(f64::NAN).to_bits(),
+        );
+        if cache
+            .granulated_lookup
+            .as_ref()
+            .is_none_or(|(k, _)| *k != key)
+        {
+            cache.granulated_lookup =
+                Some((key, std::sync::Arc::new(layout.granulated_mesh.kdtree())));
+        }
+        let granulated_vert_lookup = cache.granulated_lookup.as_ref().unwrap().1.clone();
         let nearest_granulated_vert = granulated_vert_lookup.nearest(&position.into()).1;
 
         // Look for nearest segmentation corner

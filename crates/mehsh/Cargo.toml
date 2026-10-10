@@ -2,33 +2,39 @@
 name = "mehsh"
 version = "0.0.1"
 edition = "2024"
+license.workspace = true
 description = "a meh mesh processing library in Rust"
-license = "MIT"
 repository = "https://github.com/maximsnoep/mehsh"
 keywords = ["mesh", "geometry", "processing", "rust"]
 categories = ["graphics", "data-structures"]
 
 [features]
 default = []
-obj = ["dep:obj"]
+obj = ["dep:tobj"]
 stl = ["dep:stl_io"]
 all = [ "obj", "stl"]
 
 [dependencies]
 itertools = "0.15.0"
-tracing = "0.1.44"
-nalgebra = "0.33.2"
+tracing = { version = "0.1.44", features = ["release_max_level_info"] }
+nalgebra = "0.34.0"
 thiserror = "2.0.17"
 slotmap = { version = "1.0.7", features = ["serde"] }
 bimap = { version = "0.6.3", features = ["serde"] } # for face and vertex ID maps
-kdtree = "0.7.0" # for vertex lookup
-bvh = "0.11.0" # for face lookup
+kiddo = "6.3.0" # for vertex lookup
+robust = "1.2.0" # Shewchuk's adaptive precision geometry predicates
+bvh = "0.12.0" # for face lookup
 orx-parallel = "3.4.0"
+rustc-hash = "2.1.1"
 
 # Optional features
-obj = { version = "0.10.2", optional = true }
-stl_io = { version = "0.8.5", optional = true }
+tobj = { version = "4.0.5", optional = true, default-features = false, features = ["use_f64"] }
+stl_io = { version = "0.11.0", optional = true }
 serde = { version = "1.0.188" }
 
 [lints]
 workspace = true
+[[test]]
+name = "remesh"
+required-features = ["obj"]
+

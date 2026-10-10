@@ -99,7 +99,7 @@ impl Export for NLR {
             info!("Writing TOPOL file to {path_topol:?}");
             let mut file_topol = std::fs::File::create(path_topol)?;
 
-            // Write log::info (should apparently be 5 lines)
+            // Write the log information (apparently 5 lines)
             write!(
                 file_topol,
                 "'topol file <> {signature}'\n'2nd line'\n'3rd line'\n'4th line'\n'5th line'"
@@ -290,9 +290,9 @@ impl Export for NLR {
                         format!(
                             "       {}       {}  {}  {}       'VERTEX'",
                             vert_int,
-                            ryu::Buffer::new().format(pos.x),
-                            ryu::Buffer::new().format(pos.y),
-                            ryu::Buffer::new().format(pos.z)
+                            float(pos.x),
+                            float(pos.y),
+                            float(pos.z)
                         )
                     })
                     .collect::<Vec<_>>()
@@ -301,58 +301,58 @@ impl Export for NLR {
             write!(
                 file_geom,
                 "\n       70001       {}  {}  {}       'VERTEX'",
-                ryu::Buffer::new().format(v1.x),
-                ryu::Buffer::new().format(v1.y),
-                ryu::Buffer::new().format(v1.z)
+                float(v1.x),
+                float(v1.y),
+                float(v1.z)
             )?;
             write!(
                 file_geom,
                 "\n       70002       {}  {}  {}       'VERTEX'",
-                ryu::Buffer::new().format(v2.x),
-                ryu::Buffer::new().format(v2.y),
-                ryu::Buffer::new().format(v2.z)
+                float(v2.x),
+                float(v2.y),
+                float(v2.z)
             )?;
             write!(
                 file_geom,
                 "\n       70003       {}  {}  {}       'VERTEX'",
-                ryu::Buffer::new().format(v3.x),
-                ryu::Buffer::new().format(v3.y),
-                ryu::Buffer::new().format(v3.z)
+                float(v3.x),
+                float(v3.y),
+                float(v3.z)
             )?;
             write!(
                 file_geom,
                 "\n       70004       {}  {}  {}       'VERTEX'",
-                ryu::Buffer::new().format(v4.x),
-                ryu::Buffer::new().format(v4.y),
-                ryu::Buffer::new().format(v4.z)
+                float(v4.x),
+                float(v4.y),
+                float(v4.z)
             )?;
             write!(
                 file_geom,
                 "\n       70005       {}  {}  {}       'VERTEX'",
-                ryu::Buffer::new().format(v5.x),
-                ryu::Buffer::new().format(v5.y),
-                ryu::Buffer::new().format(v5.z)
+                float(v5.x),
+                float(v5.y),
+                float(v5.z)
             )?;
             write!(
                 file_geom,
                 "\n       70006       {}  {}  {}       'VERTEX'",
-                ryu::Buffer::new().format(v6.x),
-                ryu::Buffer::new().format(v6.y),
-                ryu::Buffer::new().format(v6.z)
+                float(v6.x),
+                float(v6.y),
+                float(v6.z)
             )?;
             write!(
                 file_geom,
                 "\n       70007       {}  {}  {}       'VERTEX'",
-                ryu::Buffer::new().format(v7.x),
-                ryu::Buffer::new().format(v7.y),
-                ryu::Buffer::new().format(v7.z)
+                float(v7.x),
+                float(v7.y),
+                float(v7.z)
             )?;
             write!(
                 file_geom,
                 "\n       70008       {}  {}  {}       'VERTEX'",
-                ryu::Buffer::new().format(v8.x),
-                ryu::Buffer::new().format(v8.y),
-                ryu::Buffer::new().format(v8.z)
+                float(v8.x),
+                float(v8.y),
+                float(v8.z)
             )?;
 
             // Write all edges
@@ -378,9 +378,9 @@ impl Export for NLR {
                                 let pos = quad.quad_mesh.position(vert_id);
                                 lines.push(format!(
                                     "  {}  {}  {}",
-                                    ryu::Buffer::new().format(pos.x),
-                                    ryu::Buffer::new().format(pos.y),
-                                    ryu::Buffer::new().format(pos.z)
+                                    float(pos.x),
+                                    float(pos.y),
+                                    float(pos.z)
                                 ));
                             }
                             lines.join("\n")
@@ -423,9 +423,9 @@ impl Export for NLR {
                                 let pos = quad.quad_mesh.position(vert_id);
                                 let line = format!(
                                     "  {}  {}  {}",
-                                    ryu::Buffer::new().format(pos.x),
-                                    ryu::Buffer::new().format(pos.y),
-                                    ryu::Buffer::new().format(pos.z)
+                                    float(pos.x),
+                                    float(pos.y),
+                                    float(pos.z)
                                 );
                                 lines.push(line);
                             }
@@ -678,11 +678,7 @@ impl Export for NLR {
                 let mut file_seg = std::fs::File::create(path)?;
 
                 for xloop in solution.get_loops_in_direction(dir) {
-                    let edges_through_loop = &solution.loops.get(xloop).unwrap().edges;
-                    let mut positions_on_loop = edges_through_loop
-                        .iter()
-                        .map(|&edge_id| solution.get_coordinates_of_loop_in_edge(xloop, edge_id))
-                        .collect_vec();
+                    let mut positions_on_loop = solution.get_coordinates_of_loop(xloop);
                     // repeat first position to make a loop
                     positions_on_loop.push(positions_on_loop[0]);
                     let lines = positions_on_loop
@@ -690,9 +686,9 @@ impl Export for NLR {
                         .map(|pos| {
                             format!(
                                 "    {}    {}    {}    ",
-                                ryu::Buffer::new().format(pos.x),
-                                ryu::Buffer::new().format(pos.y),
-                                ryu::Buffer::new().format(pos.z)
+                                float(pos.x),
+                                float(pos.y),
+                                float(pos.z)
                             )
                         })
                         .collect::<Vec<_>>()
@@ -708,5 +704,20 @@ impl Export for NLR {
         }
 
         Ok(())
+    }
+}
+
+// A number as text: the shortest that reads back as the same number, in plain decimal (with a fraction, e.g., "1.0"),
+// or in scientific notation below 1e-5 and from 1e16 on (as the formatting of the `ryu` crate).
+fn float(x: f64) -> String {
+    if x != 0. && x.is_finite() && !(1e-5..1e16).contains(&x.abs()) {
+        format!("{x:e}")
+    } else {
+        let text = format!("{x}");
+        if text.contains(['.', 'i', 'N']) {
+            text
+        } else {
+            text + ".0"
+        }
     }
 }

@@ -1,4 +1,4 @@
-//! Render object for the quad mesh.
+//! Render layers for the quad mesh (shown on top of the input mesh, see `render::refresh`).
 
 use super::super::gizmos::{edge_endpoints_view, uniform_color_map};
 use super::super::store::RenderObject;

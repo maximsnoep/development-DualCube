@@ -51,8 +51,8 @@ impl Hex {
             return Err(io::Error::other("cannot build Hex: input mesh is empty"));
         }
 
-        let job_dir1 = std::env::var("DISK_SCISSORS_JOB_DIR_WINDOWS").unwrap();
-        let job_dir2 = std::env::var("DISK_SCISSORS_JOB_DIR_WSL").unwrap();
+        let job_dir1 = job_dir("DISK_SCISSORS_JOB_DIR_WINDOWS")?;
+        let job_dir2 = job_dir("DISK_SCISSORS_JOB_DIR_WSL")?;
 
         info!("creating job directory at {}", job_dir1);
         fs::create_dir_all(&job_dir1)?;
@@ -219,19 +219,20 @@ impl Hex {
         let mesh1 = stitched_cut.mesh_a;
         let mesh2 = stitched_cut.mesh_b;
 
-        let obj_path1 =
-            std::env::var("DISK_SCISSORS_JOB_DIR_WINDOWS").unwrap() + &output.name + "_mesh_a.obj";
-        let obj_path2 =
-            std::env::var("DISK_SCISSORS_JOB_DIR_WINDOWS").unwrap() + &output.name + "_mesh_b.obj";
-
-        mesh1.to_obj(&PathBuf::from(obj_path1))?;
-        mesh2.to_obj(&PathBuf::from(obj_path2))?;
+        let out_dir = PathBuf::from(job_dir("DISK_SCISSORS_JOB_DIR_WINDOWS")?);
+        mesh1.to_obj(&out_dir.join(format!("{}_mesh_a.obj", output.name)))?;
+        mesh2.to_obj(&out_dir.join(format!("{}_mesh_b.obj", output.name)))?;
 
         println!("stdout: {}", output.stdout);
         println!("stderr: {}", output.stderr);
 
         Ok(Self {})
     }
+}
+
+/// Reads a required job-directory environment variable, as an `io::Error` instead of a panic.
+fn job_dir(var: &str) -> io::Result<String> {
+    std::env::var(var).map_err(|e| io::Error::other(format!("environment variable {var}: {e}")))
 }
 
 /// Run one DiskScissors cut on an already exported VTK tet mesh.
@@ -243,8 +244,8 @@ fn run_disk_scissors_cut(
     let tet_mesh_refined_filename = format!("{}_tet_mesh_refined.vtk", cut.name);
     let disk_triangles_filename = format!("{}_disk_triangles.txt", cut.name);
 
-    let job_dir1 = std::env::var("DISK_SCISSORS_JOB_DIR_WINDOWS").unwrap();
-    let job_dir2 = std::env::var("DISK_SCISSORS_JOB_DIR_WSL").unwrap();
+    let job_dir1 = job_dir("DISK_SCISSORS_JOB_DIR_WINDOWS")?;
+    let job_dir2 = job_dir("DISK_SCISSORS_JOB_DIR_WSL")?;
 
     let loop_path1 = PathBuf::from(job_dir1.clone()).join(&loop_filename);
     let loop_path2 = PathBuf::from(job_dir2.clone()).join(&loop_filename);
@@ -465,8 +466,10 @@ pub trait HexExt {
 
 impl HexExt for Solution {
     fn construct_hex(&mut self) -> Result<(), PropertyViolationError> {
-        let _hex_mesh =
-            Hex::from_solution(self).map_err(|_| PropertyViolationError::UnknownError)?;
+        let _hex_mesh = Hex::from_solution(self).map_err(|err| {
+            warn!("Hex mesh construction failed: {err}");
+            PropertyViolationError::UnknownError
+        })?;
         Ok(())
     }
 }

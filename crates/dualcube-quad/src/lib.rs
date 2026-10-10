@@ -1,8 +1,10 @@
 use bimap::BiHashMap;
-use dualcube::prelude::*;
+use dualcube_primal::prelude::*;
+use dualcube_types::prelude::*;
 use faer::Mat;
+use faer::prelude::Solve;
 use faer::sparse::{SparseColMat, Triplet};
-use faer_gmres::gmres;
+use orx_parallel::*;
 
 fn arc_length_parameterization(verts: &[Vector3D]) -> Vec<f64> {
     // Arc-length parameterization of list of points to [0, 1] interval
@@ -10,6 +12,12 @@ fn arc_length_parameterization(verts: &[Vector3D]) -> Vec<f64> {
         .chain(verts.windows(2).map(|w| (w[1] - w[0]).norm()))
         .collect_vec();
     let total_length = distances.iter().sum::<f64>();
+
+    if !(total_length > 0.0 && total_length.is_finite()) {
+        // Degenerate path (coincident points): fall back to uniform spacing.
+        let last = verts.len().saturating_sub(1).max(1) as f64;
+        return (0..verts.len()).map(|i| i as f64 / last).collect_vec();
+    }
 
     distances
         .into_iter()
@@ -20,8 +28,113 @@ fn arc_length_parameterization(verts: &[Vector3D]) -> Vec<f64> {
         .collect_vec()
 }
 
+/// The density of a quad mesh.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum QuadDensity {
+    /// Quads with edges of about this factor times the mean edge length of the input mesh: the density follows the
+    /// resolution of the input mesh (quads much smaller than its triangles add nothing).
+    Auto(f64),
+    /// This many quads along a polycube edge of average length (and proportionally more or fewer along the others).
+    Fixed(usize),
+}
+
+/// The default factor of `QuadDensity::Auto`.
+pub const DEFAULT_QUAD_FACTOR: f64 = 1.5;
+
+impl Default for QuadDensity {
+    fn default() -> Self {
+        Self::Auto(DEFAULT_QUAD_FACTOR)
+    }
+}
+
+// The target edge length of the quads (`Auto`), or the number of quads per unit edge of the polycube (`Fixed`).
+#[derive(Clone, Copy)]
+enum Resolution {
+    Length(f64),
+    PerUnit(f64),
+}
+
+impl Resolution {
+    fn of(density: QuadDensity, mesh: &Mesh<INPUT>) -> Self {
+        match density {
+            QuadDensity::Fixed(omega) => Self::PerUnit(omega.max(1) as f64),
+            QuadDensity::Auto(factor) => {
+                let edges = mesh.edge_ids();
+                let mean =
+                    edges.iter().map(|&e| mesh.size(e)).sum::<f64>() / edges.len().max(1) as f64;
+                Self::Length((factor * mean).max(f64::MIN_POSITIVE))
+            }
+        }
+    }
+}
+
+// The number of quads along every polycube edge, in proportion to the geometric lengths of the edges (from the layout):
+// either a number per unit edge of the polycube (with unit edge lengths), so the density does not depend on the scale of
+// the mesh, or a target length of the quad edges. Twin edges and opposite edges of a face (a rectangle) get the same
+// count, so the grids of neighboring faces match.
+fn edge_resolutions(
+    polycube: &Mesh<POLYCUBE>,
+    geometric: &Mesh<POLYCUBE>,
+    resolution: Resolution,
+) -> Option<HashMap<EdgeKey<POLYCUBE>, usize>> {
+    let edges = polycube.edge_ids();
+    let unit_total: f64 = edges.iter().map(|&e| polycube.size(e)).sum();
+    let geometric_total: f64 = edges.iter().map(|&e| geometric.size(e)).sum();
+    if !(unit_total > 0. && geometric_total > 0.) {
+        return None;
+    }
+    let scale = unit_total / geometric_total;
+
+    // Classes of edges that need the same count: twins, and opposite edges of a face.
+    let index: HashMap<EdgeKey<POLYCUBE>, usize> =
+        edges.iter().enumerate().map(|(i, &e)| (e, i)).collect();
+    let mut parent = (0..edges.len()).collect_vec();
+    fn find(parent: &mut [usize], mut x: usize) -> usize {
+        while parent[x] != x {
+            parent[x] = parent[parent[x]];
+            x = parent[x];
+        }
+        x
+    }
+    let mut union = |a: EdgeKey<POLYCUBE>, b: EdgeKey<POLYCUBE>| {
+        let (ra, rb) = (find(&mut parent, index[&a]), find(&mut parent, index[&b]));
+        parent[ra] = rb;
+    };
+    for &edge in &edges {
+        union(edge, polycube.twin(edge));
+    }
+    for face in polycube.face_ids() {
+        let [e1, e2, e3, e4] = polycube.edges(face).collect_array::<4>()?;
+        union(e1, e3);
+        union(e2, e4);
+    }
+    let mut lengths: HashMap<usize, (f64, usize)> = HashMap::new();
+    for &edge in &edges {
+        let class = find(&mut parent, index[&edge]);
+        let entry = lengths.entry(class).or_default();
+        entry.0 += geometric.size(edge) * scale;
+        entry.1 += 1;
+    }
+    Some(
+        edges
+            .iter()
+            .map(|&edge| {
+                let (sum, count) = lengths[&find(&mut parent, index[&edge])];
+                let length = sum / count as f64;
+                let cells = match resolution {
+                    Resolution::PerUnit(omega) => length * omega,
+                    // The lengths are scaled to the unit polycube.
+                    Resolution::Length(target) => length / scale / target,
+                };
+                let cells = cells.round().max(1.) as usize;
+                (edge, cells)
+            })
+            .collect(),
+    )
+}
+
 #[must_use]
-pub fn build_quad_from_layout(layout: &Layout, omega: usize) -> Option<Quad> {
+pub fn build_quad_from_layout(layout: &Layout, density: QuadDensity) -> Option<Quad> {
     let mut triangle_mesh_polycube = layout.granulated_mesh.clone();
 
     let mut edges_done: HashMap<EdgeKey<POLYCUBE>, Vec<usize>> = HashMap::new();
@@ -41,6 +154,12 @@ pub fn build_quad_from_layout(layout: &Layout, omega: usize) -> Option<Quad> {
     let mut polycube_resized = polycube.clone();
     polycube_resized.resize(&layout.dual_ref, Some(layout));
     let polycube = polycube.structure;
+    let resolution = Resolution::of(density, &layout.dual_ref.mesh_ref);
+    let Some(resolution) = edge_resolutions(&polycube, &polycube_resized.structure, resolution)
+    else {
+        warn!("Cannot construct quad mesh: the polycube is not made of quadrilaterals");
+        return None;
+    };
 
     let mut queue = vec![];
     queue.push(polycube.face_ids()[0]);
@@ -69,24 +188,25 @@ pub fn build_quad_from_layout(layout: &Layout, omega: usize) -> Option<Quad> {
 
         let Some([edge1, edge2, edge3, edge4]) = polycube.edges(patch_id).collect_array::<4>()
         else {
-            panic!()
+            warn!("Cannot construct quad mesh: a polycube face is not a quadrilateral");
+            return None;
+        };
+        let (Some(boundary1), Some(boundary2), Some(boundary3), Some(boundary4)) = (
+            layout.edge_to_path.get(&edge1),
+            layout.edge_to_path.get(&edge2),
+            layout.edge_to_path.get(&edge3),
+            layout.edge_to_path.get(&edge4),
+        ) else {
+            warn!("Cannot construct quad mesh: the layout is incomplete");
+            return None;
         };
 
-        // Edge1 is mapped to unit edge (0,1) -> (1,1)
-        let boundary1 = layout.edge_to_path.get(&edge1).unwrap();
-        let corner1 = polycube.vertices(edge1).next().unwrap();
-
-        // Edge2 is mapped to unit edge (1,1) -> (1,0)
-        let boundary2 = layout.edge_to_path.get(&edge2).unwrap();
-        let corner2 = polycube.vertices(edge2).next().unwrap();
-
-        // Edge3 is mapped to unit edge (1,0) -> (0,0)
-        let boundary3 = layout.edge_to_path.get(&edge3).unwrap();
-        let corner3 = polycube.vertices(edge3).next().unwrap();
-
-        // Edge4 is mapped to unit edge (0,0) -> (0,1)
-        let boundary4 = layout.edge_to_path.get(&edge4).unwrap();
-        let corner4 = polycube.vertices(edge4).next().unwrap();
+        // Edge1 is mapped to unit edge (0,1) -> (1,1), edge2 to (1,1) -> (1,0), edge3 to (1,0) -> (0,0), and edge4 to
+        // (0,0) -> (0,1).
+        let corner1 = polycube.vertices(edge1).next()?;
+        let corner2 = polycube.vertices(edge2).next()?;
+        let corner3 = polycube.vertices(edge3).next()?;
+        let corner4 = polycube.vertices(edge4).next()?;
 
         // d3p1 = (x1, y1, z1)
         // d3p2 = (x2, y2, z2)
@@ -107,14 +227,22 @@ pub fn build_quad_from_layout(layout: &Layout, omega: usize) -> Option<Quad> {
         let p4 = polycube.vertices(edge4).next().unwrap();
         let d3p4 = polycube.position(p4);
 
-        let coordinates = if d3p1.x == d3p2.x && d3p1.x == d3p3.x && d3p1.x == d3p4.x {
+        // The constant coordinate of the (axis-aligned) face.
+        let constant = |axis: usize| {
+            let values = [d3p1[axis], d3p2[axis], d3p3[axis], d3p4[axis]];
+            let spread = values.iter().copied().fold(f64::NEG_INFINITY, f64::max)
+                - values.iter().copied().fold(f64::INFINITY, f64::min);
+            spread <= 1e-9 * (1. + d3p1.norm())
+        };
+        let coordinates = if constant(0) {
             (1, 2, 0)
-        } else if d3p1.y == d3p2.y && d3p1.y == d3p3.y && d3p1.y == d3p4.y {
+        } else if constant(1) {
             (0, 2, 1)
-        } else if d3p1.z == d3p2.z && d3p1.z == d3p3.z && d3p1.z == d3p4.z {
+        } else if constant(2) {
             (0, 1, 2)
         } else {
-            panic!("The face is not axis-aligned!")
+            warn!("Cannot construct quad mesh: a polycube face is not axis-aligned");
+            return None;
         };
 
         let d2p1 = Vector2D::new(d3p1[coordinates.0], d3p1[coordinates.1]);
@@ -235,8 +363,15 @@ pub fn build_quad_from_layout(layout: &Layout, omega: usize) -> Option<Quad> {
                 })
                 .collect_vec();
 
+            // A degenerate one-ring (e.g., coincident vertices, of zero-area triangles) has no mean value weights:
+            // then the vertex is the average of its neighbors (Tutte weights, always a valid embedding).
             let sum_w = w.iter().sum::<f64>();
-            let weights = w.iter().map(|&wi| wi / sum_w).collect_vec();
+            let weights = if w.iter().all(|wi| wi.is_finite()) && sum_w.is_finite() && sum_w > 0.0 {
+                w.iter().map(|&wi| wi / sum_w).collect_vec()
+            } else {
+                debug!("Degenerate one-ring around {v0:?}: uniform weights");
+                vec![1.0 / k as f64; k]
+            };
 
             for i in 0..k {
                 let vi = neighbors[i];
@@ -253,25 +388,28 @@ pub fn build_quad_from_layout(layout: &Layout, omega: usize) -> Option<Quad> {
             }
         }
 
-        let b_u = Mat::from_fn(n, 1, |i, _| bu[i]);
-        let b_v = Mat::from_fn(n, 1, |i, _| bv[i]);
+        if !(bu.iter().chain(&bv).all(|v| v.is_finite())) {
+            warn!("Right-hand side of the patch parameterization contains NaN or Inf");
+            return None;
+        }
 
-        assert!(bu.iter().all(|v| v.is_finite()), "bu contains NaN or Inf");
-        assert!(bv.iter().all(|v| v.is_finite()), "bv contains NaN or Inf");
-
-        let mut x_u = Mat::from_fn(n, 1, |_, _| 0.0);
-        let mut x_v = Mat::from_fn(n, 1, |_, _| 0.0);
-
-        let faer_triplets = triplets
-            .into_iter()
-            .map(|(i, j, v)| Triplet::new(i, j, v))
-            .collect::<Vec<_>>();
-        let a = SparseColMat::<usize, f64>::try_new_from_triplets(n, n, &faer_triplets).unwrap();
+        // Both coordinates share the same system matrix: factor it once (sparse LU) and solve
+        // for u and v together. This replaces two unpreconditioned, unrestarted GMRES runs that
+        // allocated O(n * 1000) dense memory each and could fail to converge on large patches.
+        let mut x_uv = Mat::from_fn(n, 2, |i, j| if j == 0 { bu[i] } else { bv[i] });
         if !interior_verts.is_empty() {
-            if gmres(a.as_ref(), b_u.as_ref(), x_u.as_mut(), 1000, 1e-8, None).is_err() {
+            let faer_triplets = triplets
+                .into_iter()
+                .map(|(i, j, v)| Triplet::new(i, j, v))
+                .collect::<Vec<_>>();
+            let a = SparseColMat::<usize, f64>::try_new_from_triplets(n, n, &faer_triplets).ok()?;
+            let Ok(lu) = a.sp_lu() else {
+                warn!("Sparse LU factorization of the patch parameterization failed");
                 return None;
-            }
-            if gmres(a.as_ref(), b_v.as_ref(), x_v.as_mut(), 1000, 1e-8, None).is_err() {
+            };
+            lu.solve_in_place(x_uv.as_mut());
+            if !(0..n).all(|i| x_uv[(i, 0)].is_finite() && x_uv[(i, 1)].is_finite()) {
+                warn!("Patch parameterization produced non-finite coordinates");
                 return None;
             }
         }
@@ -288,8 +426,8 @@ pub fn build_quad_from_layout(layout: &Layout, omega: usize) -> Option<Quad> {
                 }
             } else {
                 let mapped_pos = Vector2D::new(
-                    x_u[(vert_to_id.get_by_left(&v).unwrap().to_owned(), 0)],
-                    x_v[(vert_to_id.get_by_left(&v).unwrap().to_owned(), 0)],
+                    x_uv[(vert_to_id.get_by_left(&v).unwrap().to_owned(), 0)],
+                    x_uv[(vert_to_id.get_by_left(&v).unwrap().to_owned(), 1)],
                 );
                 match coordinates {
                     (1, 2, 0) => Vector3D::new(d3p1.x, mapped_pos.x, mapped_pos.y),
@@ -302,13 +440,8 @@ pub fn build_quad_from_layout(layout: &Layout, omega: usize) -> Option<Quad> {
             triangle_mesh_polycube.set_position(v, position);
         }
 
-        let grid_width = polycube_resized.structure.size(edge1) * 2.;
-        // assert!(polycube.size(edge3) == grid_width);
-        let grid_n = grid_width as usize * omega + 1;
-
-        let grid_height = polycube_resized.structure.size(edge2) * 2.;
-        // assert!(polycube.size(edge4) == grid_height);
-        let grid_m = grid_height as usize * omega + 1;
+        let grid_n = resolution[&edge1] + 1;
+        let grid_m = resolution[&edge2] + 1;
 
         let to_pos = |i: usize, j: usize| {
             let u = i as f64 / (grid_m - 1) as f64;
@@ -342,7 +475,10 @@ pub fn build_quad_from_layout(layout: &Layout, omega: usize) -> Option<Quad> {
         // Edge1 which is i=0 and j=0 to j=grid_n-1
         if edges_done.contains_key(&edge1) {
             let edge_verts = edges_done.get(&edge1).unwrap().to_owned();
-            assert!(edge_verts.len() == grid_n);
+            if edge_verts.len() != grid_n {
+                warn!("Cannot construct quad mesh: the grids of neighboring faces do not match");
+                return None;
+            }
             for (j, &vert) in edge_verts.iter().enumerate() {
                 vert_map[0][j] = Some(vert);
             }
@@ -352,7 +488,10 @@ pub fn build_quad_from_layout(layout: &Layout, omega: usize) -> Option<Quad> {
         // Edge2 which is j=grid_n-1 and i=0 to i=grid_m-1
         if edges_done.contains_key(&edge2) {
             let edge_verts = edges_done.get(&edge2).unwrap().to_owned();
-            assert!(edge_verts.len() == grid_m);
+            if edge_verts.len() != grid_m {
+                warn!("Cannot construct quad mesh: the grids of neighboring faces do not match");
+                return None;
+            }
             for (i, &vert) in edge_verts.iter().enumerate() {
                 vert_map[i][grid_n - 1] = Some(vert);
             }
@@ -362,7 +501,10 @@ pub fn build_quad_from_layout(layout: &Layout, omega: usize) -> Option<Quad> {
         // Edge3 which is i=grid_m-1 and j=grid_n-1 to j=0
         if edges_done.contains_key(&edge3) {
             let edge_verts = edges_done.get(&edge3).unwrap().to_owned();
-            assert!(edge_verts.len() == grid_n);
+            if edge_verts.len() != grid_n {
+                warn!("Cannot construct quad mesh: the grids of neighboring faces do not match");
+                return None;
+            }
             for (j, &vert) in edge_verts.iter().enumerate() {
                 vert_map[grid_m - 1][grid_n - 1 - j] = Some(vert);
             }
@@ -372,7 +514,10 @@ pub fn build_quad_from_layout(layout: &Layout, omega: usize) -> Option<Quad> {
         // Edge4 which is j=0 and i=grid_m-1 to i=0
         if edges_done.contains_key(&edge4) {
             let edge_verts = edges_done.get(&edge4).unwrap().to_owned();
-            assert!(edge_verts.len() == grid_m);
+            if edge_verts.len() != grid_m {
+                warn!("Cannot construct quad mesh: the grids of neighboring faces do not match");
+                return None;
+            }
             for (i, &vert) in edge_verts.iter().enumerate() {
                 vert_map[grid_m - 1 - i][0] = Some(vert);
             }
@@ -474,10 +619,10 @@ pub fn build_quad_from_layout(layout: &Layout, omega: usize) -> Option<Quad> {
         }
     }
 
-    assert!(
-        patches_done.len() == polycube.face_ids().len(),
-        "Not all patches were done!"
-    );
+    if patches_done.len() != polycube.face_ids().len() {
+        warn!("Cannot construct quad mesh: not all faces of the polycube are connected");
+        return None;
+    }
 
     // Create the polycube quad mesh:
     if let Ok((quad_mesh_polycube, vert_id_map, _)) = Mesh::<QUAD>::from(&faces, &vertex_positions)
@@ -507,14 +652,14 @@ pub fn build_quad_from_layout(layout: &Layout, omega: usize) -> Option<Quad> {
             edge_to_verts.insert(twin_id, rev_vert_keys);
         }
 
-        // For each vert_id in quad_mesh_polycube, check the surrounding normals. If surrounding normals are all equal, then this vertex is NOT frozen. Else it is frozen (its a boundary vertex)
+        // A vertex is frozen if its faces do not all have the same label (it lies on a polycube edge or corner).
         for vert_id in quad_mesh_polycube.vert_ids() {
-            let mut surrounding_normals = HashSet::new();
-            for neighbor in quad_mesh_polycube.neighbors(vert_id) {
-                surrounding_normals
-                    .insert(to_principal_direction(quad_mesh_polycube.normal(neighbor)));
-            }
-            if surrounding_normals.len() > 1 {
+            let mut labels = quad_mesh_polycube
+                .faces(vert_id)
+                .map(|face| to_principal_direction(quad_mesh_polycube.normal(face)));
+            if let Some(first) = labels.next()
+                && labels.any(|label| label != first)
+            {
                 frozen.insert(vert_id);
             }
         }
@@ -524,59 +669,51 @@ pub fn build_quad_from_layout(layout: &Layout, omega: usize) -> Option<Quad> {
         let mut quad_mesh = quad_mesh_polycube.clone();
         let triangle_lookup = triangle_mesh_polycube.bvh();
 
-        // Now, we need to set the positions of the vertices in the quad mesh based on barycentric coordinates of the mapped triangles
-        for vert_id in quad_mesh.vert_ids() {
-            // Get the nearest triangle in the triangle mesh (polycube map)
-            let point = quad_mesh_polycube.position(vert_id);
-            let triangle = triangle_lookup.nearest(&[point.x, point.y, point.z]);
-            let Some([a, b, c]) = triangle_mesh_polycube
-                .vertices(triangle)
-                .collect_array::<3>()
-            else {
-                panic!("Triangle does not have 3 vertices!");
-            };
-
-            // check distance from point to triangle
-            let distance1 = geom::distance_to_triangle(
-                point,
-                (
+        // The position of every vertex on the input surface: the barycentric coordinates of the nearest point on the
+        // polycube map, applied to the same triangle of the granulated mesh (in parallel).
+        let mapped = quad_mesh
+            .vert_ids()
+            .into_par()
+            .map(|vert_id| {
+                let point = quad_mesh_polycube.position(vert_id);
+                let triangle = triangle_lookup.nearest(&[point.x, point.y, point.z]);
+                let [a, b, c] = triangle_mesh_polycube
+                    .vertices(triangle)
+                    .collect_array::<3>()?;
+                let on_polycube = (
                     triangle_mesh_polycube.position(a),
                     triangle_mesh_polycube.position(b),
                     triangle_mesh_polycube.position(c),
-                ),
-            );
-
-            if distance1 > 0.001 {
-                warn!("Distance from point to triangle is very large: {distance1} (> 0.001)");
+                );
+                let distance = geom::distance_to_triangle(point, on_polycube);
+                // Barycentric coordinates of the closest point on the triangle (always within [0, 1], even if the BVH
+                // returned a slightly-off triangle).
+                let closest = geom::point_on_triangle(point, on_polycube);
+                let (u, v, w) = geom::calculate_barycentric_coordinates(closest, on_polycube);
+                let position = geom::inverse_barycentric_coordinates(
+                    u,
+                    v,
+                    w,
+                    (
+                        layout.granulated_mesh.position(a),
+                        layout.granulated_mesh.position(b),
+                        layout.granulated_mesh.position(c),
+                    ),
+                );
+                Some((vert_id, position, distance))
+            })
+            .collect::<Vec<_>>();
+        let mut far = 0;
+        for (vert_id, position, distance) in mapped.into_iter().flatten() {
+            if distance > 0.001 {
+                far += 1;
             }
-
-            // Calculate the barycentric coordinates of the point in the triangle
-            let (u, v, w) = geom::calculate_barycentric_coordinates(
-                point,
-                (
-                    triangle_mesh_polycube.position(a),
-                    triangle_mesh_polycube.position(b),
-                    triangle_mesh_polycube.position(c),
-                ),
-            );
-
-            // Do the inverse of the barycentric coordinates, with the original triangle in granulated mesh
-            let new_position = geom::inverse_barycentric_coordinates(
-                u,
-                v,
-                w,
-                (
-                    layout.granulated_mesh.position(a),
-                    layout.granulated_mesh.position(b),
-                    layout.granulated_mesh.position(c),
-                ),
-            );
-
-            // quad_mesh.set_position(vert_id, new_position);
-
-            if distance1 < 0.001 {
-                quad_mesh.set_position(vert_id, new_position);
-            }
+            // Always map back: skipping a vertex would leave it in polycube coordinates while the rest of the quad
+            // mesh lives in input-mesh coordinates.
+            quad_mesh.set_position(vert_id, position);
+        }
+        if far > 0 {
+            warn!("{far} quad vertices lie far (> 0.001) from the polycube map");
         }
 
         Some(Quad {
@@ -588,17 +725,7 @@ pub fn build_quad_from_layout(layout: &Layout, omega: usize) -> Option<Quad> {
             frozen,
         })
     } else {
-        panic!("Failed to create quad mesh from faces and vertex positions");
-    }
-}
-
-pub trait QuadExt {
-    fn construct_quad(&mut self, omega: usize) -> Result<(), PropertyViolationError>;
-}
-
-impl QuadExt for Solution {
-    fn construct_quad(&mut self, omega: usize) -> Result<(), PropertyViolationError> {
-        self.quad = build_quad_from_layout(self.layout.as_ref().unwrap(), omega);
-        Ok(())
+        warn!("Failed to create quad mesh from faces and vertex positions");
+        None
     }
 }

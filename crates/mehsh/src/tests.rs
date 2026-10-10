@@ -295,3 +295,144 @@ fn concave_prism_positions() -> Vec<Vector3D> {
         Vector3D::new(0.0, 2.0, 1.0),
     ]
 }
+
+/// Closed prism whose two caps are `n`-gons.
+fn prism(n: usize) -> (Vec<Vec<usize>>, Vec<Vector3D>) {
+    let mut positions = vec![];
+    for z in [0., 1.] {
+        for i in 0..n {
+            let a = std::f64::consts::TAU * i as f64 / n as f64;
+            positions.push(Vector3D::new(a.cos(), a.sin(), z));
+        }
+    }
+    let mut faces = vec![(0..n).rev().collect::<Vec<_>>(), (n..2 * n).collect()];
+    for i in 0..n {
+        let j = (i + 1) % n;
+        faces.push(vec![i, j, n + j, n + i]);
+    }
+    (faces, positions)
+}
+
+#[test]
+fn from_accepts_large_polygons() {
+    let (faces, positions) = prism(16);
+    let mesh = Mesh::<TestMesh>::from(&faces, &positions);
+    assert!(mesh.is_ok(), "{mesh:?}");
+}
+
+#[test]
+fn from_rejects_out_of_range_indices() {
+    let faces = vec![vec![0, 1, 7]];
+    let positions = vec![Vector3D::new(0., 0., 0.); 3];
+    assert!(Mesh::<TestMesh>::from(&faces, &positions).is_err());
+}
+
+#[test]
+fn face_area_and_normal() {
+    let (faces, positions) = prism(4);
+    let (mesh, _, _) = Mesh::<TestMesh>::from(&faces, &positions).unwrap();
+    // The cap of a unit-circle square has area 2; every side quad has area sqrt(2).
+    let mut areas = mesh
+        .face_ids()
+        .iter()
+        .map(|&f| mesh.size(f))
+        .collect::<Vec<_>>();
+    areas.sort_by(f64::total_cmp);
+    for a in &areas[..4] {
+        assert!((a - 2f64.sqrt()).abs() < 1e-9, "{areas:?}");
+    }
+    for a in &areas[4..] {
+        assert!((a - 2.).abs() < 1e-9, "{areas:?}");
+    }
+    // Normals point outwards and agree with the vector area.
+    for &f in &mesh.face_ids() {
+        let n = mesh.normal(f);
+        assert!((n.norm() - 1.).abs() < 1e-9);
+        assert!(n.dot(&(mesh.position(f) - Vector3D::new(0., 0., 0.5))) > 0.);
+        assert!(n.dot(&mesh.vector_area(f)) > 0.);
+    }
+}
+
+#[test]
+fn degenerate_face_has_finite_normal() {
+    let faces = vec![vec![0, 2, 1], vec![0, 1, 3], vec![1, 2, 3], vec![0, 3, 2]];
+    let (mesh, _, _) = Mesh::<TestMesh>::from(&faces, &[Vector3D::new(0., 0., 0.); 4]).unwrap();
+    for &f in &mesh.face_ids() {
+        assert!(mesh.normal(f).iter().all(|c| c.is_finite()));
+    }
+    for &v in &mesh.vert_ids() {
+        assert!(mesh.normal(v).iter().all(|c| c.is_finite()));
+    }
+}
+
+#[test]
+fn point_on_triangle_matches_brute_force() {
+    let t = (
+        Vector3D::new(20.3, 19.1, 21.7),
+        Vector3D::new(23.9, 18.2, 20.1),
+        Vector3D::new(21.1, 22.6, 19.4),
+    );
+    // Deterministic pseudo-random query points around the triangle.
+    let mut state = 0x2545_f491_4f6c_dd1d_u64;
+    let mut rnd = || {
+        state ^= state << 13;
+        state ^= state >> 7;
+        state ^= state << 17;
+        (state >> 11) as f64 / (1u64 << 53) as f64
+    };
+    for _ in 0..500 {
+        let p = Vector3D::new(17. + 10. * rnd(), 15. + 10. * rnd(), 16. + 10. * rnd());
+        let q = geom::point_on_triangle(p, t);
+        // Brute force over a fine barycentric grid.
+        let steps = 200;
+        let mut best = f64::MAX;
+        for i in 0..=steps {
+            for j in 0..=steps - i {
+                let (u, v) = (i as f64 / steps as f64, j as f64 / steps as f64);
+                let r = t.0 + (t.1 - t.0) * u + (t.2 - t.0) * v;
+                best = best.min((p - r).norm());
+            }
+        }
+        let d = (p - q).norm();
+        assert!(d <= best + 1e-9, "closest point not optimal: {d} > {best}");
+        assert!(d >= best - 0.05, "closest point too close?! {d} < {best}");
+    }
+}
+
+#[test]
+fn barycentric_coordinates_are_scale_invariant() {
+    for scale in [1e3, 1., 1e-3, 1e-6] {
+        let t = (
+            Vector3D::new(0., 0., 0.) * scale,
+            Vector3D::new(1., 0., 0.) * scale,
+            Vector3D::new(0., 1., 0.) * scale,
+        );
+        let p = Vector3D::new(0.2, 0.3, 0.) * scale;
+        let (u, v, w) = geom::calculate_barycentric_coordinates(p, t);
+        assert!(
+            (u - 0.5).abs() < 1e-9 && (v - 0.2).abs() < 1e-9 && (w - 0.3).abs() < 1e-9,
+            "scale {scale}: {u} {v} {w}"
+        );
+        assert!(geom::is_point_inside_triangle(p, t), "scale {scale}");
+        assert!(
+            !geom::is_point_inside_triangle(Vector3D::new(0.8, 0.8, 0.) * scale, t),
+            "scale {scale}"
+        );
+    }
+}
+
+#[test]
+fn barycentric_coordinates_degenerate_uses_longest_edge() {
+    // Collinear triangle whose longest edge is CA.
+    let t = (
+        Vector3D::new(0., 0., 0.),
+        Vector3D::new(0.1, 0., 0.),
+        Vector3D::new(1., 0., 0.),
+    );
+    let (u, v, w) = geom::calculate_barycentric_coordinates(Vector3D::new(0.5, 0., 0.), t);
+    let q = t.0 * u + t.1 * v + t.2 * w;
+    assert!(
+        (q - Vector3D::new(0.5, 0., 0.)).norm() < 1e-12,
+        "{u} {v} {w}"
+    );
+}

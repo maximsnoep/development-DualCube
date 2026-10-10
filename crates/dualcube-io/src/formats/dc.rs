@@ -3,7 +3,6 @@ use anyhow::{Context, bail};
 use dualcube::prelude::*;
 use serde::{Deserialize, Serialize};
 use slotmap::SlotMap;
-use std::io::Write;
 use std::path::Path;
 use std::sync::Arc;
 
@@ -89,14 +88,16 @@ impl Export for Dc {
 
         info!("Compressed Dc size: {} bytes", compressed.len());
 
-        let mut file = std::fs::File::create(&path_save)
-            .with_context(|| format!("creating {}", path_save.display()))?;
-
-        file.write_all(DC_MAGIC)
-            .with_context(|| format!("writing Dc header to {}", path_save.display()))?;
-
-        file.write_all(&compressed)
-            .with_context(|| format!("writing {}", path_save.display()))?;
+        // Write to a temporary file first and rename it over the target, so a failed
+        // write never destroys an existing save.
+        let path_tmp = path_save.with_extension("dc.tmp");
+        let mut bytes = Vec::with_capacity(DC_MAGIC.len() + compressed.len());
+        bytes.extend_from_slice(DC_MAGIC);
+        bytes.extend_from_slice(&compressed);
+        std::fs::write(&path_tmp, &bytes)
+            .with_context(|| format!("writing {}", path_tmp.display()))?;
+        std::fs::rename(&path_tmp, &path_save)
+            .with_context(|| format!("moving {} to {}", path_tmp.display(), path_save.display()))?;
 
         info!("Successfully written Dc to {:?}", path_save);
         Ok(())

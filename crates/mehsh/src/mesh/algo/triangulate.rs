@@ -212,12 +212,12 @@ fn contains_other_vertex(points: &[Vector2D], remaining: &[usize], triangle: [us
 }
 
 fn point_in_triangle(point: Vector2D, a: Vector2D, b: Vector2D, c: Vector2D) -> bool {
-    let ab = cross_2d(b - a, point - a);
-    let bc = cross_2d(c - b, point - b);
-    let ca = cross_2d(a - c, point - c);
+    let coord = |v: Vector2D| robust::Coord { x: v.x, y: v.y };
+    let o1 = robust::orient2d(coord(a), coord(b), coord(point));
+    let o2 = robust::orient2d(coord(b), coord(c), coord(point));
+    let o3 = robust::orient2d(coord(c), coord(a), coord(point));
 
-    (ab >= -TRIANGULATION_EPS && bc >= -TRIANGULATION_EPS && ca >= -TRIANGULATION_EPS)
-        || (ab <= TRIANGULATION_EPS && bc <= TRIANGULATION_EPS && ca <= TRIANGULATION_EPS)
+    (o1 >= 0.0 && o2 >= 0.0 && o3 >= 0.0) || (o1 <= 0.0 && o2 <= 0.0 && o3 <= 0.0)
 }
 
 fn cross_2d(a: Vector2D, b: Vector2D) -> f64 {

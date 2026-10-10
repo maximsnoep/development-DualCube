@@ -126,6 +126,9 @@ impl<M: Tag> Mesh<M> {
         self.edge_face.insert(e_0a, f_0);
         self.edge_next.insert(e_0a, e_ax);
 
+        self.vert_repr.insert(v_0, e_0x);
+        self.vert_repr.insert(v_1, e_1x);
+
         (v_x, [f_0, f_1, f_2, f_3])
     }
 
@@ -200,6 +203,10 @@ impl<M: Tag> Mesh<M> {
         self.edge_next.insert(e_01, e_1x);
         self.edge_next.insert(e_12, e_2x);
         self.edge_next.insert(e_20, e_0x);
+
+        self.vert_repr.insert(v_0, e_0x);
+        self.vert_repr.insert(v_1, e_1x);
+        self.vert_repr.insert(v_2, e_2x);
 
         (v_x, [f_0, f_1, f_2])
     }
