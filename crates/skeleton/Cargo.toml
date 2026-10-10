@@ -1,0 +1,14 @@
+[package]
+name = "skeleton"
+version = "0.1.0"
+edition = "2024"
+license.workspace = true
+description = "Data types and implementation for skeleton-based initialization for arbitrary genus surfaces."
+
+[dependencies]
+dualcube-dual = { path = "../dualcube-dual" }
+dualcube-types = { path = "../dualcube-types" }
+slotmap = "1.0.7"
+
+[lints]
+workspace = true

@@ -9,6 +9,7 @@ members = [
     "crates/dualcube-primal",
     "crates/dualcube-quad",
     "crates/dualcube-types",
+    "crates/skeleton",
     "crates/grapff",
     "crates/mehsh",
     "crates/mehsh-tetgen",

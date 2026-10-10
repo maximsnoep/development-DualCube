@@ -7,6 +7,7 @@ pub mod loop_band;
 pub mod medial;
 pub mod phases;
 pub mod quality;
+pub mod skeleton;
 pub mod solution;
 
 pub mod prelude {

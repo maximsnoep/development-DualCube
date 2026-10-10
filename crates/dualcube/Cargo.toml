@@ -10,6 +10,7 @@ dualcube-flow = { path = "../dualcube-flow" }
 dualcube-primal = { path = "../dualcube-primal" }
 dualcube-quad = { path = "../dualcube-quad" }
 dualcube-types = { path = "../dualcube-types" }
+skeleton = { path = "../skeleton" }
 grapff = { path = "../grapff" }
 slotmap = "1.0.7"
 rand = "0.10.1"
