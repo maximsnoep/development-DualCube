@@ -67,7 +67,7 @@ pub enum CubeOwner {
 }
 
 /// An axis-aligned cube in target space. Target-space units need not match the
-/// input mesh. Placement and size are chosen by the labeling/optimization method.
+/// input mesh. Placement and size are chosen by cube placement/optimization.
 #[derive(Clone, Debug)]
 pub struct Cube {
     /// Finite target-space coordinates.
@@ -83,21 +83,30 @@ pub struct Cube {
 /// Connections join existing, distinct cubes sharing a complete face, without
 /// duplicate pairs. Incidental geometric contact does not create a connection.
 /// Cube interiors must not overlap. Every owner refers to the accompanying
-/// skeleton; every skeleton node has exactly one cube, 
-/// and every skeleton edge has at least one cube. 
+/// skeleton; every skeleton node has exactly one cube,
+/// and every skeleton edge has at least one cube.
 #[derive(Clone, Debug, Default)]
 pub struct CubeLayout {
     pub cubes: SlotMap<CubeID, Cube>,
     pub connections: Vec<[CubeID; 2]>,
 }
 
-/// Complete input/output of optimization, including the target geometry it uses.
+/// Combinatorial labeling, before cube placement. Every edge has a signed axis.
 #[derive(Clone, Debug)]
 pub struct LabeledSkeleton {
     pub skeleton: Skeleton,
     pub labels: SecondaryMap<SkeletonEdgeID, EdgeLabel>,
-    pub cubes: CubeLayout, // TODO: maybe separate into own type?
+}
+
+/// Labeled skeleton with target geometry, used by optimization and loop drawing.
+/// Topology edits must keep labels, patch boundaries, and cube ownership consistent.
+#[derive(Clone, Debug)]
+pub struct RealizedSkeleton {
+    pub labeled: LabeledSkeleton,
+    pub cubes: CubeLayout,
 }
 
 /// Dual loops drawn on the surface, able to be primalized into a polycube segmentation.
+/// Uses main's doubled half-edge format with crossing offsets in (0, 1),
+/// complementary on twins and strictly ordered along shared edges.
 pub type DualLoops = SlotMap<LoopID, Loop>;

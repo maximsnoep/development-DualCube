@@ -7,7 +7,6 @@ pub mod loop_band;
 pub mod medial;
 pub mod phases;
 pub mod quality;
-pub mod skeleton;
 pub mod solution;
 
 pub mod prelude {
@@ -33,5 +32,6 @@ pub use dualcube_flow as flow;
 pub use dualcube_primal as primal;
 pub use dualcube_quad as quad;
 pub use dualcube_types as types;
+pub use skeleton;
 
 pub use prelude::*;
