@@ -65,10 +65,11 @@ struct TriangleBvhShape<M: Tag> {
 
 impl<M: Tag> PointDistance<f64, 3> for TriangleBvhShape<M> {
     fn distance_squared(&self, query_point: nalgebra::Point<f64, 3>) -> f64 {
-        geom::distance_to_triangle(
-            Vector3D::new(query_point[0], query_point[1], query_point[2]),
-            (self.corners[0], self.corners[1], self.corners[2]),
-        )
+        // The BVH compares this against squared AABB distances, so it must be squared too.
+        let p = Vector3D::new(query_point[0], query_point[1], query_point[2]);
+        let closest =
+            geom::point_on_triangle(p, (self.corners[0], self.corners[1], self.corners[2]));
+        (p - closest).norm_squared()
     }
 }
 

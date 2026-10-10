@@ -1,0 +1,15 @@
+# Vendored from crates.io (bevy-toon 0.2.0, by Snoep; MIT), ported along with the Bevy version of the workspace.
+[package]
+name = "bevy-toon"
+version = "0.2.0"
+edition = "2024"
+license.workspace = true
+description = "A tiny Bevy plugin for a toon shader."
+publish = false
+
+[lib]
+name = "bevy_toon"
+
+[dependencies]
+bevy = { workspace = true, features = ["bevy_pbr"] }
+

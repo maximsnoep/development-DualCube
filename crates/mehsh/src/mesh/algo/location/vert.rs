@@ -1,34 +1,45 @@
 use crate::prelude::*;
-use kdtree::{KdTree, distance::squared_euclidean};
+use kiddo::{ImmutableKdTree, SquaredEuclidean};
 
-#[derive(Debug, Clone)]
-pub struct VertLocation<M: Tag>(KdTree<f64, VertKey<M>, [f64; 3]>);
+/// The vertices of a mesh in a k-d tree (`kiddo`), for nearest-vertex queries.
+pub struct VertLocation<M: Tag> {
+    // `None` for a mesh without vertices.
+    tree: Option<ImmutableKdTree<f64, 3>>,
+    // The vertex of every item of the tree (by its index).
+    verts: Vec<VertKey<M>>,
+}
 
 impl<M: Tag> VertLocation<M> {
+    /// The vertex nearest to the given point, with its squared distance. Panics for a mesh without vertices.
     #[must_use]
     pub fn nearest(&self, point: &[f64; 3]) -> (f64, VertKey<M>) {
-        let neighbors = self.0.nearest(point, 1, &squared_euclidean).unwrap();
-        let (d, i) = neighbors.first().unwrap();
-        (*d, **i)
-    }
-
-    fn add(&mut self, point: [f64; 3], index: VertKey<M>) {
-        self.0.add(point, index).unwrap();
+        let tree = self.tree.as_ref().expect("a mesh with vertices");
+        let nearest = tree
+            .query(point)
+            .nearest_one::<SquaredEuclidean<f64>>()
+            .execute();
+        (nearest.distance, self.verts[nearest.item as usize])
     }
 }
-impl<M: Tag> Default for VertLocation<M> {
-    fn default() -> Self {
-        Self(KdTree::new(3))
+
+impl<M: Tag> std::fmt::Debug for VertLocation<M> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "VertLocation({} vertices)", self.verts.len())
     }
 }
 
 impl<M: Tag> Mesh<M> {
+    /// The vertices in a k-d tree (see `VertLocation`).
     #[must_use]
     pub fn kdtree(&self) -> VertLocation<M> {
-        let mut tree = VertLocation::default();
-        for id in self.vert_ids() {
-            tree.add(self.position(id).into(), id);
+        let verts = self.vert_ids();
+        let points = verts
+            .iter()
+            .map(|&v| self.position(v).into())
+            .collect::<Vec<[f64; 3]>>();
+        VertLocation {
+            tree: ImmutableKdTree::new_from_slice(&points).ok(),
+            verts,
         }
-        tree
     }
 }

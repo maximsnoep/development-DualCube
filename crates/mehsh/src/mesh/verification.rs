@@ -100,10 +100,12 @@ impl<M: Tag> Mesh<M> {
             );
         }
         // this->next->...->next == this
-        const MAX_FACE_SIZE: usize = 10;
+        // A face can never have more edges than the mesh, so this bounds the walk without
+        // rejecting large (valid) polygons.
+        let max_face_size = self.nr_edges();
         for edge_id in self.edge_ids() {
             let mut next_id = edge_id;
-            for _ in 0..MAX_FACE_SIZE {
+            for _ in 0..max_face_size {
                 next_id = self.next(next_id);
                 if next_id == edge_id {
                     break;
@@ -145,7 +147,7 @@ impl<M: Tag> Mesh<M> {
             let a = corners[0];
             for o in corners.into_iter().skip(1) {
                 if self.position(a) == self.position(o) && self.position(a) != Vector3D::zeros() {
-                    println!("WARN: Face {face_id:?} has two identical corners: {a:?} and {o:?}");
+                    tracing::debug!("Face {face_id:?} has two identical corners: {a:?} and {o:?}");
                 }
             }
 

@@ -1,25 +1,12 @@
 use std::env;
 
-struct CliLogger;
-
-impl log::Log for CliLogger {
-    fn enabled(&self, metadata: &log::Metadata<'_>) -> bool {
-        metadata.level() <= log::Level::Info
-    }
-
-    fn log(&self, record: &log::Record<'_>) {
-        if self.enabled(record.metadata()) {
-            eprintln!("{} {}: {}", record.level(), record.target(), record.args());
-        }
-    }
-
-    fn flush(&self) {}
-}
-
-static LOGGER: CliLogger = CliLogger;
-
 fn main() {
-    let _ = log::set_logger(&LOGGER).map(|()| log::set_max_level(log::LevelFilter::Info));
+    // Log events (of all crates, through `tracing`) from INFO on, to stderr: level, target, and message.
+    tracing_subscriber::fmt()
+        .with_max_level(tracing::Level::INFO)
+        .with_writer(std::io::stderr)
+        .without_time()
+        .init();
 
     if let Err(err) = cli::cli_main(env::args().collect()) {
         eprintln!("error: {err}");

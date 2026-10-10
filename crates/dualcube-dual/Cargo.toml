@@ -2,6 +2,7 @@
 name = "dualcube-dual"
 version = "0.1.0"
 edition = "2024"
+license.workspace = true
 
 [lib]
 name = "dualcube_dual"
@@ -9,12 +10,12 @@ name = "dualcube_dual"
 [dependencies]
 dualcube-types = { path = "../dualcube-types" }
 grapff = { path = "../grapff" }
-mehsh = { path = "../mehsh" }
 orx-parallel = "3.4.0"
 rand = "0.10.1"
 serde = { version = "1.0.188", features = ["rc", "derive"] }
 slotmap = "1.0.7"
 thiserror = "2.0.17"
+rustc-hash = "2.1.1"
 
 [lints]
 workspace = true

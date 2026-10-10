@@ -6,19 +6,17 @@
 
 use super::{Job, JobResult};
 use crate::render;
-use crate::resources::{Configuration, Phase};
+use crate::resources::Configuration;
 use bevy::prelude::*;
 use dualcube::prelude::*;
 #[cfg(feature = "hex")]
 use dualcube_hex::HexExt;
-#[cfg(feature = "quad")]
-use dualcube_quad::QuadExt;
 use mehsh::prelude::VertKey;
 
 /// A completed stage of the pipeline.
 #[derive(Clone, Copy)]
+#[allow(dead_code)]
 pub(super) enum Stage {
-    Field,
     Graph,
     Loops,
     Dual,
@@ -30,29 +28,16 @@ pub(super) enum Stage {
 }
 
 impl Stage {
-    /// The job that follows this stage. The pipeline stops (with a refresh of
-    /// the renders) when the configured stop phase has been reached.
+    /// The job that follows this stage (the pipeline runs to the end, then refreshes the renders).
     pub(super) fn next_job(self, solution: Solution, configuration: Configuration) -> Job {
-        let stop_phase = match self {
-            Self::Loops => Some(Phase::Loops),
-            Self::Dual => Some(Phase::Dual),
-            Self::Layout => Some(Phase::Layout),
-            Self::Polycube => Some(Phase::Polycube),
-            // These stages never stop the pipeline themselves.
-            Self::Field | Self::Graph | Self::Corners | Self::Quad | Self::Hex => None,
-        };
-        if stop_phase == Some(configuration.stop.clone()) {
-            return Job::refresh(solution, configuration);
-        }
-
         match self {
-            Self::Field => Job::compute_graph(solution, configuration),
             Self::Graph => Job::refresh(solution, configuration),
             Self::Loops => Job::compute_dual(solution, configuration),
             Self::Dual => Job::place_corners(solution, configuration),
             Self::Corners => Job::place_paths(solution, configuration),
             Self::Layout => Job::compute_polycube(solution, configuration),
-            Self::Polycube => Job::refresh(solution, configuration),
+            // The quad mesh (and the polycube map) complete the pipeline.
+            Self::Polycube => Job::compute_quad(solution, configuration),
             Self::Quad => Job::refresh(solution, configuration),
             Self::Hex => Job::refresh(solution, configuration),
         }
@@ -76,6 +61,17 @@ fn try_step<E: std::fmt::Debug>(
     }
 }
 
+// A new solution from scratch (see `Solution::initialize`); only the flow fields and graphs are kept (they only depend
+// on the mesh).
+fn initialized(solution: &Solution, configuration: &Configuration) -> Solution {
+    let mut initialized = Solution::new(solution.mesh_ref.clone());
+    initialized.fields = solution.fields.clone();
+    initialized.flow_graphs = solution.flow_graphs.clone();
+    initialized.quality = configuration.quality;
+    initialized.initialize();
+    initialized
+}
+
 fn completed(stage: Stage, solution: Solution, configuration: &Configuration) -> Option<JobResult> {
     Some(JobResult::StageCompleted {
         stage,
@@ -84,46 +80,65 @@ fn completed(stage: Stage, solution: Solution, configuration: &Configuration) ->
     })
 }
 
+#[allow(dead_code)]
 impl Job {
     pub fn initialize_loops(solution: Solution, configuration: Configuration) -> Self {
         Self::new("initializing loops", move || {
-            let mut initialized = Solution::new(solution.mesh_ref.clone());
-            initialized.initialize();
-            completed(Stage::Loops, initialized, &configuration)
+            completed(
+                Stage::Loops,
+                initialized(&solution, &configuration),
+                &configuration,
+            )
         })
+        // A new start: replaces a running evolution.
+        .preempting()
     }
 
-    pub fn evolve(solution: Solution, configuration: Configuration) -> Self {
-        Self::new("evolving", move || {
-            match solution.evolve(
-                configuration.iterations,
-                configuration.pool1,
-                configuration.pool2,
-            ) {
-                Ok(evolved) => return completed(Stage::Loops, evolved, &configuration),
-                Err(e) => {
-                    warn!("Failed to evolve solution. {e}");
-                    return None;
-                }
+    /// Optimize the loops and the layout (see `Solution::optimize`), reporting to the monitor (see `EvolutionLive`);
+    /// supervised: it runs until stopped. A solution without a layout is initialized first.
+    pub fn optimize(
+        solution: Solution,
+        configuration: Configuration,
+        monitor: EvolutionMonitor,
+    ) -> Self {
+        Self::new("optimizing", move || {
+            let mut solution = if solution.layout.is_none() || solution.loops.len() < 3 {
+                monitor.set_activity("initializing".to_owned());
+                initialized(&solution, &configuration)
+            } else {
+                solution.clone()
             };
+            if solution.layout.is_none() {
+                warn!("Failed to optimize the solution: the initialization failed");
+                monitor.finish();
+                return completed(Stage::Loops, solution, &configuration);
+            }
+            solution.quality = configuration.quality;
+            let params = CoupledParams {
+                loops: EvolutionParams {
+                    patience: usize::MAX,
+                    ..configuration.evolution
+                },
+                layout: configuration.layout_evolution,
+                loop_generations: configuration.loop_generations,
+                layout_generations: configuration.layout_generations,
+                max_cycles: usize::MAX,
+            };
+            match solution.optimize(&params, &monitor) {
+                // The result is embedded (dual, layout, polycube): only the polycube and quad mesh follow.
+                Ok(optimized) => completed(Stage::Layout, optimized, &configuration),
+                Err(e) => {
+                    warn!("Failed to optimize the solution. {e}");
+                    None
+                }
+            }
         })
     }
 
-    pub fn compute_fields(solution: Solution, configuration: Configuration) -> Self {
-        Self::new("computing fields", move || {
+    pub fn prepare_flow(solution: Solution, configuration: Configuration) -> Self {
+        Self::new("computing flow fields and graphs", move || {
             let mut solution = solution.clone();
-            solution.fields = Some(Fields::new(
-                &solution.mesh_ref,
-                configuration.fields_params.clone(),
-            ));
-            completed(Stage::Field, solution, &configuration)
-        })
-    }
-
-    pub fn compute_graph(solution: Solution, configuration: Configuration) -> Self {
-        Self::new("computing flow graphs", move || {
-            let mut solution = solution.clone();
-            solution.set_flow_graphs(configuration.graph_params.clone());
+            solution.prepare_flow();
             completed(Stage::Graph, solution, &configuration)
         })
     }
@@ -171,9 +186,10 @@ impl Job {
         })
     }
 
-    pub fn smoothen_layout(solution: Solution, configuration: Configuration) -> Self {
-        Self::new("smoothening layout", move || {
-            let modified = try_step(&solution, "optimize corners", |s| s.optimize_corners())?;
+    /// Post-processing: smooth the paths of the layout (see `Solution::smooth_layout`).
+    pub fn smooth_layout(solution: Solution, configuration: Configuration) -> Self {
+        Self::new("smoothing paths", move || {
+            let modified = try_step(&solution, "smooth paths", |s| s.smooth_layout())?;
             completed(Stage::Layout, modified, &configuration)
         })
     }
@@ -187,27 +203,17 @@ impl Job {
         })
     }
 
+    /// The quad mesh, and the polycube map (the mesh mapped onto the polycube).
     pub fn compute_quad(solution: Solution, configuration: Configuration) -> Self {
-        #[cfg(feature = "quad")]
-        {
-            Self::new("computing quad", move || {
-                let modified = try_step(&solution, "construct quad", |s| {
-                    s.construct_quad(configuration.omega)
-                })?;
-                completed(Stage::Quad, modified, &configuration)
-            })
-        }
-        #[cfg(not(feature = "quad"))]
-        {
-            Self::new("computing quad", move || {
-                warn!(
-                    "Quad computation is disabled. Rebuild gui with `--features quad` to enable it."
-                );
-                None
-            })
-        }
+        Self::new("computing quad mesh", move || {
+            let modified = try_step(&solution, "construct quad", |s| {
+                s.construct_quad(QuadDensity::Fixed(configuration.omega))
+            })?;
+            completed(Stage::Quad, modified, &configuration)
+        })
     }
 
+    #[allow(unused_variables)]
     pub fn compute_hex(solution: Solution, configuration: Configuration) -> Self {
         #[cfg(feature = "hex")]
         {

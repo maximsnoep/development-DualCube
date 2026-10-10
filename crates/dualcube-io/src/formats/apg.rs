@@ -77,7 +77,7 @@ impl Export for APG {
                 Direction::Z => "Z",
             };
             let Some([v1, v2]) = polycube.structure.vertices(edge_id).collect_array::<2>() else {
-                panic!()
+                anyhow::bail!("polycube edge {edge_id:?} does not have exactly two endpoints");
             };
             edge_strings.push(format!(
                 "{} {} {label}",
@@ -85,7 +85,9 @@ impl Export for APG {
                 vert_ids.id(&v2).unwrap()
             ));
 
-            let path = layout.edge_to_path.get(&edge_id).unwrap();
+            let path = layout.edge_to_path.get(&edge_id).ok_or_else(|| {
+                anyhow::anyhow!("layout has no path for polycube edge {edge_id:?}")
+            })?;
             let length_of_path = path
                 .windows(2)
                 .map(|w| layout.granulated_mesh.distance(w[0], w[1]))
@@ -94,6 +96,9 @@ impl Export for APG {
         }
 
         let min_edge_length = edge_lengths.iter().cloned().fold(f64::MAX, f64::min);
+        if !(min_edge_length > 0.0 && min_edge_length.is_finite()) {
+            anyhow::bail!("degenerate layout: shortest edge path has length {min_edge_length}");
+        }
         let edge_lengths_int = edge_lengths
             .into_iter()
             .map(|length: f64| (length / min_edge_length).ceil() as u32)

@@ -14,8 +14,8 @@ impl InputPhase {
     }
 
     #[must_use]
-    pub fn compute_flow(&self, field_params: FieldParams, graph_params: GraphParams) -> FlowPhase {
-        let fields = Fields::new(&self.mesh_ref, field_params);
+    pub fn compute_flow(&self, graph_params: GraphParams) -> FlowPhase {
+        let fields = Fields::new(&self.mesh_ref);
         let flow_graphs = FlowPhase::build_graphs(&self.mesh_ref, &fields, graph_params);
         FlowPhase {
             input: self.clone(),
@@ -41,13 +41,6 @@ impl FlowPhase {
     ) -> Arc<[grapff::fixed::FixedGraph<EdgeID, f64>; 3]> {
         Arc::new(build_flow_graphs(mesh_ref, fields, graph_params))
     }
-
-    pub fn compute_dual(
-        &self,
-        loops: SlotMap<LoopID, Loop>,
-    ) -> Result<DualPhase, PropertyViolationError> {
-        DualPhase::from_loops(self.input.clone(), loops)
-    }
 }
 
 #[derive(Clone, Debug)]
@@ -71,21 +64,33 @@ impl DualPhase {
         Polycube::from_dual(&self.dual)
     }
 
-    pub fn compute_primal(&self, unit: bool) -> Result<PrimalPhase, SolutionError> {
+    /// Compute the primal (polycube and layout) with the given layout parameters; if given, near the corners of a
+    /// similar solution (see `CornerHint`).
+    pub fn compute_primal_near(
+        &self,
+        unit: bool,
+        params: LayoutParams,
+        hint: Option<&CornerHint>,
+    ) -> Result<PrimalPhase, SolutionError> {
         let polycube = self.compute_polycube();
         validate_polycube(&polycube)?;
+        let targets = hint.map(|hint| hint.targets(&self.dual, &polycube));
 
         let mut layout = None;
-        let mut layout_attempts = 0;
-        for _ in 0..10 {
-            layout_attempts += 1;
-            match Layout::embed(&self.dual, &polycube) {
+        for attempt in 0..params.attempts {
+            match Layout::embed_best_attempt_near(
+                &self.dual,
+                &polycube,
+                params.candidates,
+                attempt,
+                targets.as_ref().map(|t| (&t.corners, &t.styles)),
+            ) {
                 Ok(ok_layout) => {
                     layout = Some(ok_layout);
                     break;
                 }
                 Err(err) => {
-                    info!("compute_primal: layout attempt {layout_attempts} failed: {err:?}");
+                    debug!("compute_primal: layout attempt {attempt} failed: {err:?}");
                 }
             }
         }
@@ -104,6 +109,35 @@ impl DualPhase {
     }
 }
 
+/// Parameters for embedding the layout.
+#[derive(Clone, Copy, Debug)]
+pub struct LayoutParams {
+    /// Number of path insertion orders that are tried (in parallel); the shortest embedding is kept.
+    pub candidates: usize,
+    /// Number of times the embedding is retried if all candidates fail.
+    pub attempts: usize,
+}
+
+impl Default for LayoutParams {
+    fn default() -> Self {
+        Self {
+            candidates: 4,
+            attempts: 3,
+        }
+    }
+}
+
+impl LayoutParams {
+    /// Cheap parameters, e.g., for scoring many candidate solutions during evolution.
+    #[must_use]
+    pub fn fast() -> Self {
+        Self {
+            candidates: 1,
+            attempts: 10,
+        }
+    }
+}
+
 #[derive(Clone, Debug)]
 pub struct PrimalPhase {
     pub dual: DualPhase,
@@ -119,18 +153,6 @@ impl PrimalPhase {
             self.polycube.resize(&self.dual.dual, Some(&self.layout));
         }
         Ok(())
-    }
-
-    #[must_use]
-    pub fn quality(&self, loop_count: usize) -> Option<f64> {
-        let beta = 0.001;
-        if let (Some(alignment), Some(orthogonality)) =
-            (self.layout.alignment, self.layout.orthogonality)
-        {
-            Some(alignment + orthogonality - beta * loop_count as f64)
-        } else {
-            None
-        }
     }
 }
 

@@ -3,9 +3,9 @@ use std::fs;
 use std::path::PathBuf;
 
 fn repo_root() -> PathBuf {
+    // CARGO_MANIFEST_DIR is <repo>/apps/cli
     PathBuf::from(env!("CARGO_MANIFEST_DIR"))
         .parent()
-        .and_then(|p| p.parent())
         .and_then(|p| p.parent())
         .unwrap()
         .to_path_buf()
@@ -18,12 +18,24 @@ fn test_output_dir(name: &str) -> PathBuf {
     dir
 }
 
+/// A small triangle mesh that is tracked in the repository.
+const TEST_MODEL: &str = "blub001k.obj";
+
 fn example_model(name: &str) -> PathBuf {
-    repo_root().join("out").join("examples").join(name)
+    // Prefer local (untracked) example models, fall back to the tracked mehsh test assets.
+    let local = repo_root().join("out").join("examples").join(name);
+    if local.exists() {
+        return local;
+    }
+    repo_root()
+        .join("crates")
+        .join("mehsh")
+        .join("assets")
+        .join(name)
 }
 
 fn maybe_models() -> Vec<PathBuf> {
-    ["cube.obj", "plane.obj", "bunny.obj"]
+    ["cube.obj", "plane.obj", "bunny.obj", TEST_MODEL]
         .into_iter()
         .map(example_model)
         .filter(|p| p.exists())
@@ -39,18 +51,18 @@ fn run_cli(args: &[&str]) {
 
 #[test]
 fn import_command_runs_on_example_model() {
-    let input = example_model("cube.obj");
+    let input = example_model(TEST_MODEL);
     assert!(input.exists(), "missing test model: {}", input.display());
 
     run_cli(&["import", &input.display().to_string()]);
 }
 
 #[test]
-fn initialize_then_export_dsol_end_to_end() {
-    let input = example_model("cube.obj");
+fn initialize_then_export_dc_end_to_end() {
+    let input = example_model(TEST_MODEL);
     assert!(input.exists(), "missing test model: {}", input.display());
 
-    let out_dir = test_output_dir("initialize_then_export_dsol_end_to_end");
+    let out_dir = test_output_dir("initialize_then_export_dc_end_to_end");
     let output_base = out_dir.join("cube_initialized");
 
     run_cli(&[
@@ -61,7 +73,7 @@ fn initialize_then_export_dsol_end_to_end() {
         &output_base.display().to_string(),
     ]);
 
-    let output_file = output_base.with_extension("dsol");
+    let output_file = output_base.with_extension("dc");
     assert!(
         output_file.exists(),
         "expected output file to exist: {}",
@@ -71,7 +83,7 @@ fn initialize_then_export_dsol_end_to_end() {
 
 #[test]
 fn reconstruct_command_runs_from_initialized_solution() {
-    let input = example_model("cube.obj");
+    let input = example_model(TEST_MODEL);
     assert!(input.exists(), "missing test model: {}", input.display());
 
     let out_dir = test_output_dir("reconstruct_command_runs_from_initialized_solution");
@@ -86,7 +98,7 @@ fn reconstruct_command_runs_from_initialized_solution() {
         &initialized_base.display().to_string(),
     ]);
 
-    let initialized_file = initialized_base.with_extension("dsol");
+    let initialized_file = initialized_base.with_extension("dc");
     assert!(
         initialized_file.exists(),
         "expected initialized file to exist: {}",
@@ -100,11 +112,9 @@ fn reconstruct_command_runs_from_initialized_solution() {
         "--output",
         &reconstructed_base.display().to_string(),
         "--unit",
-        "--omega",
-        "5",
     ]);
 
-    let reconstructed_file = reconstructed_base.with_extension("dsol");
+    let reconstructed_file = reconstructed_base.with_extension("dc");
     assert!(
         reconstructed_file.exists(),
         "expected reconstructed file to exist: {}",
@@ -132,7 +142,7 @@ fn initialize_smoke_runs_across_available_models() {
             &output_base.display().to_string(),
         ]);
 
-        let output_file = output_base.with_extension("dsol");
+        let output_file = output_base.with_extension("dc");
         assert!(
             output_file.exists(),
             "expected output file to exist: {}",

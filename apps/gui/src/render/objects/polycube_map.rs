@@ -1,9 +1,9 @@
 //! Render object for the polycube-map (the input mesh mapped onto the polycube).
 
 use super::super::gizmos::{
-    lambert_color_map, layout_path_gizmos, segmentation_color_map, uniform_color_map,
+    lambert_color_map, loop_half_width, path_strips, segmentation_color_map, uniform_color_map,
 };
-use super::super::store::RenderObject;
+use super::super::store::{RenderAsset, RenderObject};
 use crate::{colors, resources::Configuration};
 use dualcube::prelude::*;
 use mehsh_bevy;
@@ -14,7 +14,7 @@ use mehsh_bevy;
 /// - the layout paths mapped on the polycube (flat and non-flat)
 pub(in crate::render) fn build(
     solution: &Solution,
-    _configuration: &Configuration,
+    configuration: &Configuration,
 ) -> Option<RenderObject> {
     let (quad, layout, polycube) = (
         solution.quad.as_ref()?,
@@ -24,8 +24,15 @@ pub(in crate::render) fn build(
 
     let mesh = &quad.triangle_mesh_polycube;
     let (scale, translation) = mesh.scale_translation();
-    let (gizmos_paths, gizmos_flat_paths) =
-        layout_path_gizmos(layout, polycube, mesh, translation, scale);
+    // The paths as strips (as on the model), lifted off the polycube (on its edges, they bend around them).
+    let half = loop_half_width(mesh, configuration.loop_width);
+    let [paths, flat_paths] = path_strips(
+        |spacing| solution.path_bands_on(mesh, spacing),
+        half,
+        half,
+        translation,
+        scale,
+    );
 
     Some(
         RenderObject::default()
@@ -47,8 +54,8 @@ pub(in crate::render) fn build(
                 -0.01,
                 "triangles",
             )
-            .gizmo(gizmos_paths, 5., -0.001, "paths")
-            .gizmo(gizmos_flat_paths, 3., -0.0011, "flat paths")
+            .add("paths", RenderAsset::Mesh(paths))
+            .add("flat paths", RenderAsset::Mesh(flat_paths))
             .to_owned(),
     )
 }

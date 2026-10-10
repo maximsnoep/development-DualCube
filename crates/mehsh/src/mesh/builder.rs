@@ -68,18 +68,44 @@ impl<M: Tag> Mesh<M> {
         //      return error if no such edge exists
         //
 
+        // 0. Validate the input, so malformed files produce an error instead of a panic.
+        for (inp_face_id, inp_face_verts) in faces.iter().enumerate() {
+            if inp_face_verts.len() < 3 {
+                return Err(MeshError::Unknown(format!(
+                    "face {inp_face_id} has {} vertices (need at least 3)",
+                    inp_face_verts.len()
+                )));
+            }
+            if let Some(&bad) = inp_face_verts.iter().find(|&&v| v >= positions.len()) {
+                return Err(MeshError::Unknown(format!(
+                    "face {inp_face_id} references vertex {bad}, but only {} vertices exist",
+                    positions.len()
+                )));
+            }
+        }
+
         // 1. Create the vertices.
         // Need mapping between original indices, and new pointers
         let mut vertex_pointers = ids::IdMap::new();
         let mut face_pointers = ids::IdMap::new();
 
-        for &inp_vert_id in faces.iter().flatten().unique() {
-            vertex_pointers.insert(inp_vert_id, mesh.add_vertex(positions[inp_vert_id]));
+        // Dense lookup table for the hot loop below (the IdMap is a SipHash bimap).
+        let mut vert_lookup: Vec<Option<VertKey<M>>> = vec![None; positions.len()];
+        for &inp_vert_id in faces.iter().flatten() {
+            if vert_lookup[inp_vert_id].is_none() {
+                let vert_id = mesh.add_vertex(positions[inp_vert_id]);
+                vert_lookup[inp_vert_id] = Some(vert_id);
+                vertex_pointers.insert(inp_vert_id, vert_id);
+            }
         }
 
         // 2. Create the faces with its (half)edges.
         // Need mapping between endpoints and edges for later use (assigning twins).
-        let mut endpoints_to_edges = HashMap::<(VertKey<M>, VertKey<M>), EdgeKey<M>>::new();
+        let mut endpoints_to_edges =
+            rustc_hash::FxHashMap::<(VertKey<M>, VertKey<M>), EdgeKey<M>>::with_capacity_and_hasher(
+                faces.iter().map(Vec::len).sum(),
+                rustc_hash::FxBuildHasher,
+            );
         for (inp_face_id, inp_face_verts) in faces.iter().enumerate() {
             let face_id = mesh.add_face();
             face_pointers.insert(inp_face_id, face_id);
@@ -88,9 +114,9 @@ impl<M: Tag> Mesh<M> {
             for i in 0..inp_face_verts.len() {
                 let inp_start_vertex = inp_face_verts[i];
                 let inp_end_vertex = inp_face_verts[(i + 1) % inp_face_verts.len()];
-                let (&start_vertex, &end_vertex) = (
-                    vertex_pointers.key(inp_start_vertex).unwrap(),
-                    vertex_pointers.key(inp_end_vertex).unwrap(),
+                let (start_vertex, end_vertex) = (
+                    vert_lookup[inp_start_vertex].unwrap(),
+                    vert_lookup[inp_end_vertex].unwrap(),
                 );
                 let edge_id = mesh.add_edge();
                 if endpoints_to_edges
@@ -127,10 +153,15 @@ impl<M: Tag> Mesh<M> {
             }
         }
 
-        // Assert that all elements have their required properties set.
-        mesh.assert_properties();
-        mesh.assert_references();
-        mesh.assert_invariants();
+        // Assert that all elements have their required properties set. These are internal consistency
+        // checks of the construction above (O(E) each, and `from` is called in hot paths such as mesh
+        // refinement), so they only run in debug builds.
+        #[cfg(debug_assertions)]
+        {
+            mesh.assert_properties();
+            mesh.assert_references();
+            mesh.assert_invariants();
+        }
 
         // mesh.is_connected();
         if mesh.is_polygonal().is_err() {

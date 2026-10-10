@@ -7,18 +7,18 @@
 //! representations:
 //!
 //! 1. flow fields and graphs ([`crate::flow`]),
-//! 2. dual loops ([`crate::loops`]),
-//! 3. the dual structure ([`crate::dual`]),
-//! 4. the layout / embedding ([`crate::layout`]),
-//! 5. the polycube ([`crate::polycube`]),
-//! 6. the quad mesh ([`crate::quad`]),
-//! 7. the hex mesh ([`crate::hex`]).
+//! 2. dual loops ([`crate::dual::loops`]),
+//! 3. the dual structure ([`crate::dual::dual`]),
+//! 4. the layout / embedding ([`crate::primal::layout`]),
+//! 5. the polycube ([`crate::primal::polycube`]),
+//! 6. the quad mesh ([`Quad`]).
 //!
-//! The loop bookkeeping and tracing methods live in [`crate::loops`]; the flow
-//! graph construction lives in [`crate::flow::graph`].
+//! The loop bookkeeping and sampling live in [`crate::dual::loops`] and
+//! [`crate::dual::sampler`]; the flow graph construction lives in
+//! [`crate::flow::flowgraph`].
 
 use crate::prelude::*;
-use rand::seq::IteratorRandom;
+
 use serde::{Deserialize, Serialize};
 use slotmap::SlotMap;
 use std::sync::Arc;
@@ -37,6 +37,8 @@ pub enum SolutionError {
     NoPrimal,
     #[error("The POLYCUBE representation is not initialized and can therefore not be modified.")]
     NoPolycube,
+    #[error("The QUAD mesh could not be constructed.")]
+    QuadFailed,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -59,8 +61,6 @@ pub struct Solution {
 
     #[serde(skip)]
     pub(crate) occupied: ids::SecMap<EDGE, INPUT, Vec<LoopID>>,
-    #[serde(skip)]
-    pub last_loop: Option<LoopID>,
 
     pub dual: Result<Dual, PropertyViolationError>,
     pub polycube: Option<Polycube>,
@@ -72,6 +72,132 @@ pub struct Solution {
 
     #[serde(skip)]
     pub fields: Option<Fields<INPUT>>,
+
+    /// The criterion used to score this solution (see `get_quality`).
+    #[serde(skip)]
+    pub quality: QualityParams,
+
+    /// Evolution: the misalignment per input face of this solution's layout (kept when the layout itself is dropped
+    /// to save memory), used to target badly aligned regions.
+    #[serde(skip)]
+    pub(crate) targets: Option<Arc<Vec<(FaceID, f64)>>>,
+
+    /// Evolution: the corners of this solution's layout (or of its parent's), kept when the layout itself is dropped;
+    /// a solution with similar loops starts its layout from them (see `CornerHint`).
+    #[serde(skip)]
+    pub(crate) corner_hint: Option<Arc<CornerHint>>,
+
+    /// Evolution: the penalty of every loop of this solution's layout (see `Solution::loop_penalties`), kept when the
+    /// layout is dropped, so that the mutations target the loops that need it.
+    #[serde(skip)]
+    pub(crate) loop_penalties: Option<Arc<HashMap<LoopID, f64>>>,
+}
+
+/// The corners of a layout per loop region, to place the corners of a similar solution (e.g., a mutation) at the same
+/// positions: every region of the new solution that shares most of its vertices (`HINT_OVERLAP`, in both directions)
+/// with a region of this solution gets the position of that region's corner as a target (see
+/// `Layout::place_all_corners_near`); the other regions are placed as usual. Optimizations of the layout are thus
+/// largely kept by the loops.
+#[derive(Debug)]
+pub struct CornerHint {
+    region_of: HashMap<VertID, usize>,
+    sizes: Vec<usize>,
+    positions: Vec<Vector3D>,
+    // The styles of the paths (by the regions of their corners, both orientations).
+    styles: HashMap<(usize, usize), PathStyle>,
+}
+
+/// The targets of a layout from a `CornerHint`: positions of the corners per region, and styles of the paths.
+#[derive(Debug, Default)]
+pub struct LayoutTargets {
+    pub corners: HashMap<LoopRegionID, Vector3D>,
+    pub styles: HashMap<EdgeKey<POLYCUBE>, PathStyle>,
+}
+
+// The fraction of the vertices that two regions must share to be the same region (see `CornerHint`).
+const HINT_OVERLAP: f64 = 0.7;
+
+impl CornerHint {
+    /// The corners of the layout of a solution (`None` if it has no complete layout).
+    #[must_use]
+    pub fn of(solution: &Solution) -> Option<Self> {
+        let dual = solution.dual.as_ref().ok()?;
+        let layout = solution.layout.as_ref()?;
+        let mut hint = Self {
+            region_of: HashMap::new(),
+            sizes: vec![],
+            positions: vec![],
+            styles: HashMap::new(),
+        };
+        let mut index_of = HashMap::new();
+        for region in dual.loop_structure.face_ids() {
+            let Some(corner) = layout.polycube_ref.region_to_vertex.get_by_left(&region) else {
+                continue;
+            };
+            let Some(&vert) = layout.vert_to_corner.get_by_left(corner) else {
+                continue;
+            };
+            let verts = dual.region_to_verts(region);
+            if verts.is_empty() {
+                continue;
+            }
+            let index = hint.positions.len();
+            index_of.insert(*corner, index);
+            hint.sizes.push(verts.len());
+            hint.positions.push(layout.granulated_mesh.position(vert));
+            for v in verts {
+                hint.region_of.insert(v, index);
+            }
+        }
+        let structure = &layout.polycube_ref.structure;
+        for (&edge, &style) in &layout.path_styles {
+            if let Some([u, v]) = structure.vertices(edge).collect_array::<2>()
+                && let (Some(&a), Some(&b)) = (index_of.get(&u), index_of.get(&v))
+            {
+                hint.styles.insert((a, b), style);
+                hint.styles.insert((b, a), style);
+            }
+        }
+        Some(hint)
+    }
+
+    /// The targets of the corners of the regions of a (similar) dual structure, and of the styles of the paths
+    /// between matched corners.
+    #[must_use]
+    pub fn targets(&self, dual: &Dual, polycube: &Polycube) -> LayoutTargets {
+        let mut targets = LayoutTargets::default();
+        let mut matched = HashMap::new();
+        for region in dual.loop_structure.face_ids() {
+            if polycube.region_to_vertex.get_by_left(&region).is_none() {
+                continue;
+            }
+            let verts = dual.region_to_verts(region);
+            let mut counts: HashMap<usize, usize> = HashMap::new();
+            for v in &verts {
+                if let Some(&index) = self.region_of.get(v) {
+                    *counts.entry(index).or_default() += 1;
+                }
+            }
+            if let Some((index, count)) = counts.into_iter().max_by_key(|&(_, count)| count)
+                && count as f64 >= HINT_OVERLAP * verts.len() as f64
+                && count as f64 >= HINT_OVERLAP * self.sizes[index] as f64
+            {
+                targets.corners.insert(region, self.positions[index]);
+                if let Some(&corner) = polycube.region_to_vertex.get_by_left(&region) {
+                    matched.insert(corner, index);
+                }
+            }
+        }
+        for edge in polycube.structure.edge_ids() {
+            if let Some([u, v]) = polycube.structure.vertices(edge).collect_array::<2>()
+                && let (Some(&a), Some(&b)) = (matched.get(&u), matched.get(&v))
+                && let Some(&style) = self.styles.get(&(a, b))
+            {
+                targets.styles.insert(edge, style);
+            }
+        }
+        targets
+    }
 }
 
 impl Clone for Solution {
@@ -80,13 +206,16 @@ impl Clone for Solution {
             mesh_ref: self.mesh_ref.clone(),
             loops: self.loops.clone(),
             occupied: self.occupied.clone(),
-            last_loop: self.last_loop,
             dual: self.dual.clone(),
             polycube: self.polycube.clone(),
             layout: self.layout.clone(),
             quad: self.quad.clone(),
             flow_graphs: self.flow_graphs.clone(),
             fields: self.fields.clone(),
+            quality: self.quality,
+            targets: self.targets.clone(),
+            corner_hint: self.corner_hint.clone(),
+            loop_penalties: self.loop_penalties.clone(),
         }
     }
 }
@@ -103,12 +232,15 @@ impl Solution {
     }
 
     pub fn from_persistence(data: SolutionPersistence) -> Self {
+        // Loops stored without offsets (older files) are ordered along their edges here.
+        let LoopState {
+            loops, occupied, ..
+        } = LoopState::from_loops(&data.mesh_ref, data.loops);
         Self {
             fields: None,
 
-            occupied: Loop::occupied(&data.loops),
-            loops: data.loops,
-            last_loop: None,
+            occupied,
+            loops,
 
             dual: data.dual,
 
@@ -118,6 +250,11 @@ impl Solution {
             quad: None,
 
             flow_graphs: None,
+
+            quality: QualityParams::default(),
+            targets: None,
+            corner_hint: None,
+            loop_penalties: None,
 
             mesh_ref: data.mesh_ref,
         }
@@ -144,12 +281,15 @@ impl Solution {
             polycube: None,
             layout: None,
             quad: None,
-            last_loop: None,
             // Flow fields and graphs are computed lazily (see `prepare_flow`), so we
             // don't waste work building them for solutions that are only loaded or
             // reconstructed rather than initialized from scratch.
             fields: None,
             flow_graphs: None,
+            quality: QualityParams::default(),
+            targets: None,
+            corner_hint: None,
+            loop_penalties: None,
         }
     }
 
@@ -164,7 +304,7 @@ impl Solution {
             return;
         }
         let input = InputPhase::new(self.mesh_ref.clone());
-        let flow = input.compute_flow(FieldParams::default(), GraphParams::default());
+        let flow = input.compute_flow(GraphParams::default());
         self.fields = Some(flow.fields);
         self.flow_graphs = Some(flow.flow_graphs);
     }
@@ -179,163 +319,6 @@ impl Solution {
 
         self.flow_graphs = Some(Arc::new(build_flow_graphs(&self.mesh_ref, fields, params)));
         info!("flow graphs set");
-    }
-
-    /// Initialize the loop structure by sampling per-axis loops and keeping the
-    /// best valid combination.
-    pub fn initialize(&mut self) {
-        // Loops are sampled from the flow graphs, so make sure they are ready.
-        self.prepare_flow();
-
-        let m = |b: f64| OrderedFloat(b.powi(10));
-        let s = |(p, _): (&[EdgeID], f64)| -(p.len() as f64);
-
-        let samples = 3;
-        let x_loops = self.sample_loops(samples, Direction::X, m, s);
-        let y_loops = self.sample_loops(samples, Direction::Y, m, s);
-        let z_loops = self.sample_loops(samples, Direction::Z, m, s);
-
-        // Compute all n^3 combinations
-        let combinations = x_loops
-            .into_iter()
-            .cartesian_product(y_loops)
-            .cartesian_product(z_loops)
-            .map(|((x, y), z)| (x, y, z))
-            .collect_vec();
-
-        let candidate_solutions = combinations
-            .into_par()
-            .filter_map(|(x_loop, y_loop, z_loop)| {
-                let mut solution = self.clone();
-                solution.add_loop(Loop {
-                    edges: x_loop,
-                    direction: Direction::X,
-                });
-                solution.add_loop(Loop {
-                    edges: y_loop,
-                    direction: Direction::Y,
-                });
-                solution.add_loop(Loop {
-                    edges: z_loop,
-                    direction: Direction::Z,
-                });
-                if solution.reconstruct_solution(false, 1).is_err() {
-                    None
-                } else {
-                    Some(solution)
-                }
-            })
-            .collect::<Vec<_>>();
-
-        // Get the best solution based on quality
-        if let Some(best_solution) = candidate_solutions
-            .into_iter()
-            .max_by_key(|solution| OrderedFloat(solution.get_quality().unwrap()))
-        {
-            *self = best_solution;
-        }
-    }
-
-    /// Evolve the loop structure with a simple population-based search.
-    pub fn evolve(
-        &self,
-        iterations: usize,
-        pool1_size: usize,
-        pool2_size: usize,
-    ) -> Result<Self, SolutionError> {
-        let Some(initial_quality) = self.get_quality() else {
-            return Err(SolutionError::NoPrimal);
-        };
-        if pool1_size == 0 {
-            warn!("evolve: pool1_size is 0; cannot evolve");
-            return Ok(self.clone());
-        }
-
-        let started_at = Instant::now();
-        let survivor_count = pool1_size.min(5);
-        let mut seed = self.clone();
-        seed.prepare_flow();
-        let mut pool1 = vec![(seed, initial_quality); pool1_size];
-
-        info!(
-            "evolve: starting with iterations={iterations}, pool1_size={pool1_size}, pool2_size={pool2_size}, initial_quality={initial_quality}"
-        );
-
-        for iteration in 0..iterations {
-            let iteration_started_at = Instant::now();
-
-            let raw_mutations = (0..pool2_size)
-                .into_par()
-                .filter_map(|_| {
-                    let index = rand::random_range(0..pool1.len());
-                    let (sol, _) = &pool1[index];
-                    sol.mutation()
-                })
-                .collect::<Vec<_>>();
-
-            let raw_generated = raw_mutations.len();
-            let dedup_timer = Instant::now();
-            let mut seen = HashSet::new();
-            let unique_mutations = raw_mutations
-                .into_iter()
-                .filter(|solution| seen.insert(solution.loop_signature()))
-                .collect::<Vec<_>>();
-            let unique_generated = unique_mutations.len();
-            let dedup_ms = dedup_timer.elapsed();
-
-            let mut pool2 = unique_mutations
-                .into_par()
-                .filter_map(|mut mutation| {
-                    if mutation.reconstruct_solution_inner(true, 1, false).is_err() {
-                        return None;
-                    }
-                    let quality = mutation.get_quality().unwrap_or(0.0);
-                    Some((mutation, quality))
-                })
-                .collect::<Vec<_>>();
-
-            let generated = pool2.len();
-            let best_mutation = pool2.iter().map(|(_, q)| *q).reduce(f64::max);
-            let avg_mutation = if generated == 0 {
-                None
-            } else {
-                Some(pool2.iter().map(|(_, q)| *q).sum::<f64>() / generated as f64)
-            };
-
-            pool1.append(&mut pool2);
-            pool1.sort_unstable_by(|(_, a), (_, b)| b.total_cmp(a));
-            pool1.truncate(survivor_count);
-
-            let best_in_pool = pool1.first().map(|(_, q)| *q).unwrap_or(f64::MIN);
-            let worst_in_pool = pool1.last().map(|(_, q)| *q).unwrap_or(f64::MIN);
-
-            info!(
-                "evolve: iteration {}/{} raw={} unique={} valid={}/{} dedup={:?} elapsed={:?}; best_mutation={best_mutation:?}, avg_mutation={avg_mutation:?}, pool_len={}, best={best_in_pool}, worst={worst_in_pool}",
-                iteration + 1,
-                iterations,
-                raw_generated,
-                unique_generated,
-                generated,
-                pool2_size,
-                dedup_ms,
-                iteration_started_at.elapsed(),
-                pool1.len()
-            );
-        }
-
-        let Some((sol, quality)) = pool1.into_iter().next() else {
-            return Ok(self.clone());
-        };
-        info!(
-            "evolve: picked best solution with quality {quality} after {:?}",
-            started_at.elapsed()
-        );
-
-        let mut combined = self.clone();
-        combined.loops = sol.loops.clone();
-        combined.occupied = sol.occupied.clone();
-        combined.reconstruct_solution(false, 0)?;
-        Ok(combined)
     }
 
     /// Construct the dual structure and the polycube from the current loops.
@@ -396,51 +379,18 @@ impl Solution {
             return Err(SolutionError::NoPrimal);
         }
         let layout = self.layout.as_mut().unwrap();
-        layout.place_all_paths()?;
-        layout.assign_all_patches()?;
+        layout.place_paths_best(LayoutParams::default().candidates)?;
         Ok(())
     }
 
-    /// Optimize corner placements by laplacian-shooting each corner and keeping
-    /// the improved layout.
-    pub fn optimize_corners(&mut self) -> Result<(), SolutionError> {
-        if self.dual.is_err() {
-            return Err(SolutionError::NoDual);
-        }
-        let dual = self.layout.as_ref().unwrap().dual_ref.clone();
-        let polycube = self.layout.as_ref().unwrap().polycube_ref.clone();
-
-        let polycube_vertices = dual
-            .loop_structure
-            .face_ids()
-            .iter()
-            .map(|f| polycube.region_to_vertex.get_by_left(f).unwrap().to_owned())
-            .collect_vec();
-
-        let mut solution_backup = self.clone();
-        let mut solution_clone = self.clone();
-
-        let vert_lookup = self.layout.as_ref().unwrap().granulated_mesh.kdtree();
-
-        for &polycube_vertex in &polycube_vertices {
-            let layout = solution_clone.layout.as_mut().unwrap();
-
-            if layout
-                .laplacian_corner_shoot(polycube_vertex, &vert_lookup)
-                .is_err()
-            {
-                solution_clone = solution_backup.clone();
-                continue;
-            }
-
-            let quality = solution_clone.get_quality().unwrap();
-            solution_backup = solution_clone.clone();
-            info!("optimize_corners: shot corner {polycube_vertex:?}, new quality {quality:?}");
-        }
-
-        *self = solution_clone;
-
-        Ok(())
+    /// Straighten the layout paths (to locally shortest paths, keeping the patch topology).
+    pub fn straighten_paths(&mut self) -> Result<StraightenStats, SolutionError> {
+        let layout = self
+            .layout
+            .as_mut()
+            .filter(|layout| layout.is_complete())
+            .ok_or(SolutionError::NoPrimal)?;
+        Ok(layout.straighten_paths()?)
     }
 
     /// Whether the current loops induce a valid dual structure.
@@ -449,17 +399,31 @@ impl Solution {
     }
 
     /// Rebuild the full chain (dual, polycube, layout, quad) from the loops.
-    pub fn reconstruct_solution(&mut self, unit: bool, omega: usize) -> Result<(), SolutionError> {
-        self.reconstruct_solution_inner(unit, omega, false)
+    pub fn reconstruct_solution(&mut self, unit: bool) -> Result<(), SolutionError> {
+        self.reconstruct_solution_with(unit, LayoutParams::default())
     }
 
-    fn reconstruct_solution_inner(
+    /// Rebuild the full chain from the loops, with the given parameters for embedding the layout.
+    pub fn reconstruct_solution_with(
         &mut self,
         unit: bool,
-        _omega: usize,
-        _construct_quad: bool,
+        params: LayoutParams,
+    ) -> Result<(), SolutionError> {
+        self.reconstruct_near(unit, params, None)
+    }
+
+    /// See `reconstruct_solution_with`; the corners near those of the given hint (see `CornerHint`).
+    pub fn reconstruct_near(
+        &mut self,
+        unit: bool,
+        params: LayoutParams,
+        hint: Option<&CornerHint>,
     ) -> Result<(), SolutionError> {
         let started_at = Instant::now();
+        // Reuse the dual structure if it is up to date (e.g., built when the loops were added during the evolution).
+        let current = self
+            .dual_is_current()
+            .then(|| std::mem::replace(&mut self.dual, Err(PropertyViolationError::default())));
         self.clear();
 
         if self.loops.len() < 3 {
@@ -467,31 +431,28 @@ impl Solution {
         }
 
         let dual_timer = Instant::now();
-        let dual_phase =
-            DualPhase::from_loops(InputPhase::new(self.mesh_ref.clone()), self.loops.clone())?;
+        let input = InputPhase::new(self.mesh_ref.clone());
+        let dual_phase = match current {
+            Some(Ok(dual)) => DualPhase {
+                input,
+                loops: self.loops.clone(),
+                dual,
+            },
+            _ => DualPhase::from_loops(input, self.loops.clone())?,
+        };
         let dual_ms = dual_timer.elapsed();
 
         let primal_timer = Instant::now();
-        let primal = dual_phase.compute_primal(unit)?;
+        let primal = dual_phase.compute_primal_near(unit, params, hint)?;
         let primal_ms = primal_timer.elapsed();
 
         self.dual = Ok(primal.dual.dual);
         self.polycube = Some(primal.polycube);
         self.layout = Some(primal.layout);
-        let polycube_ms = primal_ms;
-        let layout_ms = primal_ms;
-        let resize_ms = std::time::Duration::ZERO;
-        let layout_attempts = 0;
 
-        info!(
-            "reconstruct_solution: quality={:?} loops={} dual={:?} polycube={:?} layout={:?} layout_attempts={} resize={:?} total_before_quad={:?}",
-            self.get_quality(),
+        debug!(
+            "reconstruct_solution: loops={} dual={dual_ms:?} primal={primal_ms:?} total={:?}",
             self.loops.len(),
-            dual_ms,
-            polycube_ms,
-            layout_ms,
-            layout_attempts,
-            resize_ms,
             started_at.elapsed()
         );
 
@@ -521,121 +482,55 @@ impl Solution {
         }
     }
 
+    /// Constructs the quad mesh of the layout (`self.quad`; `None` on failure).
+    pub fn construct_quad(&mut self, density: QuadDensity) -> Result<(), SolutionError> {
+        let layout = self.layout.as_ref().ok_or(SolutionError::NoPrimal)?;
+        self.quad = build_quad_from_layout(layout, density);
+        self.quad.as_ref().ok_or(SolutionError::QuadFailed)?;
+        Ok(())
+    }
+
+    /// The quality of the solution according to its quality criterion (`self.quality`), or `None` if the solution
+    /// has no complete layout. Only the terms needed by the criterion are computed.
     pub fn get_quality(&self) -> Option<f64> {
         let layout = self.layout.as_ref()?;
-        let beta = 0.001;
-        if let (Some(alignment), Some(orthogonality)) = (layout.alignment, layout.orthogonality) {
-            Some(alignment + orthogonality - beta * self.loops.len() as f64)
-        } else {
-            None
-        }
-    }
-
-    fn clone_loop_state(&self) -> Self {
-        // Evolution mutates only loop bookkeeping. Avoid cloning any derived
-        // representations; they are rebuilt once the candidate needs scoring.
-        // `flow_graphs` is Arc-backed, so this only bumps a refcount and lets
-        // evolved candidates keep sampling loops in later iterations.
-        Self {
-            mesh_ref: self.mesh_ref.clone(),
-            loops: self.loops.clone(),
-            occupied: self.occupied.clone(),
-            last_loop: self.last_loop,
-            dual: Err(PropertyViolationError::default()),
-            polycube: None,
-            layout: None,
-            quad: None,
-            flow_graphs: self.flow_graphs.clone(),
-            fields: None,
-        }
-    }
-
-    fn loop_signature(&self) -> Vec<(usize, Vec<EdgeID>)> {
-        self.loops
-            .values()
-            .map(|loop_| (loop_.direction as usize, loop_.edges.clone()))
-            .sorted_by(|a, b| a.0.cmp(&b.0).then_with(|| a.1.len().cmp(&b.1.len())))
-            .collect_vec()
-    }
-
-    /// Produce a mutated loop-state copy of this solution by adding or removing loops.
-    pub fn mutation(&self) -> Option<Self> {
-        // Two types of mutation:
-        // 1. Add loop(s)
-        // 2. Remove loop(s)
-
-        let m = |b: f64| OrderedFloat(b.powi(10));
-        let s = |(_, s): (&[EdgeID], f64)| s;
-
-        let timer = Instant::now();
-        let mut mutated_solution = self.clone_loop_state();
-        let clone_ms = timer.elapsed();
-        let mut case = (rand::random::<u8>() % 2) + 1;
-        let mut operation = "remove";
-        let mut sampled_loops = 0usize;
-        let mut sample_ms = std::time::Duration::ZERO;
-
-        if self.loops.is_empty() {
-            return None;
-        }
-
-        if self.loops.len() < 5 {
-            case = 1;
-        }
-
-        match case {
-            1 => {
-                // Add a small batch before validating. Most mutations stay cheap,
-                // but some explore coupled loops that only become valid/useful together.
-                let add_count = match rand::random_range(0..10) {
-                    0 => 3,
-                    1..=3 => 2,
-                    _ => 1,
-                };
-
-                operation = "add";
-                let max_attempts = add_count * 4;
-                let mut attempts = 0;
-                while sampled_loops < add_count && attempts < max_attempts {
-                    attempts += 1;
-                    let axis = DIRECTIONS[rand::random_range(0..DIRECTIONS.len())];
-                    let sample_timer = Instant::now();
-                    let maybe_loop = self.sample_loops(1, axis, m, s).into_iter().next();
-                    sample_ms += sample_timer.elapsed();
-
-                    let Some(lewp) = maybe_loop else {
-                        continue;
-                    };
-
-                    sampled_loops += 1;
-                    mutated_solution.add_loop(Loop {
-                        edges: lewp,
-                        direction: axis,
-                    });
-                }
-
-                if sampled_loops == 0 {
-                    return None;
-                }
-            }
-            2 => {
-                // Remove loop(s)
-                let loop_id = self.loops.keys().choose(&mut rand::rng()).unwrap();
-                mutated_solution.del_loop(loop_id);
-            }
-            _ => unreachable!(),
-        };
-
-        info!(
-            "mutation: operation={operation} parent_loops={} child_loops={} sampled_loops={} clone={:?} sample={:?} total={:?}",
+        let weights = self.quality.weights;
+        QualityReport::compute(
             self.loops.len(),
-            mutated_solution.loops.len(),
-            sampled_loops,
-            clone_ms,
-            sample_ms,
-            timer.elapsed()
-        );
+            layout,
+            &self.quality,
+            QualityTerms::needed(&weights),
+        )
+        .score(&weights)
+    }
 
-        Some(mutated_solution)
+    /// All quality terms of the solution (requires a complete layout).
+    pub fn quality_report(&self) -> Option<QualityReport> {
+        let layout = self.layout.as_ref()?;
+        Some(QualityReport::compute(
+            self.loops.len(),
+            layout,
+            &self.quality,
+            QualityTerms::all(),
+        ))
+    }
+
+    /// A cheap estimate of the quality from the dual structure only (see `QualityReport::estimate`), or `None` if
+    /// the loops do not form a valid dual structure.
+    pub fn estimate_quality(&self) -> Option<f64> {
+        let dual = self.current_dual()?;
+        let polycube = Polycube::from_dual(&dual);
+        validate_polycube(&polycube).ok()?;
+        let weights = self.quality.weights;
+        Some(
+            QualityReport::estimate(
+                self.loops.len(),
+                &dual,
+                &polycube,
+                &self.quality,
+                QualityTerms::needed(&weights),
+            )
+            .partial_score(&weights),
+        )
     }
 }

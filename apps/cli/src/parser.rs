@@ -1,3 +1,4 @@
+use dualcube::prelude::QualityParams;
 use std::path::PathBuf;
 
 #[derive(Debug, Clone)]
@@ -14,26 +15,30 @@ pub enum Command {
     Initialize {
         input: PathBuf,
         output: Option<PathBuf>,
-        samples: usize,
+        quality: QualityParams,
         reconstruct: bool,
         unit: bool,
-        omega: usize,
     },
     Evolve {
         input: PathBuf,
         output: Option<PathBuf>,
-        iterations: usize,
-        pool1: usize,
-        pool2: usize,
+        iterations: Option<usize>,
+        pool1: Option<usize>,
+        pool2: Option<usize>,
+        patience: Option<usize>,
+        quality: QualityParams,
         reconstruct: bool,
         unit: bool,
-        omega: usize,
     },
     Reconstruct {
         input: PathBuf,
         output: Option<PathBuf>,
         unit: bool,
-        omega: usize,
+    },
+    Score {
+        input: PathBuf,
+        quality: QualityParams,
+        csv: Option<PathBuf>,
     },
     Export {
         input: PathBuf,
@@ -63,28 +68,24 @@ impl Args {
             "initialize" | "init" => {
                 let mut input = None;
                 let mut output = None;
-                let mut samples = 3usize;
+                let mut quality = QualityParams::default();
                 let mut reconstruct = false;
                 let mut unit = true;
-                let mut omega = 1usize;
 
                 parse_kv_flags(it.collect(), |flag, value| {
+                    if parse_quality_flag(flag, value, &mut quality)? {
+                        return Ok(());
+                    }
                     match flag {
                         "--input" | "-i" => {
-                            input = Some(PathBuf::from(require_value(flag, value)?))
+                            input = Some(PathBuf::from(require_value(flag, value)?));
                         }
                         "--output" | "-o" => {
-                            output = Some(PathBuf::from(require_value(flag, value)?))
-                        }
-                        "--samples" | "-s" => {
-                            samples = require_value(flag, value)?.parse::<usize>()?;
+                            output = Some(PathBuf::from(require_value(flag, value)?));
                         }
                         "--reconstruct" => reconstruct = true,
                         "--no-unit" => unit = false,
                         "--unit" => unit = true,
-                        "--omega" => {
-                            omega = require_value(flag, value)?.parse::<usize>()?;
-                        }
                         other => anyhow::bail!("unknown flag for initialize: {other}"),
                     }
                     Ok(())
@@ -94,45 +95,48 @@ impl Args {
                 Command::Initialize {
                     input,
                     output,
-                    samples,
+                    quality,
                     reconstruct,
                     unit,
-                    omega,
                 }
             }
             "evolve" => {
                 let mut input = None;
                 let mut output = None;
-                let mut iterations = 10usize;
-                let mut pool1 = 10usize;
-                let mut pool2 = 30usize;
+                let mut iterations = None;
+                let mut pool1 = None;
+                let mut pool2 = None;
+                let mut patience = None;
+                let mut quality = QualityParams::default();
                 let mut reconstruct = false;
                 let mut unit = true;
-                let mut omega = 1usize;
 
                 parse_kv_flags(it.collect(), |flag, value| {
+                    if parse_quality_flag(flag, value, &mut quality)? {
+                        return Ok(());
+                    }
                     match flag {
                         "--input" | "-i" => {
-                            input = Some(PathBuf::from(require_value(flag, value)?))
+                            input = Some(PathBuf::from(require_value(flag, value)?));
                         }
                         "--output" | "-o" => {
-                            output = Some(PathBuf::from(require_value(flag, value)?))
+                            output = Some(PathBuf::from(require_value(flag, value)?));
                         }
                         "--iterations" => {
-                            iterations = require_value(flag, value)?.parse::<usize>()?;
+                            iterations = Some(require_value(flag, value)?.parse::<usize>()?);
                         }
                         "--pool1" => {
-                            pool1 = require_value(flag, value)?.parse::<usize>()?;
+                            pool1 = Some(require_value(flag, value)?.parse::<usize>()?);
                         }
                         "--pool2" => {
-                            pool2 = require_value(flag, value)?.parse::<usize>()?;
+                            pool2 = Some(require_value(flag, value)?.parse::<usize>()?);
+                        }
+                        "--patience" => {
+                            patience = Some(require_value(flag, value)?.parse::<usize>()?);
                         }
                         "--reconstruct" => reconstruct = true,
                         "--no-unit" => unit = false,
                         "--unit" => unit = true,
-                        "--omega" => {
-                            omega = require_value(flag, value)?.parse::<usize>()?;
-                        }
                         other => anyhow::bail!("unknown flag for evolve: {other}"),
                     }
                     Ok(())
@@ -145,30 +149,27 @@ impl Args {
                     iterations,
                     pool1,
                     pool2,
+                    patience,
+                    quality,
                     reconstruct,
                     unit,
-                    omega,
                 }
             }
             "reconstruct" => {
                 let mut input = None;
                 let mut output = None;
                 let mut unit = true;
-                let mut omega = 1usize;
 
                 parse_kv_flags(it.collect(), |flag, value| {
                     match flag {
                         "--input" | "-i" => {
-                            input = Some(PathBuf::from(require_value(flag, value)?))
+                            input = Some(PathBuf::from(require_value(flag, value)?));
                         }
                         "--output" | "-o" => {
-                            output = Some(PathBuf::from(require_value(flag, value)?))
+                            output = Some(PathBuf::from(require_value(flag, value)?));
                         }
                         "--no-unit" => unit = false,
                         "--unit" => unit = true,
-                        "--omega" => {
-                            omega = require_value(flag, value)?.parse::<usize>()?;
-                        }
                         other => anyhow::bail!("unknown flag for reconstruct: {other}"),
                     }
                     Ok(())
@@ -179,7 +180,32 @@ impl Args {
                     input,
                     output,
                     unit,
-                    omega,
+                }
+            }
+            "score" => {
+                let mut input = None;
+                let mut quality = QualityParams::default();
+                let mut csv = None;
+
+                parse_kv_flags(it.collect(), |flag, value| {
+                    if parse_quality_flag(flag, value, &mut quality)? {
+                        return Ok(());
+                    }
+                    match flag {
+                        "--input" | "-i" => {
+                            input = Some(PathBuf::from(require_value(flag, value)?));
+                        }
+                        "--csv" => csv = Some(PathBuf::from(require_value(flag, value)?)),
+                        other => anyhow::bail!("unknown flag for score: {other}"),
+                    }
+                    Ok(())
+                })?;
+
+                let input = input.ok_or_else(|| anyhow::anyhow!("missing required --input"))?;
+                Command::Score {
+                    input,
+                    quality,
+                    csv,
                 }
             }
             "export" => {
@@ -190,10 +216,10 @@ impl Args {
                 parse_kv_flags(it.collect(), |flag, value| {
                     match flag {
                         "--input" | "-i" => {
-                            input = Some(PathBuf::from(require_value(flag, value)?))
+                            input = Some(PathBuf::from(require_value(flag, value)?));
                         }
                         "--output" | "-o" => {
-                            output = Some(PathBuf::from(require_value(flag, value)?))
+                            output = Some(PathBuf::from(require_value(flag, value)?));
                         }
                         "--format" | "-f" => {
                             format = Some(require_value(flag, value)?.to_owned());
@@ -216,6 +242,21 @@ impl Args {
 
         Ok(Self { command })
     }
+}
+
+/// Parse the flags of the quality criterion. Returns whether the flag was one of them.
+///
+/// - `--beta <f64>` (complexity: the penalty per loop)
+fn parse_quality_flag(
+    flag: &str,
+    value: Option<&str>,
+    quality: &mut QualityParams,
+) -> anyhow::Result<bool> {
+    match flag {
+        "--beta" => quality.weights.complexity = require_value(flag, value)?.parse::<f64>()?,
+        _ => return Ok(false),
+    }
+    Ok(true)
 }
 
 fn require_value<'a>(flag: &str, value: Option<&'a str>) -> anyhow::Result<&'a str> {
@@ -250,12 +291,15 @@ where
                 | "-o"
                 | "--samples"
                 | "-s"
+                | "--method"
                 | "--iterations"
                 | "--pool1"
                 | "--pool2"
-                | "--omega"
+                | "--patience"
                 | "--format"
                 | "-f"
+                | "--beta"
+                | "--csv"
         );
 
         let value = if takes_value {

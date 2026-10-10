@@ -2,6 +2,7 @@
 name = "mehsh-bevy"
 version = "0.1.0"
 edition = "2024"
+license.workspace = true
 
 [lib]
 name = "mehsh_bevy"
@@ -9,7 +10,7 @@ name = "mehsh_bevy"
 [dependencies]
 mehsh = { path = "../mehsh" }
 orx-parallel = { version = "3.4.0" }
-bevy = { version = "0.18.0" , default-features = false }
+bevy = { workspace = true, features = ["bevy_asset", "bevy_color", "bevy_gizmos", "bevy_mesh"] }
 
 [lints]
 workspace = true

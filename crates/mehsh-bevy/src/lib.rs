@@ -20,6 +20,17 @@ impl MeshBuilder {
         }
     }
 
+    /// Adds a triangle (in the coordinates of a mesh, see `normalize`) with vertex normals and a flat color (sRGB).
+    pub fn add_triangle(&mut self, corners: [Vector3D; 3], normals: [Vector3D; 3], color: [f32; 3]) {
+        let color = srgb_to_linear(color);
+        for (corner, normal) in corners.into_iter().zip(normals) {
+            self.positions.push(v3d_to_slice(corner));
+            self.normals.push(v3d_to_slice(normal));
+            self.colors.push(color);
+            self.uvs.push([0., 0.]);
+        }
+    }
+
     #[allow(clippy::cast_possible_truncation)]
     pub fn normalize(&mut self, scale: f64, translation: Vector3D) {
         for position in &mut self.positions {
@@ -65,45 +76,38 @@ pub fn to_bevy<M: Tag>(
 }
 
 fn bevy_builder<M: Tag>(mesh: &Mesh<M>, color_map: &HashMap<FaceKey<M>, [f32; 3]>) -> MeshBuilder {
+    // Compute every vertex normal exactly once, instead of re-walking the one-ring (and
+    // recomputing all incident face normals) for every face corner.
+    let vert_normals: HashMap<VertKey<M>, [f32; 3]> = mesh
+        .vert_ids()
+        .par()
+        .map(|&v| (v, v3d_to_slice(mesh.normal(v))))
+        .collect::<Vec<_>>()
+        .into_iter()
+        .collect();
+
     let triangulated_faces = mesh
         .face_ids()
         .par()
-        .map(|&id| match mesh.vertices(id).collect_vec().as_slice() {
-            &[v0, v1, v2] => {
-                let (p0, p1, p2) = (
-                    v3d_to_slice(mesh.position(v0)),
-                    v3d_to_slice(mesh.position(v1)),
-                    v3d_to_slice(mesh.position(v2)),
-                );
-                let (n0, n1, n2) = (
-                    v3d_to_slice(mesh.normal(v0)),
-                    v3d_to_slice(mesh.normal(v1)),
-                    v3d_to_slice(mesh.normal(v2)),
-                );
-                let c = srgb_to_linear(color_map.get(&id).copied().unwrap_or([0., 0., 0.]));
-                (vec![p0, p1, p2], vec![n0, n1, n2], vec![c; 3])
-            }
-            &[v0, v1, v2, v3] => {
-                let (p0, p1, p2, p3) = (
-                    v3d_to_slice(mesh.position(v0)),
-                    v3d_to_slice(mesh.position(v1)),
-                    v3d_to_slice(mesh.position(v2)),
-                    v3d_to_slice(mesh.position(v3)),
-                );
-                let (n0, n1, n2, n3) = (
-                    v3d_to_slice(mesh.normal(v0)),
-                    v3d_to_slice(mesh.normal(v1)),
-                    v3d_to_slice(mesh.normal(v2)),
-                    v3d_to_slice(mesh.normal(v3)),
-                );
-                let c = srgb_to_linear(color_map.get(&id).copied().unwrap_or([0., 0., 0.]));
-                (
-                    vec![p3, p0, p1, p1, p2, p3],
-                    vec![n3, n0, n1, n1, n2, n3],
-                    vec![c; 6],
-                )
-            }
-            _ => (vec![], vec![], vec![]),
+        .map(|&id| {
+            let verts = mesh.vertices(id).collect_vec();
+            let c = srgb_to_linear(color_map.get(&id).copied().unwrap_or([0., 0., 0.]));
+            // Triangles as-is; quads split along v1-v3 (as before); larger polygons fan from v0.
+            let corners: Vec<VertKey<M>> = match verts.as_slice() {
+                &[v0, v1, v2] => vec![v0, v1, v2],
+                &[v0, v1, v2, v3] => vec![v3, v0, v1, v1, v2, v3],
+                vs if vs.len() > 4 => (1..vs.len() - 1)
+                    .flat_map(|i| [vs[0], vs[i], vs[i + 1]])
+                    .collect(),
+                _ => vec![],
+            };
+            let p = corners
+                .iter()
+                .map(|&v| v3d_to_slice(mesh.position(v)))
+                .collect_vec();
+            let n = corners.iter().map(|v| vert_normals[v]).collect_vec();
+            let c = vec![c; corners.len()];
+            (p, n, c)
         })
         .collect::<Vec<_>>();
 
@@ -134,19 +138,15 @@ fn bevy_builder<M: Tag>(mesh: &Mesh<M>, color_map: &HashMap<FaceKey<M>, [f32; 3]
 pub fn gizmos<M: Tag>(mesh: &Mesh<M>, color: [f32; 3]) -> bevy::gizmos::GizmoAsset {
     let mut gizmo = bevy::gizmos::GizmoAsset::new();
     let (scale, translation) = mesh.scale_translation();
-    for e in mesh.edge_ids_iter() {
-        if let &[u, v] = mesh
-            .vertices(e)
-            .map(|id| mesh.position(id))
-            .collect::<Vec<_>>()
-            .as_slice()
-        {
-            gizmo.line(
-                v3d_to_bevy(&(u * scale + translation)),
-                v3d_to_bevy(&(v * scale + translation)),
-                srgb_to_bevy(color),
-            );
-        }
+    // Half-edges come in twin pairs; draw each undirected edge once.
+    for e in mesh.edge_ids_iter().filter(|&e| e < mesh.twin(e)) {
+        let u = mesh.position(mesh.root(e));
+        let v = mesh.position(mesh.toor(e));
+        gizmo.line(
+            v3d_to_bevy(&(u * scale + translation)),
+            v3d_to_bevy(&(v * scale + translation)),
+            srgb_to_bevy(color),
+        );
     }
     gizmo
 }

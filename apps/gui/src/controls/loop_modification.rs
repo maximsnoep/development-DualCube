@@ -1,4 +1,4 @@
-use super::shared::{CacheResource, LoopPreviewKey, draw_edgepair_arrow, draw_loop_gradient};
+use super::shared::{CacheResource, LoopPreviewKey, draw_edgepair_arrow, draw_polyline_gradient};
 use crate::colors;
 use crate::jobs::Job;
 use crate::render::gizmos::PerpetualGizmos;
@@ -73,15 +73,39 @@ pub fn loop_modification_system(
     };
 
     if cache.loop_preview_key.as_ref() != Some(&preview_key) {
-        if let Some((edges, cost, segments)) = solution
+        cache.loop_preview_gaps = None;
+        // Valid loops: the cheapest loop through the hovered edge that is valid by construction (only for a single
+        // anchor, and if the current loops form a valid loop structure).
+        let valid = (configuration.loop_anchors.is_empty()
+            && solution.current_solution.dual.is_ok())
+        .then(|| {
+            solution
+                .current_solution
+                .best_valid_loop_through(direction, edgepair[0], 6)
+        });
+        if let Some(found) = valid {
+            if let Some((edges, cost, gaps)) = found {
+                cache.loop_preview_positions = solution
+                    .current_solution
+                    .loop_positions_preview(&edges, direction);
+                cache.loop_preview = Some((edges, cost));
+                cache.loop_preview_gaps = Some(gaps);
+            } else {
+                cache.loop_preview = None;
+            }
+            cache.loop_preview_segments.clear();
+        } else if let Some((edges, cost, segments)) = solution
             .current_solution
             .construct_loop_with_anchors_and_locked_segments(
                 &preview_anchors,
                 direction,
                 &cache.locked_loop_segments,
-                |a: f64| OrderedFloat(a.powi(3)),
+                OrderedFloat,
             )
         {
+            cache.loop_preview_positions = solution
+                .current_solution
+                .loop_positions_preview(&edges, direction);
             cache.loop_preview = Some((edges, cost));
             cache.loop_preview_segments = segments;
         } else {
@@ -91,8 +115,13 @@ pub fn loop_modification_system(
         cache.loop_preview_key = Some(preview_key);
     }
 
-    if let Some((edges, _)) = &cache.loop_preview {
-        draw_loop_gradient(&mesh_resmut, &mut gizmos, edges, preview_color);
+    if cache.loop_preview.is_some() {
+        draw_polyline_gradient(
+            &mesh_resmut,
+            &mut gizmos,
+            &cache.loop_preview_positions,
+            preview_color,
+        );
     }
 
     let lmb = mouse.just_pressed(MouseButton::Left);
@@ -123,12 +152,6 @@ pub fn loop_modification_system(
     if enter {
         if let Some((edges, _)) = cache.loop_preview.clone() {
             configuration.loop_anchors.clear();
-            solution.next[0].clear();
-            solution.next[1].clear();
-            solution.next[2].clear();
-            cache.cache[0].clear();
-            cache.cache[1].clear();
-            cache.cache[2].clear();
             cache.loop_preview = None;
             cache.loop_preview_key = None;
             cache.loop_preview_segments.clear();
@@ -136,7 +159,9 @@ pub fn loop_modification_system(
             cache.locked_loop_direction = None;
             jobs.write(Job::add_loop(
                 solution.current_solution.clone(),
-                Loop { edges, direction },
+                Loop::new(edges, direction),
+                cache.loop_preview_gaps.take(),
+                force,
                 configuration.clone(),
             ));
         }
@@ -153,7 +178,6 @@ pub fn loop_modification_system(
             jobs.write(Job::remove_loop(
                 solution.current_solution.clone(),
                 loop_id,
-                force,
                 configuration.clone(),
             ));
         }

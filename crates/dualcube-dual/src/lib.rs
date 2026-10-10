@@ -1,3 +1,4 @@
+mod arrangement;
 pub mod dual;
 pub mod loops;
 pub mod sampler;

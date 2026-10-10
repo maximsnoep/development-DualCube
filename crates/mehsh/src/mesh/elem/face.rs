@@ -55,9 +55,13 @@ impl<M: Tag> Mesh<M> {
     // Vector area of a given face.
     #[must_use]
     pub fn vector_area(&self, id: FaceKey<M>) -> Vector3D {
+        // Newell / shoelace formula: sum of p_i x p_{i+1}. Its magnitude is twice the
+        // (projected) area, and it points along the face normal (CCW winding).
+        // Positions are taken relative to the first corner to avoid cancellation far from the origin.
+        let origin = self.position(self.root(self.frep(id)));
         self.edges(id).fold(Vector3D::zeros(), |sum, edge_id| {
-            let u = self.vector(self.twin(edge_id));
-            let v = self.vector(self.next(edge_id));
+            let u = self.position(self.root(edge_id)) - origin;
+            let v = self.position(self.toor(edge_id)) - origin;
             sum + u.cross(&v)
         })
     }
@@ -83,14 +87,11 @@ impl<M: Tag> HasPosition<FACE, M> for Mesh<M> {
 
 impl<M: Tag> HasNormal<FACE, M> for Mesh<M> {
     fn compute_normal(&self, id: FaceKey<M>) -> Vector3D {
-        // TODO: Make this better for non-planar faces.
-        let mut vertices = self.vertices(id);
-        let p_u = self.position(vertices.next().unwrap());
-        let p_v = self.position(vertices.next().unwrap());
-        let p_w = self.position(vertices.next().unwrap());
-        let p = p_v - p_u;
-        let q = p_w - p_u;
-        p.cross(&q).normalize()
+        // Newell's method: robust for non-planar polygons and polygons whose first corners are
+        // collinear. Degenerate (zero-area) faces get a zero normal instead of NaN.
+        self.vector_area(id)
+            .try_normalize(1e-300)
+            .unwrap_or_else(Vector3D::zeros)
     }
 
     fn normal(&self, id: FaceKey<M>) -> Vector3D {

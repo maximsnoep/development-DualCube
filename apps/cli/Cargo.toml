@@ -2,12 +2,14 @@
 name = "cli"
 version = "0.1.0"
 edition = "2024"
+license.workspace = true
 
 [dependencies]
 dualcube = { path = "../../crates/dualcube" }
 io = { path = "../../crates/dualcube-io" }
 
-log = "0.4.27"
+tracing = "0.1.44"
+tracing-subscriber = { version = "0.3.20", features = ["fmt"] }
 anyhow = "1.0"
 
 [lints]

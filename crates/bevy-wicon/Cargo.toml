@@ -1,0 +1,16 @@
+# Vendored from crates.io (bevy-wicon 0.18.1, by Snoep; MIT), ported along with the Bevy version of the workspace.
+[package]
+name = "bevy-wicon"
+version = "0.18.1"
+edition = "2024"
+license.workspace = true
+description = "A window icon for Bevy."
+publish = false
+
+[lib]
+name = "bevy_wicon"
+
+[dependencies]
+bevy = { workspace = true, features = ["bevy_pbr", "bevy_winit"] }
+image = { version = "0.25.6", default-features = false, features = ["png"] }
+winit = "0.30.0"

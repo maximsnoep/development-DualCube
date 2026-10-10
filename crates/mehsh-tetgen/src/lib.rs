@@ -7,12 +7,6 @@ use rw::*;
 use std::{io, path::Path, process::Command};
 use utils::*;
 
-#[derive(Debug, Clone)]
-pub struct TetgenCliParams {
-    pub command: String,
-    pub args: String,
-}
-
 #[derive(Debug, Clone, Copy)]
 struct TetNode {
     position: Vector3D,

@@ -15,7 +15,7 @@ use bevy::prelude::*;
 use dualcube::prelude::*;
 use store::{RenderObject, RenderObjectStore};
 
-/// Registers the render resources, the cameras, and the (re)spawn systems.
+/// Registers the render resources, the cameras, and the systems that keep the renders in sync.
 pub struct RenderPlugin;
 
 impl Plugin for RenderPlugin {
@@ -30,8 +30,8 @@ impl Plugin for RenderPlugin {
                 (
                     camera::update,
                     camera::update_camera_settings,
-                    store::update_render_settings,
-                    store::respawn_renders,
+                    // Settings must be derived from the store before (re)spawning from them.
+                    (store::update_render_settings, store::sync_renders).chain(),
                 ),
             );
     }
@@ -42,21 +42,15 @@ impl Plugin for RenderPlugin {
 /// To add a new scene: add a variant, one line in [`Objects::spec`], and a
 /// module with a `build` function that constructs its [`RenderObject`].
 #[derive(PartialEq, Eq, Hash, Debug, Copy, Clone, Default)]
-pub enum Objects {
+pub(crate) enum Objects {
     InputMesh,
     #[default]
     Polycube,
     PolycubeMap,
-    QuadMesh,
 }
 
 impl Objects {
-    pub const ALL: [Self; 4] = [
-        Self::InputMesh,
-        Self::Polycube,
-        Self::PolycubeMap,
-        Self::QuadMesh,
-    ];
+    pub const ALL: [Self; 3] = [Self::InputMesh, Self::Polycube, Self::PolycubeMap];
 
     /// The display name and scene builder of each object.
     fn spec(
@@ -69,7 +63,6 @@ impl Objects {
             Self::InputMesh => ("input mesh", objects::input_mesh::build),
             Self::Polycube => ("polycube", objects::polycube::build),
             Self::PolycubeMap => ("polycube-map", objects::polycube_map::build),
-            Self::QuadMesh => ("quad mesh", objects::quad_mesh::build),
         }
     }
 }
@@ -88,20 +81,52 @@ impl From<Objects> for Vec3 {
     }
 }
 
-/// Builds the complete [`RenderObjectStore`] for the given solution.
+/// Builds the complete [`RenderObjectStore`] for the given solution. With `smooth_paths`, the paths of the layout are
+/// shown smoothed (see `Solution::smooth_layout`): only in the renders, as the optimizations need the paths of the
+/// solution as they are.
 #[must_use]
 pub fn refresh(solution: &Solution, configuration: &Configuration) -> RenderObjectStore {
+    let smoothed = if configuration.smooth_paths {
+        smoothed(solution)
+    } else {
+        None
+    };
     let mut store = RenderObjectStore::default();
     for object in Objects::ALL {
         let (_, build) = object.spec();
-        if let Some(render_object) = build(solution, configuration) {
+        // The polycube map is built from the quad mesh, which belongs to the paths of the solution (not smoothed).
+        let shown = match (object, &smoothed) {
+            (Objects::InputMesh | Objects::Polycube, Some(smoothed)) => smoothed,
+            _ => solution,
+        };
+        if let Some(mut render_object) = build(shown, configuration) {
+            // The quad mesh is shown on top of the model (its features are layers of the input mesh).
+            if object == Objects::InputMesh
+                && let Some(quad) = objects::quad_mesh::build(solution, configuration)
+            {
+                for label in &quad.labels {
+                    render_object.add(&format!("quad {label}"), quad.features[label].clone());
+                }
+            }
             store.add_object(object, render_object);
         }
     }
     store
 }
 
+// The solution with smoothed paths (without a quad mesh), or `None` if it has no layout or the smoothing fails.
+pub(crate) fn smoothed(solution: &Solution) -> Option<Solution> {
+    solution.layout.as_ref()?;
+    let mut smoothed = solution.clone();
+    smoothed.smooth_layout().ok()?;
+    Some(smoothed)
+}
+
+/// How far the negative side of a loop is lightened toward white (as in Polycuber).
+pub(crate) const LIGHT_MIX: f32 = 0.4;
+
 /// The configured background color as a Bevy color.
+#[allow(unused_qualifications)]
 pub(crate) fn clear_color(configuration: &Configuration) -> bevy::color::Color {
     bevy::color::Color::srgb_u8(
         configuration.clear_color[0],

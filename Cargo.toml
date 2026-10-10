@@ -12,17 +12,36 @@ members = [
     "crates/grapff",
     "crates/mehsh",
     "crates/mehsh-tetgen",
+    "crates/bevy-orbit-camera",
+    "crates/bevy-axes-gizmo",
+    "crates/bevy-toon",
+    "crates/bevy-wicon",
     "apps/cli",
     "apps/gui",
 ]
 
+# The license of every crate (see LICENSE).
+[workspace.package]
+license = "MIT"
+
+[workspace.dependencies]
+bevy = { version = "0.20.0", default-features = false }
+
+# Optimized and quick to rebuild (incremental): for iterating (`cargo rel`).
 [profile.release]
-opt-level = 2
+opt-level = 3
 lto = false
-incremental = false
+incremental = true
 codegen-units = 16
 debug = 0
 strip = "debuginfo"
+
+# The fastest runtime, slow to build (`cargo max`): whole-program optimization.
+[profile.max]
+inherits = "release"
+lto = "fat"
+codegen-units = 1
+incremental = false
 
 [profile.profiling]
 inherits = "release"
@@ -30,6 +49,8 @@ codegen-units = 16
 debug = 2
 strip = false
 
+# Quickest to compile (`cargo dev`): the workspace crates are not optimized, the dependencies are (they are compiled
+# once and cached).
 [profile.dev]
 opt-level = 0
 lto = false
@@ -37,6 +58,9 @@ incremental = true
 codegen-units = 16
 debug = 0
 strip = "debuginfo"
+
+[profile.dev.package."*"]
+opt-level = 3
 
 [workspace.lints.rust]
 rust_2018_idioms = { level = "warn", priority = -1 }

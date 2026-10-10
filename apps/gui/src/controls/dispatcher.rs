@@ -20,12 +20,9 @@ pub fn control_system(
     solution: ResMut<'_, SolutionResource>,
     cache: ResMut<'_, CacheResource>,
     mut gizmos: Gizmos<'_, '_, PerpetualGizmos>,
-    mut configuration: ResMut<'_, Configuration>,
+    configuration: ResMut<'_, Configuration>,
     jobs: MessageWriter<'_, Job>,
 ) -> Result<(), BevyError> {
-    configuration.raycasted = None;
-    configuration.selected = None;
-
     if keyboard.pressed(KeyCode::ControlLeft) || mouse.pressed(MouseButton::Right) {
         return Ok(());
     }

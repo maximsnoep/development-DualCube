@@ -4,8 +4,6 @@ use dualcube_dual::prelude::*;
 use dualcube_types::prelude::*;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
-use std::io::Write;
-use std::path::PathBuf;
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct Polycube {
@@ -114,30 +112,40 @@ impl Polycube {
             }
         }
 
-        // scale the coordinates s.t. smallest edge is 1, and all other edges are multiples of 1 (integer lengths)
-        let mut min_distance = f64::MAX;
+        // The levels of every direction are ordered (their order is that of the level graph), so their coordinates must
+        // increase strictly; the measured positions (the mean position of their corners) may not. Make them increasing,
+        // with a minimum gap, as close as possible to the measured positions (see `increasing_with_gap`).
+        let gaps = levels.each_ref().map(|direction_levels| {
+            let values = direction_levels
+                .iter()
+                .map(|(value, _)| *value)
+                .collect_vec();
+            let increasing = increasing_with_gap(&values);
+            increasing
+                .iter()
+                .tuple_windows()
+                .map(|(a, b)| b - a)
+                .collect_vec()
+        });
+
+        // Integer coordinates: the smallest gap (over all directions) is 1, and every gap is a positive integer (so
+        // every edge has a positive length).
+        let min_gap = gaps.iter().flatten().copied().fold(f64::INFINITY, f64::min);
+        let scale = if min_gap.is_finite() && min_gap > 0. {
+            1. / min_gap
+        } else {
+            1.
+        };
         for direction in DIRECTIONS {
-            let direction_levels = &levels[direction as usize];
-            for (level1, level2) in direction_levels.iter().tuple_windows() {
-                let distance = (level2.0 - level1.0).abs();
-                if distance < min_distance {
-                    min_distance = distance;
+            let mut coordinate = 0.;
+            for (index, (_, verts_in_level)) in levels[direction as usize].iter().enumerate() {
+                if index > 0 {
+                    coordinate += (gaps[direction as usize][index - 1] * scale)
+                        .round()
+                        .max(1.);
                 }
-            }
-        }
-        assert!(
-            !(min_distance == 0.),
-            "The distance between two levels is 0. This should not happen."
-        );
-        let scale = 1. / min_distance;
-        for direction in DIRECTIONS {
-            for (level, verts_in_level) in levels[direction as usize].iter() {
-                let value = level * scale;
-                // round to nearest integer
-                let value = value.round();
-                info!("resize: {direction} level {level:.4} scaled to integer coordinate {value}");
                 for vert in verts_in_level {
-                    vert_to_coord.get_mut(vert).unwrap()[direction as usize] = value;
+                    vert_to_coord.get_mut(vert).unwrap()[direction as usize] = coordinate;
                 }
             }
         }
@@ -160,93 +168,69 @@ impl Polycube {
                 .vector(self.structure.edge_between_verts(a, b).unwrap().0),
         )
     }
+}
 
-    pub fn to_dotgraph(dual: &Dual, layout: &Layout, path: &PathBuf) -> Result<(), std::io::Error> {
-        let mut file = std::fs::File::create(path)?;
-
-        let mut polycube = Self::from_dual(dual);
-        polycube.resize(dual, Some(layout));
-
-        let mut vert_ids = ids::IdMap::<VERT, POLYCUBE>::new();
-        for (i, vert_id) in polycube.structure.vert_ids().into_iter().enumerate() {
-            vert_ids.insert(i, vert_id);
-        }
-
-        writeln!(
-            file,
-            "/ comments are lines starting with a slash (/), they should be ignored when parsing the file"
-        )?;
-        writeln!(file, "/ ")?;
-        writeln!(
-            file,
-            "/ number of faces, number of edges, and number of vertices:"
-        )?;
-        writeln!(
-            file,
-            "{} {} {}",
-            polycube.structure.face_ids().len(),
-            polycube.structure.edge_ids().len() / 2,
-            polycube.structure.vert_ids().len(),
-        )?;
-
-        writeln!(file, "/ faces in format of:")?;
-        writeln!(file, "/ <VERT_ID> <VERT_ID> <VERT_ID> <VERT_ID>")?;
-        for face_id in polycube.structure.face_ids() {
-            let vertices = polycube.structure.vertices(face_id);
-            writeln!(
-                file,
-                "{}",
-                vertices
-                    .map(|vert_id| format!("{}", vert_ids.id(&vert_id).unwrap()))
-                    .collect_vec()
-                    .into_iter()
-                    .rev()
-                    .join(" ")
-            )?;
-        }
-
-        writeln!(file, "/ edges in format of:")?;
-        writeln!(file, "/ <VERT_ID> <VERT_ID> <AXIS_LABEL> <TARGET_LENGTH>")?;
-        let mut edge_strings = vec![];
-        let mut edge_lengths = vec![];
-        for edge_id in polycube.structure.edge_ids() {
-            let direction_vector = polycube.structure.vector(edge_id).normalize();
-            let (direction, orientation) = to_principal_direction(direction_vector);
-            if orientation == Sign::Negative {
-                continue;
-            }
-            let label = match direction {
-                Direction::X => "X",
-                Direction::Y => "Y",
-                Direction::Z => "Z",
-            };
-            let Some([v1, v2]) = polycube.structure.vertices(edge_id).collect_array::<2>() else {
-                panic!()
-            };
-            edge_strings.push(format!(
-                "{} {} {label}",
-                vert_ids.id(&v1).unwrap(),
-                vert_ids.id(&v2).unwrap()
+/// The increasing sequence closest (in the least-squares sense) to `values` in which consecutive values differ by at
+/// least a minimum gap (5% of the mean spacing of the values): an isotonic regression (pool adjacent violators) of
+/// `values[i] - i * gap`, plus `i * gap`.
+fn increasing_with_gap(values: &[f64]) -> Vec<f64> {
+    let n = values.len();
+    if n < 2 {
+        return values.to_vec();
+    }
+    let span = values.iter().copied().fold(f64::NEG_INFINITY, f64::max)
+        - values.iter().copied().fold(f64::INFINITY, f64::min);
+    let gap = if span > 0. {
+        0.05 * span / (n - 1) as f64
+    } else {
+        1.
+    };
+    // Pool adjacent violators: blocks of (mean, count), merged while the means decrease.
+    let mut blocks: Vec<(f64, usize)> = Vec::with_capacity(n);
+    for (i, &value) in values.iter().enumerate() {
+        blocks.push((value - i as f64 * gap, 1));
+        while blocks.len() >= 2 && blocks[blocks.len() - 2].0 > blocks[blocks.len() - 1].0 {
+            let (mean2, count2) = blocks.pop().unwrap();
+            let (mean1, count1) = blocks.pop().unwrap();
+            let count = count1 + count2;
+            blocks.push((
+                (mean1 * count1 as f64 + mean2 * count2 as f64) / count as f64,
+                count,
             ));
-
-            let path = layout.edge_to_path.get(&edge_id).unwrap();
-            let length_of_path = path
-                .windows(2)
-                .map(|w| layout.granulated_mesh.distance(w[0], w[1]))
-                .sum::<f64>();
-            edge_lengths.push(length_of_path);
         }
+    }
+    blocks
+        .into_iter()
+        .flat_map(|(mean, count)| std::iter::repeat_n(mean, count))
+        .enumerate()
+        .map(|(i, value)| value + i as f64 * gap)
+        .collect()
+}
 
-        let min_edge_length = edge_lengths.iter().cloned().fold(f64::MAX, f64::min);
-        let edge_lengths_int = edge_lengths
-            .into_iter()
-            .map(|length: f64| (length / min_edge_length).ceil() as u32)
-            .collect::<Vec<_>>();
+#[cfg(test)]
+mod tests {
+    use super::increasing_with_gap;
 
-        for i in 0..edge_strings.len() {
-            writeln!(file, "{} {}", edge_strings[i], edge_lengths_int[i])?;
+    #[test]
+    fn levels_become_strictly_increasing() {
+        for values in [
+            vec![0., 1., 2., 3.],
+            vec![0., 2., 1., 3.],
+            vec![3., 2., 1., 0.],
+            vec![0., 0., 0.],
+            vec![0., 5., 4.9, 5.1, 10.],
+        ] {
+            let result = increasing_with_gap(&values);
+            assert_eq!(result.len(), values.len());
+            for pair in result.windows(2) {
+                assert!(pair[1] > pair[0], "{values:?} -> {result:?}");
+            }
         }
-
-        Ok(())
+        // Already increasing (with enough spacing): unchanged.
+        let values = [0., 1., 2., 3.];
+        let result = increasing_with_gap(&values);
+        for (a, b) in values.iter().zip(&result) {
+            assert!((a - b).abs() < 1e-12);
+        }
     }
 }

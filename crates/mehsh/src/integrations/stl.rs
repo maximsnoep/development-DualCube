@@ -14,13 +14,15 @@ where
         path: &Path,
     ) -> Result<(Self, ids::IdMap<VERT, M>, ids::IdMap<FACE, M>), MeshError<M>> {
         match OpenOptions::new().read(true).open(path) {
-            Ok(file) => match path.extension().unwrap().to_str() {
-                Some("stl") => match Self::stl_to_elements(BufReader::new(file)) {
-                    Ok((verts, faces)) => Self::from(&faces, &verts),
-                    Err(e) => Err(MeshError::Unknown(format!(
-                        "Something went wrong while reading the STL file: {path:?}\nErr: {e}"
-                    ))),
-                },
+            Ok(file) => match path.extension().and_then(|e| e.to_str()) {
+                Some(e) if e.eq_ignore_ascii_case("stl") => {
+                    match Self::stl_to_elements(BufReader::new(file)) {
+                        Ok((verts, faces)) => Self::from_input(&faces, &verts),
+                        Err(e) => Err(MeshError::Unknown(format!(
+                            "Something went wrong while reading the STL file: {path:?}\nErr: {e}"
+                        ))),
+                    }
+                }
                 _ => Err(MeshError::Unknown(format!(
                     "Unknown file extension: {path:?}",
                 ))),
@@ -29,10 +31,6 @@ where
                 "Cannot read file: {path:?}\nErr: {e}"
             ))),
         }
-    }
-
-    pub fn to_stl(&self) -> Result<(), std::io::Error> {
-        unimplemented!("writing to stl is not implemented yet");
     }
 
     pub fn stl_to_elements(
