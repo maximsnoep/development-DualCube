@@ -8,7 +8,7 @@ license.workspace = true
 name = "mehsh_tetgen"
 
 [dependencies]
-mehsh = { path = "../mehsh" }
+mehsh = { workspace = true }
 
 [lints]
 workspace = true

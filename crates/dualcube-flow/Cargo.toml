@@ -10,8 +10,8 @@ name = "dualcube_flow"
 [dependencies]
 dualcube-types = { path = "../dualcube-types" }
 grapff = { path = "../grapff" }
-mehsh = { path = "../mehsh" }
-slotmap = "1.0.7"
+mehsh = { workspace = true }
+slotmap.workspace = true
 
 [lints]
 workspace = true

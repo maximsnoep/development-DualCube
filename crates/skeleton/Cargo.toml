@@ -8,7 +8,14 @@ description = "Data types and implementation for skeleton-based initialization f
 [dependencies]
 dualcube-dual = { path = "../dualcube-dual" }
 dualcube-types = { path = "../dualcube-types" }
-slotmap = "1.0.7"
+faer.workspace = true
+mehsh.workspace = true
+mehsh-tetgen.workspace = true
+nalgebra.workspace = true
+petgraph.workspace = true
+serde = { workspace = true, features = ["derive"] }
+slotmap.workspace = true
+tracing.workspace = true
 
 [lints]
 workspace = true

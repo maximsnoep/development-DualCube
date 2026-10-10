@@ -13,7 +13,7 @@ dualcube-types = { path = "../dualcube-types" }
 bimap = "0.6.3"
 orx-parallel = "3.4.0"
 rand = "0.10.1"
-serde = { version = "1.0.188", features = ["rc", "derive"] }
+serde = { workspace = true, features = ["rc", "derive"] }
 thiserror = "2.0.17"
 
 [lints]

@@ -27,6 +27,14 @@ license = "MIT"
 
 [workspace.dependencies]
 bevy = { version = "0.20.0", default-features = false }
+faer = "0.24.0"
+mehsh = { path = "crates/mehsh" }
+mehsh-tetgen = { path = "crates/mehsh-tetgen" }
+nalgebra = "0.34.0"
+petgraph = "0.8.2"
+serde = "1.0.219"
+slotmap = "1.0.7"
+tracing = "0.1.44"
 
 # Optimized and quick to rebuild (incremental): for iterating (`cargo rel`).
 [profile.release]

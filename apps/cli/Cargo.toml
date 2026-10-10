@@ -8,7 +8,7 @@ license.workspace = true
 dualcube = { path = "../../crates/dualcube" }
 io = { path = "../../crates/dualcube-io" }
 
-tracing = "0.1.44"
+tracing.workspace = true
 tracing-subscriber = { version = "0.3.20", features = ["fmt"] }
 anyhow = "1.0"
 

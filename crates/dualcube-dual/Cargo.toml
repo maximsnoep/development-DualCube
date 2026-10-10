@@ -12,8 +12,8 @@ dualcube-types = { path = "../dualcube-types" }
 grapff = { path = "../grapff" }
 orx-parallel = "3.4.0"
 rand = "0.10.1"
-serde = { version = "1.0.188", features = ["rc", "derive"] }
-slotmap = "1.0.7"
+serde = { workspace = true, features = ["rc", "derive"] }
+slotmap.workspace = true
 thiserror = "2.0.17"
 rustc-hash = "2.1.1"
 

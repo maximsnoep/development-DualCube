@@ -9,7 +9,7 @@ name = "dualcube_hex"
 
 [dependencies]
 dualcube = { path = "../dualcube" }
-mehsh-tetgen = { path = "../mehsh-tetgen" }
+mehsh-tetgen = { workspace = true }
 
 [lints]
 workspace = true

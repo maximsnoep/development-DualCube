@@ -8,11 +8,11 @@ license.workspace = true
 name = "dualcube_types"
 
 [dependencies]
-mehsh = { path = "../mehsh", features = ["obj", "stl"] }
+mehsh = { workspace = true, features = ["obj", "stl"] }
 grapff = { path = "../grapff" }
-serde = { version = "1.0.188", features = ["derive"] }
+serde = { workspace = true, features = ["derive"] }
 itertools = { version = "0.15.0" }
-tracing = { version = "0.1.44", features = ["release_max_level_info"] }
+tracing = { workspace = true, features = ["release_max_level_info"] }
 ordered-float = "5.0.0"
 
 [lints]

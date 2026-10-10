@@ -23,7 +23,7 @@ dynamic = ["bevy/dynamic_linking"]
 dualcube = { path = "../../crates/dualcube" }
 dualcube-hex = { path = "../../crates/dualcube-hex", optional = true }
 io = { path = "../../crates/dualcube-io" }
-mehsh = { path = "../../crates/mehsh" }
+mehsh = { workspace = true }
 mehsh-bevy = { path = "../../crates/mehsh-bevy" }
 
 bevy = { workspace = true, features = [

@@ -11,7 +11,7 @@ name = "dualcube_quad"
 dualcube-primal = { path = "../dualcube-primal" }
 dualcube-types = { path = "../dualcube-types" }
 bimap = "0.6.3"
-faer = "0.24.0"
+faer.workspace = true
 orx-parallel = "3.4.0"
 
 [lints]

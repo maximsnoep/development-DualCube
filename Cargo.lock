@@ -6085,7 +6085,14 @@ version = "0.1.0"
 dependencies = [
  "dualcube-dual",
  "dualcube-types",
+ "faer",
+ "mehsh",
+ "mehsh-tetgen",
+ "nalgebra",
+ "petgraph",
+ "serde",
  "slotmap",
+ "tracing",
 ]
 
 [[package]]
