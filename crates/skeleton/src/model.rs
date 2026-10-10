@@ -58,12 +58,20 @@ pub struct EdgeLabel {
     pub sign: Sign,
 }
 
-/// The skeleton element represented by a cube. Multiple cubes may represent
-/// the same element; edge cubes represent the connection between node patches.
+/// Correspondence between target cubes and input-surface patches.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum CubeOwner {
+    /// A node cube, entirely owned by that node's patch.
     Node(SkeletonNodeID),
-    Edge(SkeletonEdgeID),
+    /// An edge cube entirely owned by one endpoint's patch.
+    Edge {
+        edge: SkeletonEdgeID,
+        /// Must be an endpoint of `edge`.
+        patch: SkeletonNodeID,
+    },
+    /// Split at the cube center, perpendicular to the edge's signed axis.
+    /// The positive side belongs to `nodes[1]`, the other side to `nodes[0]`.
+    Midpoint(SkeletonEdgeID),
 }
 
 /// An axis-aligned cube in target space. Target-space units need not match the
@@ -83,8 +91,8 @@ pub struct Cube {
 /// Connections join existing, distinct cubes sharing a complete face, without
 /// duplicate pairs. Incidental geometric contact does not create a connection.
 /// Cube interiors must not overlap. Every owner refers to the accompanying
-/// skeleton; every skeleton node has exactly one cube,
-/// and every skeleton edge has at least one cube.
+/// skeleton; every node has exactly one node cube. Each edge has one midpoint
+/// cube and any additional edge cubes belong to the endpoint on their side.
 #[derive(Clone, Debug, Default)]
 pub struct CubeLayout {
     pub cubes: SlotMap<CubeID, Cube>,
