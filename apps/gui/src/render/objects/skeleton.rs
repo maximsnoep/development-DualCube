@@ -85,6 +85,8 @@ pub fn sync(
     }
 }
 
+const PATCH_OPACITY: f32 = 0.3;
+
 fn build(mesh: &mehsh::prelude::Mesh<INPUT>, state: &SkeletonResource) -> RenderObject {
     let mut object = RenderObject::default();
     let Some(contracted) = state.contracted_mesh() else {
@@ -135,7 +137,7 @@ fn build(mesh: &mehsh::prelude::Mesh<INPUT>, state: &SkeletonResource) -> Render
         translucent.attribute_mut(BevyMesh::ATTRIBUTE_COLOR)
     {
         for color in colors {
-            color[3] = 0.3;
+            color[3] = PATCH_OPACITY;
         }
     }
     object.add(
@@ -322,45 +324,16 @@ fn patches(
     builder.build()
 }
 
-use bevy::color::palettes::tailwind;
-
-const TAILWIND_500: [Srgba; 17] = [
-    tailwind::RED_500,
-    tailwind::CYAN_500,
-    tailwind::YELLOW_500,
-    tailwind::PURPLE_500,
-    tailwind::GREEN_500,
-    tailwind::PINK_500,
-    tailwind::BLUE_500,
-    tailwind::ORANGE_500,
-    tailwind::TEAL_500,
-    tailwind::FUCHSIA_500,
-    tailwind::LIME_500,
-    tailwind::INDIGO_500,
-    tailwind::AMBER_500,
-    tailwind::EMERALD_500,
-    tailwind::VIOLET_500,
-    tailwind::SKY_500,
-    tailwind::ROSE_500,
-];
-
-/// Gets a color for a region index using Tailwind colors with chroma reduction for cycling.
+/// Spread successive regions around the hue wheel without fading larger patch sets.
 fn region_color(region: usize) -> [f32; 3] {
-    let base_idx = region % TAILWIND_500.len();
-    let cycle = region / TAILWIND_500.len();
-
-    let base = TAILWIND_500[base_idx];
-
-    if cycle == 0 {
-        [base.red, base.green, base.blue]
-    } else {
-        // Reduce chroma and lighten for subsequent cycles
-        let mut lch: Lcha = base.into();
-        lch.chroma *= 0.5_f32.powi(cycle as i32);
-        lch.lightness = (lch.lightness + 0.1 * cycle as f32).min(0.95);
-        let srgb: Srgba = lch.into();
-        [srgb.red, srgb.green, srgb.blue]
-    }
+    let hue = ((0.58 + region as f64 * 0.618_033_988_749_895).fract() * 360.) as f32;
+    let (saturation, value) = match region % 3 {
+        0 => (0.78, 0.90),
+        1 => (0.65, 0.76),
+        _ => (0.85, 0.98),
+    };
+    let srgb = Srgba::from(Hsva::new(hue, saturation, value, 1.));
+    [srgb.red, srgb.green, srgb.blue]
 }
 
 #[cfg(test)]

@@ -7,6 +7,13 @@ fn parse(args: &[&str]) -> Result<Launch, String> {
 #[test]
 fn startup_defaults_and_options() {
     assert!(parse(&[]).unwrap().path.is_none());
+    assert!(
+        !parse(&[])
+            .unwrap()
+            .configuration()
+            .skeleton_options
+            .refine_embedding
+    );
     let launch = parse(&[
         "--load",
         "models/a model.obj",
@@ -15,7 +22,8 @@ fn startup_defaults_and_options() {
     ])
     .unwrap();
     assert_eq!(launch.path.unwrap(), PathBuf::from("models/a model.obj"));
-    assert_eq!(launch.stop, Some(SkeletonStage::Refinement));
+    assert_eq!(launch.stop, Some(SkeletonStage::Surgery));
+    assert!(!launch.options.refine_embedding);
     assert_eq!(launch.view, Some(ModelViewKind::Combined));
     assert!(!launch.quit);
     let launch = parse(&[
@@ -163,4 +171,15 @@ fn startup_jobs_load_extract_select_view_and_report_failure() {
     });
     assert_eq!(exit, AppExit::error());
     assert!(app.world().resource::<SkeletonResource>().state.is_none());
+}
+
+#[test]
+fn refinement_remains_opt_in_for_full_extraction() {
+    for action in ["--auto-start=skeleton", "--quit-after=skeleton"] {
+        let launch = parse(&["--load=a.obj", action]).unwrap();
+        assert_eq!(launch.stop, Some(SkeletonStage::Surgery));
+        let launch = parse(&["--load=a.obj", action, "--refinement"]).unwrap();
+        assert_eq!(launch.stop, Some(SkeletonStage::Refinement));
+        assert!(launch.options.refine_embedding);
+    }
 }

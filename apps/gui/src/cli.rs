@@ -18,6 +18,7 @@ Run from the repository root:
   --auto-start skeleton      Extract a skeleton after loading
   --stop-after <stage>       Run through input, deflation, surgery, or refinement
   --view <view>              input, deflated, raw, skeleton, patches, combined
+  --refinement               Enable embedding refinement (default off)
   --no-refinement            Skip embedding refinement
   --iterations <count>      Deflation iteration limit (default 50)
   --shape-weight <number>   Surgery shape weight (default 1)
@@ -59,6 +60,7 @@ impl Launch {
         let mut launch = Self::default();
         let mut args = args.into_iter();
         let mut auto_start = false;
+        let mut refinement = None;
         let mut stop = None;
         let mut quit_after = None;
         let mut quit_skeleton = false;
@@ -70,8 +72,8 @@ impl Launch {
             if matches!(flag, "--help" | "-h") {
                 return Ok(None);
             }
-            if flag == "--no-refinement" && inline.is_none() {
-                launch.options.refine_embedding = false;
+            if matches!(flag, "--refinement" | "--no-refinement") && inline.is_none() {
+                refinement = Some(flag == "--refinement");
                 continue;
             }
             if !matches!(
@@ -139,6 +141,12 @@ impl Launch {
                 _ => unreachable!(),
             }
         }
+        let requests_refinement = stop == Some(Some(SkeletonStage::Refinement))
+            || quit_after == Some(Some(SkeletonStage::Refinement));
+        if requests_refinement && refinement == Some(false) {
+            return Err("--no-refinement conflicts with stopping after refinement".into());
+        }
+        launch.options.refine_embedding = refinement.unwrap_or(requests_refinement);
         if quit_skeleton {
             quit_after = Some(Some(if launch.options.refine_embedding {
                 SkeletonStage::Refinement
@@ -158,9 +166,6 @@ impl Launch {
                 SkeletonStage::Surgery
             })
         });
-        if launch.stop == Some(SkeletonStage::Refinement) && !launch.options.refine_embedding {
-            return Err("--no-refinement conflicts with stopping after refinement".into());
-        }
         if launch.stop == Some(SkeletonStage::Surgery) {
             launch.options.refine_embedding = false;
         }

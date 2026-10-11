@@ -174,3 +174,21 @@ fn node_colors_match_patches_and_overlay_keeps_split_geometry() {
         assert_eq!(translucent[3], 0.3);
     }
 }
+
+#[test]
+fn large_patch_sets_keep_saturated_colors_and_neighboring_indices_distinct() {
+    for region in 0..10_000 {
+        let color = region_color(region);
+        assert!(
+            color
+                .iter()
+                .all(|c| c.is_finite() && (0.0..=1.0).contains(c))
+        );
+        let hsv = Hsva::from(Srgba::rgb(color[0], color[1], color[2]));
+        assert!(hsv.saturation >= 0.64);
+        assert!((0.75..=0.99).contains(&hsv.value));
+        let next = region_color(region + 1);
+        let distance: f32 = color.iter().zip(next).map(|(a, b)| (a - b).powi(2)).sum();
+        assert!(distance > 0.1);
+    }
+}

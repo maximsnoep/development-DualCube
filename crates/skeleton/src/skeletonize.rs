@@ -21,7 +21,7 @@ impl Default for Options {
     fn default() -> Self {
         Self {
             max_iterations: 50,
-            refine_embedding: true,
+            refine_embedding: false,
             surgery: surgery::Options::default(),
         }
     }
