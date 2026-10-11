@@ -13,6 +13,7 @@ use bevy_egui::egui::{
     CollapsingHeader, CursorIcon, MenuBar, Panel, Popup, PopupCloseBehavior, RectAlign, RichText,
     Ui,
 };
+use bevy_egui::egui::containers::menu::MenuConfig;
 use bevy_orbit_camera::automatic::AutomaticRotation;
 use dualcube::prelude::*;
 
@@ -127,7 +128,9 @@ pub fn show(
                 ui.output_mut(|o| o.cursor_icon = CursorIcon::Progress);
             }
             ui.add_space(9.);
-            MenuBar::new().ui(ui, |ui| {
+            MenuBar::new()
+                .config(MenuConfig::new().close_behavior(PopupCloseBehavior::CloseOnClickOutside))
+                .ui(ui, |ui| {
                 // More room between the buttons.
                 ui.spacing_mut().item_spacing.x += 6.;
                 ui.spacing_mut().button_padding.y += 2.;
