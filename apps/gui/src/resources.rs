@@ -191,8 +191,32 @@ pub fn genus(mesh: &mehsh::prelude::Mesh<INPUT>) -> Option<usize> {
 
 #[derive(Resource, Default)]
 pub struct SkeletonResource {
-    pub extraction: Option<dualcube::skeleton::skeletonize::Extraction>,
+    pub state: Option<SkeletonState>,
     pub labeled: Option<dualcube::skeleton::LabeledSkeleton>,
+}
+
+pub enum SkeletonState {
+    Deflated(mehsh::prelude::Mesh<dualcube::skeleton::skeletonize::deflate::CONTRACTION>),
+    Extracted(dualcube::skeleton::skeletonize::Extraction),
+}
+
+impl SkeletonResource {
+    pub fn extraction(&self) -> Option<&dualcube::skeleton::skeletonize::Extraction> {
+        match &self.state {
+            Some(SkeletonState::Extracted(extraction)) => Some(extraction),
+            _ => None,
+        }
+    }
+
+    pub fn contracted_mesh(
+        &self,
+    ) -> Option<&mehsh::prelude::Mesh<dualcube::skeleton::skeletonize::deflate::CONTRACTION>> {
+        match &self.state {
+            Some(SkeletonState::Deflated(mesh)) => Some(mesh),
+            Some(SkeletonState::Extracted(extraction)) => Some(&extraction.contracted_mesh),
+            None => None,
+        }
+    }
 }
 
 #[cfg(test)]

@@ -5,6 +5,7 @@ use super::super::store::{RenderAsset, RenderObject, RenderObjectStore};
 use crate::colors;
 use crate::render::Objects;
 use crate::resources::{InputResource, SkeletonResource};
+use bevy::mesh::{Mesh as BevyMesh, VertexAttributeValues};
 use bevy::prelude::*;
 use dualcube::prelude::*;
 use dualcube::skeleton::{LabeledSkeleton, Skeleton, SkeletonEdgeID};
@@ -18,16 +19,18 @@ pub enum SkeletonLayer {
     Raw,
     Labeled,
     Patches,
+    TranslucentPatches,
     Boundaries,
     Deflated,
 }
 
 impl SkeletonLayer {
-    pub const ALL: [Self; 6] = [
+    pub const ALL: [Self; 7] = [
         Self::Skeleton,
         Self::Raw,
         Self::Labeled,
         Self::Patches,
+        Self::TranslucentPatches,
         Self::Boundaries,
         Self::Deflated,
     ];
@@ -38,6 +41,7 @@ impl SkeletonLayer {
             Self::Raw => "raw skeleton",
             Self::Labeled => "labeled skeleton",
             Self::Patches => "patches",
+            Self::TranslucentPatches => "translucent patches",
             Self::Boundaries => "patch boundaries",
             Self::Deflated => "deflated",
         }
@@ -48,7 +52,10 @@ impl SkeletonLayer {
     }
 
     pub fn is_surface(self) -> bool {
-        matches!(self, Self::Patches | Self::Boundaries)
+        matches!(
+            self,
+            Self::Patches | Self::TranslucentPatches | Self::Boundaries
+        )
     }
 }
 
@@ -80,10 +87,31 @@ pub fn sync(
 
 fn build(mesh: &mehsh::prelude::Mesh<INPUT>, state: &SkeletonResource) -> RenderObject {
     let mut object = RenderObject::default();
-    let Some(extraction) = &state.extraction else {
+    let Some(contracted) = state.contracted_mesh() else {
         return object;
     };
     let (scale, translation) = mesh.scale_translation();
+    let mut deflated = MeshBuilder::new();
+    for f in contracted.face_ids() {
+        let points: Vec<_> = contracted
+            .vertices(f)
+            .map(|v| contracted.position(v))
+            .collect();
+        let p = [points[0], points[1], points[2]];
+        let normal = (p[1] - p[0])
+            .cross(&(p[2] - p[0]))
+            .try_normalize(1e-20)
+            .unwrap_or(Vector3D::z());
+        deflated.add_triangle(p, [normal; 3], colors::LIGHT_GRAY);
+    }
+    deflated.normalize(scale, translation);
+    object.add(
+        SkeletonLayer::Deflated.label(),
+        RenderAsset::Mesh(deflated.build()),
+    );
+    let Some(extraction) = state.extraction() else {
+        return object;
+    };
     object.add(
         SkeletonLayer::Skeleton.label(),
         RenderAsset::Mesh(graph(&extraction.skeleton, None, scale, translation)),
@@ -98,9 +126,21 @@ fn build(mesh: &mehsh::prelude::Mesh<INPUT>, state: &SkeletonResource) -> Render
             RenderAsset::Mesh(graph(&labeled.skeleton, Some(labeled), scale, translation)),
         );
     }
+    let mut translucent = patches(mesh, &extraction.skeleton, scale, translation);
     object.add(
         SkeletonLayer::Patches.label(),
-        RenderAsset::Mesh(patches(mesh, &extraction.skeleton, scale, translation)),
+        RenderAsset::Mesh(translucent.clone()),
+    );
+    if let Some(VertexAttributeValues::Float32x4(colors)) =
+        translucent.attribute_mut(BevyMesh::ATTRIBUTE_COLOR)
+    {
+        for color in colors {
+            color[3] = 0.3;
+        }
+    }
+    object.add(
+        SkeletonLayer::TranslucentPatches.label(),
+        RenderAsset::TranslucentMesh(translucent),
     );
     let mut boundaries = GizmoAsset::new();
     for edge in extraction.skeleton.edges.values() {
@@ -124,35 +164,15 @@ fn build(mesh: &mehsh::prelude::Mesh<INPUT>, state: &SkeletonResource) -> Render
         }
     }
     object.gizmo(boundaries, 2.0, -0.001, SkeletonLayer::Boundaries.label());
-    let mut deflated = MeshBuilder::new();
-    for f in extraction.contracted_mesh.face_ids() {
-        let points: Vec<_> = extraction
-            .contracted_mesh
-            .vertices(f)
-            .map(|v| extraction.contracted_mesh.position(v))
-            .collect();
-        let p = [points[0], points[1], points[2]];
-        let normal = (p[1] - p[0])
-            .cross(&(p[2] - p[0]))
-            .try_normalize(1e-20)
-            .unwrap_or(Vector3D::z());
-        deflated.add_triangle(p, [normal; 3], colors::LIGHT_GRAY);
-    }
-    deflated.normalize(scale, translation);
-    object.add(
-        SkeletonLayer::Deflated.label(),
-        RenderAsset::Mesh(deflated.build()),
-    );
     object
 }
 
-#[allow(unused_qualifications)]
 fn graph(
     skeleton: &Skeleton,
     labeled: Option<&LabeledSkeleton>,
     scale: f64,
     translation: Vector3D,
-) -> bevy::mesh::Mesh {
+) -> BevyMesh {
     let mut builder = MeshBuilder::new();
     let position = |id| skeleton.nodes[id].position * scale + translation;
     let edge_color = |id: SkeletonEdgeID| {
@@ -171,8 +191,13 @@ fn graph(
             edge_color(id),
         );
     }
-    for id in skeleton.nodes.keys() {
-        sphere(&mut builder, position(id), 0.2, colors::LIGHT_GRAY);
+    for (region, id) in skeleton.nodes.keys().enumerate() {
+        let color = if labeled.is_some() {
+            colors::LIGHT_GRAY
+        } else {
+            region_color(region)
+        };
+        sphere(&mut builder, position(id), 0.2, color);
     }
     builder.build()
 }
@@ -272,13 +297,12 @@ fn split_triangle(points: [Vector3D; 3], regions: [usize; 3]) -> Vec<([Vector3D;
         .collect()
 }
 
-#[allow(unused_qualifications)]
 fn patches(
     mesh: &mehsh::prelude::Mesh<INPUT>,
     skeleton: &Skeleton,
     scale: f64,
     translation: Vector3D,
-) -> bevy::mesh::Mesh {
+) -> BevyMesh {
     let owners: HashMap<_, _> = skeleton
         .nodes
         .values()

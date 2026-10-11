@@ -13,7 +13,7 @@ fn extraction_layers_survive_refresh_and_clear_with_new_input() {
     let mut app = App::new();
     app.insert_resource(InputResource::new(solution.mesh_ref))
         .insert_resource(SkeletonResource {
-            extraction: Some(extraction),
+            state: Some(crate::resources::SkeletonState::Extracted(extraction)),
             labeled: None,
         })
         .insert_resource(store)
@@ -24,7 +24,7 @@ fn extraction_layers_survive_refresh_and_clear_with_new_input() {
     assert!(object.features.contains_key("skeleton"));
     assert!(!object.features.contains_key("labeled skeleton"));
     for asset in object.features.values() {
-        if let RenderAsset::Mesh(mesh) = asset {
+        if let RenderAsset::Mesh(mesh) | RenderAsset::TranslucentMesh(mesh) = asset {
             let positions = mesh
                 .attribute(BevyMesh::ATTRIBUTE_POSITION)
                 .unwrap()
@@ -120,12 +120,12 @@ fn labeled_graph_uses_labels_and_accepts_coincident_nodes() {
     );
     let gray = graph(&labeled.skeleton, None, 1., Vector3D::zeros());
     let colored = graph(&labeled.skeleton, Some(&labeled), 1., Vector3D::zeros());
-    let Some(bevy::mesh::VertexAttributeValues::Float32x4(gray_colors)) =
+    let Some(VertexAttributeValues::Float32x4(gray_colors)) =
         gray.attribute(BevyMesh::ATTRIBUTE_COLOR)
     else {
         panic!("Missing colors");
     };
-    let Some(bevy::mesh::VertexAttributeValues::Float32x4(axis_colors)) =
+    let Some(VertexAttributeValues::Float32x4(axis_colors)) =
         colored.attribute(BevyMesh::ATTRIBUTE_COLOR)
     else {
         panic!("Missing colors");
@@ -134,4 +134,41 @@ fn labeled_graph_uses_labels_and_accepts_coincident_nodes() {
     labeled.skeleton.nodes[b].position = Vector3D::zeros();
     let coincident = graph(&labeled.skeleton, Some(&labeled), 1., Vector3D::zeros());
     assert!(coincident.count_vertices() > 0);
+}
+
+#[test]
+fn node_colors_match_patches_and_overlay_keeps_split_geometry() {
+    let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("../../crates/mehsh/assets/tetrahedron.obj");
+    let solution = io::import_solution(&path).unwrap();
+    let extraction =
+        dualcube::skeleton::skeletonize::extract(&solution.mesh_ref, Default::default()).unwrap();
+    let state = SkeletonResource {
+        state: Some(crate::resources::SkeletonState::Extracted(extraction)),
+        labeled: None,
+    };
+    let object = build(&solution.mesh_ref, &state);
+    let RenderAsset::Mesh(graph) = &object.features[SkeletonLayer::Skeleton.label()] else {
+        panic!()
+    };
+    let RenderAsset::Mesh(patches) = &object.features[SkeletonLayer::Patches.label()] else {
+        panic!()
+    };
+    let RenderAsset::TranslucentMesh(overlay) =
+        &object.features[SkeletonLayer::TranslucentPatches.label()]
+    else {
+        panic!()
+    };
+    let colors = |mesh: &BevyMesh| match mesh.attribute(BevyMesh::ATTRIBUTE_COLOR).unwrap() {
+        VertexAttributeValues::Float32x4(colors) => colors.clone(),
+        _ => panic!(),
+    };
+    let graph_colors = colors(graph);
+    let patch_colors = colors(patches);
+    assert!(patch_colors.iter().all(|c| graph_colors.contains(c)));
+    assert_eq!(patches.count_vertices(), overlay.count_vertices());
+    for (opaque, translucent) in patch_colors.iter().zip(colors(overlay)) {
+        assert_eq!(opaque[..3], translucent[..3]);
+        assert_eq!(translucent[3], 0.3);
+    }
 }

@@ -25,6 +25,7 @@ pub struct MainMesh;
 #[derive(Clone)]
 pub enum RenderAsset {
     Mesh(bevy::mesh::Mesh),
+    TranslucentMesh(bevy::mesh::Mesh),
     Gizmo {
         asset: GizmoAsset,
         line_width: f32,
@@ -154,6 +155,7 @@ pub fn update_render_settings(
 #[allow(unused_qualifications)]
 enum SpawnedAsset {
     Mesh(Handle<bevy::mesh::Mesh>),
+    TranslucentMesh(Handle<bevy::mesh::Mesh>),
     Gizmo(Handle<GizmoAsset>),
 }
 
@@ -162,7 +164,7 @@ enum SpawnedAsset {
 pub struct Spawned {
     features: HashMap<(Objects, String), (Entity, SpawnedAsset)>,
     covers: HashMap<Objects, Entity>,
-    materials: Option<[Handle<StandardMaterial>; 2]>,
+    materials: Option<[Handle<StandardMaterial>; 3]>,
     toon_material: Option<Handle<ToonMaterial>>,
 }
 
@@ -189,7 +191,7 @@ pub fn sync_renders(
     }
 
     // The shared materials (created once; the background follows the configured color).
-    let [flat_material, background_material] = spawned
+    let [flat_material, background_material, translucent_material] = spawned
         .materials
         .get_or_insert_with(|| {
             [
@@ -199,6 +201,11 @@ pub fn sync_renders(
                 }),
                 materials.add(StandardMaterial {
                     unlit: true,
+                    ..default()
+                }),
+                materials.add(StandardMaterial {
+                    unlit: true,
+                    alpha_mode: AlphaMode::Blend,
                     ..default()
                 }),
             ]
@@ -259,7 +266,11 @@ pub fn sync_renders(
             let key = (object, label.clone());
             // On new data, replace the assets of the spawned features in place.
             match (spawned.features.get(&key), asset) {
-                (Some((_, SpawnedAsset::Mesh(handle))), RenderAsset::Mesh(mesh)) => {
+                (Some((_, SpawnedAsset::Mesh(handle))), RenderAsset::Mesh(mesh))
+                | (
+                    Some((_, SpawnedAsset::TranslucentMesh(handle))),
+                    RenderAsset::TranslucentMesh(mesh),
+                ) => {
                     if content_changed && let Some(mut current) = meshes.get_mut(handle) {
                         *current = mesh.clone();
                     }
@@ -292,14 +303,17 @@ pub fn sync_renders(
                 (None, _) => {}
             }
             let spawned_feature = match asset {
-                RenderAsset::Mesh(mesh) => {
+                RenderAsset::Mesh(mesh) | RenderAsset::TranslucentMesh(mesh) => {
+                    let translucent = matches!(asset, RenderAsset::TranslucentMesh(_));
                     let handle = meshes.add(mesh.clone());
                     let mut entity = commands.spawn((
                         Mesh3d(handle.clone()),
                         Transform::from_translation(translation),
                     ));
                     // The polycube-like objects are unlit; the surface meshes are toon-shaded.
-                    if matches!(object, Objects::Polycube | Objects::PolycubeMap) {
+                    if translucent {
+                        entity.insert(MeshMaterial3d(translucent_material.clone()));
+                    } else if matches!(object, Objects::Polycube | Objects::PolycubeMap) {
                         entity.insert(MeshMaterial3d(flat_material.clone()));
                     } else {
                         entity.insert(MeshMaterial3d(toon_material.clone()));
@@ -310,7 +324,14 @@ pub fn sync_renders(
                     {
                         entity.insert(MainMesh);
                     }
-                    (entity.id(), SpawnedAsset::Mesh(handle))
+                    (
+                        entity.id(),
+                        if translucent {
+                            SpawnedAsset::TranslucentMesh(handle)
+                        } else {
+                            SpawnedAsset::Mesh(handle)
+                        },
+                    )
                 }
                 RenderAsset::Gizmo {
                     asset,

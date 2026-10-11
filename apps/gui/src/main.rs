@@ -1,3 +1,4 @@
+mod cli;
 mod colors;
 mod controls;
 mod jobs;
@@ -8,13 +9,13 @@ mod ui;
 use bevy::diagnostic::{FrameTimeDiagnosticsPlugin, SystemInformationDiagnosticsPlugin};
 use bevy::log::{Level, LogPlugin};
 use bevy::prelude::*;
-use bevy::ui::UiScale;
-use bevy::window::{WindowMode, WindowResolution};
+use bevy::window::WindowMode;
 use bevy::winit::{UpdateMode, WinitSettings};
 use dualcube::prelude::*;
-use resources::{Configuration, InputResource, SolutionResource};
+use resources::{InputResource, SolutionResource};
 
-fn main() {
+fn main() -> AppExit {
+    let launch = cli::Launch::from_env_or_exit();
     let axis_color = |direction| {
         colors::to_bevy(colors::from_direction(
             direction,
@@ -25,11 +26,11 @@ fn main() {
 
     App::new()
         // Application state
-        .init_resource::<Configuration>()
+        .insert_resource(launch.configuration())
+        .insert_resource(launch)
         .init_resource::<InputResource>()
         .init_resource::<SolutionResource>()
         .init_resource::<resources::SkeletonResource>()
-        .insert_resource(UiScale(1.0)) // no UI scaling
         .insert_resource(WinitSettings {
             focused_mode: UpdateMode::Continuous,
             unfocused_mode: UpdateMode::Reactive {
@@ -52,7 +53,6 @@ fn main() {
                     primary_window: Some(Window {
                         title: "DualCube".to_string(),
                         mode: WindowMode::Windowed,
-                        resolution: WindowResolution::default().with_scale_factor_override(1.),
                         ..Default::default()
                     }),
                     ..Default::default()
@@ -97,8 +97,8 @@ fn main() {
             controls::ControlsPlugin,
             render::RenderPlugin,
         ))
-        .add_systems(Startup, maximize)
-        .run();
+        .add_systems(Startup, (maximize, cli::start))
+        .run()
 }
 
 // Start maximized (a regular window with its borders, filling the screen).

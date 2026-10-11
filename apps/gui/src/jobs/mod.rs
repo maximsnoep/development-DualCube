@@ -34,6 +34,7 @@ use pipeline::Stage;
 use std::sync::Arc;
 
 pub use evolution::EvolutionLive;
+pub use skeleton::SkeletonStage;
 
 pub struct JobPlugin;
 
@@ -65,6 +66,7 @@ impl Plugin for JobPlugin {
 pub struct JobState {
     pub request: Option<&'static str>,
     current: Option<Task<Option<JobResult>>>,
+    startup: bool,
 }
 
 /// A unit of background work: a description (shown in the UI while running)
@@ -76,6 +78,7 @@ pub struct JobState {
 pub struct Job {
     description: &'static str,
     preempt: bool,
+    startup: bool,
     run: Arc<dyn Fn() -> Option<JobResult> + Send + Sync>,
 }
 
@@ -87,12 +90,18 @@ impl Job {
         Self {
             description,
             preempt: false,
+            startup: false,
             run: Arc::new(run),
         }
     }
 
-    /// This job replaces a running job (and stops a running evolution) instead of being dropped; the result of the
-    /// replaced job is discarded.
+    /// Part of the command-line startup sequence.
+    pub fn for_startup(mut self) -> Self {
+        self.startup = true;
+        self
+    }
+
+    /// Replaces running work; its eventual result is discarded.
     pub fn preempting(mut self) -> Self {
         self.preempt = true;
         self
@@ -101,7 +110,10 @@ impl Job {
 
 /// What a finished job hands back to [`poll_jobs`].
 enum JobResult {
-    SkeletonExtracted(dualcube::skeleton::skeletonize::Extraction),
+    SkeletonReady {
+        state: crate::resources::SkeletonState,
+        view: crate::ui::ModelViewKind,
+    },
     /// A solution was imported (with its renders); resets the input resources and the view.
     Imported {
         solution: Solution,
@@ -148,6 +160,7 @@ fn submit_jobs(
         }
         info!("Starting job: {}", job.description);
         job_state.request = Some(job.description);
+        job_state.startup = job.startup;
         let job = job.clone();
         let task = AsyncComputeTaskPool::get().spawn(async move { (job.run)() });
         job_state.current = Some(task);
@@ -166,6 +179,8 @@ pub(crate) fn poll_jobs(
     mut configuration: ResMut<'_, Configuration>,
     mut evolution_live: ResMut<'_, EvolutionLive>,
     mut skeleton: ResMut<'_, crate::resources::SkeletonResource>,
+    launch: Res<'_, crate::cli::Launch>,
+    mut exit: MessageWriter<'_, AppExit>,
 ) {
     let (Some(request), Some(mut task)) = (job_state.request.take(), job_state.current.take())
     else {
@@ -180,6 +195,9 @@ pub(crate) fn poll_jobs(
     };
 
     let Some(result) = result else {
+        if job_state.startup {
+            launch.finish(false, &mut model_view, &mut exit);
+        }
         // Normal for jobs without a result (e.g. exports); failures have
         // already been logged by the job itself.
         return;
@@ -188,7 +206,7 @@ pub(crate) fn poll_jobs(
     info!("Finished job: {request}");
 
     match result {
-        JobResult::SkeletonExtracted(extraction) => {
+        JobResult::SkeletonReady { state, view } => {
             // New initialization: previous loops and their downstream results are stale.
             let current = &solution_resource.current_solution;
             let mut initialized = Solution::new(current.mesh_ref.clone());
@@ -199,15 +217,17 @@ pub(crate) fn poll_jobs(
             solution_resource.selected_corner = None;
             configuration.loop_anchors.clear();
             evolution_live.reset();
-            jobs.write(Job::refresh(
+            let mut refresh = Job::refresh(
                 solution_resource.current_solution.clone(),
                 configuration.clone(),
-            ));
+            );
+            refresh.startup = job_state.startup;
+            jobs.write(refresh);
             *skeleton = crate::resources::SkeletonResource {
-                extraction: Some(extraction),
+                state: Some(state),
                 labeled: None,
             };
-            model_view.show_when_ready(crate::ui::ModelViewKind::Skeleton);
+            model_view.show_when_ready(view);
         }
 
         JobResult::StageCompleted {
@@ -240,11 +260,26 @@ pub(crate) fn poll_jobs(
             // Show the new model right away, as the input.
             *render_object_store = store;
             model_view.show_input(&mut render_settings);
-            // The flow fields and graphs only depend on the mesh: compute them right away (then refresh).
-            jobs.write(Job::prepare_flow(
-                solution_resource.current_solution.clone(),
-                configuration.clone(),
-            ));
+            if job_state.startup {
+                if let Some(stop) = launch.stop {
+                    jobs.write(
+                        Job::extract_skeleton_until(
+                            input_resource.mesh.clone(),
+                            configuration.skeleton_options,
+                            stop,
+                        )
+                        .for_startup(),
+                    );
+                } else {
+                    launch.finish(true, &mut model_view, &mut exit);
+                }
+            } else {
+                // Interactive imports prepare the flow graphs; skeleton startup does not need them.
+                jobs.write(Job::prepare_flow(
+                    solution_resource.current_solution.clone(),
+                    configuration.clone(),
+                ));
+            }
         }
 
         JobResult::AddedLoop {
@@ -271,6 +306,9 @@ pub(crate) fn poll_jobs(
 
         JobResult::Refreshed(new_render_object_store) => {
             *render_object_store = new_render_object_store;
+            if job_state.startup {
+                launch.finish(true, &mut model_view, &mut exit);
+            }
         }
     }
 }
