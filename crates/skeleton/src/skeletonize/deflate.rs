@@ -1,16 +1,14 @@
 use crate::validate::volume;
 use std::collections::HashMap;
 
+use skeleton_numerics::QrWorkspace;
 use faer::{
     Mat,
-    prelude::SolveLstsq,
-    sparse::{
-        SparseColMat, Triplet,
-        linalg::solvers::{Qr, SymbolicQr},
-    },
+    sparse::{SparseColMat, Triplet},
 };
 use mehsh::prelude::{
-    HasFaces, HasNeighbors, HasPosition, HasSize, HasVertices, Mesh, SetPosition, Tag, VertKey,
+    FaceKey, HasFaces, HasNeighbors, HasPosition, HasSize, HasVertices, Mesh, SetPosition, Tag,
+    VertKey,
 };
 use serde::{Deserialize, Serialize};
 use tracing::{error, info, warn};
@@ -28,9 +26,10 @@ struct ContractionState {
     /// so we maintain a stable vertex ordering throughout contraction.
     pub vert_ids: Vec<VertKey<CONTRACTION>>,
 
-    /// Reverse lookup: VertKey -> matrix index.
-    /// Used for O(1) index lookups during matrix assembly.
-    pub vert_to_idx: HashMap<VertKey<CONTRACTION>, usize>,
+    // Static topology, in the same order as the mesh iterators.
+    neighbors: Vec<Vec<(usize, [VertKey<CONTRACTION>; 2])>>,
+    faces: Vec<FaceKey<CONTRACTION>>,
+    vertex_faces: Vec<Vec<usize>>,
 
     /// Global contraction weight scalar (s_L * W_L).
     /// Starts as 10^-3 * sqrt(AvgArea). Increases by s_L each step.
@@ -38,11 +37,11 @@ struct ContractionState {
 
     /// Per-vertex attraction weights (W_H).
     /// Starts as 1.0. Updates based on ratio of current area to original area.
-    pub wh: HashMap<VertKey<CONTRACTION>, f64>,
+    pub wh: Vec<f64>,
 
     /// Original one-ring area of each vertex (A^0).
     /// Used to calculate the update for W_H.
-    pub original_areas: HashMap<VertKey<CONTRACTION>, f64>,
+    pub original_areas: Vec<f64>,
 
     /// Original mesh volume. Used for stopping condition.
     pub original_volume: f64,
@@ -51,23 +50,19 @@ struct ContractionState {
     pub unstable: bool,
 
     /// Cache symbolic factorization since topology is static in this step.
-    pub symbolic: Option<SymbolicQr<usize>>,
+    qr: Option<QrWorkspace>,
 }
 
 impl ContractionState {
-    /// Computes the one-ring area for a vertex (sum of areas of adjacent faces).
-    fn one_ring_area(mesh: &Mesh<CONTRACTION>, vertex: VertKey<CONTRACTION>) -> f64 {
-        mesh.faces(vertex).map(|face| mesh.size(face)).sum()
+    fn one_ring_areas(&self, mesh: &Mesh<CONTRACTION>) -> Vec<f64> {
+        let areas: Vec<_> = self.faces.iter().map(|&f| mesh.size(f)).collect();
+        self.vertex_faces
+            .iter()
+            .map(|faces| faces.iter().map(|&f| areas[f]).sum())
+            .collect()
     }
 
-    /// Creates a new `ContractionState` from a mesh.
-    ///
-    /// Initializes:
-    /// - `vert_ids` and `vert_to_idx` for matrix index mapping
-    /// - `wl` as 10^-3 * sqrt(average face area)
-    /// - `wh` as 1.0 for all vertices
-    /// - `original_areas` as the one-ring area for each vertex
-    /// - `original_volume` from the mesh volume
+    // Cache topology once; contraction only changes positions.
     pub fn new(mesh: &Mesh<CONTRACTION>) -> Self {
         let vert_ids = mesh.vert_ids();
         let n = vert_ids.len();
@@ -79,14 +74,33 @@ impl ContractionState {
             .map(|(idx, &v)| (v, idx))
             .collect();
 
-        // Compute one-ring areas and initialize weights for all vertices
-        let mut original_areas = HashMap::with_capacity(n);
-        let mut wh = HashMap::with_capacity(n);
-        for &v in &vert_ids {
-            let area = Self::one_ring_area(mesh, v);
-            original_areas.insert(v, area);
-            wh.insert(v, 1.0);
-        }
+        let faces = mesh.face_ids();
+        let face_indices: HashMap<_, _> = faces.iter().enumerate().map(|(i, &f)| (f, i)).collect();
+        let vertex_faces: Vec<Vec<_>> = vert_ids
+            .iter()
+            .map(|&v| mesh.faces(v).map(|f| face_indices[&f]).collect())
+            .collect();
+        let areas: Vec<_> = faces.iter().map(|&f| mesh.size(f)).collect();
+        let original_areas = vertex_faces
+            .iter()
+            .map(|faces| faces.iter().map(|&f| areas[f]).sum())
+            .collect();
+        let neighbors = vert_ids
+            .iter()
+            .map(|&a| {
+                mesh.neighbors(a)
+                    .map(|b| {
+                        let (edge, _) = mesh.edge_between_verts(a, b).unwrap();
+                        let opposite: Vec<_> = mesh
+                            .faces(edge)
+                            .map(|face| mesh.vertices(face).find(|&v| v != a && v != b).unwrap())
+                            .collect();
+                        (vert_to_idx[&b], [opposite[0], opposite[1]])
+                    })
+                    .collect()
+            })
+            .collect();
+        let wh = vec![1.; n];
 
         // Initial wl = 10^-3 * sqrt(avg_area)
         let mut total_area = 0.0;
@@ -100,13 +114,15 @@ impl ContractionState {
 
         Self {
             vert_ids,
-            vert_to_idx,
+            neighbors,
+            faces,
+            vertex_faces,
             wl,
             wh,
             original_areas,
             original_volume: volume(mesh),
             unstable: false,
-            symbolic: None,
+            qr: None,
         }
     }
 }
@@ -186,8 +202,8 @@ fn contract_once(mesh: &mut Mesh<CONTRACTION>, state: &mut ContractionState) {
     }
 
     // Bottom block: W_H (Diagonal)
-    for (i, &v) in state.vert_ids.iter().enumerate() {
-        let wh = state.wh[&v];
+    for i in 0..num_verts {
+        let wh = state.wh[i];
         triplets_m.push(Triplet::new(num_verts + i, i, wh));
     }
 
@@ -196,13 +212,13 @@ fn contract_once(mesh: &mut Mesh<CONTRACTION>, state: &mut ContractionState) {
         .expect("Failed to create sparse matrix from triplets");
 
     // Assemble RHS Matrix B (2N x 3)
-    let mat_b = Mat::from_fn(2 * num_verts, 3, |r, c| {
+    let mut mat_b = Mat::from_fn(2 * num_verts, 3, |r, c| {
         if r < num_verts {
             0.0
         } else {
             let i = r - num_verts;
             let v = state.vert_ids[i];
-            let wh = state.wh[&v];
+            let wh = state.wh[i];
             let pos = mesh.position(v);
             match c {
                 0 => wh * pos.x,
@@ -213,30 +229,19 @@ fn contract_once(mesh: &mut Mesh<CONTRACTION>, state: &mut ContractionState) {
         }
     });
 
-    // Solve M X = B in the least-squares sense
-    if state.symbolic.is_none() {
-        match SymbolicQr::try_new(mat_m.symbolic()) {
-            Ok(sym) => state.symbolic = Some(sym),
+    // Reuse factorization storage and scratch space, with the same QR and parallelism.
+    if state.qr.is_none() {
+        match QrWorkspace::new(mat_m.as_ref(), 3) {
+            Ok(qr) => state.qr = Some(qr),
             Err(error) => {
-                warn!("Symbolic factorization failed: {}", error);
+                warn!("QR workspace initialization failed: {error}");
                 state.unstable = true;
                 return;
             }
         }
     }
-
-    // Guaranteed to exist now
-    let symbolic = state.symbolic.clone().unwrap();
-
-    let qr = match Qr::try_new_with_symbolic(symbolic, mat_m.as_ref()) {
-        Ok(factorization) => factorization,
-        Err(error) => {
-            warn!("Numeric factorization failed: {}", error);
-            state.unstable = true;
-            return;
-        }
-    };
-    let solution = qr.solve_lstsq(mat_b.as_ref());
+    state.qr.as_mut().unwrap().solve(mat_m.as_ref(), &mut mat_b);
+    let solution = mat_b;
 
     if (0..num_verts).any(|i| (0..3).any(|j| !solution[(i, j)].is_finite())) {
         warn!("Contraction produced non-finite positions; keeping the previous iterate");
@@ -256,68 +261,34 @@ fn contract_once(mesh: &mut Mesh<CONTRACTION>, state: &mut ContractionState) {
     state.wl *= SL;
     const MIN_VERTEX_AREA: f64 = 1e-16;
 
-    for &v in &state.vert_ids {
-        let current_area = ContractionState::one_ring_area(mesh, v);
+    for (i, current_area) in state.one_ring_areas(mesh).into_iter().enumerate() {
         let safe_area = current_area.max(MIN_VERTEX_AREA);
         // Eq: W_H_new = W_H_old * sqrt(A_0 / A_new).
         // Since we only store current W_H and W_H^0=1, this simplifies to sqrt(A_0 / A_new).
-        let original_area = state.original_areas[&v];
-        state.wh.insert(v, (original_area / safe_area).sqrt());
+        let original_area = state.original_areas[i];
+        state.wh[i] = (original_area / safe_area).sqrt();
     }
 }
 
-/// Computes the cotangent weight for a specific edge between v_i and v_j.
-/// This corresponds to (cot alpha + cot beta) in Eq 1.
-///
-/// Returns 0.0 when the edge does not exist.
 fn cotangent_weight(
     mesh: &Mesh<CONTRACTION>,
     v_i: VertKey<CONTRACTION>,
     v_j: VertKey<CONTRACTION>,
+    opposite: [VertKey<CONTRACTION>; 2],
 ) -> f64 {
-    // Find the edge between the two vertices
-    let Some((edge_ij, _twin)) = mesh.edge_between_verts(v_i, v_j) else {
-        return 0.0;
-    };
-
     let p_i = mesh.position(v_i);
     let p_j = mesh.position(v_j);
-
-    // Cap crossproduct length to avoid division by zero
     const MIN_CROSSPROD_LEN: f64 = 1e-8;
-
     let mut sum_cot = 0.0;
-    // Each edge has exactly 2 adjacent faces in a watertight 2-manifold mesh
-    for face in mesh.faces(edge_ij) {
-        // Find the third vertex making up the face
-        let v_k = mesh.vertices(face).find(|&v| v != v_i && v != v_j);
-
-        if let Some(v_k) = v_k {
-            let p_k = mesh.position(v_k);
-
-            // Vectors from p_k to the edge vertices
-            let u = p_i - p_k;
-            let v = p_j - p_k;
-
-            // Cot(theta) = cos(theta) / sin(theta)
-            // dot(u, v) = |u||v| cos(theta)
-            // |cross(u, v)| = |u||v| sin(theta)
-            // => dot / |cross| = cot(theta)
-            let cross_len = u.cross(&v).magnitude();
-
-            // Handle degenerate triangles (area ~ 0) safely
-            if cross_len > MIN_CROSSPROD_LEN {
-                let cot = u.dot(&v) / cross_len;
-                sum_cot += cot
-            }
-        } else {
-            unreachable!(
-                "Expected to find a third vertex for face {:?} adjacent to edge ({:?}, {:?})",
-                face, v_i, v_j
-            );
+    for v_k in opposite {
+        let p_k = mesh.position(v_k);
+        let u = p_i - p_k;
+        let v = p_j - p_k;
+        let cross_len = u.cross(&v).magnitude();
+        if cross_len > MIN_CROSSPROD_LEN {
+            sum_cot += u.dot(&v) / cross_len;
         }
     }
-
     sum_cot
 }
 
@@ -337,11 +308,11 @@ fn get_laplacian_triplets(
         let mut sum_weights = 0.0;
 
         // Iterate over 1-ring neighbors
-        for v_j in mesh.neighbors(v_i) {
-            let j = state.vert_to_idx[&v_j];
+        for &(j, opposite) in &state.neighbors[i] {
+            let v_j = state.vert_ids[j];
 
             // Compute cotangent weight for edge (i, j)
-            let weight = cotangent_weight(mesh, v_i, v_j);
+            let weight = cotangent_weight(mesh, v_i, v_j, opposite);
             if weight.is_finite() {
                 // Off-diagonal L_ij = weight
                 triplets.push((i, j, weight));
@@ -360,3 +331,6 @@ fn get_laplacian_triplets(
 
     triplets
 }
+
+#[cfg(test)]
+mod tests;

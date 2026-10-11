@@ -1,0 +1,12 @@
+[package]
+name = "skeleton-numerics"
+version = "0.1.0"
+edition = "2024"
+license.workspace = true
+description = "Optimized numerical kernels for skeleton extraction."
+
+[dependencies]
+faer.workspace = true
+
+[lints]
+workspace = true

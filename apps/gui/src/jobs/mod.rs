@@ -34,7 +34,7 @@ use pipeline::Stage;
 use std::sync::Arc;
 
 pub use evolution::EvolutionLive;
-pub use skeleton::SkeletonStage;
+pub use skeleton::{ContractionCache, SkeletonStage};
 
 pub struct JobPlugin;
 
@@ -223,10 +223,8 @@ pub(crate) fn poll_jobs(
             );
             refresh.startup = job_state.startup;
             jobs.write(refresh);
-            *skeleton = crate::resources::SkeletonResource {
-                state: Some(state),
-                labeled: None,
-            };
+            skeleton.state = Some(state);
+            skeleton.labeled = None;
             model_view.show_when_ready(view);
         }
 
@@ -267,6 +265,7 @@ pub(crate) fn poll_jobs(
                             input_resource.mesh.clone(),
                             configuration.skeleton_options,
                             stop,
+                            skeleton.contraction_cache.clone(),
                         )
                         .for_startup(),
                     );

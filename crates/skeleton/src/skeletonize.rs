@@ -43,8 +43,18 @@ pub fn run(mesh: &Mesh<INPUT>) -> SkeletonResult<Skeleton> {
 
 pub fn extract(mesh: &Mesh<INPUT>, options: Options) -> SkeletonResult<Extraction> {
     options.surgery.validate()?;
-    let genus = crate::validate::input_genus(mesh)?;
     let contracted_mesh = deflate::run(mesh, options.max_iterations)?;
+    extract_from_contracted(mesh, contracted_mesh, options)
+}
+
+/// Continue from a contracted mesh with matching topology. Only surgery and refinement options apply.
+pub fn extract_from_contracted(
+    mesh: &Mesh<INPUT>,
+    contracted_mesh: Mesh<deflate::CONTRACTION>,
+    options: Options,
+) -> SkeletonResult<Extraction> {
+    options.surgery.validate()?;
+    let genus = crate::validate::input_genus(mesh)?;
     let raw = surgery::run_with_options(&contracted_mesh, mesh, options.surgery)?;
     let mut skeleton = raw.clone();
     if options.refine_embedding {

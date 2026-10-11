@@ -6,6 +6,7 @@ license.workspace = true
 description = "Data types and implementation for skeleton-based initialization for arbitrary genus surfaces."
 
 [dependencies]
+skeleton-numerics = { path = "../skeleton-numerics" }
 dualcube-dual = { path = "../dualcube-dual" }
 dualcube-types = { path = "../dualcube-types" }
 faer.workspace = true

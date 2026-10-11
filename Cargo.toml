@@ -10,6 +10,7 @@ members = [
     "crates/dualcube-quad",
     "crates/dualcube-types",
     "crates/skeleton",
+    "crates/skeleton-numerics",
     "crates/grapff",
     "crates/mehsh",
     "crates/mehsh-tetgen",
@@ -58,7 +59,7 @@ codegen-units = 16
 debug = 2
 strip = false
 
-# Quickest to compile (`cargo dev`): the workspace crates are not optimized, the dependencies are (they are compiled
+# Quickest to compile (`cargo dev`): algorithm/UI crates are not optimized, the dependencies are (they are compiled
 # once and cached).
 [profile.dev]
 opt-level = 0
@@ -69,6 +70,10 @@ debug = 0
 strip = "debuginfo"
 
 [profile.dev.package."*"]
+opt-level = 3
+
+# Instantiate generic numerical kernels here, outside frequently edited algorithm crates.
+[profile.dev.package.skeleton-numerics]
 opt-level = 3
 
 [workspace.lints.rust]

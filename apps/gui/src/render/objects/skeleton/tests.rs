@@ -15,6 +15,7 @@ fn extraction_layers_survive_refresh_and_clear_with_new_input() {
         .insert_resource(SkeletonResource {
             state: Some(crate::resources::SkeletonState::Extracted(extraction)),
             labeled: None,
+            ..default()
         })
         .insert_resource(store)
         .add_systems(Update, sync);
@@ -146,6 +147,7 @@ fn node_colors_match_patches_and_overlay_keeps_split_geometry() {
     let state = SkeletonResource {
         state: Some(crate::resources::SkeletonState::Extracted(extraction)),
         labeled: None,
+        ..default()
     };
     let object = build(&solution.mesh_ref, &state);
     let RenderAsset::Mesh(graph) = &object.features[SkeletonLayer::Skeleton.label()] else {

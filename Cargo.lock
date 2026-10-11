@@ -6091,8 +6091,16 @@ dependencies = [
  "nalgebra",
  "petgraph",
  "serde",
+ "skeleton-numerics",
  "slotmap",
  "tracing",
+]
+
+[[package]]
+name = "skeleton-numerics"
+version = "0.1.0"
+dependencies = [
+ "faer",
 ]
 
 [[package]]

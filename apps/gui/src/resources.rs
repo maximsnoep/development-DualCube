@@ -191,6 +191,7 @@ pub fn genus(mesh: &mehsh::prelude::Mesh<INPUT>) -> Option<usize> {
 
 #[derive(Resource, Default)]
 pub struct SkeletonResource {
+    pub contraction_cache: crate::jobs::ContractionCache,
     pub state: Option<SkeletonState>,
     pub labeled: Option<dualcube::skeleton::LabeledSkeleton>,
 }

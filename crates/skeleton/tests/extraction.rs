@@ -259,3 +259,28 @@ fn rejects_invalid_surgery_weights() {
         assert!(error.to_string().contains("weights"));
     }
 }
+
+#[test]
+fn extraction_can_resume_from_a_contracted_mesh() {
+    let mesh = tetrahedron();
+    let options = Options {
+        max_iterations: 3,
+        ..Options::default()
+    };
+    let contracted = deflate::run(&mesh, options.max_iterations).unwrap();
+    let resumed = skeletonize::extract_from_contracted(&mesh, contracted.clone(), options).unwrap();
+    let fresh = skeletonize::extract(&mesh, options).unwrap();
+    assert_eq!(resumed.skeleton.nodes.len(), fresh.skeleton.nodes.len());
+    assert_eq!(resumed.skeleton.edges.len(), fresh.skeleton.edges.len());
+    for (id, node) in &fresh.skeleton.nodes {
+        assert_eq!(node.position, resumed.skeleton.nodes[id].position);
+        assert_eq!(
+            node.patch_vertices,
+            resumed.skeleton.nodes[id].patch_vertices
+        );
+    }
+    let mut invalid = contracted;
+    let e = invalid.edge_ids()[0];
+    invalid.edge_root.insert(e, invalid.toor(e));
+    assert!(skeletonize::extract_from_contracted(&mesh, invalid, options).is_err());
+}

@@ -201,6 +201,7 @@ pub fn show(
                     &mut evolution_live,
                     &mut view_preview,
                     &mut render_setting_store,
+                    &skeleton.contraction_cache,
                 );
                 ui.separator();
                 // The view that the running optimization works on (see `ModelView`).
@@ -584,6 +585,7 @@ fn pipeline_bar(
     evolution_live: &mut EvolutionLive,
     view: &mut ModelView,
     render_setting_store: &mut RenderObjectSettingStore,
+    cache: &crate::jobs::ContractionCache,
 ) {
     let current = &solution.current_solution;
     let button = |ui: &mut Ui, name: &str, enabled: bool| {
@@ -640,13 +642,17 @@ fn pipeline_bar(
         });
     }
 
-    // A new initialization; skeleton extraction stops before labeling.
+    // Initialization options
     if button(ui, "Initialize", current.mesh_ref.nr_verts() > 0) {
         evolution_live.reset();
         if conf.initialization == Initialization::Minimal {
             view.show(ModelViewKind::Dual, render_setting_store);
         }
-        jobs.write(Job::initialize_loops(current.clone(), conf.clone()));
+        jobs.write(Job::initialize_loops(
+            current.clone(),
+            conf.clone(),
+            cache.clone(),
+        ));
     }
     // The optimization (its settings, start, and progress) is in its window.
     if button(ui, "Evolve", current.mesh_ref.nr_verts() > 0) {

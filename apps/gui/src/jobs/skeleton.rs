@@ -1,3 +1,6 @@
+mod cache;
+pub use cache::ContractionCache;
+
 use super::{Job, JobResult};
 use crate::resources::SkeletonState;
 use crate::ui::ModelViewKind;
@@ -24,22 +27,27 @@ impl SkeletonStage {
 }
 
 impl Job {
-    pub fn extract_skeleton(mesh: Arc<mehsh::prelude::Mesh<INPUT>>, options: Options) -> Self {
+    pub fn extract_skeleton(
+        mesh: Arc<mehsh::prelude::Mesh<INPUT>>,
+        options: Options,
+        cache: ContractionCache,
+    ) -> Self {
         let stop = if options.refine_embedding {
             SkeletonStage::Refinement
         } else {
             SkeletonStage::Surgery
         };
-        Self::extract_skeleton_until(mesh, options, stop)
+        Self::extract_skeleton_until(mesh, options, stop, cache)
     }
 
     pub fn extract_skeleton_until(
         mesh: Arc<mehsh::prelude::Mesh<INPUT>>,
         options: Options,
         stop: SkeletonStage,
+        cache: ContractionCache,
     ) -> Self {
         Self::new("extracting skeleton", move || {
-            match extract_until(&mesh, options, stop) {
+            match extract_until(&mesh, options, stop, &cache) {
                 Ok(state) => Some(JobResult::SkeletonReady {
                     state,
                     view: stop.view(),
@@ -55,16 +63,18 @@ impl Job {
 }
 
 fn extract_until(
-    mesh: &mehsh::prelude::Mesh<INPUT>,
+    mesh: &Arc<mehsh::prelude::Mesh<INPUT>>,
     mut options: Options,
     stop: SkeletonStage,
+    cache: &ContractionCache,
 ) -> dualcube::skeleton::SkeletonResult<SkeletonState> {
+    options.surgery.validate()?;
+    let contracted = cache.get_or_compute(mesh.clone(), options.max_iterations)?;
     if stop == SkeletonStage::Deflation {
-        return skeletonize::deflate::run(mesh, options.max_iterations)
-            .map(SkeletonState::Deflated);
+        return Ok(SkeletonState::Deflated((*contracted).clone()));
     }
     options.refine_embedding = stop == SkeletonStage::Refinement;
-    let extraction = skeletonize::extract(mesh, options)?;
+    let extraction = skeletonize::extract_from_contracted(mesh, (*contracted).clone(), options)?;
     info!(
         "Skeleton: {} nodes, {} edges",
         extraction.skeleton.nodes.len(),
