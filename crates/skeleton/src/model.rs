@@ -18,7 +18,8 @@ slotmap::new_key_type! {
 /// A successful generation stage returns a nonempty connected graph. Every
 /// input vertex belongs to exactly one node's patch, and every edge joins two
 /// existing, distinct nodes. An edge's boundary is the ordered simple closed
-/// boundary between those nodes' patches. A single-node skeleton is valid.
+/// boundary between those nodes' patches. Patches are connected and genus zero,
+/// boundaries are disjoint. A single-node skeleton is valid for genus-zero input.
 #[derive(Clone, Debug, Default)]
 pub struct Skeleton {
     pub nodes: SlotMap<SkeletonNodeID, SkeletonNode>,

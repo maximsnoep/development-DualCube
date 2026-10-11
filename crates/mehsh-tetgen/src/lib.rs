@@ -1,5 +1,10 @@
 mod rw;
+mod tetrahedralize;
 mod utils;
+
+pub use tetrahedralize::{
+    TetgenOptions, TetrahedralMesh, tetrahedralize, tetrahedralize_with_options,
+};
 
 use mehsh::prelude::*;
 use mehsh::utils::ids::IdMap;
