@@ -22,6 +22,7 @@ fn usage_color(value: f64) -> Color32 {
 /// Shows the bottom panel.
 pub fn show(
     mut egui_ctx: bevy_egui::EguiContexts<'_, '_>,
+    console: Res<'_, super::console::Console>,
     conf: Res<'_, Configuration>,
     diagnostics: Res<'_, DiagnosticsStore>,
     job_state: Res<'_, JobState>,
@@ -143,6 +144,18 @@ pub fn show(
                         stats.append(&entry, 0.0, sized_text_format(STAT_SIZE, color));
                     }
                     ui.label(stats);
+                    let latest = console.0.lock().ok().and_then(|line| line.clone());
+                    if let Some(line) = latest {
+                        let color = match line.level {
+                            bevy::log::Level::ERROR | bevy::log::Level::WARN => WARN_RED,
+                            bevy::log::Level::INFO => TEXT_COLOR,
+                            _ => super::theme::TEXT_COLOR2,
+                        };
+                        let message = format!("{}: {}", line.level, line.text);
+                        ui.label(sized_text(" | ", 9.0, TEXT_COLOR));
+                        ui.add(bevy_egui::egui::Label::new(sized_text(&message, STAT_SIZE, color)).truncate())
+                            .on_hover_text(message);
+                    }
                 });
 
                 ui.with_layout(Layout::right_to_left(Align::TOP), |ui| {

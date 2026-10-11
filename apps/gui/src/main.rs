@@ -57,6 +57,7 @@ fn main() {
                     ..Default::default()
                 })
                 .set(LogPlugin {
+                    custom_layer: ui::console::capture,
                     level: Level::TRACE,
                     // Quiet in release builds (`RUST_LOG` overrides this).
                     filter: if cfg!(debug_assertions) {

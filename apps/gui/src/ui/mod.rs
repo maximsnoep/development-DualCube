@@ -4,6 +4,7 @@
 //! Each panel is its own system (in its own module), run in order via
 //! [`UiPlugin`]; `theme` and `widgets` hold the shared styling and widgets.
 
+pub mod console;
 mod evolution;
 mod footer;
 mod menu;
