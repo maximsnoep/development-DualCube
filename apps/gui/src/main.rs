@@ -10,6 +10,7 @@ use bevy::log::{Level, LogPlugin};
 use bevy::prelude::*;
 use bevy::ui::UiScale;
 use bevy::window::{WindowMode, WindowResolution};
+use bevy::winit::{UpdateMode, WinitSettings};
 use dualcube::prelude::*;
 use resources::{Configuration, InputResource, SolutionResource};
 
@@ -28,6 +29,15 @@ fn main() {
         .init_resource::<InputResource>()
         .init_resource::<SolutionResource>()
         .insert_resource(UiScale(1.0)) // no UI scaling
+        .insert_resource(WinitSettings {
+            focused_mode: UpdateMode::Continuous,
+            unfocused_mode: UpdateMode::Reactive {
+                wait: std::time::Duration::from_millis(200),
+                react_to_device_events: false,
+                react_to_user_events: false,
+                react_to_window_events: false,
+            },
+        })
         .insert_resource(GlobalAmbientLight {
             #[allow(unused_qualifications)]
             color: bevy::color::Color::WHITE,
