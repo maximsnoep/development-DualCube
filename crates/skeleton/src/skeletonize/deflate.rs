@@ -142,6 +142,7 @@ pub fn run<M: Tag>(
     mesh: &Mesh<M>,
     max_iterations: usize,
 ) -> crate::SkeletonResult<Mesh<CONTRACTION>> {
+    let start = std::time::Instant::now();
     crate::validate::input_genus(mesh)?;
 
     // Make a copy of the mesh to use for contraction
@@ -164,12 +165,16 @@ pub fn run<M: Tag>(
         let vol_ratio = current_volume / state.original_volume;
 
         info!(
-            "Geometry contraction iteration {}: Volume Ratio = {:.8}",
-            i, vol_ratio
+            "Geometry contraction: Volume ratio = {:.8} (elapsed {:.2}s)",
+            vol_ratio,
+            start.elapsed().as_secs_f64()
         );
 
         if vol_ratio < VOLUME_EPSILON {
-            info!("Geometry contraction converged at iteration {}.", i);
+            info!(
+                "Geometry contraction: converged (elapsed {:.2}s)",
+                start.elapsed().as_secs_f64()
+            );
             break;
         }
 

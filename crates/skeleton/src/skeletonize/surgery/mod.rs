@@ -1413,12 +1413,7 @@ fn extract_skeleton(
     let mut buckets_logged: usize = 0;
     let mut last_bucket_at = start;
     let mut last_bucket_faces = initial_faces;
-    info!(
-        "Connectivity surgery starting: V={}, F={}, target_g={}.",
-        ctx.positions.len() - ctx.is_dead.len(),
-        initial_faces,
-        ctx.target_g,
-    );
+    info!("Connectivity surgery: starting (genus {})", ctx.target_g,);
 
     // Greedy collapse loop
     while !ctx.active_faces.is_empty() {
@@ -1478,12 +1473,8 @@ fn extract_skeleton(
                 0.0
             };
             info!(
-                "Surgery progress: {}% (F={}/{}, -{} in {:.2}s, {:.0}/s, elapsed {:.2}s)",
+                "Connectivity surgery: {}% ({:.0} faces/s, elapsed {:.2}s)",
                 b * 10,
-                f_now,
-                initial_faces,
-                removed_this_bucket,
-                bucket_elapsed,
                 rate,
                 total_elapsed
             );
