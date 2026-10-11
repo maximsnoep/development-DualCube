@@ -54,7 +54,8 @@ pub fn radio<T: PartialEq<T> + std::fmt::Display>(
 }
 
 pub fn menu_button(ui: &mut Ui, label: &str, f: impl FnOnce(&mut Ui)) {
-    ui.menu_button(RichText::new(label).color(TEXT_COLOR).size(TEXT_SIZE), f);
+    let response = ui.button(RichText::new(label).color(TEXT_COLOR).size(TEXT_SIZE));
+    super::menus::popup(&response).show(f);
 }
 
 pub fn sleek_button(ui: &mut Ui, label: &str) -> bool {

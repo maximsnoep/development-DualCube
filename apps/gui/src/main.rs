@@ -28,6 +28,7 @@ fn main() {
         .init_resource::<Configuration>()
         .init_resource::<InputResource>()
         .init_resource::<SolutionResource>()
+        .init_resource::<resources::SkeletonResource>()
         .insert_resource(UiScale(1.0)) // no UI scaling
         .insert_resource(WinitSettings {
             focused_mode: UpdateMode::Continuous,

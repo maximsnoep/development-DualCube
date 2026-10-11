@@ -21,6 +21,7 @@ mod evolution;
 mod io;
 mod loops;
 mod pipeline;
+mod skeleton;
 
 use crate::render::store::{RenderObjectSettingStore, RenderObjectStore};
 use crate::resources::{Configuration, InputResource, SolutionResource};
@@ -100,6 +101,7 @@ impl Job {
 
 /// What a finished job hands back to [`poll_jobs`].
 enum JobResult {
+    SkeletonExtracted(dualcube::skeleton::skeletonize::Extraction),
     /// A solution was imported (with its renders); resets the input resources and the view.
     Imported {
         solution: Solution,
@@ -153,7 +155,7 @@ fn submit_jobs(
 }
 
 /// Polls the current job for completion and applies its result.
-fn poll_jobs(
+pub(crate) fn poll_jobs(
     mut job_state: ResMut<'_, JobState>,
     mut jobs: MessageWriter<'_, Job>,
     mut input_resource: ResMut<'_, InputResource>,
@@ -163,6 +165,7 @@ fn poll_jobs(
     mut model_view: ResMut<'_, ModelView>,
     mut configuration: ResMut<'_, Configuration>,
     mut evolution_live: ResMut<'_, EvolutionLive>,
+    mut skeleton: ResMut<'_, crate::resources::SkeletonResource>,
 ) {
     let (Some(request), Some(mut task)) = (job_state.request.take(), job_state.current.take())
     else {
@@ -176,16 +179,37 @@ fn poll_jobs(
         return;
     };
 
-    info!("Finished job: {request}");
-
     let Some(result) = result else {
         // Normal for jobs without a result (e.g. exports); failures have
         // already been logged by the job itself.
-        debug!("Job '{request}' produced no result to apply");
         return;
     };
 
+    info!("Finished job: {request}");
+
     match result {
+        JobResult::SkeletonExtracted(extraction) => {
+            // New initialization: previous loops and their downstream results are stale.
+            let current = &solution_resource.current_solution;
+            let mut initialized = Solution::new(current.mesh_ref.clone());
+            initialized.fields = current.fields.clone();
+            initialized.flow_graphs = current.flow_graphs.clone();
+            initialized.quality = configuration.quality;
+            solution_resource.current_solution = initialized;
+            solution_resource.selected_corner = None;
+            configuration.loop_anchors.clear();
+            evolution_live.reset();
+            jobs.write(Job::refresh(
+                solution_resource.current_solution.clone(),
+                configuration.clone(),
+            ));
+            *skeleton = crate::resources::SkeletonResource {
+                extraction: Some(extraction),
+                labeled: None,
+            };
+            model_view.show_when_ready(crate::ui::ModelViewKind::Skeleton);
+        }
+
         JobResult::StageCompleted {
             stage,
             solution,
@@ -207,6 +231,10 @@ fn poll_jobs(
             // The selections and anchors refer to elements of the old model.
             solution_resource.selected_corner = None;
             configuration.loop_anchors.clear();
+            *skeleton = Default::default();
+            if crate::resources::genus(&input_resource.mesh) != Some(0) {
+                configuration.initialization = crate::resources::Initialization::Skeleton;
+            }
             // A new model: the histories of the evolutions belong to the old one.
             evolution_live.reset();
             // Show the new model right away, as the input.

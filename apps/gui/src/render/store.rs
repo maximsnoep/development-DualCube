@@ -304,7 +304,10 @@ pub fn sync_renders(
                     } else {
                         entity.insert(MeshMaterial3d(toon_material.clone()));
                     }
-                    if object == Objects::InputMesh {
+                    if object == Objects::InputMesh
+                        && super::objects::skeleton::SkeletonLayer::from_label(label)
+                            .is_none_or(|layer| layer.is_surface())
+                    {
                         entity.insert(MainMesh);
                     }
                     (entity.id(), SpawnedAsset::Mesh(handle))

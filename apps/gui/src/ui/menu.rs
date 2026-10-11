@@ -6,14 +6,11 @@ use crate::colors;
 use crate::controls::InteractiveMode;
 use crate::jobs::{EvolutionLive, Job, JobState};
 use crate::render::Objects;
+use crate::render::objects::skeleton::SkeletonLayer;
 use crate::render::store::{RenderObjectSetting, RenderObjectSettingStore};
 use crate::resources::{Configuration, FigureFormat, InputResource, SolutionResource};
 use bevy::prelude::*;
-use bevy_egui::egui::{
-    CollapsingHeader, CursorIcon, MenuBar, Panel, Popup, PopupCloseBehavior, RectAlign, RichText,
-    Ui,
-};
-use bevy_egui::egui::containers::menu::MenuConfig;
+use bevy_egui::egui::{CollapsingHeader, CursorIcon, MenuBar, Panel, RectAlign, RichText, Ui};
 use bevy_orbit_camera::automatic::AutomaticRotation;
 use dualcube::prelude::*;
 
@@ -26,31 +23,79 @@ fn apply_render_preset(store: &mut RenderObjectSettingStore, layers: &[&str]) {
     }
 }
 
-/// Views of the model (in the top bar): the layers of the model that each shows.
-const MODEL_VIEWS: [(&str, &[&str]); 4] = [
-    ("Input", &["lambert", "wireframe"]),
-    (
-        "Dual",
-        &[
-            "black",
-            "paths",
-            "flat paths",
-            "x-loops",
-            "y-loops",
-            "z-loops",
-        ],
-    ),
-    ("Primal", &["segmentation", "paths", "flat paths"]),
-    (
-        "Quad",
-        &[
-            "quad colored",
-            "quad wireframe",
-            "quad paths",
-            "quad flat paths",
-        ],
-    ),
-];
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ModelViewKind {
+    Input,
+    Deflated,
+    Raw,
+    Skeleton,
+    Patches,
+    Labeled,
+    Dual,
+    Primal,
+    Quad,
+}
+
+impl ModelViewKind {
+    const ALL: [Self; 9] = [
+        Self::Input,
+        Self::Deflated,
+        Self::Raw,
+        Self::Skeleton,
+        Self::Patches,
+        Self::Labeled,
+        Self::Dual,
+        Self::Primal,
+        Self::Quad,
+    ];
+
+    fn label(self) -> &'static str {
+        match self {
+            Self::Input => "Input",
+            Self::Deflated => "Deflated",
+            Self::Raw => "Raw",
+            Self::Skeleton => "Skeleton",
+            Self::Patches => "Patches",
+            Self::Labeled => "Labeled",
+            Self::Dual => "Dual",
+            Self::Primal => "Primal",
+            Self::Quad => "Quad",
+        }
+    }
+
+    fn layers(self) -> &'static [&'static str] {
+        match self {
+            Self::Input => &["lambert", "wireframe"],
+            Self::Deflated => const { &[SkeletonLayer::Deflated.label()] },
+            Self::Raw => const { &[SkeletonLayer::Raw.label(), "wireframe"] },
+            Self::Skeleton => const { &[SkeletonLayer::Skeleton.label(), "wireframe"] },
+            Self::Patches => {
+                const {
+                    &[
+                        SkeletonLayer::Patches.label(),
+                        SkeletonLayer::Boundaries.label(),
+                    ]
+                }
+            }
+            Self::Labeled => const { &[SkeletonLayer::Labeled.label(), "wireframe"] },
+            Self::Dual => &[
+                "black",
+                "paths",
+                "flat paths",
+                "x-loops",
+                "y-loops",
+                "z-loops",
+            ],
+            Self::Primal => &["segmentation", "paths", "flat paths"],
+            Self::Quad => &[
+                "quad colored",
+                "quad wireframe",
+                "quad paths",
+                "quad flat paths",
+            ],
+        }
+    }
+}
 
 /// The score of the current layout, recomputed only when the layout or the quality criterion changes (computing it
 /// takes too long to do every frame).
@@ -106,6 +151,7 @@ pub fn show(
     mut evolution_live: ResMut<'_, EvolutionLive>,
     mut view_preview: ResMut<'_, ModelView>,
     input: Res<'_, InputResource>,
+    skeleton: Res<'_, crate::resources::SkeletonResource>,
     main_camera: Query<'_, '_, &Transform, With<bevy_orbit_camera::Controller>>,
 ) -> Result<(), BevyError> {
     // The figures are seen as the model is (the polycube window shares its rotation).
@@ -128,9 +174,7 @@ pub fn show(
                 ui.output_mut(|o| o.cursor_icon = CursorIcon::Progress);
             }
             ui.add_space(9.);
-            MenuBar::new()
-                .config(MenuConfig::new().close_behavior(PopupCloseBehavior::CloseOnClickOutside))
-                .ui(ui, |ui| {
+            MenuBar::new().ui(ui, |ui| {
                 // More room between the buttons.
                 ui.spacing_mut().item_spacing.x += 6.;
                 ui.spacing_mut().button_padding.y += 2.;
@@ -140,7 +184,7 @@ pub fn show(
                 pipeline_bar(
                     ui,
                     &mut jobs,
-                    &conf,
+                    &mut conf,
                     &solution,
                     &mut evolution_live,
                     &mut view_preview,
@@ -154,19 +198,24 @@ pub fn show(
                     .filter(|_| evolution_live.running())
                     .map(|monitor| {
                         if monitor.layout_active() {
-                            "Primal"
+                            ModelViewKind::Primal
                         } else {
-                            "Dual"
+                            ModelViewKind::Dual
                         }
                     });
                 // The views of what has been computed (or is being computed).
                 let current = &solution.current_solution;
                 let initializing = job_state.request == Some("initializing loops");
                 let evolving = evolution_live.running();
-                let available = |name: &str| match name {
-                    "Dual" => !current.loops.is_empty() || initializing || evolving,
-                    "Primal" => current.layout.is_some() || evolving,
-                    "Quad" => current.quad.is_some(),
+                let available = |view| match view {
+                    ModelViewKind::Dual => !current.loops.is_empty() || initializing || evolving,
+                    ModelViewKind::Primal => current.layout.is_some() || evolving,
+                    ModelViewKind::Quad => current.quad.is_some(),
+                    ModelViewKind::Skeleton
+                    | ModelViewKind::Raw
+                    | ModelViewKind::Patches
+                    | ModelViewKind::Deflated => skeleton.extraction.is_some(),
+                    ModelViewKind::Labeled => skeleton.labeled.is_some(),
                     _ => true,
                 };
                 view_bar(
@@ -203,9 +252,8 @@ fn view_menu(
     render_setting_store: &mut RenderObjectSettingStore,
 ) {
     let response = ui.button(RichText::new("View").color(TEXT_COLOR).size(TEXT_SIZE));
-    Popup::menu(&response)
+    super::menus::popup(&response)
         .align(RectAlign::BOTTOM_END)
-        .close_behavior(PopupCloseBehavior::CloseOnClickOutside)
         .show(|ui| {
             ui.horizontal_top(|ui| {
                 ui.vertical(|ui| {
@@ -426,58 +474,56 @@ fn menu_bar(
 pub struct ModelView {
     // The layers of the model before the hovered view was shown (restored when the mouse leaves it).
     saved: Option<RenderObjectSetting>,
-    hovered: Option<&'static str>,
-    active: Option<&'static str>,
+    hovered: Option<ModelViewKind>,
+    active: Option<ModelViewKind>,
     // The view that the running optimization asked for last.
-    followed: Option<&'static str>,
+    followed: Option<ModelViewKind>,
+    pending: Option<ModelViewKind>,
 }
 
 impl ModelView {
-    /// Show the view with the given name (see `MODEL_VIEWS`).
-    pub fn show(&mut self, name: &'static str, store: &mut RenderObjectSettingStore) {
-        if let Some(&(name, layers)) = MODEL_VIEWS.iter().find(|(n, _)| *n == name) {
-            apply_render_preset(store, layers);
-            self.active = Some(name);
-            self.saved = None;
-        }
+    pub fn show_when_ready(&mut self, view: ModelViewKind) {
+        self.pending = Some(view);
     }
 
-    /// Show the input (the first view), e.g., for a new model.
+    pub fn show(&mut self, view: ModelViewKind, store: &mut RenderObjectSettingStore) {
+        apply_render_preset(store, view.layers());
+        self.active = Some(view);
+        self.saved = None;
+    }
+
     pub fn show_input(&mut self, store: &mut RenderObjectSettingStore) {
-        let (name, layers) = MODEL_VIEWS[0];
-        apply_render_preset(store, layers);
-        *self = Self {
-            active: Some(name),
-            ..Self::default()
-        };
+        *self = Self::default();
+        self.show(ModelViewKind::Input, store);
     }
 }
 
-// The views of the model (see `MODEL_VIEWS`): shown while hovered, kept when clicked.
+// The views of the model (see `ModelViewKind`): shown while hovered, kept when clicked.
 fn view_bar(
     ui: &mut Ui,
     render_setting_store: &mut RenderObjectSettingStore,
     preview: &mut ModelView,
-    followed: Option<&'static str>,
-    available: impl Fn(&str) -> bool,
+    followed: Option<ModelViewKind>,
+    available: impl Fn(ModelViewKind) -> bool,
 ) {
     // Follow the optimization (not while a view is hovered; then once the mouse leaves it).
     if followed != preview.followed && preview.hovered.is_none() {
         preview.followed = followed;
-        if let Some((name, layers)) =
-            followed.and_then(|followed| MODEL_VIEWS.iter().find(|(name, _)| *name == followed))
-        {
-            apply_render_preset(render_setting_store, layers);
-            preview.active = Some(name);
+        if let Some(view) = followed {
+            apply_render_preset(render_setting_store, view.layers());
+            preview.active = Some(view);
         }
     }
     let mut hovered = None;
-    for (name, layers) in MODEL_VIEWS {
+    for name in ModelViewKind::ALL {
+        let layers = name.layers();
         // Not computed yet: shown dimmed, and does nothing.
         if !available(name) {
             ui.add_enabled(
                 false,
-                bevy_egui::egui::Button::new(RichText::new(name).color(DIM_COLOR).size(TEXT_SIZE)),
+                bevy_egui::egui::Button::new(
+                    RichText::new(name.label()).color(DIM_COLOR).size(TEXT_SIZE),
+                ),
             );
             continue;
         }
@@ -486,7 +532,7 @@ fn view_bar(
         } else {
             TEXT_COLOR2
         };
-        let response = ui.button(RichText::new(name).color(color).size(TEXT_SIZE));
+        let response = ui.button(RichText::new(name.label()).color(color).size(TEXT_SIZE));
         if response.clicked() {
             apply_render_preset(render_setting_store, layers);
             preview.active = Some(name);
@@ -520,7 +566,7 @@ fn view_bar(
 fn pipeline_bar(
     ui: &mut Ui,
     jobs: &mut MessageWriter<'_, Job>,
-    conf: &Configuration,
+    conf: &mut Configuration,
     solution: &SolutionResource,
     evolution_live: &mut EvolutionLive,
     view: &mut ModelView,
@@ -536,10 +582,57 @@ fn pipeline_bar(
         }
     };
 
-    // A new solution from scratch (and new histories of the optimizations), shown in the dual view.
+    use crate::resources::{Initialization, genus};
+    let method = bevy_egui::egui::ComboBox::from_id_salt("initialization method")
+        .selected_text(match conf.initialization {
+            Initialization::Minimal => "Minimal (genus 0)",
+            Initialization::Skeleton => "Skeleton",
+        })
+        .width(85.)
+        .show_ui(ui, |ui| {
+            ui.add_enabled_ui(genus(&current.mesh_ref) == Some(0), |ui| {
+                ui.selectable_value(
+                    &mut conf.initialization,
+                    Initialization::Minimal,
+                    "Minimal (genus 0)",
+                );
+            })
+            .response
+            .on_disabled_hover_text("Minimal initialization requires genus zero");
+            ui.selectable_value(
+                &mut conf.initialization,
+                Initialization::Skeleton,
+                "Skeleton",
+            );
+        });
+    super::menus::track(&method.response);
+    if conf.initialization == Initialization::Skeleton {
+        menu_button(ui, "Options", |ui| {
+            label(ui, "Skeleton", TEXT_COLOR);
+            ui.checkbox(
+                &mut conf.skeleton_options.refine_embedding,
+                "embedding refinement",
+            );
+            sep(ui);
+            label(ui, "Connectivity surgery", TEXT_COLOR);
+            let options = &mut conf.skeleton_options.surgery;
+            log_slider(ui, "shape weight", &mut options.shape_weight, 100.);
+            log_slider(ui, "sampling weight", &mut options.sampling_weight, 100.);
+            log_slider(ui, "handle bonus", &mut options.handle_bonus, 1.0e9);
+            if sleek_button(ui, "defaults") {
+                conf.skeleton_options = Default::default();
+            }
+            space(ui);
+            label(ui, "Settings apply on Initialize.", TEXT_COLOR2);
+        });
+    }
+
+    // A new initialization; skeleton extraction stops before labeling.
     if button(ui, "Initialize", current.mesh_ref.nr_verts() > 0) {
         evolution_live.reset();
-        view.show("Dual", render_setting_store);
+        if conf.initialization == Initialization::Minimal {
+            view.show(ModelViewKind::Dual, render_setting_store);
+        }
         jobs.write(Job::initialize_loops(current.clone(), conf.clone()));
     }
     // The optimization (its settings, start, and progress) is in its window.
@@ -553,5 +646,14 @@ fn pipeline_bar(
     #[cfg(feature = "hex")]
     if button(ui, "Hex", current.polycube.is_some()) {
         jobs.write(Job::compute_hex(current.clone(), conf.clone()));
+    }
+}
+
+pub fn apply_pending_view(
+    mut view: ResMut<'_, ModelView>,
+    mut settings: ResMut<'_, RenderObjectSettingStore>,
+) {
+    if let Some(name) = view.pending.take() {
+        view.show(name, &mut settings);
     }
 }

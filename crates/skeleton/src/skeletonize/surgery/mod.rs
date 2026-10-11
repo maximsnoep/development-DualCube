@@ -234,12 +234,44 @@ fn toggle_col_in_chain(chain: &mut Vec<u32>, col: u32) {
     }
 }
 
+/// Weights of collapse costs; topology checks are unchanged.
+#[derive(Clone, Copy, Debug)]
+pub struct Options {
+    pub shape_weight: f64,
+    pub sampling_weight: f64,
+    /// Subtracted once per handle cycle through the collapsed edge. Not from Au et al.
+    pub handle_bonus: f64,
+}
+
+impl Default for Options {
+    fn default() -> Self {
+        Self {
+            shape_weight: 1.0,
+            sampling_weight: 0.1,
+            handle_bonus: 1.0e6,
+        }
+    }
+}
+
+impl Options {
+    pub fn validate(self) -> crate::SkeletonResult<()> {
+        if [self.shape_weight, self.sampling_weight, self.handle_bonus]
+            .iter()
+            .any(|x| !x.is_finite() || *x < 0.0)
+        {
+            return Err("Surgery weights must be finite and nonnegative".into());
+        }
+        Ok(())
+    }
+}
+
 /// Ephemeral state used during the surgery process.
 ///
 /// We maintain a "virtual" adjacency structure separate from the DCEL mesh
 /// to perform edge collapses without modifying the original mesh structure.
 /// (This was simpler to implement than implementing structural modifications there).
 struct SurgeryContext {
+    options: Options,
     /// Normalized vertex positions for numerical stability.
     positions: HashMap<VIdx, Vector3D>,
 
@@ -373,6 +405,7 @@ impl SurgeryContext {
         }
 
         Ok(Self {
+            options: Options::default(),
             positions,
             center,
             scale,
@@ -388,17 +421,6 @@ impl SurgeryContext {
 
     /// Computes the collapse cost for edge u -> v (Eq 8 in paper).
     fn compute_collapse_cost(&self, u: VIdx, v: VIdx) -> f64 {
-        const WA: f64 = 1.0; // Shape weight
-        const WB: f64 = 0.1; // Sampling weight
-        // Handle-cycle bonus: a very negative cost added per cycle this
-        // edge participates in. Pulls handle-killing collapses to the
-        // front of the heap so greedy whittles the handle down before
-        // exhausting the easy non-handle candidates and getting stuck at
-        // the manifold floor. Provably homotopy-safe: bias only affects
-        // ordering, the legality criterion still gates whether the
-        // collapse is allowed.
-        const W_HANDLE_BONUS: f64 = 1.0e6;
-
         // Shape Cost: v^T * (Q_u + Q_v) * v
         let p_v = self.positions[&v];
         let p_hom = Vector4::new(p_v.x, p_v.y, p_v.z, 1.0);
@@ -421,12 +443,13 @@ impl SurgeryContext {
         if let Some(&col) = self.boundary_matrix.edge_to_col.get(&sort_edge(u, v)) {
             for cycle in &self.boundary_matrix.handle_cycles {
                 if cycle.binary_search(&col).is_ok() {
-                    handle_bonus += W_HANDLE_BONUS;
+                    handle_bonus += self.options.handle_bonus;
                 }
             }
         }
 
-        WA * shape_cost + WB * sampling_cost - handle_bonus
+        self.options.shape_weight * shape_cost + self.options.sampling_weight * sampling_cost
+            - handle_bonus
     }
 
     /// Checks if an edge (u, v) is part of any active face.
@@ -1350,8 +1373,10 @@ impl SurgeryContext {
 fn extract_skeleton(
     contracted_mesh: &Mesh<CONTRACTION>,
     original_mesh: &Mesh<INPUT>,
+    options: Options,
 ) -> crate::SkeletonResult<(Skeleton, usize)> {
     let mut ctx = SurgeryContext::new(contracted_mesh, original_mesh)?;
+    ctx.options = options;
     let mut heap = BinaryHeap::new();
 
     // Initial heap population
@@ -1914,6 +1939,15 @@ pub fn run(
     contracted: &Mesh<CONTRACTION>,
     original: &Mesh<INPUT>,
 ) -> crate::SkeletonResult<Skeleton> {
+    run_with_options(contracted, original, Options::default())
+}
+
+pub fn run_with_options(
+    contracted: &Mesh<CONTRACTION>,
+    original: &Mesh<INPUT>,
+    options: Options,
+) -> crate::SkeletonResult<Skeleton> {
+    options.validate()?;
     crate::validate::input_genus(original)?;
     let converted = Mesh::<CONTRACTION>::convert(original);
     if converted.vert_ids() != contracted.vert_ids()
@@ -1935,7 +1969,7 @@ pub fn run(
     {
         return Err("Deflated positions must be finite".into());
     }
-    let (mut skeleton, genus) = extract_skeleton(contracted, original)?;
+    let (mut skeleton, genus) = extract_skeleton(contracted, original, options)?;
     let result = crate::validate::assign_boundaries(&mut skeleton, original)
         .and_then(|()| skeleton.validate(original))
         .and_then(|()| {

@@ -83,6 +83,7 @@ fn refinement_can_be_disabled_or_called_independently() {
         Options {
             max_iterations: 3,
             refine_embedding: false,
+            ..Options::default()
         },
     )
     .unwrap();
@@ -247,4 +248,14 @@ fn two_handle_surface_preserves_two_cycles() {
         result.skeleton.nodes.len() + 2
     );
     result.skeleton.validate(&mesh).unwrap();
+}
+
+#[test]
+fn rejects_invalid_surgery_weights() {
+    for weight in [-1., f64::NAN, f64::INFINITY] {
+        let mut options = Options::default();
+        options.surgery.shape_weight = weight;
+        let error = skeletonize::extract(&tetrahedron(), options).unwrap_err();
+        assert!(error.to_string().contains("weights"));
+    }
 }

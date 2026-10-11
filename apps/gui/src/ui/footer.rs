@@ -45,7 +45,10 @@ pub fn show(
         format!("V {v}"),
         format!("E {e}"),
         format!("F {f}"),
-        format!("genus {}", (2 - (v - e + f)) / 2),
+        format!(
+            "genus {}",
+            crate::resources::genus(mesh).map_or_else(|| "-".to_owned(), |g| g.to_string())
+        ),
         format!("loops {}", current.loops.len()),
         score.map_or_else(|| "score -".to_owned(), |score| format!("score {score:.4}")),
     ];
@@ -153,8 +156,11 @@ pub fn show(
                         };
                         let message = format!("{}: {}", line.level, line.text);
                         ui.label(sized_text(" | ", 9.0, TEXT_COLOR));
-                        ui.add(bevy_egui::egui::Label::new(sized_text(&message, STAT_SIZE, color)).truncate())
-                            .on_hover_text(message);
+                        ui.add(
+                            bevy_egui::egui::Label::new(sized_text(&message, STAT_SIZE, color))
+                                .truncate(),
+                        )
+                        .on_hover_text(message);
                     }
                 });
 

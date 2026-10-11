@@ -7,6 +7,7 @@ pub mod objects {
     pub mod polycube;
     pub mod polycube_map;
     pub mod quad_mesh;
+    pub mod skeleton;
 }
 pub mod store;
 
@@ -26,12 +27,22 @@ impl Plugin for RenderPlugin {
             .init_gizmo_group::<gizmos::PerpetualGizmos>()
             .add_systems(Startup, (camera::setup, gizmos::setup))
             .add_systems(
+                PreUpdate,
+                camera::update_camera_settings.after(crate::ui::menus::dismiss),
+            )
+            .add_systems(
                 Update,
                 (
                     camera::update,
-                    camera::update_camera_settings,
                     // Settings must be derived from the store before (re)spawning from them.
-                    (store::update_render_settings, store::sync_renders).chain(),
+                    (
+                        objects::skeleton::sync,
+                        store::update_render_settings,
+                        crate::ui::apply_pending_view,
+                        store::sync_renders,
+                    )
+                        .chain()
+                        .after(crate::jobs::poll_jobs),
                 ),
             );
     }

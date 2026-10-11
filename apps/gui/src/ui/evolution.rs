@@ -63,8 +63,8 @@ pub fn show(
     if !live.open && live.monitor.is_none() {
         return Ok(());
     }
-    // Without a layout, the optimization initializes first.
-    let ready = job_state.request.is_none() && solution.current_solution.mesh_ref.nr_verts() > 0;
+    let can_optimize = Job::can_optimize(&solution.current_solution, &conf);
+    let ready = job_state.request.is_none() && can_optimize;
     let conf = &mut *conf;
     let monitor = live.monitor.clone();
     let history = monitor
@@ -104,6 +104,13 @@ pub fn show(
             }
             sep(ui);
 
+            if !can_optimize {
+                label(
+                    ui,
+                    "Initialize a loop layout before starting evolution.",
+                    TEXT_COLOR2,
+                );
+            }
             // Start, stop, or continue (from the current result).
             ui.horizontal(|ui| {
                 if running {

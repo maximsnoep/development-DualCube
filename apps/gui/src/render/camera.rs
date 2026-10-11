@@ -132,6 +132,7 @@ pub fn update_camera_settings(
     mut camera_controller: Query<'_, '_, &mut Controller>,
     configuration: Res<'_, Configuration>,
     egui_input: Res<'_, bevy_egui::input::EguiWantsInput>,
+    menus: Res<'_, crate::ui::menus::MenuInput>,
 ) {
     let Ok(mut main_camera) = camera_controller.single_mut() else {
         warn_once!("No main camera controller");
@@ -139,7 +140,7 @@ pub fn update_camera_settings(
     };
 
     // The camera does not react to the mouse while it is over the UI (menus, windows).
-    let active = if egui_input.wants_any_pointer_input() {
+    let active = if egui_input.wants_any_pointer_input() && !menus.viewport_press {
         0.
     } else {
         1.

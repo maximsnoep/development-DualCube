@@ -12,6 +12,8 @@ use std::sync::Arc;
 #[derive(Resource, Debug, Clone)]
 pub struct Configuration {
     pub direction: Direction,
+    pub initialization: Initialization,
+    pub skeleton_options: dualcube::skeleton::skeletonize::Options,
 
     pub unit: bool,
     pub omega: usize,
@@ -57,6 +59,8 @@ impl Default for Configuration {
     fn default() -> Self {
         Self {
             direction: Direction::X,
+            initialization: Initialization::default(),
+            skeleton_options: Default::default(),
 
             unit: false,
             omega: 5,
@@ -167,3 +171,29 @@ impl Default for SolutionResource {
         }
     }
 }
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum Initialization {
+    Minimal,
+    #[default]
+    Skeleton,
+}
+
+/// Genus from the Euler characteristic, assuming the mesh's closed, connected, orientable surface contract.
+pub fn genus(mesh: &mehsh::prelude::Mesh<INPUT>) -> Option<usize> {
+    if mesh.nr_verts() == 0 || mesh.nr_faces() == 0 || !mesh.nr_edges().is_multiple_of(2) {
+        return None;
+    }
+    let chi = mesh.nr_verts() as i64 - (mesh.nr_edges() / 2) as i64 + mesh.nr_faces() as i64;
+    let twice_genus = 2 - chi;
+    (twice_genus >= 0 && twice_genus % 2 == 0).then_some((twice_genus / 2) as usize)
+}
+
+#[derive(Resource, Default)]
+pub struct SkeletonResource {
+    pub extraction: Option<dualcube::skeleton::skeletonize::Extraction>,
+    pub labeled: Option<dualcube::skeleton::LabeledSkeleton>,
+}
+
+#[cfg(test)]
+mod tests;

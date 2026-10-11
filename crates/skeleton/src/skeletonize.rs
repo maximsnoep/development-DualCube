@@ -14,6 +14,7 @@ use dualcube_types::prelude::*;
 pub struct Options {
     pub max_iterations: usize,
     pub refine_embedding: bool,
+    pub surgery: surgery::Options,
 }
 
 impl Default for Options {
@@ -21,6 +22,7 @@ impl Default for Options {
         Self {
             max_iterations: 50,
             refine_embedding: true,
+            surgery: surgery::Options::default(),
         }
     }
 }
@@ -40,9 +42,10 @@ pub fn run(mesh: &Mesh<INPUT>) -> SkeletonResult<Skeleton> {
 }
 
 pub fn extract(mesh: &Mesh<INPUT>, options: Options) -> SkeletonResult<Extraction> {
+    options.surgery.validate()?;
     let genus = crate::validate::input_genus(mesh)?;
     let contracted_mesh = deflate::run(mesh, options.max_iterations)?;
-    let raw = surgery::run(&contracted_mesh, mesh)?;
+    let raw = surgery::run_with_options(&contracted_mesh, mesh, options.surgery)?;
     let mut skeleton = raw.clone();
     if options.refine_embedding {
         refinement::run(mesh, &mut skeleton)?;

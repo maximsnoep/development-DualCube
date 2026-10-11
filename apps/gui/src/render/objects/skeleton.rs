@@ -1,0 +1,343 @@
+//! Skeleton geometry and midpoint-split surface patches.
+
+use super::super::gizmos::world_to_view;
+use super::super::store::{RenderAsset, RenderObject, RenderObjectStore};
+use crate::colors;
+use crate::render::Objects;
+use crate::resources::{InputResource, SkeletonResource};
+use bevy::prelude::*;
+use dualcube::prelude::*;
+use dualcube::skeleton::{LabeledSkeleton, Skeleton, SkeletonEdgeID};
+use mehsh_bevy::MeshBuilder;
+use std::collections::HashMap;
+use std::f64::consts::{PI, TAU};
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum SkeletonLayer {
+    Skeleton,
+    Raw,
+    Labeled,
+    Patches,
+    Boundaries,
+    Deflated,
+}
+
+impl SkeletonLayer {
+    pub const ALL: [Self; 6] = [
+        Self::Skeleton,
+        Self::Raw,
+        Self::Labeled,
+        Self::Patches,
+        Self::Boundaries,
+        Self::Deflated,
+    ];
+
+    pub const fn label(self) -> &'static str {
+        match self {
+            Self::Skeleton => "skeleton",
+            Self::Raw => "raw skeleton",
+            Self::Labeled => "labeled skeleton",
+            Self::Patches => "patches",
+            Self::Boundaries => "patch boundaries",
+            Self::Deflated => "deflated",
+        }
+    }
+
+    pub fn from_label(label: &str) -> Option<Self> {
+        Self::ALL.into_iter().find(|layer| layer.label() == label)
+    }
+
+    pub fn is_surface(self) -> bool {
+        matches!(self, Self::Patches | Self::Boundaries)
+    }
+}
+
+pub fn sync(
+    state: Res<'_, SkeletonResource>,
+    input: Res<'_, InputResource>,
+    mut store: ResMut<'_, RenderObjectStore>,
+    mut cached: Local<'_, RenderObject>,
+) {
+    let changed = state.is_changed() || input.is_changed();
+    if !changed && !store.is_changed() {
+        return;
+    }
+    if changed {
+        *cached = build(&input.mesh, &state);
+    }
+    if let Some(object) = store.objects.get_mut(&Objects::InputMesh) {
+        object
+            .labels
+            .retain(|label| SkeletonLayer::from_label(label).is_none());
+        object
+            .features
+            .retain(|label, _| SkeletonLayer::from_label(label).is_none());
+        for label in &cached.labels {
+            object.add(label, cached.features[label].clone());
+        }
+    }
+}
+
+fn build(mesh: &mehsh::prelude::Mesh<INPUT>, state: &SkeletonResource) -> RenderObject {
+    let mut object = RenderObject::default();
+    let Some(extraction) = &state.extraction else {
+        return object;
+    };
+    let (scale, translation) = mesh.scale_translation();
+    object.add(
+        SkeletonLayer::Skeleton.label(),
+        RenderAsset::Mesh(graph(&extraction.skeleton, None, scale, translation)),
+    );
+    object.add(
+        SkeletonLayer::Raw.label(),
+        RenderAsset::Mesh(graph(&extraction.raw, None, scale, translation)),
+    );
+    if let Some(labeled) = &state.labeled {
+        object.add(
+            SkeletonLayer::Labeled.label(),
+            RenderAsset::Mesh(graph(&labeled.skeleton, Some(labeled), scale, translation)),
+        );
+    }
+    object.add(
+        SkeletonLayer::Patches.label(),
+        RenderAsset::Mesh(patches(mesh, &extraction.skeleton, scale, translation)),
+    );
+    let mut boundaries = GizmoAsset::new();
+    for edge in extraction.skeleton.edges.values() {
+        let points: Vec<_> = edge
+            .boundary
+            .edge_midpoints
+            .iter()
+            .map(|&e| {
+                world_to_view(
+                    (mesh.position(mesh.root(e)) + mesh.position(mesh.root(mesh.twin(e)))) * 0.5,
+                    translation,
+                    scale,
+                )
+            })
+            .collect();
+        if !points.is_empty() {
+            boundaries.linestrip(
+                points.iter().copied().chain(points.first().copied()),
+                colors::to_bevy(colors::WHITE),
+            );
+        }
+    }
+    object.gizmo(boundaries, 2.0, -0.001, SkeletonLayer::Boundaries.label());
+    let mut deflated = MeshBuilder::new();
+    for f in extraction.contracted_mesh.face_ids() {
+        let points: Vec<_> = extraction
+            .contracted_mesh
+            .vertices(f)
+            .map(|v| extraction.contracted_mesh.position(v))
+            .collect();
+        let p = [points[0], points[1], points[2]];
+        let normal = (p[1] - p[0])
+            .cross(&(p[2] - p[0]))
+            .try_normalize(1e-20)
+            .unwrap_or(Vector3D::z());
+        deflated.add_triangle(p, [normal; 3], colors::LIGHT_GRAY);
+    }
+    deflated.normalize(scale, translation);
+    object.add(
+        SkeletonLayer::Deflated.label(),
+        RenderAsset::Mesh(deflated.build()),
+    );
+    object
+}
+
+#[allow(unused_qualifications)]
+fn graph(
+    skeleton: &Skeleton,
+    labeled: Option<&LabeledSkeleton>,
+    scale: f64,
+    translation: Vector3D,
+) -> bevy::mesh::Mesh {
+    let mut builder = MeshBuilder::new();
+    let position = |id| skeleton.nodes[id].position * scale + translation;
+    let edge_color = |id: SkeletonEdgeID| {
+        labeled
+            .and_then(|s| s.labels.get(id))
+            .map_or(colors::LIGHT_GRAY, |label| {
+                colors::from_direction(label.direction, Some(Perspective::Primal), None)
+            })
+    };
+    for (id, edge) in &skeleton.edges {
+        tube(
+            &mut builder,
+            position(edge.nodes[0]),
+            position(edge.nodes[1]),
+            0.09,
+            edge_color(id),
+        );
+    }
+    for id in skeleton.nodes.keys() {
+        sphere(&mut builder, position(id), 0.2, colors::LIGHT_GRAY);
+    }
+    builder.build()
+}
+
+fn sphere(builder: &mut MeshBuilder, center: Vector3D, radius: f64, color: colors::Kolor) {
+    let normal = |i: usize, j: usize| {
+        let theta = PI * i as f64 / 8.;
+        let phi = TAU * j as f64 / 12.;
+        Vector3D::new(
+            theta.sin() * phi.cos(),
+            theta.cos(),
+            theta.sin() * phi.sin(),
+        )
+    };
+    for i in 0..8 {
+        for j in 0..12 {
+            let [a, b, c, d] = [
+                normal(i, j),
+                normal(i, j + 1),
+                normal(i + 1, j + 1),
+                normal(i + 1, j),
+            ];
+            for normals in [[a, b, c], [a, c, d]] {
+                if (normals[1] - normals[0])
+                    .cross(&(normals[2] - normals[0]))
+                    .norm_squared()
+                    > 1e-20
+                {
+                    builder.add_triangle(normals.map(|n| center + radius * n), normals, color);
+                }
+            }
+        }
+    }
+}
+
+fn tube(builder: &mut MeshBuilder, a: Vector3D, b: Vector3D, radius: f64, color: colors::Kolor) {
+    let Some(axis) = (b - a).try_normalize(1e-12) else {
+        return;
+    };
+    let reference = if axis.x.abs() < 0.9 {
+        Vector3D::x()
+    } else {
+        Vector3D::y()
+    };
+    let u = axis.cross(&reference).normalize();
+    let v = axis.cross(&u);
+    for i in 0..12 {
+        let normal = |j| {
+            let theta = TAU * j as f64 / 12.;
+            u * theta.cos() + v * theta.sin()
+        };
+        let (n, m) = (normal(i), normal(i + 1));
+        builder.add_triangle(
+            [a + radius * n, a + radius * m, b + radius * m],
+            [n, m, m],
+            color,
+        );
+        builder.add_triangle(
+            [a + radius * n, b + radius * m, b + radius * n],
+            [n, m, n],
+            color,
+        );
+    }
+}
+
+// The two equal labels form a quad; the remaining label forms a triangle.
+fn split_triangle(points: [Vector3D; 3], regions: [usize; 3]) -> Vec<([Vector3D; 3], usize)> {
+    if regions[0] == regions[1] && regions[1] == regions[2] {
+        return vec![(points, regions[0])];
+    }
+    for i in 0..3 {
+        let j = (i + 1) % 3;
+        let k = (i + 2) % 3;
+        if regions[i] == regions[j] {
+            let [a, b, c] = [points[i], points[j], points[k]];
+            let ac = (a + c) * 0.5;
+            let bc = (b + c) * 0.5;
+            return vec![
+                ([a, b, ac], regions[i]),
+                ([b, bc, ac], regions[i]),
+                ([ac, bc, c], regions[k]),
+            ];
+        }
+    }
+    // Diagnostic partitions can have a three-way junction.
+    let center = (points[0] + points[1] + points[2]) / 3.;
+    (0..3)
+        .flat_map(|i| {
+            let a = points[i];
+            let next = (a + points[(i + 1) % 3]) * 0.5;
+            let prev = (a + points[(i + 2) % 3]) * 0.5;
+            [
+                ([a, next, center], regions[i]),
+                ([a, center, prev], regions[i]),
+            ]
+        })
+        .collect()
+}
+
+#[allow(unused_qualifications)]
+fn patches(
+    mesh: &mehsh::prelude::Mesh<INPUT>,
+    skeleton: &Skeleton,
+    scale: f64,
+    translation: Vector3D,
+) -> bevy::mesh::Mesh {
+    let owners: HashMap<_, _> = skeleton
+        .nodes
+        .values()
+        .enumerate()
+        .flat_map(|(i, node)| node.patch_vertices.iter().map(move |&v| (v, i)))
+        .collect();
+    let mut builder = MeshBuilder::new();
+    for f in mesh.face_ids() {
+        let vertices: Vec<_> = mesh.vertices(f).collect();
+        let points = [vertices[0], vertices[1], vertices[2]].map(|v| mesh.position(v));
+        let regions = [vertices[0], vertices[1], vertices[2]].map(|v| owners[&v]);
+        for (triangle, region) in split_triangle(points, regions) {
+            builder.add_triangle(triangle, [mesh.normal(f); 3], region_color(region));
+        }
+    }
+    builder.normalize(scale, translation);
+    builder.build()
+}
+
+use bevy::color::palettes::tailwind;
+
+const TAILWIND_500: [Srgba; 17] = [
+    tailwind::RED_500,
+    tailwind::CYAN_500,
+    tailwind::YELLOW_500,
+    tailwind::PURPLE_500,
+    tailwind::GREEN_500,
+    tailwind::PINK_500,
+    tailwind::BLUE_500,
+    tailwind::ORANGE_500,
+    tailwind::TEAL_500,
+    tailwind::FUCHSIA_500,
+    tailwind::LIME_500,
+    tailwind::INDIGO_500,
+    tailwind::AMBER_500,
+    tailwind::EMERALD_500,
+    tailwind::VIOLET_500,
+    tailwind::SKY_500,
+    tailwind::ROSE_500,
+];
+
+/// Gets a color for a region index using Tailwind colors with chroma reduction for cycling.
+fn region_color(region: usize) -> [f32; 3] {
+    let base_idx = region % TAILWIND_500.len();
+    let cycle = region / TAILWIND_500.len();
+
+    let base = TAILWIND_500[base_idx];
+
+    if cycle == 0 {
+        [base.red, base.green, base.blue]
+    } else {
+        // Reduce chroma and lighten for subsequent cycles
+        let mut lch: Lcha = base.into();
+        lch.chroma *= 0.5_f32.powi(cycle as i32);
+        lch.lightness = (lch.lightness + 0.1 * cycle as f32).min(0.95);
+        let srgb: Srgba = lch.into();
+        [srgb.red, srgb.green, srgb.blue]
+    }
+}
+
+#[cfg(test)]
+mod tests;

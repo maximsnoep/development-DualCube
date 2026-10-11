@@ -8,11 +8,12 @@ pub mod console;
 mod evolution;
 mod footer;
 mod menu;
+pub(crate) mod menus;
 mod theme;
 pub mod viewport;
 mod widgets;
 
-pub use menu::ModelView;
+pub use menu::{ModelView, ModelViewKind, apply_pending_view};
 
 use bevy::prelude::*;
 use bevy_egui::{EguiPrimaryContextPass, PrimaryEguiContext};
@@ -24,8 +25,15 @@ impl Plugin for UiPlugin {
     fn build(&self, app: &mut App) {
         app.init_resource::<viewport::ViewResource>()
             .init_resource::<ModelView>()
+            .init_resource::<menus::MenuInput>()
             .add_plugins(bevy_egui::EguiPlugin::default())
             .add_observer(setup)
+            .add_systems(
+                PreUpdate,
+                menus::dismiss
+                    .after(bevy_egui::EguiInputSet::WriteEguiEvents)
+                    .before(bevy_egui::EguiPreUpdateSet::BeginPass),
+            )
             .add_systems(
                 EguiPrimaryContextPass,
                 (menu::show, footer::show, viewport::show, evolution::show).chain(),

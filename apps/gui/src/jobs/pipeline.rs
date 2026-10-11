@@ -63,13 +63,21 @@ fn try_step<E: std::fmt::Debug>(
 
 // A new solution from scratch (see `Solution::initialize`); only the flow fields and graphs are kept (they only depend
 // on the mesh).
-fn initialized(solution: &Solution, configuration: &Configuration) -> Solution {
+fn initialized(solution: &Solution, configuration: &Configuration) -> Option<Solution> {
+    if configuration.initialization == crate::resources::Initialization::Skeleton {
+        warn!("Skeleton loop drawing is not implemented yet; extract a skeleton with Initialize");
+        return None;
+    }
+    if crate::resources::genus(&solution.mesh_ref) != Some(0) {
+        warn!("Minimal initialization requires genus zero; select skeleton initialization");
+        return None;
+    }
     let mut initialized = Solution::new(solution.mesh_ref.clone());
     initialized.fields = solution.fields.clone();
     initialized.flow_graphs = solution.flow_graphs.clone();
     initialized.quality = configuration.quality;
     initialized.initialize();
-    initialized
+    Some(initialized)
 }
 
 fn completed(stage: Stage, solution: Solution, configuration: &Configuration) -> Option<JobResult> {
@@ -82,11 +90,20 @@ fn completed(stage: Stage, solution: Solution, configuration: &Configuration) ->
 
 #[allow(dead_code)]
 impl Job {
+    pub fn can_optimize(solution: &Solution, configuration: &Configuration) -> bool {
+        (solution.layout.is_some() && solution.loops.len() >= 3)
+            || (configuration.initialization == crate::resources::Initialization::Minimal
+                && crate::resources::genus(&solution.mesh_ref) == Some(0))
+    }
+
     pub fn initialize_loops(solution: Solution, configuration: Configuration) -> Self {
+        if configuration.initialization == crate::resources::Initialization::Skeleton {
+            return Self::extract_skeleton(solution.mesh_ref, configuration.skeleton_options);
+        }
         Self::new("initializing loops", move || {
             completed(
                 Stage::Loops,
-                initialized(&solution, &configuration),
+                initialized(&solution, &configuration)?,
                 &configuration,
             )
         })
@@ -104,7 +121,11 @@ impl Job {
         Self::new("optimizing", move || {
             let mut solution = if solution.layout.is_none() || solution.loops.len() < 3 {
                 monitor.set_activity("initializing".to_owned());
-                initialized(&solution, &configuration)
+                let Some(initialized) = initialized(&solution, &configuration) else {
+                    monitor.finish();
+                    return None;
+                };
+                initialized
             } else {
                 solution.clone()
             };
