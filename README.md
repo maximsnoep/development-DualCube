@@ -6,7 +6,10 @@
 It provides:
 - robust polycube segmentations on triangle meshes,
 - an interactive GUI for visualization and manual interaction,
-- and a lightweight CLI for batch processing.
+
+Work in progress:
+- a lightweight CLI for batch processing,
+- automatic initialization for higher-genus inputs,
 
 [^1]: SNOEP M., SPECKMANN B., VERBEEK K.: Polycubes via dual loops. In _Proceedings of the 2025 SIAM International Meshing Roundtable (IMR)_ (2025). [doi:10.1137/1.9781611978575.7](https://doi.org/10.1137/1.9781611978575.7)
 [^2]: SNOEP M., SPECKMANN B., VERBEEK K.: Robust construction of polycube segmentations via dual loops. In _Proceedings of the 2025 Symposium on Geometry Processing (SGP)_ (2025). [doi:10.1111/cgf.70195](https://doi.org/10.1111/cgf.70195)
@@ -69,4 +72,4 @@ DualCube is an active research codebase intended for experimentation, visualizat
 
 ## License
 
-DualCube is licensed under the [MIT License](LICENSE). Versions before the switch to MIT were released under the GNU General Public License v3.0.
+DualCube is licensed under the [MIT License](LICENSE).
