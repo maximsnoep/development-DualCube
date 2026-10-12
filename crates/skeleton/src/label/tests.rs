@@ -1,5 +1,6 @@
 use super::*;
 use crate::{PatchBoundary, SkeletonEdge, SkeletonNode};
+use dualcube_types::prelude::HasPosition;
 
 fn costs(skeleton: &Skeleton) -> SecondaryMap<SkeletonEdgeID, [f64; 6]> {
     skeleton
@@ -294,4 +295,107 @@ fn path_repair_can_require_all_four_subdivisions() {
     }
     let solution = path::optimize(&costs, &constraints).unwrap();
     assert_eq!(solution.ports.len(), 5);
+}
+
+#[test]
+fn collars_have_no_vertex_budget_on_either_side() {
+    use crate::surface::{Regions, Vertex, tests::lenses};
+    for side in 0..2 {
+        let (mesh, original) = lenses(1);
+        let edge = original.edges.keys().next().unwrap();
+        let mut skeleton = original.clone();
+        for count in 1..=12 {
+            let (next, added) = subdivide::collar(&mesh, &skeleton, edge, side)
+                .unwrap()
+                .unwrap();
+            let middle = next.edges[added].nodes[0];
+            let regions = Regions::build(&mesh, &next).unwrap();
+            assert!(
+                regions
+                    .cells
+                    .iter()
+                    .enumerate()
+                    .filter(|(i, _)| regions.owners[*i] == middle)
+                    .all(|(_, c)| c.vertices.iter().all(|v| matches!(v, Vertex::Crossing(_))))
+            );
+            assert_eq!(next.nodes.len(), original.nodes.len() + count);
+            skeleton = next;
+        }
+        assert_eq!(mesh.nr_verts(), 4);
+        original.validate(&mesh).unwrap();
+    }
+}
+
+#[test]
+fn overfull_junctions_split_even_when_all_patches_share_one_mesh_edge() {
+    for degree in [6, 7, 11] {
+        let (mesh, skeleton) = crate::surface::tests::lenses(degree);
+        let result = attempt(&mesh, &skeleton).unwrap();
+        assert!(result.failure.is_none(), "{:?}", result.failure);
+        assert_eq!(result.junction_splits.len(), degree.saturating_sub(6));
+        result.completed().unwrap().validate(&mesh).unwrap();
+        for node in result.skeleton.nodes.keys() {
+            assert!(
+                result
+                    .skeleton
+                    .edges
+                    .values()
+                    .filter(|e| e.nodes.contains(&node))
+                    .count()
+                    <= 6
+            );
+        }
+        assert_eq!(mesh.nr_verts(), 4);
+        skeleton.validate(&mesh).unwrap();
+    }
+}
+
+#[test]
+fn cycle_repair_uses_real_annuli_and_preserves_mst_membership() {
+    for positions in [
+        vec![[0., 0., 0.], [2., 0., 0.]],
+        vec![[0., 0., 0.], [2., 0., 0.], [2., 2., 0.]],
+        vec![[0., 0., 0.], [2., 0., 0.], [2., 2., 0.], [0., 2., 0.]],
+    ] {
+        let (mesh, skeleton) = crate::surface::tests::bands(&positions);
+        let before: Vec<_> = mesh.vert_ids().iter().map(|&v| mesh.position(v)).collect();
+        let result = attempt(&mesh, &skeleton).unwrap();
+        assert!(result.failure.is_none(), "{:?}", result.failure);
+        assert_eq!(result.repairs.len(), 1);
+        assert_eq!(result.tree_edges.len(), skeleton.nodes.len() - 1);
+        let path = &result.repairs[0].path;
+        assert_eq!(
+            result.skeleton.nodes.len(),
+            skeleton.nodes.len() + path.len() - 1
+        );
+        if positions.len() < 4 {
+            assert!(path.len() > 1);
+        }
+        for edge in path {
+            assert!(!result.tree_edges.contains(edge));
+        }
+        for &edge in &result.tree_edges {
+            assert_eq!(
+                result.skeleton.edges[edge].boundary.crossings,
+                skeleton.edges[edge].boundary.crossings
+            );
+            assert_eq!(
+                result.skeleton.edges[edge].nodes,
+                skeleton.edges[edge].nodes
+            );
+            assert_eq!(
+                Port::from_label(result.labels[edge]),
+                Port::from_label(result.tree_labels[edge])
+            );
+        }
+        result.completed().unwrap().validate(&mesh).unwrap();
+        skeleton.validate(&mesh).unwrap();
+        assert_eq!(
+            before,
+            mesh.vert_ids()
+                .iter()
+                .map(|&v| mesh.position(v))
+                .collect::<Vec<_>>()
+        );
+    }
 }

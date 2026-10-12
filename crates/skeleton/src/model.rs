@@ -20,7 +20,7 @@ slotmap::new_key_type! {
 ///
 /// Successful extraction returns connected genus-zero patches with disjoint boundaries.
 /// Regions may contain no original vertices. Input mesh topology remains immutable.
-/// Full validation after later edits awaits boundary-region reconstruction.
+/// Validation reconstructs the regions from crossing order and face arcs.
 #[derive(Clone, Debug, Default)]
 pub struct Skeleton {
     pub nodes: SlotMap<SkeletonNodeID, SkeletonNode>,
@@ -63,7 +63,7 @@ pub struct BoundarySurface {
     pub crossings: SlotMap<BoundaryCrossingID, BoundaryCrossing>,
     /// Root-to-tip order on the smaller of each pair of twin half-edge IDs.
     /// Each occurrence belongs to one loop and appears exactly once in these orders.
-    // TODO(step 5): Derive uniform offsets (rank + 1)/(count + 1); later optimize geometry.
+    // Geometry uses uniform offsets initially; topology depends only on this order.
     pub edge_order: HashMap<EdgeID, Vec<BoundaryCrossingID>>,
 }
 

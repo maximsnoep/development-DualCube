@@ -111,7 +111,7 @@ impl std::fmt::Display for Failure {
                 max_subdivisions,
             } => write!(
                 f,
-                "Cannot repair cycle edge {edge:?} with 0–{max_subdivisions} subdivisions: no coordinate-feasible path on the available surface collars"
+                "Cannot repair cycle edge {edge:?} with 0–{max_subdivisions} subdivisions: no coordinate-feasible path on the available boundary-loop collars"
             ),
             Self::IncompleteLabels => write!(f, "Incomplete labeling"),
         }
@@ -281,7 +281,7 @@ fn repair(
         if subdivisions == 4 {
             break;
         }
-        // TODO: Search loop sequences jointly with the path DP beyond endpoint-only collar peeling.
+        // TODO: Search loop sequences jointly with the path DP beyond endpoint-only parallel collars.
         let mut next = Vec::new();
         for (candidate, edges) in candidates {
             for side in 0..2 {

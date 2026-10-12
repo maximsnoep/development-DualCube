@@ -16,10 +16,10 @@ fn tetrahedron() -> Mesh<INPUT> {
 }
 
 #[test]
-fn full_run_retains_extraction_when_boundary_validation_is_unavailable() {
+fn full_run_retains_labeling_at_unimplemented_cube_placement() {
     let mesh = tetrahedron();
     let error = pipeline::run(&mesh).unwrap_err();
-    assert_eq!(error.failure.stage, Stage::Labeling);
+    assert_eq!(error.failure.stage, Stage::CubePlacement);
     assert_eq!(
         error
             .failure
@@ -32,27 +32,36 @@ fn full_run_retains_extraction_when_boundary_validation_is_unavailable() {
     let skeleton = error.progress.skeleton.as_ref().unwrap();
     assert!(!skeleton.nodes.is_empty());
     assert!(!skeleton.surface.crossings.is_empty());
-    assert!(error.progress.labeling.is_none());
-    assert!(error.progress.labeled.is_none());
+    assert!(error.progress.labeling.is_some());
+    error
+        .progress
+        .labeled
+        .as_ref()
+        .unwrap()
+        .validate(&mesh)
+        .unwrap();
     assert!(error.progress.realized.is_none());
     assert!(error.progress.optimized.is_none());
     assert!(error.progress.loops.is_none());
 }
 
 #[test]
-fn explicit_labeling_stop_reports_unavailable_without_losing_extraction() {
+fn explicit_labeling_stop_succeeds_and_continuation_keeps_it() {
     let mesh = tetrahedron();
     let skeleton = skeleton::skeletonize::run(&mesh).unwrap();
     let before = skeleton.surface.edge_order.clone();
     let mut progress = Progress::from_skeleton(skeleton);
-    assert_eq!(progress.label(&mesh).unwrap_err().stage, Stage::Labeling);
-    assert_eq!(progress.finish(&mesh).unwrap_err().stage, Stage::Labeling);
+    progress.label(&mesh).unwrap();
+    assert_eq!(
+        progress.finish(&mesh).unwrap_err().stage,
+        Stage::CubePlacement
+    );
     assert_eq!(
         progress.skeleton.as_ref().unwrap().surface.edge_order,
         before
     );
-    assert!(progress.labeling.is_none());
-    assert!(progress.labeled.is_none());
+    assert!(progress.labeling.is_some());
+    progress.labeled.as_ref().unwrap().validate(&mesh).unwrap();
 }
 
 #[test]

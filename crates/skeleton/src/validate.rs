@@ -1,17 +1,12 @@
-//! Input validation; boundary-region validation is the next migration step.
+//! Input and combinatorial surface-region validation.
 
 use crate::{Skeleton, SkeletonResult};
 use dualcube_types::prelude::*;
 
 impl Skeleton {
-    /// Full surface validation is unavailable until boundary regions can be reconstructed.
-    pub fn validate(&self, _mesh: &Mesh<INPUT>) -> SkeletonResult<()> {
-        // TODO(step 2): Check face arcs, regions, genus, and boundary-side incidence.
-        Err(std::io::Error::new(
-            std::io::ErrorKind::Unsupported,
-            "Boundary-region validation is not implemented yet",
-        )
-        .into())
+    /// Validate boundary incidence, disjoint arcs, connected regions, and genus-zero patches.
+    pub fn validate(&self, mesh: &Mesh<INPUT>) -> SkeletonResult<()> {
+        crate::surface::Regions::build(mesh, self).map(|_| ())
     }
 }
 

@@ -61,6 +61,7 @@ pub fn extract_from_contracted(
     if options.refine_embedding {
         refinement::run(mesh, &mut skeleton)?;
     }
+    skeleton.validate(mesh)?;
     Ok(Extraction {
         contracted_mesh,
         raw,

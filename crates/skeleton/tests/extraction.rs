@@ -234,8 +234,9 @@ fn extraction_can_resume_from_a_contracted_mesh() {
     assert!(skeletonize::extract_from_contracted(&mesh, invalid, options).is_err());
 }
 
-// Checks conversion's representation, not general surface topology (migration step 2).
+// Check occurrence bookkeeping in addition to full surface validation.
 fn assert_boundary_loops(mesh: &Mesh<INPUT>, skeleton: &Skeleton) {
+    skeleton.validate(mesh).unwrap();
     let mut seen = HashSet::new();
     for edge in skeleton.edges.values() {
         assert_ne!(edge.nodes[0], edge.nodes[1]);
@@ -259,12 +260,8 @@ fn assert_boundary_loops(mesh: &Mesh<INPUT>, skeleton: &Skeleton) {
 }
 
 #[test]
-fn general_boundary_validation_is_explicitly_unavailable() {
+fn reconstructed_boundary_regions_validate_after_extraction() {
     let mesh = tetrahedron();
     let skeleton = skeletonize::run(&mesh).unwrap();
-    let error = skeleton.validate(&mesh).unwrap_err();
-    assert_eq!(
-        error.downcast_ref::<std::io::Error>().unwrap().kind(),
-        std::io::ErrorKind::Unsupported
-    );
+    skeleton.validate(&mesh).unwrap();
 }

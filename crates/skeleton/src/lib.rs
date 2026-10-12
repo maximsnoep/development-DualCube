@@ -7,6 +7,7 @@ pub mod optimize;
 pub mod pipeline;
 pub mod place_cubes;
 pub mod skeletonize;
+pub(crate) mod surface;
 pub mod validate;
 
 pub use model::*;
