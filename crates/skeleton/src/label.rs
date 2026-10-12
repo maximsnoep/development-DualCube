@@ -60,6 +60,7 @@ impl Port {
 
 /// Unweighted angles in radians. Coincident embedded endpoints have no preference.
 pub fn angle_costs(vector: Vector3D) -> [f64; 6] {
+    // TODO: Evaluate surface patch deformation and label fit beyond edge-axis angle.
     let scale = vector.amax();
     if scale == 0. {
         return [std::f64::consts::FRAC_PI_2; 6];
@@ -212,6 +213,7 @@ pub fn attempt(mesh: &Mesh<INPUT>, skeleton: &Skeleton) -> SkeletonResult<Attemp
             }
         }
     }
+    // TODO: Refine this initial solution with joint path/junction optimization and simplification.
     if let Some(labeled) = result.completed() {
         labeled.validate(mesh)?;
     }
@@ -232,6 +234,7 @@ fn cached_cost(
 ) -> [f64; 6] {
     let [a, b] = skeleton.edges[edge].nodes;
     let vector = skeleton.nodes[b].position - skeleton.nodes[a].position;
+    // TODO: Include surface candidate identity and labels when caching richer patch costs.
     let key = [vector.x.to_bits(), vector.y.to_bits(), vector.z.to_bits()];
     *cache.entry(key).or_insert_with(|| angle_costs(vector))
 }
@@ -278,6 +281,7 @@ fn repair(
         if subdivisions == 4 {
             break;
         }
+        // TODO: Search loop sequences jointly with the path DP beyond endpoint-only collar peeling.
         let mut next = Vec::new();
         for (candidate, edges) in candidates {
             for side in 0..2 {

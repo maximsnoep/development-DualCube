@@ -35,6 +35,8 @@ pub(super) fn collar(
             }
         }
     }
+    // TODO: Sample multiple valid surface loops guided by label costs and return alternatives
+    // for joint loop/label selection instead of accepting the first valid collar.
     let max = distance.values().copied().max().unwrap_or(0);
     for depth in 0..max {
         let mut candidate = skeleton.clone();

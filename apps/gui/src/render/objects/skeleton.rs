@@ -132,6 +132,7 @@ fn build(mesh: &mehsh::prelude::Mesh<INPUT>, state: &SkeletonResource) -> Render
             RenderAsset::Mesh(graph_with_labels(
                 &attempt.skeleton,
                 |e| attempt.labels.get(e).copied(),
+                |e| !attempt.tree_edges.is_empty() && !attempt.tree_labels.contains_key(e),
                 true,
                 scale,
                 translation,
@@ -193,6 +194,7 @@ fn graph(
     graph_with_labels(
         skeleton,
         |e| labeled.and_then(|s| s.labels.get(e)).copied(),
+        |_| false,
         labeled.is_some(),
         scale,
         translation,
@@ -202,6 +204,7 @@ fn graph(
 fn graph_with_labels(
     skeleton: &Skeleton,
     label: impl Fn(SkeletonEdgeID) -> Option<dualcube::skeleton::EdgeLabel>,
+    non_tree: impl Fn(SkeletonEdgeID) -> bool,
     labeled: bool,
     scale: f64,
     translation: Vector3D,
@@ -218,7 +221,8 @@ fn graph_with_labels(
             &mut builder,
             position(edge.nodes[0]),
             position(edge.nodes[1]),
-            0.09,
+            // Repair subdivisions inherit non-MST status; unresolved cycle edges stay gray.
+            if non_tree(id) { 0.16 } else { 0.09 },
             edge_color(id),
         );
     }

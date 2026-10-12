@@ -7,6 +7,7 @@ use std::collections::{HashSet, VecDeque};
 
 /// Split until every junction fits six ports. Failed searches retain earlier splits.
 pub(super) fn reduce(mesh: &Mesh<INPUT>, result: &mut Attempt) -> SkeletonResult<()> {
+    // TODO: Search alternative split sequences and labelings instead of committing greedily.
     loop {
         let mut degree = SecondaryMap::new();
         for n in result.skeleton.nodes.keys() {
@@ -175,6 +176,8 @@ fn split(
     let distances: Vec<_> = seeds.iter().map(|&seed| distances(&graph, seed)).collect();
     let mut seen = HashSet::new();
     let mut candidates = Vec::new();
+    // TODO: Guide surface-loop sampling with label costs beyond graph-distance bisectors;
+    // retain competing loops so their best labelings can determine which cut to prefer.
     // Sweep bisectors between boundary pairs; boundary collars are indivisible blocks.
     for a in 0..seeds.len() {
         for b in a + 1..seeds.len() {

@@ -56,6 +56,8 @@ pub struct Solution {
 /// The final port is reversed when checking the end junction's available ports.
 /// Complexity: O(n * 6 * 64 * 6), with 384 states per boundary.
 pub fn optimize(costs: &[[f64; 6]], constraints: &Constraints) -> Option<Solution> {
+    // TODO: Jointly select boundaries and labels over bounded candidate intervals, including
+    // boundary removal; precompute each candidate patch/label cost once before the DP.
     if costs.is_empty() {
         return None;
     }
