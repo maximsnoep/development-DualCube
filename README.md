@@ -1,5 +1,9 @@
 # DualCube: Robust Polycube Maps
-> Maxim Snoep, via [algo](https://algo.win.tue.nl) at [TU/e](https://tue.nl)
+> Maxim Snoep ([ALGO](https://algo.win.tue.nl))<br>
+> Bas Paardekooper ([ALGO](https://algo.win.tue.nl) and [NLR](https://www.nlr.org/nl/))<br>
+> Stevie-Ray Janssen ([NLR](https://www.nlr.org/nl/))<br>
+> Bettina Speckmann ([ALGO](https://algo.win.tue.nl))<br>
+> Kevin Verbeek ([ALGO](https://algo.win.tue.nl))<br>
 
 **DualCube** is a research-oriented implementation of robust algorithms for polycube map construction.[^1][^2]
 
