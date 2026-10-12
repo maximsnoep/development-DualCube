@@ -22,7 +22,7 @@ mod tests {
 
     /// Build a closed triangulated cylinder mesh as described by `RINGS`/`SLOTS`,
     /// closed at top and bottom by triangle fans to two apex vertices. Returns the
-    /// mesh along with the IdMap from original integer vertex index → mesh `VertKey`.
+    /// mesh along with the `IdMap` from original integer vertex index → mesh `VertKey`.
     fn build_cylinder<M: Tag>() -> (Mesh<M>, IdMap<VERT, M>) {
         let radius: f64 = 1.0;
         let height_step: f64 = 0.5;
@@ -273,13 +273,7 @@ mod tests {
             let Some(c) = chosen else {
                 if verbose {
                     eprintln!(
-                        "[link={}] iter exhausted heap: rejected dead={}, !adj={}, !face={}, link={}, stale={}",
-                        link_condition_enabled,
-                        rejected_dead,
-                        rejected_not_adjacent,
-                        rejected_no_faces,
-                        rejected_link,
-                        rejected_stale,
+                        "[link={link_condition_enabled}] iter exhausted heap: rejected dead={rejected_dead}, !adj={rejected_not_adjacent}, !face={rejected_no_faces}, link={rejected_link}, stale={rejected_stale}",
                     );
                 }
                 break ExitReason::HeapEmpty;
@@ -415,7 +409,7 @@ mod tests {
             eprintln!("    k={:>3}: (i,j,k) face exists? {}", idx_of(k), exists);
         }
         let verdict = ctx.check_link_condition(i, j);
-        eprintln!("  check_link_condition(i, j) = {}", verdict);
+        eprintln!("  check_link_condition(i, j) = {verdict}");
 
         // Also: for any *pair* of common neighbors w1, w2, if both (i,w1,w2) and (j,w1,w2)
         // are faces, then w1-w2 ∈ lk(i) ∩ lk(j) but not in lk(ij). The classical 2-manifold
@@ -432,10 +426,7 @@ mod tests {
                 }
             }
         }
-        eprintln!(
-            "  strict (Dey/Edelsbrunner) edge-link violations: {:?}",
-            strict_violations
-        );
+        eprintln!("  strict (Dey/Edelsbrunner) edge-link violations: {strict_violations:?}");
     }
 
     /// Step 5: A/B experiment — run the surgery twice on the same cylinder, with the

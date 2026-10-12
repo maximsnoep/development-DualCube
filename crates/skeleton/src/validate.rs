@@ -216,10 +216,10 @@ impl Skeleton {
         let mut seen = HashSet::new();
         let mut stack = vec![self.nodes.keys().next().unwrap()];
         while let Some(v) = stack.pop() {
-            if seen.insert(v) {
-                if let Some(neighbors) = graph.get(&v) {
-                    stack.extend(neighbors);
-                }
+            if seen.insert(v)
+                && let Some(neighbors) = graph.get(&v)
+            {
+                stack.extend(neighbors);
             }
         }
         if seen.len() != self.nodes.len() {

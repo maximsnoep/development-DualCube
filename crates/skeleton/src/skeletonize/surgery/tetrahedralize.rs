@@ -1,4 +1,4 @@
-//! Adapt the shared TetGen output to the homology calculation's indices.
+//! Adapt the shared `TetGen` output to the homology calculation's indices.
 
 use dualcube_types::prelude::*;
 

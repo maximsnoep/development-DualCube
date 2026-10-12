@@ -34,3 +34,36 @@ fn qr_rejects_rhs_that_exceeds_its_workspace() {
     let mut qr = QrWorkspace::new(matrix.as_ref(), 1).unwrap();
     qr.solve(matrix.as_ref(), &mut Mat::zeros(1, 2));
 }
+
+#[test]
+#[should_panic(expected = "QR matrix sparsity pattern changed")]
+fn qr_rejects_changed_pattern_with_same_dimensions_and_nonzero_count() {
+    let original = SparseColMat::try_new_from_triplets(3, 1, &[Triplet::new(0, 0, 1.)]).unwrap();
+    let changed = SparseColMat::try_new_from_triplets(3, 1, &[Triplet::new(1, 0, 1.)]).unwrap();
+    let mut qr = QrWorkspace::new(original.as_ref(), 1).unwrap();
+    qr.solve(changed.as_ref(), &mut Mat::zeros(3, 1));
+}
+
+#[test]
+#[should_panic(expected = "QR right-hand side row count mismatch")]
+fn qr_rejects_wrong_rhs_row_count() {
+    let matrix = SparseColMat::try_new_from_triplets(3, 1, &[Triplet::new(0, 0, 1.)]).unwrap();
+    let mut qr = QrWorkspace::new(matrix.as_ref(), 1).unwrap();
+    qr.solve(matrix.as_ref(), &mut Mat::zeros(2, 1));
+}
+
+#[test]
+fn qr_allows_stored_values_to_become_zero() {
+    let matrix = |value| {
+        SparseColMat::try_new_from_triplets(
+            2,
+            1,
+            &[Triplet::new(0, 0, 1.), Triplet::new(1, 0, value)],
+        )
+        .unwrap()
+    };
+    let mut qr = QrWorkspace::new(matrix(1.).as_ref(), 1).unwrap();
+    let mut rhs = faer::mat![[2.], [7.]];
+    qr.solve(matrix(0.).as_ref(), &mut rhs);
+    assert!((rhs[(0, 0)] - 2.).abs() < 1e-12);
+}

@@ -16,7 +16,7 @@
 //!    the cycle space `Z₁(S)`. There are `E_S − V_S + 1` of them.
 //! 4. For each fundamental cycle, lift it to a 1-chain in `C₁(T)` by
 //!    translating surface edge indices to T-edge column indices (input
-//!    vertices keep their indices in T by the [`tetrahedralize`]
+//!    vertices keep their indices in T by the [`super::tetrahedralize::tetrahedralize`]
 //!    invariant). Reduce the lifted chain against the RREF of `∂₂^T`;
 //!    if it reduces to zero, the cycle bounds in `T` — it's a handle.
 //! 5. Among the collected handle candidates, keep only those that are
@@ -61,8 +61,8 @@ impl HandleSubspace {
 /// surface; `tet_boundary` must come from `build_tet_boundary` applied to
 /// the result of `tetrahedralize(mesh)`. `target_g` is the expected
 /// number of handle generators (= genus of the input surface, if it
-/// bounds a handlebody); the tagged-Gauss pass early-exits once it has
-/// found that many independent K basis members.
+/// bounds a handlebody). Return the full basis so callers can reject a
+/// dimension mismatch, including excess generators.
 pub fn compute_handle_subspace(
     mesh: &Mesh<INPUT>,
     tet_boundary: &TetBoundaryComplex,
@@ -225,8 +225,7 @@ pub fn compute_handle_subspace(
     // exactly a subset of fundamental cycles whose sum lies in `B₁(T)`,
     // i.e. a *K element*. We then build that K element's surface chain
     // and reduce against `B₁(S) ∪ already-chosen K basis` to test
-    // independence in `H₁(S)`. Stop as soon as we have `target_g`
-    // independent K basis members.
+    // independence in `H₁(S)`. Keep every independent basis member.
     let edges_in_t: &[[u32; 2]] = &tet_boundary.edges;
 
     // Build every fundamental cycle up front so we can rebuild surface
@@ -263,7 +262,6 @@ pub fn compute_handle_subspace(
     }
 
     let mut chosen: Vec<Vec<u32>> = Vec::new();
-    let mut total_extracted: usize = 0;
     let mut tested: usize = 0;
     let mut bound_in_t: usize = 0;
     let mut bound_individually: usize = 0;
@@ -274,13 +272,7 @@ pub fn compute_handle_subspace(
     // survived to become new tagged_pivots beyond the B₁(T) initial set.
     let mut dim_image: usize = 0;
 
-    // We process every non-tree edge — no early-exit on `target_g`. The
-    // small extra cost (each cycle is just a few XORs once enough K
-    // basis members are known) buys honest values for `dim_image`,
-    // `total_extracted`, and the "algebraic K dim agrees" cross-check.
-    // `chosen` is still capped at `target_g` for the caller; any K basis
-    // members we'd find beyond that are counted in `total_extracted`
-    // and reported only as a diagnostic signal of unexpected K dim.
+    // Process all cycles so an unexpected kernel dimension reaches the caller.
     for edge_idx in 0..(surface_edges.len() as u32) {
         if tree_edges.contains(&edge_idx) {
             continue;
@@ -298,10 +290,7 @@ pub fn compute_handle_subspace(
         tested += 1;
 
         // Reduce in T-edge space; XOR tags in lockstep.
-        loop {
-            let Some(&leading) = chain.first() else {
-                break;
-            };
+        while let Some(&leading) = chain.first() {
             if let Some((p_chain, p_tag)) = tagged_pivots.get(&leading) {
                 chain = xor_sorted(&chain, p_chain);
                 tag = xor_sorted(&tag, p_tag);
@@ -327,10 +316,7 @@ pub fn compute_handle_subspace(
 
             // Reduce mod (B₁(S) ∪ chosen K basis).
             let mut residue = surface_chain.clone();
-            loop {
-                let Some(&leading) = residue.first() else {
-                    break;
-                };
+            while let Some(&leading) = residue.first() {
                 if let Some(pivot) = k_basis_pivots.get(&leading) {
                     residue = xor_sorted(&residue, pivot);
                     continue;
@@ -338,15 +324,8 @@ pub fn compute_handle_subspace(
                 break;
             }
             if !residue.is_empty() {
-                // Always extend the pivot system so subsequent cycles
-                // reduce against the full K basis we've discovered;
-                // otherwise `total_extracted` would inflate past the
-                // true dim K.
                 k_basis_pivots.insert(residue[0], residue);
-                total_extracted += 1;
-                if chosen.len() < target_g {
-                    chosen.push(surface_chain);
-                }
+                chosen.push(surface_chain);
             }
         } else {
             // Sanity: a surface 1-cycle lifted should be a 1-cycle in T.
@@ -363,6 +342,7 @@ pub fn compute_handle_subspace(
         }
     }
 
+    let total_extracted = chosen.len();
     info!(
         "Handle-subspace: tested {} fundamental cycles, {} bound in T (= K elements): {} singleton-cycles, {} multi-cycle sums. dim(image H₁(S)→H₁(T)) = {}, total K basis members found = {}. Returning {} (target {}).",
         tested,

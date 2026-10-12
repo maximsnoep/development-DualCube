@@ -56,7 +56,7 @@ mod tests {
     /// A single-tet complex has V=4, E=6, F=4, T=1. The 1-skeleton's cycle
     /// space `Z₁` has dim `E − V + β₀ = 6 − 4 + 1 = 3`. The 3-ball is
     /// acyclic in degree 1, so `β₁ = 0`, hence `rank(∂₂) = 3`. (Note: when
-    /// TetGen inserts a Steiner point at the centroid, the counts change
+    /// `TetGen` inserts a Steiner point at the centroid, the counts change
     /// but the topology is still a 3-ball, so the equality
     /// `rank(∂₂) = E − V + 1` continues to hold.)
     #[test]
@@ -114,7 +114,7 @@ mod tests {
         // Boundary matrix has one row per unique triangle.
         // (We can't peek at the matrix's row count directly; we encode the
         // invariant via the bookkeeping vectors.)
-        assert_eq!(tb.triangles.len() > 0, true);
+        assert_eq!(!tb.triangles.is_empty(), true);
 
         // Spot-check: every triangle entry maps to a row whose three columns
         // are exactly the columns of its three edges (sorted).
@@ -158,8 +158,7 @@ mod tests {
                 let pair = sort_pair(a, b);
                 assert!(
                     tb.edge_to_col.contains_key(&pair),
-                    "triangle edge {:?} missing from edge_to_col",
-                    pair
+                    "triangle edge {pair:?} missing from edge_to_col"
                 );
             }
         }

@@ -1,7 +1,6 @@
 use crate::validate::volume;
 use std::collections::HashMap;
 
-use skeleton_numerics::QrWorkspace;
 use faer::{
     Mat,
     sparse::{SparseColMat, Triplet},
@@ -11,7 +10,8 @@ use mehsh::prelude::{
     VertKey,
 };
 use serde::{Deserialize, Serialize};
-use tracing::{error, info, warn};
+use skeleton_numerics::QrWorkspace;
+use tracing::{info, warn};
 
 /// Tag type for contraction-view of skeleton.
 #[derive(Debug, Clone, Default, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
@@ -31,16 +31,16 @@ struct ContractionState {
     faces: Vec<FaceKey<CONTRACTION>>,
     vertex_faces: Vec<Vec<usize>>,
 
-    /// Global contraction weight scalar (s_L * W_L).
-    /// Starts as 10^-3 * sqrt(AvgArea). Increases by s_L each step.
+    /// Global contraction weight scalar (`s_L` * `W_L`).
+    /// Starts as 10^-3 * sqrt(AvgArea). Increases by `s_L` each step.
     pub wl: f64,
 
-    /// Per-vertex attraction weights (W_H).
+    /// Per-vertex attraction weights (`W_H`).
     /// Starts as 1.0. Updates based on ratio of current area to original area.
     pub wh: Vec<f64>,
 
     /// Original one-ring area of each vertex (A^0).
-    /// Used to calculate the update for W_H.
+    /// Used to calculate the update for `W_H`.
     pub original_areas: Vec<f64>,
 
     /// Original mesh volume. Used for stopping condition.
@@ -178,25 +178,25 @@ pub fn run<M: Tag>(
             break;
         }
 
-        contract_once(&mut contraction_mesh, &mut state);
+        contract_once(&mut contraction_mesh, &mut state)?;
     }
 
     Ok(contraction_mesh)
 }
 
-/// Performs a single iteration of geometry contraction.
-///
-/// # Steps
-/// 1. Construct overdetermined stacked system M V' = B
-///    where M = [ W_L * L ] and B = [   0   ]
-///              [   W_H   ]         [ W_H V ]
-/// 2. Solve for new positions V' in the least-squares sense using Sparse QR
-/// 3. Update weights W_L and W_H
-fn contract_once(mesh: &mut Mesh<CONTRACTION>, state: &mut ContractionState) {
+/// Solve the stacked least-squares system, then update positions and weights.
+fn contract_once(
+    mesh: &mut Mesh<CONTRACTION>,
+    state: &mut ContractionState,
+) -> crate::SkeletonResult<()> {
     let num_verts = state.vert_ids.len();
 
     // Setup Laplacian L triplets for sparse matrix assembly
-    let l_triplets = get_laplacian_triplets(mesh, state);
+    let Some(l_triplets) = get_laplacian_triplets(mesh, state) else {
+        warn!("Non-finite Laplacian; keeping the previous iterate");
+        state.unstable = true;
+        return Ok(());
+    };
 
     // Assemble System Matrix M (2N x N)
     let mut triplets_m = Vec::with_capacity(l_triplets.len() + num_verts);
@@ -213,8 +213,12 @@ fn contract_once(mesh: &mut Mesh<CONTRACTION>, state: &mut ContractionState) {
     }
 
     // Create Sparse Matrix M
-    let mat_m = SparseColMat::try_new_from_triplets(2 * num_verts, num_verts, &triplets_m)
-        .expect("Failed to create sparse matrix from triplets");
+    if triplets_m.iter().any(|entry| !entry.val.is_finite()) {
+        warn!("Non-finite contraction weights; keeping the previous iterate");
+        state.unstable = true;
+        return Ok(());
+    }
+    let mat_m = SparseColMat::try_new_from_triplets(2 * num_verts, num_verts, &triplets_m)?;
 
     // Assemble RHS Matrix B (2N x 3)
     let mut mat_b = Mat::from_fn(2 * num_verts, 3, |r, c| {
@@ -234,16 +238,15 @@ fn contract_once(mesh: &mut Mesh<CONTRACTION>, state: &mut ContractionState) {
         }
     });
 
-    // Reuse factorization storage and scratch space, with the same QR and parallelism.
+    if (0..mat_b.nrows()).any(|i| (0..mat_b.ncols()).any(|j| !mat_b[(i, j)].is_finite())) {
+        warn!("Non-finite contraction right-hand side; keeping the previous iterate");
+        state.unstable = true;
+        return Ok(());
+    }
+
+    // Reuse factorization storage with the same sparsity pattern and parallelism.
     if state.qr.is_none() {
-        match QrWorkspace::new(mat_m.as_ref(), 3) {
-            Ok(qr) => state.qr = Some(qr),
-            Err(error) => {
-                warn!("QR workspace initialization failed: {error}");
-                state.unstable = true;
-                return;
-            }
-        }
+        state.qr = Some(QrWorkspace::new(mat_m.as_ref(), 3)?);
     }
     state.qr.as_mut().unwrap().solve(mat_m.as_ref(), &mut mat_b);
     let solution = mat_b;
@@ -251,7 +254,7 @@ fn contract_once(mesh: &mut Mesh<CONTRACTION>, state: &mut ContractionState) {
     if (0..num_verts).any(|i| (0..3).any(|j| !solution[(i, j)].is_finite())) {
         warn!("Contraction produced non-finite positions; keeping the previous iterate");
         state.unstable = true;
-        return;
+        return Ok(());
     }
 
     // Update vertex positions from solution
@@ -268,11 +271,11 @@ fn contract_once(mesh: &mut Mesh<CONTRACTION>, state: &mut ContractionState) {
 
     for (i, current_area) in state.one_ring_areas(mesh).into_iter().enumerate() {
         let safe_area = current_area.max(MIN_VERTEX_AREA);
-        // Eq: W_H_new = W_H_old * sqrt(A_0 / A_new).
-        // Since we only store current W_H and W_H^0=1, this simplifies to sqrt(A_0 / A_new).
+        // Attraction weight relative to the original area, with initial weight 1.
         let original_area = state.original_areas[i];
         state.wh[i] = (original_area / safe_area).sqrt();
     }
+    Ok(())
 }
 
 fn cotangent_weight(
@@ -298,13 +301,13 @@ fn cotangent_weight(
 }
 
 /// Generates the triplet form (row, col, value) of the Laplacian Matrix L.
-/// L_ij = cot_weight (if adjacent)
-/// L_ii = -sum(cot_weights)
+/// `L_ij` = `cot_weight` (if adjacent)
+/// `L_ii` = -`sum(cot_weights)`
 /// See Eq (1).
 fn get_laplacian_triplets(
     mesh: &Mesh<CONTRACTION>,
     state: &ContractionState,
-) -> Vec<(usize, usize, f64)> {
+) -> Option<Vec<(usize, usize, f64)>> {
     let num_verts = state.vert_ids.len();
     // Estimate capacity: ~6 neighbors per vertex + diagonal = 7 * N
     let mut triplets = Vec::with_capacity(num_verts * 7);
@@ -318,23 +321,21 @@ fn get_laplacian_triplets(
 
             // Compute cotangent weight for edge (i, j)
             let weight = cotangent_weight(mesh, v_i, v_j, opposite);
-            if weight.is_finite() {
-                // Off-diagonal L_ij = weight
-                triplets.push((i, j, weight));
-                sum_weights += weight;
-            } else {
-                error!(
-                    "Non-finite cotangent weight for edge ({:?}, {:?})",
-                    v_i, v_j
-                );
+            if !weight.is_finite() {
+                return None;
             }
+            triplets.push((i, j, weight));
+            sum_weights += weight;
         }
 
+        if !sum_weights.is_finite() {
+            return None;
+        }
         // Diagonal L_ii = -sum(weights)
         triplets.push((i, i, -sum_weights));
     }
 
-    triplets
+    Some(triplets)
 }
 
 #[cfg(test)]

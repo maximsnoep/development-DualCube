@@ -27,7 +27,7 @@ mod tests {
         assert_eq!(m.rank(), 3);
     }
 
-    /// merge_columns on disjoint rows: bit moves from the dropped col to the kept col.
+    /// `merge_columns` on disjoint rows: bit moves from the dropped col to the kept col.
     #[test]
     fn merge_columns_disjoint() {
         // row A has only col 5; row B has only col 2.
@@ -38,7 +38,7 @@ mod tests {
         assert_eq!(m.rows[1], vec![2]);
     }
 
-    /// merge_columns when a row has both: bits cancel out.
+    /// `merge_columns` when a row has both: bits cancel out.
     #[test]
     fn merge_columns_both_set_cancels() {
         let mut m = F2Matrix::from_rows(vec![vec![1, 4]]);
@@ -46,7 +46,7 @@ mod tests {
         assert_eq!(m.rows[0], Vec::<u32>::new());
     }
 
-    /// clear_row + reduce: cleared rows don't count toward rank.
+    /// `clear_row` + reduce: cleared rows don't count toward rank.
     #[test]
     fn clear_row_drops_from_rank() {
         let mut m = F2Matrix::from_rows(vec![vec![0], vec![1], vec![2]]);
@@ -63,7 +63,7 @@ mod tests {
         assert_eq!(out, vec![1, 4, 6]);
     }
 
-    /// xor_into with one empty slice returns the other slice verbatim.
+    /// `xor_into` with one empty slice returns the other slice verbatim.
     #[test]
     fn xor_into_empty_input() {
         let mut out = Vec::new();
@@ -73,7 +73,7 @@ mod tests {
         assert_eq!(out, vec![1, 3]);
     }
 
-    /// xor_into of identical slices yields the empty row.
+    /// `xor_into` of identical slices yields the empty row.
     #[test]
     fn xor_into_identical_inputs() {
         let mut out = Vec::new();
@@ -81,7 +81,7 @@ mod tests {
         assert_eq!(out, Vec::<u32>::new());
     }
 
-    /// xor_into reuses the buffer (clears existing contents).
+    /// `xor_into` reuses the buffer (clears existing contents).
     #[test]
     fn xor_into_clears_buffer() {
         let mut out = vec![99, 100, 101];
@@ -109,12 +109,12 @@ mod tests {
     fn reduce_idempotent_on_reduced_input() {
         // Already in echelon: row 0 leads with col 0, row 1 with col 1, row 2 with col 2.
         let mut m = F2Matrix::from_rows(vec![vec![0, 3], vec![1, 4], vec![2, 5]]);
-        let before = format!("{:?}", &m);
+        let before = format!("{m:?}");
         m.reduce();
-        let after_first = format!("{:?}", &m);
+        let after_first = format!("{m:?}");
         assert_eq!(before, after_first);
         m.reduce();
-        let after_second = format!("{:?}", &m);
+        let after_second = format!("{m:?}");
         assert_eq!(after_first, after_second);
         assert_eq!(m.rank(), 3);
     }
@@ -156,20 +156,14 @@ mod tests {
         m.merge_columns(0, 2);
         // Every row should now have exactly column 0.
         for i in 0..3 {
-            assert_eq!(m.rows[i], vec![0], "row {} after chained merges", i);
+            assert_eq!(m.rows[i], vec![0], "row {i} after chained merges");
         }
         m.reduce();
         // All three rows are equal → rank 1.
         assert_eq!(m.rank(), 1);
     }
 
-    /// merge_columns(a, b) and merge_columns(b, a) yield the same matrix
-    /// (the kept column is always min(a, b)).
-    /// `merge_columns(keep, drop)` keeps `keep` and drops `drop` — the
-    /// caller's choice, regardless of which integer is smaller.
-    /// Reinterpreting via min/max (as the old version did) was silently
-    /// wrong for callers that maintain external bookkeeping keyed by
-    /// column identity (e.g. the surgery boundary matrix's edge_to_col).
+    /// Column merges preserve the caller's chosen column, regardless of index order.
     #[test]
     fn merge_columns_honours_caller_keep_drop() {
         // Drop column 5 into column 1: data shifts to column 1.
@@ -189,7 +183,7 @@ mod tests {
         assert_eq!(b.rows[1], Vec::<u32>::new());
     }
 
-    /// merge_columns where the dropped column is empty in every row is a no-op.
+    /// `merge_columns` where the dropped column is empty in every row is a no-op.
     #[test]
     fn merge_columns_dropped_column_unused() {
         let original = vec![vec![0, 2], vec![1]];
@@ -200,7 +194,7 @@ mod tests {
         assert_eq!(m.rows, original);
     }
 
-    /// merge_columns followed by reduce: column merges can create new
+    /// `merge_columns` followed by reduce: column merges can create new
     /// dependencies; rank should reflect that.
     #[test]
     fn merge_columns_then_reduce_creates_dependency() {
@@ -280,8 +274,7 @@ mod tests {
         assert_eq!(
             sorted.len(),
             leading_cols.len(),
-            "duplicate leading columns after reduce: {:?}",
-            leading_cols
+            "duplicate leading columns after reduce: {leading_cols:?}"
         );
     }
 

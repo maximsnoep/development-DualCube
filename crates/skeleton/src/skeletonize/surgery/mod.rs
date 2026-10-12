@@ -171,13 +171,13 @@ struct CollapseDelta {
     faces_removed: Vec<[VIdx; 3]>,
     /// Faces (u, x, y) where (v, x, y) already exists: row of the (u, x, y)
     /// face is cleared (after column merging the two are identical), and the
-    /// (u, x, y) entry is dropped from face_to_row. The (v, x, y) row stays.
+    /// (u, x, y) entry is dropped from `face_to_row`. The (v, x, y) row stays.
     faces_merged: Vec<([VIdx; 3], [VIdx; 3])>,
     /// Faces (u, x, y) with no corresponding (v, x, y): row is unchanged in
-    /// content, only its key in face_to_row needs to be relabeled.
+    /// content, only its key in `face_to_row` needs to be relabeled.
     faces_renamed: Vec<([VIdx; 3], [VIdx; 3])>,
     /// Column-merge ops to apply: `(keep, drop)`. `keep` survives in
-    /// edge_to_col; `drop` becomes the zero column.
+    /// `edge_to_col`; `drop` becomes the zero column.
     edge_col_merges: Vec<(u32, u32)>,
     /// `(u, w)` edge keys whose column got merged into the corresponding
     /// `(v, w)` column. These keys need to be removed from `edge_to_col`
@@ -186,11 +186,11 @@ struct CollapseDelta {
     /// of `edge_to_col` looking for keys whose value lives in `dropped`.
     dropped_edge_keys: Vec<[VIdx; 2]>,
     /// Edges (u, w) for non-shared neighbors w: their column survives but
-    /// the key in edge_to_col is renamed from (u, w) to (v, w).
+    /// the key in `edge_to_col` is renamed from (u, w) to (v, w).
     edge_renames: Vec<([VIdx; 2], [VIdx; 2])>,
     /// The (u, v) edge itself: its column is implicitly emptied (every
     /// incident face is in `faces_removed`) and its key dropped from
-    /// edge_to_col.
+    /// `edge_to_col`.
     removed_uv_edge: [VIdx; 2],
     delta_v: usize,
     delta_e: usize,
@@ -279,7 +279,7 @@ struct SurgeryContext {
     center: Vector3D,
     scale: f64,
 
-    /// Mutable adjacency structure (using HashSet for efficient lookup).
+    /// Mutable adjacency structure (using `HashSet` for efficient lookup).
     neighbors: HashMap<VIdx, HashSet<VIdx>>,
 
     /// Active faces tracker for topology checks.
@@ -471,10 +471,8 @@ impl SurgeryContext {
             }
 
             // If w is a shared neighbor, check if triangle (u, v, w) is active
-            if larger.contains(&w) {
-                if self.active_faces.contains(&sort_face(u, v, w)) {
-                    return true;
-                }
+            if larger.contains(&w) && self.active_faces.contains(&sort_face(u, v, w)) {
+                return true;
             }
         }
         false
@@ -631,7 +629,7 @@ impl SurgeryContext {
         (new_beta_1, new_dim_k, new_beta_2)
     }
 
-    /// Computes what the (face_to_row, edge_to_col, matrix) state would
+    /// Computes what the (`face_to_row`, `edge_to_col`, matrix) state would
     /// change to under a hypothetical collapse u → v. Pure; mutates
     /// nothing. Caller must have already gated on adjacency
     /// (`is_legal_collapse_candidate` does this).
@@ -744,10 +742,10 @@ impl SurgeryContext {
             for &(keep, drop) in &delta.edge_col_merges {
                 merge_columns_in_chain(cycle, keep, drop);
             }
-            if let Some(col) = removed_uv_col {
-                if let Ok(pos) = cycle.binary_search(&col) {
-                    cycle.remove(pos);
-                }
+            if let Some(col) = removed_uv_col
+                && let Ok(pos) = cycle.binary_search(&col)
+            {
+                cycle.remove(pos);
             }
         }
 
@@ -1034,8 +1032,8 @@ impl SurgeryContext {
             for &col in cycle {
                 let endpoints = col_to_edge.get(&col).copied();
                 let endpoints_str = match endpoints {
-                    Some([a, b]) => format!("{:?}-{:?}", a, b),
-                    None => "<edge no longer in edge_to_col>".to_string(),
+                    Some([a, b]) => format!("{a:?}-{b:?}"),
+                    None => "<edge no longer in edge_to_col>".to_owned(),
                 };
                 let where_ = if face_incident_cols.contains(&col) {
                     "face-incident"
@@ -1086,11 +1084,10 @@ impl SurgeryContext {
                 b, k, b2, self.target_g,
             )
         } else {
-            "post-collapse stats unavailable".to_string()
+            "post-collapse stats unavailable".to_owned()
         };
         format!(
-            "{:?}->{:?}[dead u/v={}/{}, adj={}, faces={}, link_ok={}, {}]",
-            u, v, u_dead, v_dead, adjacent, has_faces, link_ok, stats_str
+            "{u:?}->{v:?}[dead u/v={u_dead}/{v_dead}, adj={adjacent}, faces={has_faces}, link_ok={link_ok}, {stats_str}]"
         )
     }
 
@@ -1337,15 +1334,16 @@ impl SurgeryContext {
             if let Some(&u_node) = node_indices.get(&u) {
                 for &v in neighbor_set {
                     // Only add each edge once (when u < v)
-                    if u < v && !self.is_dead.contains(&v) {
-                        if let Some(&v_node) = node_indices.get(&v) {
-                            graph.edges.insert(SkeletonEdge {
-                                nodes: [u_node, v_node],
-                                boundary: PatchBoundary {
-                                    edge_midpoints: Vec::new(),
-                                },
-                            });
-                        }
+                    if u < v
+                        && !self.is_dead.contains(&v)
+                        && let Some(&v_node) = node_indices.get(&v)
+                    {
+                        graph.edges.insert(SkeletonEdge {
+                            nodes: [u_node, v_node],
+                            boundary: PatchBoundary {
+                                edge_midpoints: Vec::new(),
+                            },
+                        });
                     }
                 }
             }
@@ -1713,7 +1711,7 @@ fn preprocess_topology(
 /// The translation works because the contracted mesh shares vertex raw
 /// values with the input mesh (`SurgeryContext::new` initialises
 /// `vertex_to_original` via `VertKey::<INPUT>::new(v.raw())`), and the
-/// shared TetGen wrapper verifies every input surface triangle, so each surface
+/// shared `TetGen` wrapper verifies every input surface triangle, so each surface
 /// edge is also a contraction-mesh edge with a column entry in
 /// `bm.edge_to_col`.
 ///
@@ -1815,8 +1813,7 @@ fn attach_handle_cycles(
             let b_contr = VIdx::new(b_input.raw());
             *bm.edge_to_col.get(&sort_edge(a_contr, b_contr)).unwrap_or_else(|| {
                 panic!(
-                    "handle-cycle translation: input surface edge ({:?}, {:?}) missing from contraction edge_to_col",
-                    a_input, b_input
+                    "handle-cycle translation: input surface edge ({a_input:?}, {b_input:?}) missing from contraction edge_to_col"
                 )
             })
         })
@@ -1848,7 +1845,7 @@ fn attach_handle_cycles(
 /// traversed in opposite directions by its two incident faces. If two
 /// faces traverse the same edge in the same direction, the mesh is
 /// either non-orientable or has at least one flipped triangle in its
-/// storage — both make TetGen produce a malformed interior. Returns
+/// storage — both make `TetGen` produce a malformed interior. Returns
 /// `Err(diagnostic)` describing the first offending edge.
 fn check_face_winding_consistent(mesh: &Mesh<INPUT>) -> Result<(), String> {
     // For each directed edge (x, y) we've seen, remember the face it came
@@ -1856,8 +1853,7 @@ fn check_face_winding_consistent(mesh: &Mesh<INPUT>) -> Result<(), String> {
     // exactly once in each direction: (x, y) by face A and (y, x) by
     // face B. Seeing the same directed edge twice = same winding on both
     // sides = inconsistent.
-    let mut seen_directed: HashMap<(VertKey<INPUT>, VertKey<INPUT>), [VertKey<INPUT>; 3]> =
-        HashMap::new();
+    let mut seen_directed = HashMap::new();
     for fid in mesh.face_ids() {
         let verts: Vec<_> = mesh.vertices(fid).collect();
         if verts.len() != 3 {
@@ -1870,8 +1866,7 @@ fn check_face_winding_consistent(mesh: &Mesh<INPUT>) -> Result<(), String> {
         for &(x, y) in &[(face[0], face[1]), (face[1], face[2]), (face[2], face[0])] {
             if let Some(prev_face) = seen_directed.insert((x, y), face) {
                 return Err(format!(
-                    "directed edge ({:?}, {:?}) traversed twice — first by face {:?}, then by face {:?}",
-                    x, y, prev_face, face
+                    "directed edge ({x:?}, {y:?}) traversed twice — first by face {prev_face:?}, then by face {face:?}"
                 ));
             }
         }

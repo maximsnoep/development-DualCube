@@ -1,4 +1,4 @@
-//! GF(2) boundary matrix ∂₂ for the 3-complex produced by TetGen.
+//! GF(2) boundary matrix ∂₂ for the 3-complex produced by `TetGen`.
 //!
 //! Given a [`TetMesh`] of the solid `V` bounded by the input surface `S`,
 //! this module enumerates all unique triangles and edges across all
@@ -91,8 +91,7 @@ pub fn build_tet_boundary(tm: &TetMesh) -> TetBoundaryComplex {
         let [a, b, c, d] = *tet;
         debug_assert!(
             a != b && a != c && a != d && b != c && b != d && c != d,
-            "degenerate tet with repeated vertices: {:?}",
-            tet
+            "degenerate tet with repeated vertices: {tet:?}"
         );
 
         // The four triangular faces of the tet — every 3-subset of {a, b, c, d}.

@@ -76,11 +76,10 @@ impl F2Matrix {
         self.rows[source] = src;
     }
 
-    /// Merges column `b` into column `a` (with `a != b`):
-    /// for every row, the bit at column `min(a, b)` becomes the XOR of the
-    /// old bits at columns `a` and `b`, and column `max(a, b)` becomes 0.
+    /// Merge `drop` into `keep` (which must differ): XOR the two bits into
+    /// `keep` and clear `drop`, preserving the caller's column mapping.
     ///
-    /// This is the column-side analogue of XORing two rows together. It's
+    /// This is the column-side analogue of `XORing` two rows together. It's
     /// exactly the right operation when two edges merge during an edge
     /// collapse: a face that was incident to either edge is now incident to
     /// the merged edge, while a (hypothetical) face incident to both becomes
@@ -158,8 +157,8 @@ impl F2Matrix {
         true
     }
 
-    /// Computes the row-reduced echelon form in place using sparse Gaussian
-    /// elimination. After this call, `rank()` returns the matrix's rank.
+    /// Eliminate rows until each nonzero row has a distinct leading column.
+    /// This is not full RREF. After this call, `rank()` returns the matrix's rank.
     ///
     /// Strategy: process rows in order; for each, repeatedly XOR-eliminate the
     /// leading nonzero column against the pivot row already assigned to that
