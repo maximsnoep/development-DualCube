@@ -1,7 +1,8 @@
-//! Signed-axis coordinate assignment and explicit cube chains for inspection.
+//! Signed-axis coordinates, node cubes, and stretched edge cuboids.
 
 use crate::{
-    Cube, CubeLayout, CubeOwner, LabeledSkeleton, RealizedSkeleton, SkeletonNodeID, SkeletonResult,
+    Cuboid, CuboidLayout, CuboidOwner, LabeledSkeleton, RealizedSkeleton, SkeletonNodeID,
+    SkeletonResult,
 };
 use dualcube_types::prelude::*;
 use slotmap::SecondaryMap;
@@ -9,7 +10,7 @@ use slotmap::SecondaryMap;
 mod validate;
 
 /// Recompute target coordinates from labels alone. Input-space positions are unchanged.
-/// Two units per level leave room for a midpoint cube on even the shortest edge.
+/// Two units per level leave a positive gap between unit node cubes.
 pub fn coordinates(
     labeled: &LabeledSkeleton,
 ) -> SkeletonResult<SecondaryMap<SkeletonNodeID, Vector3D>> {
@@ -36,7 +37,7 @@ pub fn coordinates(
         .collect())
 }
 
-/// Place unit cubes along the assigned axes, preserving separate identities at overlaps.
+/// Connect unit node cubes with one cuboid per edge, preserving identities at overlaps.
 /// Rebuilds all placement data, so this can be called again after relabeling.
 pub fn run(mesh: &Mesh<INPUT>, labeled: &LabeledSkeleton) -> SkeletonResult<RealizedSkeleton> {
     labeled.skeleton.validate(mesh)?;
@@ -45,53 +46,43 @@ pub fn run(mesh: &Mesh<INPUT>, labeled: &LabeledSkeleton) -> SkeletonResult<Real
 
 fn realize(labeled: &LabeledSkeleton) -> SkeletonResult<RealizedSkeleton> {
     let node_positions = coordinates(labeled)?;
-    let mut cubes = CubeLayout::default();
+    let mut cuboids = CuboidLayout::default();
     let mut nodes = SecondaryMap::new();
     for id in labeled.skeleton.nodes.keys() {
         nodes.insert(
             id,
-            cubes.cubes.insert(Cube {
+            cuboids.cuboids.insert(Cuboid {
                 center: node_positions[id],
-                size: 1.,
-                owner: CubeOwner::Node(id),
+                size: Vector3D::repeat(1.),
+                owner: CuboidOwner::Node(id),
             }),
         );
     }
     for (edge, data) in &labeled.skeleton.edges {
         let [a, b] = data.nodes;
         let delta = node_positions[b] - node_positions[a];
-        let steps = delta.amax() as usize;
-        let step = delta / steps as f64;
-        let mut previous = nodes[a];
-        for i in 1..steps {
-            let owner = if i == steps / 2 {
-                CubeOwner::Midpoint(edge)
-            } else {
-                CubeOwner::Edge {
-                    edge,
-                    patch: if i < steps / 2 { a } else { b },
-                }
-            };
-            let current = cubes.cubes.insert(Cube {
-                center: node_positions[a] + step * i as f64,
-                size: 1.,
-                owner,
-            });
-            cubes.connections.push([previous, current]);
-            previous = current;
-        }
-        cubes.connections.push([previous, nodes[b]]);
+        let axis = crate::label::Port::from_label(labeled.labels[edge]) as usize / 2;
+        let mut size = Vector3D::repeat(1.);
+        size[axis] = delta[axis].abs() - 1.;
+        let connection = cuboids.cuboids.insert(Cuboid {
+            center: (node_positions[a] + node_positions[b]) / 2.,
+            size,
+            owner: CuboidOwner::Edge(edge),
+        });
+        cuboids
+            .connections
+            .extend([[nodes[a], connection], [connection, nodes[b]]]);
     }
     let result = RealizedSkeleton {
         labeled: labeled.clone(),
         node_positions,
-        cubes,
+        cuboids,
     };
     result.validate_geometry()?;
     tracing::info!(
-        "Cube placement: {} nodes, {} cubes",
+        "Cube placement: {} node cubes, {} edge cuboids",
         result.node_positions.len(),
-        result.cubes.cubes.len()
+        result.labeled.skeleton.edges.len()
     );
     Ok(result)
 }

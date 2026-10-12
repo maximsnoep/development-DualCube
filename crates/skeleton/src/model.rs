@@ -12,8 +12,8 @@ slotmap::new_key_type! {
     pub struct SkeletonEdgeID;
     /// One occurrence of a boundary crossing an input-mesh edge.
     pub struct BoundaryCrossingID;
-    /// A cube in one cube layout. Keys are local to that layout and its clones.
-    pub struct CubeID;
+    /// A cuboid in one target layout. Keys are local to that layout and its clones.
+    pub struct CuboidID;
 }
 
 /// A curve skeleton whose patches are surface regions bounded by its edge loops.
@@ -75,45 +75,38 @@ pub struct EdgeLabel {
     pub sign: Sign,
 }
 
-/// Correspondence between target cubes and input-surface patches.
+/// Correspondence between target solids and skeleton elements.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum CubeOwner {
+pub enum CuboidOwner {
     /// A node cube, entirely owned by that node's patch.
     Node(SkeletonNodeID),
-    /// An edge cube entirely owned by one endpoint's patch.
-    Edge {
-        edge: SkeletonEdgeID,
-        /// Must be an endpoint of `edge`.
-        patch: SkeletonNodeID,
-    },
-    /// Split at the cube center, perpendicular to the edge's signed axis.
-    /// The positive side belongs to `nodes[1]`, the other side to `nodes[0]`.
-    Midpoint(SkeletonEdgeID),
+    /// One stretched connection between the endpoint node faces.
+    /// Its central cross-section corresponds to the edge's patch boundary.
+    Edge(SkeletonEdgeID),
 }
 
-/// An axis-aligned cube in target space. Target-space units need not match the
-/// input mesh. Placement and size are chosen by cube placement/optimization.
+/// An axis-aligned box in target space: a node cube or an edge cuboid.
 #[derive(Clone, Debug)]
-pub struct Cube {
+pub struct Cuboid {
     /// Finite target-space coordinates.
     pub center: Vector3D,
-    /// Finite, strictly positive side length.
-    pub size: f64,
+    /// Finite, strictly positive side lengths along X, Y, and Z.
+    pub size: Vector3D,
     /// Links target geometry to the skeleton's input-surface patches.
-    pub owner: CubeOwner,
+    pub owner: CuboidOwner,
 }
 
-/// Explicit cubes and their intended face adjacencies, available to optimization.
+/// Node cubes, stretched edge cuboids, and their intended face adjacencies.
 ///
-/// Connections join existing, distinct cubes sharing a complete face, without
+/// Connections join existing, distinct cuboids sharing a complete face, without
 /// duplicate pairs. Incidental geometric contact does not create a connection.
-/// Global intersections and coincident cubes are allowed. Owners refer to the
-/// accompanying skeleton; every node has exactly one node cube. Each edge has one midpoint
-/// cube and any additional edge cubes belong to the endpoint on their side.
+/// Global intersections and coincident solids are allowed. Every node has exactly one
+/// cube; every edge has exactly one cuboid joining its endpoint cubes. Cuboids are not
+/// divided into endpoint-owned pieces. Only explicit connections imply adjacency.
 #[derive(Clone, Debug, Default)]
-pub struct CubeLayout {
-    pub cubes: SlotMap<CubeID, Cube>,
-    pub connections: Vec<[CubeID; 2]>,
+pub struct CuboidLayout {
+    pub cuboids: SlotMap<CuboidID, Cuboid>,
+    pub connections: Vec<[CuboidID; 2]>,
 }
 
 /// Combinatorial labeling, before cube placement. Every edge has a signed axis.
@@ -132,7 +125,7 @@ pub struct RealizedSkeleton {
     pub labeled: LabeledSkeleton,
     /// Target-space node centers; the input-space embedding stays in `labeled`.
     pub node_positions: SecondaryMap<SkeletonNodeID, Vector3D>,
-    pub cubes: CubeLayout,
+    pub cuboids: CuboidLayout,
 }
 
 /// Dual loops drawn on the surface, able to be primalized into a polycube segmentation.

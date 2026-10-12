@@ -16,10 +16,10 @@ fn tetrahedron() -> Mesh<INPUT> {
 }
 
 #[test]
-fn full_run_retains_placement_at_unimplemented_optimization() {
+fn full_run_retains_no_op_optimization_at_unimplemented_loop_drawing() {
     let mesh = tetrahedron();
     let error = pipeline::run(&mesh).unwrap_err();
-    assert_eq!(error.failure.stage, Stage::Optimization);
+    assert_eq!(error.failure.stage, Stage::LoopDrawing);
     assert_eq!(
         error
             .failure
@@ -47,7 +47,21 @@ fn full_run_retains_placement_at_unimplemented_optimization() {
         .unwrap()
         .validate(&mesh)
         .unwrap();
-    assert!(error.progress.optimized.is_none());
+    let realized = error.progress.realized.as_ref().unwrap();
+    let optimized = error.progress.optimized.as_ref().unwrap();
+    optimized.validate(&mesh).unwrap();
+    assert_eq!(optimized.node_positions, realized.node_positions);
+    assert_eq!(optimized.cuboids.connections, realized.cuboids.connections);
+    assert_eq!(
+        optimized.cuboids.cuboids.len(),
+        realized.cuboids.cuboids.len()
+    );
+    for (id, cube) in &realized.cuboids.cuboids {
+        let other = &optimized.cuboids.cuboids[id];
+        assert_eq!(other.center, cube.center);
+        assert_eq!(other.size, cube.size);
+        assert_eq!(other.owner, cube.owner);
+    }
     assert!(error.progress.loops.is_none());
 }
 
@@ -60,7 +74,7 @@ fn explicit_labeling_stop_succeeds_and_continuation_keeps_it() {
     progress.label(&mesh).unwrap();
     assert_eq!(
         progress.finish(&mesh).unwrap_err().stage,
-        Stage::Optimization
+        Stage::LoopDrawing
     );
     assert_eq!(
         progress.skeleton.as_ref().unwrap().surface.edge_order,

@@ -137,13 +137,28 @@ fn large_patch_sets_keep_saturated_colors_and_neighboring_indices_distinct() {
 }
 
 #[test]
-fn cube_view_distinguishes_edge_cubes_and_keeps_finite_geometry() {
+fn cube_view_distinguishes_stretched_edges_and_keeps_finite_geometry() {
     let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
         .join("../../crates/mehsh/assets/tetrahedron.obj");
     let solution = io::import_solution(&path).unwrap();
     let raw = dualcube::skeleton::skeletonize::run(&solution.mesh_ref).unwrap();
     let labeled = dualcube::skeleton::label::run(&solution.mesh_ref, &raw).unwrap();
-    let realized = dualcube::skeleton::place_cubes::run(&solution.mesh_ref, &labeled).unwrap();
+    let mut realized = dualcube::skeleton::place_cubes::run(&solution.mesh_ref, &labeled).unwrap();
+    for (_, position) in &mut realized.node_positions {
+        *position *= 3.;
+    }
+    for (_, cuboid) in &mut realized.cuboids.cuboids {
+        cuboid.center *= 3.;
+        if let dualcube::skeleton::CuboidOwner::Edge(edge) = cuboid.owner {
+            let axis = match realized.labeled.labels[edge].direction {
+                Direction::X => 0,
+                Direction::Y => 1,
+                Direction::Z => 2,
+            };
+            cuboid.size[axis] = 3. * cuboid.size[axis] + 2.;
+        }
+    }
+    realized.validate(&solution.mesh_ref).unwrap();
     let mut object = RenderObject::default();
     cubes::add(&mut object, &realized);
     let RenderAsset::Mesh(mesh) = &object.features[SkeletonLayer::Cubes.label()] else {
