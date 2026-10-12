@@ -201,7 +201,7 @@ fn automatic_initialization_requests_the_full_pipeline_with_optional_refinement(
 }
 
 #[test]
-fn auto_start_reaches_optimization_and_explicit_stops_still_win() {
+fn auto_start_reaches_loop_drawing_and_explicit_stops_still_win() {
     use crate::render::Objects;
     use crate::render::store::RenderObjectSettingStore;
     use crate::resources::SkeletonResource;
@@ -232,7 +232,7 @@ fn auto_start_reaches_optimization_and_explicit_stops_still_win() {
         if stop.is_none() {
             assert_eq!(
                 state.initialization_failure.as_ref().unwrap().stage,
-                dualcube::skeleton::pipeline::Stage::Optimization
+                dualcube::skeleton::pipeline::Stage::LoopDrawing
             );
             assert!(state.extraction().is_some());
             assert!(state.labeling.is_some());
