@@ -16,8 +16,8 @@ Run from the repository root:
 
   --load <path>              Import a mesh or saved solution
   --auto-start skeleton      Run skeleton initialization after loading
-  --stop-after <stage>       Run through input, deflation, surgery, refinement, or labeling
-  --view <view>              input, deflated, raw, skeleton, labeled, patches, combined
+  --stop-after <stage>       Run through input, deflation, surgery, refinement, labeling, or placement
+  --view <view>              input, deflated, raw, skeleton, labeled, patches, combined, cubes
   --refinement               Enable embedding refinement (default off)
   --no-refinement            Skip embedding refinement
   --iterations <count>      Deflation iteration limit (default 50)
@@ -126,6 +126,7 @@ impl Launch {
                         "labeled" => ModelViewKind::Labeled,
                         "patches" => ModelViewKind::Patches,
                         "combined" => ModelViewKind::Combined,
+                        "cubes" => ModelViewKind::Cubes,
                         _ => return Err(format!("Unknown view: {value}")),
                     })
                 }
@@ -175,9 +176,17 @@ impl Launch {
             let available = match view {
                 ModelViewKind::Input => true,
                 ModelViewKind::Deflated => launch.stop.is_some(),
+                ModelViewKind::Cubes => matches!(
+                    launch.stop,
+                    Some(SkeletonStage::Placement | SkeletonStage::Complete)
+                ),
                 ModelViewKind::Labeled => matches!(
                     launch.stop,
-                    Some(SkeletonStage::Labeling | SkeletonStage::Complete)
+                    Some(
+                        SkeletonStage::Labeling
+                            | SkeletonStage::Placement
+                            | SkeletonStage::Complete
+                    )
                 ),
                 _ => matches!(
                     launch.stop,
@@ -185,6 +194,7 @@ impl Launch {
                         SkeletonStage::Surgery
                             | SkeletonStage::Refinement
                             | SkeletonStage::Labeling
+                            | SkeletonStage::Placement
                             | SkeletonStage::Complete
                     )
                 ),
@@ -234,6 +244,7 @@ fn parse_stage(value: &str) -> Result<Option<SkeletonStage>, String> {
         "surgery" => Ok(Some(SkeletonStage::Surgery)),
         "refinement" => Ok(Some(SkeletonStage::Refinement)),
         "labeling" => Ok(Some(SkeletonStage::Labeling)),
+        "placement" | "cubes" => Ok(Some(SkeletonStage::Placement)),
         _ => Err(format!("Unknown stage: {value}")),
     }
 }

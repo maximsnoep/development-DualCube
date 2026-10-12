@@ -36,20 +36,40 @@ pub(super) fn feasible(
     labels: &SecondaryMap<SkeletonEdgeID, EdgeLabel>,
     extra: Option<([SkeletonNodeID; 2], u8)>,
 ) -> bool {
+    coordinate_levels(skeleton, labels, extra, false).is_some()
+}
+
+/// The same equalities/order DAG used for feasibility, with optional slack compaction.
+pub(crate) fn coordinate_levels(
+    skeleton: &Skeleton,
+    labels: &SecondaryMap<SkeletonEdgeID, EdgeLabel>,
+    extra: Option<([SkeletonNodeID; 2], u8)>,
+    compact: bool,
+) -> Option<SecondaryMap<SkeletonNodeID, [usize; 3]>> {
     let ids: HashMap<_, _> = skeleton
         .nodes
         .keys()
         .enumerate()
         .map(|(i, n)| (n, i))
         .collect();
+    let mut coordinates = vec![[0; 3]; ids.len()];
     let mut relations = Vec::new();
     for (e, label) in labels {
         let Some(edge) = skeleton.edges.get(e) else {
-            return false;
+            return None;
         };
+        if edge.nodes.iter().any(|node| !ids.contains_key(node)) {
+            return None;
+        }
         relations.push((edge.nodes, Port::from_label(*label).bit()));
     }
     relations.extend(extra);
+    if relations
+        .iter()
+        .any(|(nodes, _)| nodes.iter().any(|n| !ids.contains_key(n)))
+    {
+        return None;
+    }
     for axis in 0..3 {
         let mut union = Union::new(ids.len());
         for &(nodes, mask) in &relations {
@@ -70,27 +90,43 @@ pub(super) fn feasible(
                 std::mem::swap(&mut a, &mut b);
             }
             if a == b {
-                return false;
+                return None;
             }
             outgoing[a].push(b);
             degree[b] += 1;
         }
         let mut queue: VecDeque<_> = (0..ids.len()).filter(|&i| degree[i] == 0).collect();
-        let mut visited = 0;
+        let mut order = Vec::new();
+        let mut level = vec![0usize; ids.len()];
         while let Some(i) = queue.pop_front() {
-            visited += 1;
+            order.push(i);
             for &j in &outgoing[i] {
+                level[j] = level[j].max(level[i] + 1);
                 degree[j] -= 1;
                 if degree[j] == 0 {
                     queue.push_back(j);
                 }
             }
         }
-        if visited != ids.len() {
-            return false;
+        if order.len() != ids.len() {
+            return None;
+        }
+        if compact {
+            for &i in order.iter().rev() {
+                if let Some(last) = outgoing[i].iter().map(|&j| level[j] - 1).min() {
+                    level[i] = last;
+                }
+            }
+        }
+        for i in 0..ids.len() {
+            coordinates[i][axis] = level[union.root(i)];
         }
     }
-    true
+    Some(
+        ids.into_iter()
+            .map(|(id, i)| (id, coordinates[i]))
+            .collect(),
+    )
 }
 
 pub(super) fn used_ports(

@@ -1,6 +1,6 @@
 //! Angle-based tree labeling followed by surface-preserving cycle repair.
 
-mod constraints;
+pub(crate) mod constraints;
 mod junction;
 pub mod path;
 mod subdivide;

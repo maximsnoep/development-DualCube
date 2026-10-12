@@ -52,6 +52,7 @@ fn stage_controls_and_invalid_combinations() {
         ("surgery", Some(SkeletonStage::Surgery)),
         ("refinement", Some(SkeletonStage::Refinement)),
         ("labeling", Some(SkeletonStage::Labeling)),
+        ("placement", Some(SkeletonStage::Placement)),
     ] {
         let launch = parse(&["--load=a.obj", "--stop-after", name]).unwrap();
         assert_eq!(launch.stop, stage);
@@ -135,6 +136,7 @@ fn startup_jobs_load_extract_select_view_and_report_failure() {
         SkeletonStage::Surgery,
         SkeletonStage::Refinement,
         SkeletonStage::Labeling,
+        SkeletonStage::Placement,
     ] {
         let (app, exit) = run_startup(Launch {
             path: Some(path.clone()),
@@ -146,7 +148,10 @@ fn startup_jobs_load_extract_select_view_and_report_failure() {
         assert_eq!(exit, AppExit::Success);
         let state = app.world().resource::<SkeletonResource>();
         assert!(state.contracted_mesh().is_some());
-        assert_eq!(state.labeled.is_some(), stage == SkeletonStage::Labeling);
+        assert_eq!(
+            state.labeled.is_some(),
+            matches!(stage, SkeletonStage::Labeling | SkeletonStage::Placement)
+        );
         assert!(state.initialization_failure.is_none());
         assert_eq!(
             state.extraction().is_some(),
@@ -163,7 +168,7 @@ fn startup_jobs_load_extract_select_view_and_report_failure() {
             &app.world().resource::<RenderObjectSettingStore>().objects[&Objects::InputMesh];
         let layer = if stage == SkeletonStage::Deflation {
             "deflated"
-        } else if stage == SkeletonStage::Labeling {
+        } else if matches!(stage, SkeletonStage::Labeling | SkeletonStage::Placement) {
             "labeled skeleton"
         } else {
             "skeleton"
@@ -196,7 +201,7 @@ fn automatic_initialization_requests_the_full_pipeline_with_optional_refinement(
 }
 
 #[test]
-fn auto_start_reaches_cube_placement_and_explicit_stops_still_win() {
+fn auto_start_reaches_optimization_and_explicit_stops_still_win() {
     use crate::render::Objects;
     use crate::render::store::RenderObjectSettingStore;
     use crate::resources::SkeletonResource;
@@ -227,11 +232,20 @@ fn auto_start_reaches_cube_placement_and_explicit_stops_still_win() {
         if stop.is_none() {
             assert_eq!(
                 state.initialization_failure.as_ref().unwrap().stage,
-                dualcube::skeleton::pipeline::Stage::CubePlacement
+                dualcube::skeleton::pipeline::Stage::Optimization
             );
             assert!(state.extraction().is_some());
             assert!(state.labeling.is_some());
-            assert!(state.realized.is_none());
+            state
+                .realized
+                .as_ref()
+                .unwrap()
+                .validate(
+                    &app.world()
+                        .resource::<crate::resources::InputResource>()
+                        .mesh,
+                )
+                .unwrap();
         } else {
             assert!(state.initialization_failure.is_none());
         }
@@ -244,4 +258,32 @@ fn auto_start_reaches_cube_placement_and_explicit_stops_still_win() {
             assert!(settings["labeled skeleton"].visible);
         }
     }
+}
+
+#[test]
+fn placement_stop_and_cube_view_succeed_without_running_optimization() {
+    let path =
+        PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../crates/mehsh/assets/tetrahedron.obj");
+    let launch = Launch::parse([
+        OsString::from("--load"),
+        path.into_os_string(),
+        OsString::from("--quit-after=placement"),
+        OsString::from("--view=cubes"),
+    ])
+    .unwrap()
+    .unwrap();
+    let (app, exit) = run_startup(launch);
+    assert_eq!(exit, AppExit::Success);
+    let state = app.world().resource::<crate::resources::SkeletonResource>();
+    assert!(state.realized.is_some());
+    assert!(state.initialization_failure.is_none());
+    let settings = &app
+        .world()
+        .resource::<crate::render::store::RenderObjectSettingStore>()
+        .objects[&crate::render::Objects::InputMesh]
+        .settings;
+    assert!(settings["placed cubes"].visible);
+    assert!(settings["cube edges"].visible);
+    assert!(!settings["lambert"].visible);
+    assert!(parse(&["--load=a.obj", "--stop-after=labeling", "--view=cubes"]).is_err());
 }

@@ -16,10 +16,10 @@ fn tetrahedron() -> Mesh<INPUT> {
 }
 
 #[test]
-fn full_run_retains_labeling_at_unimplemented_cube_placement() {
+fn full_run_retains_placement_at_unimplemented_optimization() {
     let mesh = tetrahedron();
     let error = pipeline::run(&mesh).unwrap_err();
-    assert_eq!(error.failure.stage, Stage::CubePlacement);
+    assert_eq!(error.failure.stage, Stage::Optimization);
     assert_eq!(
         error
             .failure
@@ -40,7 +40,13 @@ fn full_run_retains_labeling_at_unimplemented_cube_placement() {
         .unwrap()
         .validate(&mesh)
         .unwrap();
-    assert!(error.progress.realized.is_none());
+    error
+        .progress
+        .realized
+        .as_ref()
+        .unwrap()
+        .validate(&mesh)
+        .unwrap();
     assert!(error.progress.optimized.is_none());
     assert!(error.progress.loops.is_none());
 }
@@ -54,7 +60,7 @@ fn explicit_labeling_stop_succeeds_and_continuation_keeps_it() {
     progress.label(&mesh).unwrap();
     assert_eq!(
         progress.finish(&mesh).unwrap_err().stage,
-        Stage::CubePlacement
+        Stage::Optimization
     );
     assert_eq!(
         progress.skeleton.as_ref().unwrap().surface.edge_order,
@@ -71,4 +77,38 @@ fn extraction_failure_has_no_completed_downstream_stages() {
     assert!(error.progress.skeleton.is_none());
     assert!(error.progress.labeling.is_none());
     assert!(error.progress.labeled.is_none());
+}
+
+#[test]
+fn replacing_labels_and_placing_again_discards_stale_downstream_state() {
+    let mesh = tetrahedron();
+    let mut progress = Progress::from_skeleton(skeleton::skeletonize::run(&mesh).unwrap());
+    progress.place(&mesh).unwrap();
+    let before = progress.realized.clone().unwrap();
+    progress.optimized = Some(before.clone());
+    progress.loops = Some(Default::default());
+    for (_, label) in &mut progress.labeled.as_mut().unwrap().labels {
+        label.sign = if label.sign == Sign::Positive {
+            Sign::Negative
+        } else {
+            Sign::Positive
+        };
+    }
+    progress.place(&mesh).unwrap();
+    let after = progress.realized.as_ref().unwrap();
+    after.validate(&mesh).unwrap();
+    assert!(
+        after
+            .node_positions
+            .iter()
+            .any(|(id, p)| *p != before.node_positions[id])
+    );
+    assert!(progress.optimized.is_none());
+    assert!(progress.loops.is_none());
+    progress.labeled.as_mut().unwrap().labels.clear();
+    assert_eq!(
+        progress.place(&mesh).unwrap_err().stage,
+        Stage::CubePlacement
+    );
+    assert!(progress.realized.is_none());
 }

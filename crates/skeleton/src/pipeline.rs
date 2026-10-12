@@ -64,6 +64,11 @@ impl Progress {
     }
 
     pub fn label(&mut self, mesh: &Mesh<INPUT>) -> Result<(), Failure> {
+        self.labeling = None;
+        self.labeled = None;
+        self.realized = None;
+        self.optimized = None;
+        self.loops = None;
         let fail = |error| Failure {
             stage: Stage::Labeling,
             error,
@@ -87,20 +92,30 @@ impl Progress {
         Ok(())
     }
 
+    /// Recompute placement after labels change, invalidating all dependent results.
+    pub fn place(&mut self, mesh: &Mesh<INPUT>) -> Result<(), Failure> {
+        self.realized = None;
+        self.optimized = None;
+        self.loops = None;
+        if self.labeled.is_none() {
+            self.label(mesh)?;
+        }
+        self.realized = Some(
+            place_cubes::run(mesh, self.labeled.as_ref().unwrap()).map_err(|error| Failure {
+                stage: Stage::CubePlacement,
+                error,
+            })?,
+        );
+        Ok(())
+    }
+
     /// Continue the actual stage sequence; errors leave all earlier results available.
     pub fn finish(&mut self, mesh: &Mesh<INPUT>) -> Result<(), Failure> {
         if self.labeled.is_none() {
             self.label(mesh)?;
         }
         if self.realized.is_none() {
-            self.realized = Some(
-                place_cubes::run(mesh, self.labeled.as_ref().unwrap()).map_err(|error| {
-                    Failure {
-                        stage: Stage::CubePlacement,
-                        error,
-                    }
-                })?,
-            );
+            self.place(mesh)?;
         }
         if self.optimized.is_none() {
             self.optimized = Some(

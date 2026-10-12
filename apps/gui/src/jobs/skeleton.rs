@@ -15,6 +15,7 @@ pub enum SkeletonStage {
     Surgery,
     Refinement,
     Labeling,
+    Placement,
     Complete,
 }
 
@@ -24,7 +25,8 @@ impl SkeletonStage {
             Self::Deflation => ModelViewKind::Deflated,
             Self::Surgery => ModelViewKind::Raw,
             Self::Refinement => ModelViewKind::Skeleton,
-            Self::Labeling | Self::Complete => ModelViewKind::Labeled,
+            Self::Labeling => ModelViewKind::Labeled,
+            Self::Placement | Self::Complete => ModelViewKind::Cubes,
         }
     }
 }
@@ -50,14 +52,20 @@ impl Job {
                 Ok(state) => {
                     let mut progress = dualcube::skeleton::pipeline::Progress::default();
                     let mut failure = None;
-                    if matches!(stop, SkeletonStage::Labeling | SkeletonStage::Complete)
-                        && let SkeletonState::Extracted(extraction) = &state
+                    if matches!(
+                        stop,
+                        SkeletonStage::Labeling
+                            | SkeletonStage::Placement
+                            | SkeletonStage::Complete
+                    ) && let SkeletonState::Extracted(extraction) = &state
                     {
                         progress = dualcube::skeleton::pipeline::Progress::from_skeleton(
                             extraction.skeleton.clone(),
                         );
                         failure = if stop == SkeletonStage::Complete {
                             progress.finish(&mesh).err()
+                        } else if stop == SkeletonStage::Placement {
+                            progress.place(&mesh).err()
                         } else {
                             progress.label(&mesh).err()
                         };
@@ -65,10 +73,18 @@ impl Job {
                     if let Some(error) = &failure {
                         warn!("Initialization stopped at {error}");
                     }
-                    let view = if matches!(stop, SkeletonStage::Labeling | SkeletonStage::Complete)
-                        && progress.labeling.is_none()
+                    let view = if matches!(
+                        stop,
+                        SkeletonStage::Labeling
+                            | SkeletonStage::Placement
+                            | SkeletonStage::Complete
+                    ) && progress.labeling.is_none()
                     {
                         ModelViewKind::Skeleton
+                    } else if matches!(stop, SkeletonStage::Placement | SkeletonStage::Complete)
+                        && progress.realized.is_none()
+                    {
+                        ModelViewKind::Labeled
                     } else {
                         stop.view()
                     };
@@ -101,8 +117,10 @@ fn extract_until(
         return Ok(SkeletonState::Deflated((*contracted).clone()));
     }
     options.refine_embedding = stop == SkeletonStage::Refinement
-        || (matches!(stop, SkeletonStage::Labeling | SkeletonStage::Complete)
-            && options.refine_embedding);
+        || (matches!(
+            stop,
+            SkeletonStage::Labeling | SkeletonStage::Placement | SkeletonStage::Complete
+        ) && options.refine_embedding);
     let extraction = skeletonize::extract_from_contracted(mesh, (*contracted).clone(), options)?;
     info!(
         "Skeleton: {} nodes, {} edges",

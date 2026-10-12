@@ -130,6 +130,8 @@ pub struct LabeledSkeleton {
 #[derive(Clone, Debug)]
 pub struct RealizedSkeleton {
     pub labeled: LabeledSkeleton,
+    /// Target-space node centers; the input-space embedding stays in `labeled`.
+    pub node_positions: SecondaryMap<SkeletonNodeID, Vector3D>,
     pub cubes: CubeLayout,
 }
 

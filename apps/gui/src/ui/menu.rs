@@ -43,13 +43,14 @@ pub enum ModelViewKind {
     Patches,
     Combined,
     Labeled,
+    Cubes,
     Dual,
     Primal,
     Quad,
 }
 
 impl ModelViewKind {
-    const ALL: [Self; 10] = [
+    const ALL: [Self; 11] = [
         Self::Input,
         Self::Deflated,
         Self::Raw,
@@ -57,6 +58,7 @@ impl ModelViewKind {
         Self::Patches,
         Self::Combined,
         Self::Labeled,
+        Self::Cubes,
         Self::Dual,
         Self::Primal,
         Self::Quad,
@@ -71,6 +73,7 @@ impl ModelViewKind {
             Self::Patches => "Patches",
             Self::Combined => "Combined",
             Self::Labeled => "Labeled",
+            Self::Cubes => "Cubes",
             Self::Dual => "Dual",
             Self::Primal => "Primal",
             Self::Quad => "Quad",
@@ -97,6 +100,14 @@ impl ModelViewKind {
                         "wireframe",
                         SkeletonLayer::TranslucentPatches.label(),
                         SkeletonLayer::Skeleton.label(),
+                    ]
+                }
+            }
+            Self::Cubes => {
+                const {
+                    &[
+                        SkeletonLayer::Cubes.label(),
+                        SkeletonLayer::CubeEdges.label(),
                     ]
                 }
             }
@@ -240,6 +251,7 @@ pub fn show(
                     | ModelViewKind::Combined
                     | ModelViewKind::Patches => skeleton.extraction().is_some(),
                     ModelViewKind::Deflated => skeleton.contracted_mesh().is_some(),
+                    ModelViewKind::Cubes => skeleton.realized.is_some(),
                     ModelViewKind::Labeled => {
                         skeleton.labeled.is_some() || skeleton.labeling.is_some()
                     }

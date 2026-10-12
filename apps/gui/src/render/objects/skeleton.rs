@@ -20,10 +20,12 @@ pub enum SkeletonLayer {
     TranslucentPatches,
     Boundaries,
     Deflated,
+    Cubes,
+    CubeEdges,
 }
 
 impl SkeletonLayer {
-    pub const ALL: [Self; 7] = [
+    pub const ALL: [Self; 9] = [
         Self::Skeleton,
         Self::Raw,
         Self::Labeled,
@@ -31,6 +33,8 @@ impl SkeletonLayer {
         Self::TranslucentPatches,
         Self::Boundaries,
         Self::Deflated,
+        Self::Cubes,
+        Self::CubeEdges,
     ];
 
     pub const fn label(self) -> &'static str {
@@ -42,6 +46,8 @@ impl SkeletonLayer {
             Self::TranslucentPatches => "translucent patches",
             Self::Boundaries => "patch boundaries",
             Self::Deflated => "deflated",
+            Self::Cubes => "placed cubes",
+            Self::CubeEdges => "cube edges",
         }
     }
 
@@ -141,6 +147,9 @@ fn build(mesh: &mehsh::prelude::Mesh<INPUT>, state: &SkeletonResource) -> Render
             SkeletonLayer::Labeled.label(),
             RenderAsset::Mesh(graph(&labeled.skeleton, Some(labeled), scale, translation)),
         );
+    }
+    if let Some(realized) = &state.realized {
+        cubes::add(&mut object, realized);
     }
     match dualcube::skeleton::geometry::SurfaceGeometry::build(mesh, current) {
         Ok(geometry) => add_surface(&mut object, current, &geometry, scale, translation),
@@ -325,3 +334,5 @@ fn region_color(region: usize) -> [f32; 3] {
 
 #[cfg(test)]
 mod tests;
+
+mod cubes;

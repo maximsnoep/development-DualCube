@@ -135,3 +135,64 @@ fn large_patch_sets_keep_saturated_colors_and_neighboring_indices_distinct() {
         assert!(distance > 0.1);
     }
 }
+
+#[test]
+fn cube_view_distinguishes_edge_cubes_and_keeps_finite_geometry() {
+    let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("../../crates/mehsh/assets/tetrahedron.obj");
+    let solution = io::import_solution(&path).unwrap();
+    let raw = dualcube::skeleton::skeletonize::run(&solution.mesh_ref).unwrap();
+    let labeled = dualcube::skeleton::label::run(&solution.mesh_ref, &raw).unwrap();
+    let realized = dualcube::skeleton::place_cubes::run(&solution.mesh_ref, &labeled).unwrap();
+    let mut object = RenderObject::default();
+    cubes::add(&mut object, &realized);
+    let RenderAsset::Mesh(mesh) = &object.features[SkeletonLayer::Cubes.label()] else {
+        panic!("Missing cube mesh");
+    };
+    assert!(mesh.count_vertices() > 0);
+    let normals = mesh
+        .attribute(BevyMesh::ATTRIBUTE_NORMAL)
+        .unwrap()
+        .as_float3()
+        .unwrap();
+    assert!(
+        normals
+            .iter()
+            .any(|n| n.iter().filter(|&&x| x.abs() > 0.1).count() > 1)
+    );
+    assert!(
+        normals
+            .iter()
+            .all(|n| n.iter().filter(|&&x| x.abs() > 0.1).count() <= 2)
+    );
+    let positions = mesh
+        .attribute(BevyMesh::ATTRIBUTE_POSITION)
+        .unwrap()
+        .as_float3()
+        .unwrap();
+    for (points, normals) in positions.chunks_exact(3).zip(normals.chunks_exact(3)) {
+        let [a, b, c] = [
+            Vec3::from(points[0]),
+            Vec3::from(points[1]),
+            Vec3::from(points[2]),
+        ];
+        assert!((b - a).cross(c - a).dot(Vec3::from(normals[0])) > 0.);
+    }
+    for attribute in [BevyMesh::ATTRIBUTE_POSITION, BevyMesh::ATTRIBUTE_NORMAL] {
+        assert!(
+            mesh.attribute(attribute)
+                .unwrap()
+                .as_float3()
+                .unwrap()
+                .iter()
+                .flatten()
+                .all(|x| x.is_finite())
+        );
+    }
+    assert!(!SkeletonLayer::Cubes.is_surface());
+    assert!(
+        object
+            .features
+            .contains_key(SkeletonLayer::CubeEdges.label())
+    );
+}
