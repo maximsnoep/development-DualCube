@@ -235,10 +235,10 @@ pub fn show(
                     ModelViewKind::Dual => !current.loops.is_empty() || initializing || evolving,
                     ModelViewKind::Primal => current.layout.is_some() || evolving,
                     ModelViewKind::Quad => current.quad.is_some(),
-                    ModelViewKind::Skeleton | ModelViewKind::Raw | ModelViewKind::Combined => {
-                        skeleton.extraction().is_some()
-                    }
-                    ModelViewKind::Patches => false, // TODO(step 5): Restore region rendering.
+                    ModelViewKind::Skeleton
+                    | ModelViewKind::Raw
+                    | ModelViewKind::Combined
+                    | ModelViewKind::Patches => skeleton.extraction().is_some(),
                     ModelViewKind::Deflated => skeleton.contracted_mesh().is_some(),
                     ModelViewKind::Labeled => {
                         skeleton.labeled.is_some() || skeleton.labeling.is_some()

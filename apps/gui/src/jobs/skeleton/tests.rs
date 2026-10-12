@@ -28,18 +28,23 @@ fn stop_stages_retain_only_computed_states() {
     for (id, node) in &raw.raw.nodes {
         assert_eq!(node.position, raw.skeleton.nodes[id].position);
     }
-    let error = extract_until(
+    let SkeletonState::Extracted(refined) = extract_until(
         mesh,
         Options::default(),
         SkeletonStage::Refinement,
         &ContractionCache::default(),
     )
-    .err()
-    .expect("Refinement should be unavailable");
-    assert_eq!(
-        error.downcast_ref::<std::io::Error>().unwrap().kind(),
-        std::io::ErrorKind::Unsupported
-    );
+    .unwrap() else {
+        panic!("Missing refinement result");
+    };
+    let centers = dualcube::skeleton::geometry::SurfaceGeometry::build(mesh, &raw.raw)
+        .unwrap()
+        .centroids()
+        .unwrap();
+    for (id, node) in &refined.skeleton.nodes {
+        assert_eq!(node.position, centers[id]);
+        assert_eq!(refined.raw.nodes[id].position, raw.raw.nodes[id].position);
+    }
 }
 
 #[test]
@@ -54,12 +59,7 @@ fn cache_reuses_contraction_for_downstream_settings_and_invalidates_on_inputs() 
     options.surgery.sampling_weight = 0.2;
     options.surgery.handle_bonus = 0.;
     for stop in [SkeletonStage::Surgery, SkeletonStage::Refinement] {
-        let result = extract_until(&mesh, options, stop, &cache);
-        if stop == SkeletonStage::Refinement {
-            assert!(result.is_err());
-        } else {
-            result.unwrap();
-        }
+        extract_until(&mesh, options, stop, &cache).unwrap();
         assert!(Arc::ptr_eq(
             &first,
             &cache.get_or_compute(mesh.clone(), 50).unwrap()

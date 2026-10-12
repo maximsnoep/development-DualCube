@@ -133,6 +133,7 @@ fn startup_jobs_load_extract_select_view_and_report_failure() {
     for stage in [
         SkeletonStage::Deflation,
         SkeletonStage::Surgery,
+        SkeletonStage::Refinement,
         SkeletonStage::Labeling,
     ] {
         let (app, exit) = run_startup(Launch {
@@ -169,6 +170,10 @@ fn startup_jobs_load_extract_select_view_and_report_failure() {
         };
         assert!(settings.settings[layer].visible);
         assert!(!settings.settings["lambert"].visible);
+        if stage != SkeletonStage::Deflation {
+            assert!(settings.settings["translucent patches"].visible);
+            assert!(!settings.settings["patch boundaries"].visible);
+        }
     }
     let (app, exit) = run_startup(Launch {
         path: Some(path.with_file_name("missing-startup-model.obj")),

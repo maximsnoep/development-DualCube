@@ -21,8 +21,9 @@ fn extraction_layers_survive_refresh_and_clear_with_new_input() {
         .add_systems(Update, sync);
     app.update();
     let object = &app.world().resource::<RenderObjectStore>().objects[&Objects::InputMesh];
-    assert!(!object.features.contains_key("patches"));
-    assert!(!object.features.contains_key("patch boundaries"));
+    assert!(object.features.contains_key("patches"));
+    assert!(object.features.contains_key("translucent patches"));
+    assert!(object.features.contains_key("patch boundaries"));
     assert!(object.features.contains_key("skeleton"));
     assert!(!object.features.contains_key("labeled skeleton"));
     for asset in object.features.values() {
@@ -33,7 +34,27 @@ fn extraction_layers_survive_refresh_and_clear_with_new_input() {
                 .as_float3()
                 .unwrap();
             assert!(positions.iter().flatten().all(|x| x.is_finite()));
+            let normals = mesh
+                .attribute(BevyMesh::ATTRIBUTE_NORMAL)
+                .unwrap()
+                .as_float3()
+                .unwrap();
+            assert!(normals.iter().flatten().all(|x| x.is_finite()));
         }
+    }
+    for (label, expected_alpha) in [("patches", 1.), ("translucent patches", 0.3)] {
+        let (RenderAsset::Mesh(mesh) | RenderAsset::TranslucentMesh(mesh)) =
+            &object.features[label]
+        else {
+            panic!("Missing patch mesh");
+        };
+        let Some(VertexAttributeValues::Float32x4(colors)) =
+            mesh.attribute(BevyMesh::ATTRIBUTE_COLOR)
+        else {
+            panic!("Missing patch colors");
+        };
+        assert!(!colors.is_empty());
+        assert!(colors.iter().all(|c| c[3] == expected_alpha));
     }
     app.world_mut()
         .resource_mut::<RenderObjectStore>()

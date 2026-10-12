@@ -1,13 +1,16 @@
-//! Embedding refinement awaits boundary-region geometry.
+//! Area-weighted embedding refinement over boundary-defined surface regions.
 
 use crate::{Skeleton, SkeletonResult};
 use dualcube_types::prelude::*;
 
-pub fn run(_mesh: &Mesh<INPUT>, _skeleton: &mut Skeleton) -> SkeletonResult<()> {
-    // TODO(step 5): Integrate area-weighted centroids over boundary-defined regions.
-    Err(std::io::Error::new(
-        std::io::ErrorKind::Unsupported,
-        "Boundary-region centroid refinement is not implemented yet",
-    )
-    .into())
+pub fn run(mesh: &Mesh<INPUT>, skeleton: &mut Skeleton) -> SkeletonResult<()> {
+    let geometry = crate::geometry::SurfaceGeometry::build(mesh, skeleton)?;
+    let centers = geometry.centroids()?;
+    if skeleton.nodes.keys().any(|id| !centers.contains_key(id)) {
+        return Err("Surface geometry omitted a region".into());
+    }
+    for (id, node) in &mut skeleton.nodes {
+        node.position = centers[id];
+    }
+    Ok(())
 }

@@ -76,7 +76,7 @@ fn extracts_sphere_topology_and_keeps_input_unchanged() {
 }
 
 #[test]
-fn refinement_is_explicitly_unavailable_during_migration() {
+fn refinement_uses_region_centroids_and_remains_opt_in() {
     let mesh = tetrahedron();
     let result = skeletonize::extract(
         &mesh,
@@ -91,12 +91,25 @@ fn refinement_is_explicitly_unavailable_during_migration() {
         assert_eq!(node.position, result.skeleton.nodes[id].position);
     }
     let mut refined = result.raw.clone();
-    let error = refinement::run(&mesh, &mut refined).unwrap_err();
-    assert_eq!(
-        error.downcast_ref::<std::io::Error>().unwrap().kind(),
-        std::io::ErrorKind::Unsupported
-    );
-    for (id, node) in &result.raw.nodes {
+    let expected = skeleton::geometry::SurfaceGeometry::build(&mesh, &refined)
+        .unwrap()
+        .centroids()
+        .unwrap();
+    refinement::run(&mesh, &mut refined).unwrap();
+    for (id, node) in &refined.nodes {
+        assert_eq!(node.position, expected[id]);
+    }
+    refined.validate(&mesh).unwrap();
+    let enabled = skeletonize::extract_from_contracted(
+        &mesh,
+        result.contracted_mesh,
+        Options {
+            refine_embedding: true,
+            ..Options::default()
+        },
+    )
+    .unwrap();
+    for (id, node) in &enabled.skeleton.nodes {
         assert_eq!(node.position, refined.nodes[id].position);
     }
 }

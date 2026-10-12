@@ -1,10 +1,10 @@
-//! Skeleton geometry and midpoint-split surface patches.
+//! Skeleton graphs and boundary-defined surface patches.
 
 use super::super::store::{RenderAsset, RenderObject, RenderObjectStore};
 use crate::colors;
 use crate::render::Objects;
 use crate::resources::{InputResource, SkeletonResource};
-use bevy::mesh::Mesh as BevyMesh;
+use bevy::mesh::{Mesh as BevyMesh, VertexAttributeValues};
 use bevy::prelude::*;
 use dualcube::prelude::*;
 use dualcube::skeleton::{LabeledSkeleton, Skeleton, SkeletonEdgeID};
@@ -113,7 +113,9 @@ fn build(mesh: &mehsh::prelude::Mesh<INPUT>, state: &SkeletonResource) -> Render
     let current = state
         .labeling
         .as_ref()
-        .map_or(&extraction.skeleton, |attempt| &attempt.skeleton);
+        .map(|attempt| &attempt.skeleton)
+        .or_else(|| state.labeled.as_ref().map(|labeled| &labeled.skeleton))
+        .unwrap_or(&extraction.skeleton);
     object.add(
         SkeletonLayer::Skeleton.label(),
         RenderAsset::Mesh(graph(current, None, scale, translation)),
@@ -140,8 +142,60 @@ fn build(mesh: &mehsh::prelude::Mesh<INPUT>, state: &SkeletonResource) -> Render
             RenderAsset::Mesh(graph(&labeled.skeleton, Some(labeled), scale, translation)),
         );
     }
-    // TODO(step 5): Restore patch fills and boundary curves from boundary-region geometry.
+    match dualcube::skeleton::geometry::SurfaceGeometry::build(mesh, current) {
+        Ok(geometry) => add_surface(&mut object, current, &geometry, scale, translation),
+        Err(error) => warn!("Could not build skeleton surface geometry: {error}"),
+    }
     object
+}
+
+fn add_surface(
+    object: &mut RenderObject,
+    skeleton: &Skeleton,
+    geometry: &dualcube::skeleton::geometry::SurfaceGeometry,
+    scale: f64,
+    translation: Vector3D,
+) {
+    let colors: HashMap<_, _> = skeleton
+        .nodes
+        .keys()
+        .enumerate()
+        .map(|(i, id)| (id, region_color(i)))
+        .collect();
+    let mut patches = MeshBuilder::new();
+    for triangle in &geometry.triangles {
+        let [a, b, c] = triangle.points;
+        let normal = (b - a).cross(&(c - a)).normalize();
+        patches.add_triangle(triangle.points, [normal; 3], colors[&triangle.node]);
+    }
+    patches.normalize(scale, translation);
+    let mut patches = patches.build();
+    object.add(
+        SkeletonLayer::Patches.label(),
+        RenderAsset::Mesh(patches.clone()),
+    );
+    if let Some(VertexAttributeValues::Float32x4(colors)) =
+        patches.attribute_mut(BevyMesh::ATTRIBUTE_COLOR)
+    {
+        for color in colors {
+            color[3] = 0.3;
+        }
+    }
+    object.add(
+        SkeletonLayer::TranslucentPatches.label(),
+        RenderAsset::TranslucentMesh(patches),
+    );
+    let mut boundaries = GizmoAsset::new();
+    for boundary in &geometry.boundaries {
+        for pair in boundary.points.windows(2) {
+            boundaries.line(
+                crate::render::gizmos::world_to_view(pair[0], translation, scale),
+                crate::render::gizmos::world_to_view(pair[1], translation, scale),
+                colors::to_bevy(colors::DARK_GRAY),
+            );
+        }
+    }
+    object.gizmo(boundaries, 1.5, -0.001, SkeletonLayer::Boundaries.label());
 }
 
 fn graph(
@@ -181,7 +235,7 @@ fn graph_with_labels(
             position(edge.nodes[0]),
             position(edge.nodes[1]),
             // Repair subdivisions inherit non-MST status; unresolved cycle edges stay gray.
-            if non_tree(id) { 0.16 } else { 0.09 },
+            if non_tree(id) { 0.2 } else { 0.09 },
             edge_color(id),
         );
     }
