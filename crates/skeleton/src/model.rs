@@ -1,54 +1,70 @@
 //! Skeleton data models and contracts for the initialization pipeline.
 
 use dualcube_dual::{Loop, LoopID};
-use dualcube_types::prelude::{Direction, EdgeID, Sign, Vector3D, VertID};
+use dualcube_types::prelude::{Direction, EdgeID, Sign, Vector3D};
 use slotmap::{SecondaryMap, SlotMap};
+use std::collections::HashMap;
 
 slotmap::new_key_type! {
     /// A node in one skeleton. Keys are local to that skeleton and its clones.
     pub struct SkeletonNodeID;
     /// An edge in one skeleton. Keys are local to that skeleton and its clones.
     pub struct SkeletonEdgeID;
+    /// One occurrence of a boundary crossing an input-mesh edge.
+    pub struct BoundaryCrossingID;
     /// A cube in one cube layout. Keys are local to that layout and its clones.
     pub struct CubeID;
 }
 
-/// A curve skeleton together with its induced partition of the input surface.
+/// A curve skeleton whose patches are surface regions bounded by its edge loops.
 ///
-/// A successful generation stage returns a nonempty connected graph. Every
-/// input vertex belongs to exactly one node's patch, and every edge joins two
-/// existing, distinct nodes. An edge's boundary is the ordered simple closed
-/// boundary between those nodes' patches. Patches are connected and genus zero,
-/// boundaries are disjoint. A single-node skeleton is valid for genus-zero input.
+/// Successful extraction returns connected genus-zero patches with disjoint boundaries.
+/// Regions may contain no original vertices. Input mesh topology remains immutable.
+/// Full validation after later edits awaits boundary-region reconstruction.
 #[derive(Clone, Debug, Default)]
 pub struct Skeleton {
     pub nodes: SlotMap<SkeletonNodeID, SkeletonNode>,
     pub edges: SlotMap<SkeletonEdgeID, SkeletonEdge>,
+    pub surface: BoundarySurface,
 }
 
 #[derive(Clone, Debug)]
 pub struct SkeletonNode {
     /// Embedded position in the coordinate system of the original input mesh.
     pub position: Vector3D,
-    /// Original input vertices owned by this node.
-    pub patch_vertices: Vec<VertID>,
 }
 
 #[derive(Clone, Debug)]
 pub struct SkeletonEdge {
-    /// Endpoints; their order defines the orientation used by [`EdgeLabel`].
+    /// Left and right surface regions along the oriented boundary loop.
+    /// Their order also defines the orientation used by [`EdgeLabel`].
     pub nodes: [SkeletonNodeID; 2],
     pub boundary: PatchBoundary,
 }
 
-/// A patch boundary represented by crossings of input-mesh edges.
-#[derive(Clone, Debug)]
+/// An oriented, simple closed curve on the input surface; no axis is prescribed.
+#[derive(Clone, Debug, Default)]
 pub struct PatchBoundary {
-    /// One half-edge per crossed geometric edge, in cyclic traversal order;
-    /// the first entry is not repeated at the end. The crossing lies at the
-    /// edge midpoint. This is not the doubled half-edge format of a dual loop.
-    /// Winding is not prescribed; consumers must account for surface geometry.
-    pub edge_midpoints: Vec<EdgeID>,
+    /// Cyclic traversal, without repeating the first occurrence at the end.
+    /// An input edge may occur repeatedly, with distinct crossing IDs.
+    pub crossings: Vec<BoundaryCrossingID>,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct BoundaryCrossing {
+    /// Half-edge of the triangle the traversal exits; it enters through its twin.
+    /// The arc to the next crossing lies in the triangle of that twin.
+    pub exit: EdgeID,
+}
+
+/// Shared combinatorial ordering of all boundary crossings on the immutable input.
+#[derive(Clone, Debug, Default)]
+pub struct BoundarySurface {
+    pub crossings: SlotMap<BoundaryCrossingID, BoundaryCrossing>,
+    /// Root-to-tip order on the smaller of each pair of twin half-edge IDs.
+    /// Each occurrence belongs to one loop and appears exactly once in these orders.
+    // TODO(step 5): Derive uniform offsets (rank + 1)/(count + 1); later optimize geometry.
+    pub edge_order: HashMap<EdgeID, Vec<BoundaryCrossingID>>,
 }
 
 /// Signed principal axis from `SkeletonEdge::nodes[0]` to `nodes[1]` in the

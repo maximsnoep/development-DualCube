@@ -1,16 +1,14 @@
 //! Skeleton geometry and midpoint-split surface patches.
 
-use super::super::gizmos::world_to_view;
 use super::super::store::{RenderAsset, RenderObject, RenderObjectStore};
 use crate::colors;
 use crate::render::Objects;
 use crate::resources::{InputResource, SkeletonResource};
-use bevy::mesh::{Mesh as BevyMesh, VertexAttributeValues};
+use bevy::mesh::Mesh as BevyMesh;
 use bevy::prelude::*;
 use dualcube::prelude::*;
 use dualcube::skeleton::{LabeledSkeleton, Skeleton, SkeletonEdgeID};
 use mehsh_bevy::MeshBuilder;
-use std::collections::HashMap;
 use std::f64::consts::{PI, TAU};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -85,8 +83,6 @@ pub fn sync(
     }
 }
 
-const PATCH_OPACITY: f32 = 0.3;
-
 fn build(mesh: &mehsh::prelude::Mesh<INPUT>, state: &SkeletonResource) -> RenderObject {
     let mut object = RenderObject::default();
     let Some(contracted) = state.contracted_mesh() else {
@@ -144,44 +140,7 @@ fn build(mesh: &mehsh::prelude::Mesh<INPUT>, state: &SkeletonResource) -> Render
             RenderAsset::Mesh(graph(&labeled.skeleton, Some(labeled), scale, translation)),
         );
     }
-    let mut translucent = patches(mesh, current, scale, translation);
-    object.add(
-        SkeletonLayer::Patches.label(),
-        RenderAsset::Mesh(translucent.clone()),
-    );
-    if let Some(VertexAttributeValues::Float32x4(colors)) =
-        translucent.attribute_mut(BevyMesh::ATTRIBUTE_COLOR)
-    {
-        for color in colors {
-            color[3] = PATCH_OPACITY;
-        }
-    }
-    object.add(
-        SkeletonLayer::TranslucentPatches.label(),
-        RenderAsset::TranslucentMesh(translucent),
-    );
-    let mut boundaries = GizmoAsset::new();
-    for edge in current.edges.values() {
-        let points: Vec<_> = edge
-            .boundary
-            .edge_midpoints
-            .iter()
-            .map(|&e| {
-                world_to_view(
-                    (mesh.position(mesh.root(e)) + mesh.position(mesh.root(mesh.twin(e)))) * 0.5,
-                    translation,
-                    scale,
-                )
-            })
-            .collect();
-        if !points.is_empty() {
-            boundaries.linestrip(
-                points.iter().copied().chain(points.first().copied()),
-                colors::to_bevy(colors::WHITE),
-            );
-        }
-    }
-    object.gizmo(boundaries, 2.0, -0.001, SkeletonLayer::Boundaries.label());
+    // TODO(step 5): Restore patch fills and boundary curves from boundary-region geometry.
     object
 }
 
@@ -296,65 +255,6 @@ fn tube(builder: &mut MeshBuilder, a: Vector3D, b: Vector3D, radius: f64, color:
             color,
         );
     }
-}
-
-// The two equal labels form a quad; the remaining label forms a triangle.
-fn split_triangle(points: [Vector3D; 3], regions: [usize; 3]) -> Vec<([Vector3D; 3], usize)> {
-    if regions[0] == regions[1] && regions[1] == regions[2] {
-        return vec![(points, regions[0])];
-    }
-    for i in 0..3 {
-        let j = (i + 1) % 3;
-        let k = (i + 2) % 3;
-        if regions[i] == regions[j] {
-            let [a, b, c] = [points[i], points[j], points[k]];
-            let ac = (a + c) * 0.5;
-            let bc = (b + c) * 0.5;
-            return vec![
-                ([a, b, ac], regions[i]),
-                ([b, bc, ac], regions[i]),
-                ([ac, bc, c], regions[k]),
-            ];
-        }
-    }
-    // Diagnostic partitions can have a three-way junction.
-    let center = (points[0] + points[1] + points[2]) / 3.;
-    (0..3)
-        .flat_map(|i| {
-            let a = points[i];
-            let next = (a + points[(i + 1) % 3]) * 0.5;
-            let prev = (a + points[(i + 2) % 3]) * 0.5;
-            [
-                ([a, next, center], regions[i]),
-                ([a, center, prev], regions[i]),
-            ]
-        })
-        .collect()
-}
-
-fn patches(
-    mesh: &mehsh::prelude::Mesh<INPUT>,
-    skeleton: &Skeleton,
-    scale: f64,
-    translation: Vector3D,
-) -> BevyMesh {
-    let owners: HashMap<_, _> = skeleton
-        .nodes
-        .values()
-        .enumerate()
-        .flat_map(|(i, node)| node.patch_vertices.iter().map(move |&v| (v, i)))
-        .collect();
-    let mut builder = MeshBuilder::new();
-    for f in mesh.face_ids() {
-        let vertices: Vec<_> = mesh.vertices(f).collect();
-        let points = [vertices[0], vertices[1], vertices[2]].map(|v| mesh.position(v));
-        let regions = [vertices[0], vertices[1], vertices[2]].map(|v| owners[&v]);
-        for (triangle, region) in split_triangle(points, regions) {
-            builder.add_triangle(triangle, [mesh.normal(f); 3], region_color(region));
-        }
-    }
-    builder.normalize(scale, translation);
-    builder.build()
 }
 
 /// Spread successive regions around the hue wheel without fading larger patch sets.

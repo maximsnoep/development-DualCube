@@ -25,7 +25,8 @@ mod tet_boundary;
 mod tetrahedralize;
 
 use super::deflate::CONTRACTION;
-use crate::{PatchBoundary, Skeleton, SkeletonEdge, SkeletonNode};
+use super::partition::{self, Boundary, Partition, PartitionEdge, Patch};
+use crate::{Skeleton, SkeletonNodeID};
 use dualcube_types::prelude::INPUT;
 use f2_rref::F2Matrix;
 use handle_subspace::compute_handle_subspace;
@@ -1298,8 +1299,8 @@ impl SurgeryContext {
     }
 
     /// Build a graph snapshot; boundaries are assigned after successful surgery.
-    fn to_skeleton(&self) -> Skeleton {
-        let mut graph = Skeleton::default();
+    fn to_partition(&self) -> Partition {
+        let mut graph = Partition::default();
         let mut node_indices = HashMap::new();
 
         // Add living nodes
@@ -1319,9 +1320,9 @@ impl SurgeryContext {
             // Get the list of original vertex keys this node represents
             let originals = self.vertex_to_original.get(&v).cloned().unwrap_or_default();
 
-            let idx = graph.nodes.insert(SkeletonNode {
+            let idx = graph.nodes.insert(Patch {
                 position: original_pos,
-                patch_vertices: originals,
+                vertices: originals,
             });
             node_indices.insert(v, idx);
         }
@@ -1338,10 +1339,10 @@ impl SurgeryContext {
                         && !self.is_dead.contains(&v)
                         && let Some(&v_node) = node_indices.get(&v)
                     {
-                        graph.edges.insert(SkeletonEdge {
+                        graph.edges.insert(PartitionEdge {
                             nodes: [u_node, v_node],
-                            boundary: PatchBoundary {
-                                edge_midpoints: Vec::new(),
+                            boundary: Boundary {
+                                crossed_edges: Vec::new(),
                             },
                         });
                     }
@@ -1372,7 +1373,7 @@ fn extract_skeleton(
     contracted_mesh: &Mesh<CONTRACTION>,
     original_mesh: &Mesh<INPUT>,
     options: Options,
-) -> crate::SkeletonResult<(Skeleton, usize)> {
+) -> crate::SkeletonResult<(Partition, usize)> {
     let mut ctx = SurgeryContext::new(contracted_mesh, original_mesh)?;
     ctx.options = options;
     let mut heap = BinaryHeap::new();
@@ -1532,7 +1533,7 @@ fn extract_skeleton(
             free_face_collapses,
             ctx.positions.len() - ctx.is_dead.len()
         );
-        let skeleton = ctx.to_skeleton();
+        let skeleton = ctx.to_partition();
         Ok((skeleton, ctx.target_g))
     } else {
         warn!(
@@ -1543,7 +1544,7 @@ fn extract_skeleton(
         );
         Err(Box::new(SurgeryFailure {
             reason: "Connectivity surgery stopped with remaining faces".into(),
-            skeleton: ctx.to_skeleton(),
+            graph: ctx.to_partition().diagnostic(),
             remaining_face_positions: ctx.remaining_face_triangles(),
         }))
     }
@@ -1905,12 +1906,19 @@ fn sort_face(a: VIdx, b: VIdx, c: VIdx) -> [VIdx; 3] {
 #[cfg(test)]
 #[path = "test/test_mod.rs"]
 mod test_mod;
+/// Graph geometry retained when surgery cannot produce a surface partition.
+#[derive(Clone, Debug)]
+pub struct DiagnosticGraph {
+    pub positions: slotmap::SecondaryMap<SkeletonNodeID, Vector3D>,
+    pub edges: Vec<[SkeletonNodeID; 2]>,
+}
+
 /// Failed surgery or partition construction, with the available partial state.
 #[derive(Debug)]
 pub struct SurgeryFailure {
     pub reason: String,
-    /// Inspection only: incomplete surgery can leave empty boundaries.
-    pub skeleton: Skeleton,
+    /// Inspection only: not a validated surface partition.
+    pub graph: DiagnosticGraph,
     pub remaining_face_positions: Vec<[Vector3D; 3]>,
 }
 impl std::fmt::Display for SurgeryFailure {
@@ -1956,21 +1964,20 @@ pub fn run_with_options(
         return Err("Deflated positions must be finite".into());
     }
     let (mut skeleton, genus) = extract_skeleton(contracted, original, options)?;
-    let result = crate::validate::assign_boundaries(&mut skeleton, original)
-        .and_then(|()| skeleton.validate(original))
-        .and_then(|()| {
-            if skeleton.edges.len() + 1 != skeleton.nodes.len() + genus {
-                Err("Extracted graph does not preserve input genus".into())
-            } else {
-                Ok(())
-            }
-        });
+    let result = partition::assign_boundaries(&mut skeleton, original).and_then(|()| {
+        if skeleton.edges.len() + 1 != skeleton.nodes.len() + genus {
+            Err("Extracted graph does not preserve input genus".into())
+        } else {
+            Ok(())
+        }
+    });
+    let result = result.and_then(|()| skeleton.to_skeleton(original));
     if let Err(error) = result {
         return Err(Box::new(SurgeryFailure {
             reason: error.to_string(),
-            skeleton,
+            graph: skeleton.diagnostic(),
             remaining_face_positions: Vec::new(),
         }));
     }
-    Ok(skeleton)
+    result
 }

@@ -23,7 +23,6 @@ fn graph(positions: &[[f64; 3]], edges: &[[usize; 2]]) -> Skeleton {
         .map(|p| {
             graph.nodes.insert(SkeletonNode {
                 position: Vector3D::from(*p),
-                patch_vertices: Vec::new(),
             })
         })
         .collect();
@@ -31,7 +30,7 @@ fn graph(positions: &[[f64; 3]], edges: &[[usize; 2]]) -> Skeleton {
         graph.edges.insert(SkeletonEdge {
             nodes: [nodes[a], nodes[b]],
             boundary: PatchBoundary {
-                edge_midpoints: Vec::new(),
+                crossings: Vec::new(),
             },
         });
     }
@@ -220,89 +219,6 @@ fn validation_allows_global_overlap_but_rejects_coordinate_cycles() {
     assert!(!constraints::feasible(&skeleton, &labels, None));
 }
 
-/// A torus partitioned into annular bands, with no TetGen dependency.
-fn bands(width: usize, positions: &[[f64; 3]]) -> (Mesh<INPUT>, Skeleton) {
-    let n = width * positions.len();
-    let m = 8;
-    let mut points = Vec::new();
-    let mut faces = Vec::new();
-    for i in 0..n {
-        for j in 0..m {
-            let u = std::f64::consts::TAU * i as f64 / n as f64;
-            let v = std::f64::consts::TAU * j as f64 / m as f64;
-            points.push(Vector3D::new(
-                (3. + v.cos()) * u.cos(),
-                (3. + v.cos()) * u.sin(),
-                v.sin(),
-            ));
-            let (a, b, c, d) = (
-                i * m + j,
-                ((i + 1) % n) * m + j,
-                ((i + 1) % n) * m + (j + 1) % m,
-                i * m + (j + 1) % m,
-            );
-            faces.push(vec![a, b, c]);
-            faces.push(vec![a, c, d]);
-        }
-    }
-    let (mesh, mapping, _) = Mesh::from(&faces, &points).unwrap();
-    let mut skeleton = graph(
-        positions,
-        &(0..positions.len())
-            .map(|i| [i, (i + 1) % positions.len()])
-            .collect::<Vec<_>>(),
-    );
-    let vertices: Vec<_> = (0..points.len())
-        .map(|i| *mapping.key(i).unwrap())
-        .collect();
-    for ((_, node), group) in skeleton.nodes.iter_mut().zip(vertices.chunks(width * m)) {
-        node.patch_vertices = group.to_vec();
-    }
-    crate::validate::assign_boundaries(&mut skeleton, &mesh).unwrap();
-    skeleton.validate(&mesh).unwrap();
-    (mesh, skeleton)
-}
-
-#[test]
-fn cycle_repair_subdivides_real_patches_and_preserves_input() {
-    let (mesh, skeleton) = bands(4, &[[0., 0., 0.], [2., 0., 0.], [2., 2., 0.]]);
-    let result = attempt(&mesh, &skeleton).unwrap();
-    assert!(result.failure.is_none(), "{:?}", result.failure);
-    assert_eq!(result.repairs.len(), 1);
-    assert_eq!(result.repairs[0].path.len(), 2);
-    assert_eq!(result.skeleton.nodes.len(), 4);
-    result.completed().unwrap().validate(&mesh).unwrap();
-    skeleton.validate(&mesh).unwrap();
-    assert_eq!(skeleton.nodes.len(), 3);
-}
-
-#[test]
-fn tiny_patches_keep_partial_tree_without_fake_bends() {
-    let (mesh, skeleton) = bands(1, &[[0., 0., 0.], [2., 0., 0.], [2., 2., 0.]]);
-    let result = attempt(&mesh, &skeleton).unwrap();
-    assert!(matches!(
-        result.failure,
-        Some(Failure::CycleRepairUnavailable {
-            max_subdivisions: 4,
-            ..
-        })
-    ));
-    assert!(result.completed().is_none());
-    assert_eq!(result.labels.len(), 2);
-    assert_eq!(result.skeleton.nodes.len(), 3);
-    result.skeleton.validate(&mesh).unwrap();
-    assert!(run(&mesh, &skeleton).is_err());
-}
-
-#[test]
-fn direct_cycle_repair_needs_no_subdivision() {
-    let (mesh, skeleton) = bands(1, &[[0., 0., 0.], [2., 0., 0.], [2., 2., 0.], [0., 2., 0.]]);
-    let result = attempt(&mesh, &skeleton).unwrap();
-    assert!(result.failure.is_none(), "{:?}", result.failure);
-    assert_eq!(result.repairs[0].path.len(), 1);
-    result.completed().unwrap().validate(&mesh).unwrap();
-}
-
 #[test]
 fn coincident_embedding_has_finite_unbiased_costs() {
     assert_eq!(
@@ -378,53 +294,4 @@ fn path_repair_can_require_all_four_subdivisions() {
     }
     let solution = path::optimize(&costs, &constraints).unwrap();
     assert_eq!(solution.ports.len(), 5);
-}
-
-#[test]
-fn parallel_boundaries_survive_cycle_repair() {
-    let (mesh, skeleton) = bands(4, &[[0., 0., 0.], [2., 0., 0.]]);
-    let result = attempt(&mesh, &skeleton).unwrap();
-    assert!(result.failure.is_none(), "{:?}", result.failure);
-    assert_eq!(result.repairs[0].path.len(), 3);
-    result.completed().unwrap().validate(&mesh).unwrap();
-    skeleton.validate(&mesh).unwrap();
-}
-
-#[test]
-fn four_surface_subdivisions_preserve_patch_topology() {
-    let (mesh, skeleton) = bands(6, &[[0., 0., 0.], [2., 0., 0.], [2., 2., 0.]]);
-    let edge = skeleton.edges.keys().next().unwrap();
-    let mut split = skeleton.clone();
-    for count in 1..=4 {
-        split = subdivide::collar(&mesh, &split, edge, 0)
-            .unwrap()
-            .unwrap()
-            .0;
-        split.validate(&mesh).unwrap();
-        assert_eq!(split.nodes.len(), skeleton.nodes.len() + count);
-        assert_eq!(split.edges.len(), skeleton.edges.len() + count);
-    }
-    skeleton.validate(&mesh).unwrap();
-}
-
-#[test]
-fn pipeline_retains_a_typed_partial_labeling_failure() {
-    let (mesh, skeleton) = bands(1, &[[0., 0., 0.], [2., 0., 0.], [2., 2., 0.]]);
-    let mut progress = crate::pipeline::Progress::from_skeleton(skeleton);
-    let error = progress.finish(&mesh).unwrap_err();
-    assert_eq!(error.stage, crate::pipeline::Stage::Labeling);
-    assert!(matches!(
-        error.error.downcast_ref::<Failure>(),
-        Some(Failure::CycleRepairUnavailable { .. })
-    ));
-    assert_eq!(progress.labeling.as_ref().unwrap().labels.len(), 2);
-    assert!(progress.labeled.is_none());
-    assert!(progress.realized.is_none());
-    progress
-        .labeling
-        .as_ref()
-        .unwrap()
-        .skeleton
-        .validate(&mesh)
-        .unwrap();
 }

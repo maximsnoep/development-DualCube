@@ -133,7 +133,6 @@ fn startup_jobs_load_extract_select_view_and_report_failure() {
     for stage in [
         SkeletonStage::Deflation,
         SkeletonStage::Surgery,
-        SkeletonStage::Refinement,
         SkeletonStage::Labeling,
     ] {
         let (app, exit) = run_startup(Launch {
@@ -143,19 +142,22 @@ fn startup_jobs_load_extract_select_view_and_report_failure() {
             quit: true,
             ..default()
         });
-        assert_eq!(exit, AppExit::Success);
+        assert_eq!(
+            exit,
+            if stage == SkeletonStage::Labeling {
+                AppExit::error()
+            } else {
+                AppExit::Success
+            }
+        );
         let state = app.world().resource::<SkeletonResource>();
         assert!(state.contracted_mesh().is_some());
-        assert_eq!(state.labeled.is_some(), stage == SkeletonStage::Labeling);
-        if let Some(labeled) = &state.labeled {
-            labeled
-                .validate(
-                    &app.world()
-                        .resource::<SolutionResource>()
-                        .current_solution
-                        .mesh_ref,
-                )
-                .unwrap();
+        assert!(state.labeled.is_none());
+        if stage == SkeletonStage::Labeling {
+            assert_eq!(
+                state.initialization_failure.as_ref().unwrap().stage,
+                dualcube::skeleton::pipeline::Stage::Labeling
+            );
         }
         assert_eq!(
             state.extraction().is_some(),
@@ -173,7 +175,7 @@ fn startup_jobs_load_extract_select_view_and_report_failure() {
         let layer = if stage == SkeletonStage::Deflation {
             "deflated"
         } else {
-            "translucent patches"
+            "skeleton"
         };
         assert!(settings.settings[layer].visible);
         assert!(!settings.settings["lambert"].visible);
@@ -199,7 +201,7 @@ fn automatic_initialization_requests_the_full_pipeline_with_optional_refinement(
 }
 
 #[test]
-fn auto_start_runs_labeling_and_explicit_stop_still_wins() {
+fn auto_start_reports_unavailable_labeling_and_surgery_stop_still_wins() {
     use crate::render::Objects;
     use crate::render::store::RenderObjectSettingStore;
     use crate::resources::SkeletonResource;
@@ -220,34 +222,29 @@ fn auto_start_runs_labeling_and_explicit_stop_still_wins() {
         let (app, exit) = run_startup(launch);
         assert_eq!(
             exit,
-            if stop.is_none() {
+            if stop != Some("surgery") {
                 AppExit::error()
             } else {
                 AppExit::Success
             }
         );
         let state = app.world().resource::<SkeletonResource>();
-        if stop.is_none() {
+        if stop != Some("surgery") {
             assert_eq!(
                 state.initialization_failure.as_ref().unwrap().stage,
-                dualcube::skeleton::pipeline::Stage::CubePlacement
+                dualcube::skeleton::pipeline::Stage::Labeling
             );
             assert!(state.extraction().is_some());
-            assert!(state.labeling.is_some());
+            assert!(state.labeling.is_none());
             assert!(state.realized.is_none());
         } else {
             assert!(state.initialization_failure.is_none());
         }
-        assert_eq!(
-            app.world().resource::<SkeletonResource>().labeled.is_some(),
-            stop != Some("surgery")
-        );
+        assert!(state.labeled.is_none());
         let settings = &app.world().resource::<RenderObjectSettingStore>().objects
             [&Objects::InputMesh]
             .settings;
-        assert_eq!(settings["skeleton"].visible, stop == Some("surgery"));
-        if stop != Some("surgery") {
-            assert!(settings["labeled skeleton"].visible);
-        }
+        assert!(settings["skeleton"].visible);
+        assert!(!settings.contains_key("labeled skeleton"));
     }
 }

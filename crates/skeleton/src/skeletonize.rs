@@ -4,6 +4,7 @@
 //! and the skeleton before refinement. Each submodule can be called separately.
 
 pub mod deflate;
+mod partition;
 pub mod refinement;
 pub mod surgery;
 
@@ -60,7 +61,6 @@ pub fn extract_from_contracted(
     if options.refine_embedding {
         refinement::run(mesh, &mut skeleton)?;
     }
-    skeleton.validate(mesh)?;
     Ok(Extraction {
         contracted_mesh,
         raw,

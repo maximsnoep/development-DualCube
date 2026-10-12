@@ -1,6 +1,6 @@
 use dualcube_types::prelude::*;
 use skeleton::{
-    Skeleton, SkeletonNode,
+    Skeleton,
     skeletonize::{self, Options, deflate, refinement},
 };
 
@@ -56,8 +56,8 @@ fn extracts_sphere_topology_and_keeps_input_unchanged() {
     assert_eq!(result.genus, 0);
     assert!(!result.skeleton.nodes.is_empty());
     assert_eq!(result.skeleton.edges.len() + 1, result.skeleton.nodes.len());
-    result.raw.validate(&mesh).unwrap();
-    result.skeleton.validate(&mesh).unwrap();
+    assert_boundary_loops(&mesh, &result.raw);
+    assert_boundary_loops(&mesh, &result.skeleton);
     assert_eq!(
         original,
         mesh.vert_ids()
@@ -76,7 +76,7 @@ fn extracts_sphere_topology_and_keeps_input_unchanged() {
 }
 
 #[test]
-fn refinement_can_be_disabled_or_called_independently() {
+fn refinement_is_explicitly_unavailable_during_migration() {
     let mesh = tetrahedron();
     let result = skeletonize::extract(
         &mesh,
@@ -91,43 +91,14 @@ fn refinement_can_be_disabled_or_called_independently() {
         assert_eq!(node.position, result.skeleton.nodes[id].position);
     }
     let mut refined = result.raw.clone();
-    refinement::run(&mesh, &mut refined).unwrap();
-    refined.validate(&mesh).unwrap();
-}
-
-#[test]
-fn single_node_sphere_is_valid_and_refinable() {
-    let mesh = tetrahedron();
-    let mut skeleton = Skeleton::default();
-    let node = skeleton.nodes.insert(SkeletonNode {
-        position: Vector3D::zeros(),
-        patch_vertices: mesh.vert_ids(),
-    });
-    skeleton.validate(&mesh).unwrap();
-    refinement::run(&mesh, &mut skeleton).unwrap();
-    assert!(skeleton.nodes[node].position.iter().all(|x| x.is_finite()));
-    assert_ne!(skeleton.nodes[node].position, Vector3D::zeros());
-}
-
-#[test]
-fn rejects_missing_ownership_and_hidden_patch_handle() {
-    let mesh = tetrahedron();
-    let mut skeleton = Skeleton::default();
-    let node = skeleton.nodes.insert(SkeletonNode {
-        position: Vector3D::zeros(),
-        patch_vertices: mesh.vert_ids(),
-    });
-    skeleton.nodes[node].patch_vertices.pop();
-    assert!(skeleton.validate(&mesh).is_err());
-    let mesh = torus();
-    skeleton.nodes[node].patch_vertices = mesh.vert_ids();
-    assert!(
-        skeleton
-            .validate(&mesh)
-            .unwrap_err()
-            .to_string()
-            .contains("genus zero")
+    let error = refinement::run(&mesh, &mut refined).unwrap_err();
+    assert_eq!(
+        error.downcast_ref::<std::io::Error>().unwrap().kind(),
+        std::io::ErrorKind::Unsupported
     );
+    for (id, node) in &result.raw.nodes {
+        assert_eq!(node.position, refined.nodes[id].position);
+    }
 }
 
 #[test]
@@ -146,37 +117,7 @@ fn torus_extraction_preserves_one_cycle() {
     let result = skeletonize::extract(&mesh, Options::default()).unwrap();
     assert_eq!(result.genus, 1);
     assert_eq!(result.skeleton.edges.len(), result.skeleton.nodes.len());
-    result.skeleton.validate(&mesh).unwrap();
-}
-
-#[test]
-fn boundary_validation_rejects_missing_crossings_and_accepts_reverse_winding() {
-    let mesh = tetrahedron();
-    let mut skeleton = skeletonize::run(&mesh).unwrap();
-    let edge = skeleton.edges.keys().next().unwrap();
-    skeleton.edges[edge].boundary.edge_midpoints.reverse();
-    skeleton.validate(&mesh).unwrap();
-    skeleton.edges[edge].boundary.edge_midpoints.pop();
-    assert!(skeleton.validate(&mesh).is_err());
-}
-
-#[test]
-fn validation_rejects_triple_junctions() {
-    let mesh = tetrahedron();
-    let mut skeleton = Skeleton::default();
-    for v in mesh.vert_ids() {
-        skeleton.nodes.insert(SkeletonNode {
-            position: mesh.position(v),
-            patch_vertices: vec![v],
-        });
-    }
-    assert!(
-        skeleton
-            .validate(&mesh)
-            .unwrap_err()
-            .to_string()
-            .contains("Triple junction")
-    );
+    assert_boundary_loops(&mesh, &result.skeleton);
 }
 
 #[test]
@@ -247,7 +188,7 @@ fn two_handle_surface_preserves_two_cycles() {
         result.skeleton.edges.len() + 1,
         result.skeleton.nodes.len() + 2
     );
-    result.skeleton.validate(&mesh).unwrap();
+    assert_boundary_loops(&mesh, &result.skeleton);
 }
 
 #[test]
@@ -274,13 +215,56 @@ fn extraction_can_resume_from_a_contracted_mesh() {
     assert_eq!(resumed.skeleton.edges.len(), fresh.skeleton.edges.len());
     for (id, node) in &fresh.skeleton.nodes {
         assert_eq!(node.position, resumed.skeleton.nodes[id].position);
-        assert_eq!(
-            node.patch_vertices,
-            resumed.skeleton.nodes[id].patch_vertices
-        );
     }
+    for (id, edge) in &fresh.skeleton.edges {
+        let other = &resumed.skeleton.edges[id];
+        assert_eq!(edge.nodes, other.nodes);
+        assert_eq!(edge.boundary.crossings, other.boundary.crossings);
+    }
+    for (id, crossing) in &fresh.skeleton.surface.crossings {
+        assert_eq!(*crossing, resumed.skeleton.surface.crossings[id]);
+    }
+    assert_eq!(
+        fresh.skeleton.surface.edge_order,
+        resumed.skeleton.surface.edge_order
+    );
     let mut invalid = contracted;
     let e = invalid.edge_ids()[0];
     invalid.edge_root.insert(e, invalid.toor(e));
     assert!(skeletonize::extract_from_contracted(&mesh, invalid, options).is_err());
+}
+
+// Checks conversion's representation, not general surface topology (migration step 2).
+fn assert_boundary_loops(mesh: &Mesh<INPUT>, skeleton: &Skeleton) {
+    let mut seen = HashSet::new();
+    for edge in skeleton.edges.values() {
+        assert_ne!(edge.nodes[0], edge.nodes[1]);
+        let loop_ = &edge.boundary.crossings;
+        assert!(loop_.len() >= 3);
+        for (i, &id) in loop_.iter().enumerate() {
+            assert!(seen.insert(id));
+            let exit = skeleton.surface.crossings[id].exit;
+            let next = skeleton.surface.crossings[loop_[(i + 1) % loop_.len()]].exit;
+            assert_eq!(mesh.face(mesh.twin(exit)), mesh.face(next));
+            let canonical = if exit < mesh.twin(exit) {
+                exit
+            } else {
+                mesh.twin(exit)
+            };
+            assert_eq!(skeleton.surface.edge_order[&canonical], vec![id]);
+        }
+    }
+    assert_eq!(seen.len(), skeleton.surface.crossings.len());
+    assert_eq!(seen.len(), skeleton.surface.edge_order.len());
+}
+
+#[test]
+fn general_boundary_validation_is_explicitly_unavailable() {
+    let mesh = tetrahedron();
+    let skeleton = skeletonize::run(&mesh).unwrap();
+    let error = skeleton.validate(&mesh).unwrap_err();
+    assert_eq!(
+        error.downcast_ref::<std::io::Error>().unwrap().kind(),
+        std::io::ErrorKind::Unsupported
+    );
 }

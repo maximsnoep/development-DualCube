@@ -16,10 +16,10 @@ fn tetrahedron() -> Mesh<INPUT> {
 }
 
 #[test]
-fn full_run_reaches_the_real_unimplemented_stage_and_keeps_prior_results() {
+fn full_run_retains_extraction_when_boundary_validation_is_unavailable() {
     let mesh = tetrahedron();
     let error = pipeline::run(&mesh).unwrap_err();
-    assert_eq!(error.failure.stage, Stage::CubePlacement);
+    assert_eq!(error.failure.stage, Stage::Labeling);
     assert_eq!(
         error
             .failure
@@ -29,43 +29,30 @@ fn full_run_reaches_the_real_unimplemented_stage_and_keeps_prior_results() {
             .kind(),
         std::io::ErrorKind::Unsupported
     );
-    error
-        .progress
-        .skeleton
-        .as_ref()
-        .unwrap()
-        .validate(&mesh)
-        .unwrap();
-    error
-        .progress
-        .labeled
-        .as_ref()
-        .unwrap()
-        .validate(&mesh)
-        .unwrap();
-    assert!(error.progress.labeling.as_ref().unwrap().failure.is_none());
+    let skeleton = error.progress.skeleton.as_ref().unwrap();
+    assert!(!skeleton.nodes.is_empty());
+    assert!(!skeleton.surface.crossings.is_empty());
+    assert!(error.progress.labeling.is_none());
+    assert!(error.progress.labeled.is_none());
     assert!(error.progress.realized.is_none());
     assert!(error.progress.optimized.is_none());
     assert!(error.progress.loops.is_none());
 }
 
 #[test]
-fn explicit_labeling_stop_succeeds_and_continuation_preserves_it() {
+fn explicit_labeling_stop_reports_unavailable_without_losing_extraction() {
     let mesh = tetrahedron();
     let skeleton = skeleton::skeletonize::run(&mesh).unwrap();
+    let before = skeleton.surface.edge_order.clone();
     let mut progress = Progress::from_skeleton(skeleton);
-    progress.label(&mesh).unwrap();
-    let labels = progress.labeled.as_ref().unwrap().labels.clone();
+    assert_eq!(progress.label(&mesh).unwrap_err().stage, Stage::Labeling);
+    assert_eq!(progress.finish(&mesh).unwrap_err().stage, Stage::Labeling);
     assert_eq!(
-        progress.finish(&mesh).unwrap_err().stage,
-        Stage::CubePlacement
+        progress.skeleton.as_ref().unwrap().surface.edge_order,
+        before
     );
-    for (edge, before) in labels {
-        let after = progress.labeled.as_ref().unwrap().labels[edge];
-        assert_eq!(before.direction, after.direction);
-        assert_eq!(before.sign, after.sign);
-    }
-    assert!(progress.labeling.is_some());
+    assert!(progress.labeling.is_none());
+    assert!(progress.labeled.is_none());
 }
 
 #[test]
