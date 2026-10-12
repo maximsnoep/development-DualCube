@@ -36,6 +36,7 @@ bevy = { workspace = true, features = [
     "bevy_log",
     "bevy_window",
     "bevy_winit",
+    "x11",
     "bevy_input_focus",
     "keyboard",
     "mouse",
@@ -71,7 +72,7 @@ bevy = { workspace = true, features = [
 # Egui UI
 bevy_egui = "0.43.0-rc.1"
 # File dialogs
-rfd = { version = "0.17.2", default-features = false }
+rfd = { version = "0.17.2" }
 
 # Bevy plugins
 # (Vendored from crates.io and ported along with Bevy, see their manifests.)
