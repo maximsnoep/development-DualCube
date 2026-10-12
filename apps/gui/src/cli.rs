@@ -15,9 +15,9 @@ Run from the repository root:
   cargo run -p gui -- --load <model> --stop-after surgery --view combined
 
   --load <path>              Import a mesh or saved solution
-  --auto-start skeleton      Extract a skeleton after loading
-  --stop-after <stage>       Run through input, deflation, surgery, or refinement
-  --view <view>              input, deflated, raw, skeleton, patches, combined
+  --auto-start skeleton      Run skeleton initialization after loading
+  --stop-after <stage>       Run through input, deflation, surgery, refinement, or labeling
+  --view <view>              input, deflated, raw, skeleton, labeled, patches, combined
   --refinement               Enable embedding refinement (default off)
   --no-refinement            Skip embedding refinement
   --iterations <count>      Deflation iteration limit (default 50)
@@ -28,7 +28,7 @@ Run from the repository root:
   --help, -h                 Show this help
 
 The GUI stays open unless --quit-after is given. --stop-after implies auto-start.
---quit-after accepts the same stages, or skeleton for the full extraction.
+--quit-after accepts the same stages, or skeleton for the initialization pipeline.
 Both --flag value and --flag=value are accepted.
 ";
 
@@ -123,6 +123,7 @@ impl Launch {
                         "deflated" => ModelViewKind::Deflated,
                         "raw" => ModelViewKind::Raw,
                         "skeleton" => ModelViewKind::Skeleton,
+                        "labeled" => ModelViewKind::Labeled,
                         "patches" => ModelViewKind::Patches,
                         "combined" => ModelViewKind::Combined,
                         _ => return Err(format!("Unknown view: {value}")),
@@ -148,24 +149,16 @@ impl Launch {
         }
         launch.options.refine_embedding = refinement.unwrap_or(requests_refinement);
         if quit_skeleton {
-            quit_after = Some(Some(if launch.options.refine_embedding {
-                SkeletonStage::Refinement
-            } else {
-                SkeletonStage::Surgery
-            }));
+            quit_after = Some(Some(SkeletonStage::Complete));
         }
         if let (Some(stop), Some(quit)) = (stop, quit_after) {
             if stop != quit {
                 return Err("--stop-after and --quit-after must name the same stage".into());
             }
         }
-        launch.stop = stop.or(quit_after).unwrap_or_else(|| {
-            auto_start.then_some(if launch.options.refine_embedding {
-                SkeletonStage::Refinement
-            } else {
-                SkeletonStage::Surgery
-            })
-        });
+        launch.stop = stop
+            .or(quit_after)
+            .unwrap_or_else(|| auto_start.then_some(SkeletonStage::Complete));
         if launch.stop == Some(SkeletonStage::Surgery) {
             launch.options.refine_embedding = false;
         }
@@ -182,9 +175,18 @@ impl Launch {
             let available = match view {
                 ModelViewKind::Input => true,
                 ModelViewKind::Deflated => launch.stop.is_some(),
+                ModelViewKind::Labeled => matches!(
+                    launch.stop,
+                    Some(SkeletonStage::Labeling | SkeletonStage::Complete)
+                ),
                 _ => matches!(
                     launch.stop,
-                    Some(SkeletonStage::Surgery | SkeletonStage::Refinement)
+                    Some(
+                        SkeletonStage::Surgery
+                            | SkeletonStage::Refinement
+                            | SkeletonStage::Labeling
+                            | SkeletonStage::Complete
+                    )
                 ),
             };
             if !available {
@@ -207,10 +209,10 @@ impl Launch {
         view: &mut ModelView,
         exit: &mut MessageWriter<'_, AppExit>,
     ) {
+        if let Some(selected) = self.view {
+            view.show_when_ready(selected);
+        }
         if success {
-            if let Some(selected) = self.view {
-                view.show_when_ready(selected);
-            }
             info!("GUI startup complete");
         } else {
             error!("GUI startup failed; see the preceding error");
@@ -231,6 +233,7 @@ fn parse_stage(value: &str) -> Result<Option<SkeletonStage>, String> {
         "deflation" => Ok(Some(SkeletonStage::Deflation)),
         "surgery" => Ok(Some(SkeletonStage::Surgery)),
         "refinement" => Ok(Some(SkeletonStage::Refinement)),
+        "labeling" => Ok(Some(SkeletonStage::Labeling)),
         _ => Err(format!("Unknown stage: {value}")),
     }
 }

@@ -194,6 +194,11 @@ pub struct SkeletonResource {
     pub contraction_cache: crate::jobs::ContractionCache,
     pub state: Option<SkeletonState>,
     pub labeled: Option<dualcube::skeleton::LabeledSkeleton>,
+    pub labeling: Option<dualcube::skeleton::label::Attempt>,
+    pub realized: Option<dualcube::skeleton::RealizedSkeleton>,
+    pub optimized: Option<dualcube::skeleton::RealizedSkeleton>,
+    pub loops: Option<dualcube::skeleton::DualLoops>,
+    pub initialization_failure: Option<dualcube::skeleton::pipeline::Failure>,
 }
 
 pub enum SkeletonState {

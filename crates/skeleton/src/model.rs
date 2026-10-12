@@ -91,8 +91,8 @@ pub struct Cube {
 ///
 /// Connections join existing, distinct cubes sharing a complete face, without
 /// duplicate pairs. Incidental geometric contact does not create a connection.
-/// Cube interiors must not overlap. Every owner refers to the accompanying
-/// skeleton; every node has exactly one node cube. Each edge has one midpoint
+/// Global intersections and coincident cubes are allowed. Owners refer to the
+/// accompanying skeleton; every node has exactly one node cube. Each edge has one midpoint
 /// cube and any additional edge cubes belong to the endpoint on their side.
 #[derive(Clone, Debug, Default)]
 pub struct CubeLayout {
@@ -101,6 +101,8 @@ pub struct CubeLayout {
 }
 
 /// Combinatorial labeling, before cube placement. Every edge has a signed axis.
+/// Incident outward ports are distinct, and positive edge lengths admit consistent
+/// coordinates. Global intersections and coincident nodes are allowed.
 #[derive(Clone, Debug)]
 pub struct LabeledSkeleton {
     pub skeleton: Skeleton,

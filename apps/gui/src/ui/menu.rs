@@ -17,8 +17,19 @@ use dualcube::prelude::*;
 // Show exactly the given layers of the model (the main view). The polycube window has its own modes.
 fn apply_render_preset(store: &mut RenderObjectSettingStore, layers: &[&str]) {
     if let Some(settings) = store.objects.get_mut(&Objects::InputMesh) {
+        let labeled_combined = layers.contains(&SkeletonLayer::TranslucentPatches.label())
+            && layers.contains(&SkeletonLayer::Skeleton.label())
+            && settings
+                .settings
+                .contains_key(SkeletonLayer::Labeled.label());
         for (label, setting) in &mut settings.settings {
-            setting.visible = layers.contains(&label.as_str());
+            setting.visible = if labeled_combined && label == SkeletonLayer::Skeleton.label() {
+                false
+            } else if labeled_combined && label == SkeletonLayer::Labeled.label() {
+                true
+            } else {
+                layers.contains(&label.as_str())
+            };
         }
     }
 }
@@ -229,7 +240,9 @@ pub fn show(
                     | ModelViewKind::Patches
                     | ModelViewKind::Combined => skeleton.extraction().is_some(),
                     ModelViewKind::Deflated => skeleton.contracted_mesh().is_some(),
-                    ModelViewKind::Labeled => skeleton.labeled.is_some(),
+                    ModelViewKind::Labeled => {
+                        skeleton.labeled.is_some() || skeleton.labeling.is_some()
+                    }
                     _ => true,
                 };
                 view_bar(

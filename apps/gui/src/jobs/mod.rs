@@ -113,6 +113,8 @@ enum JobResult {
     SkeletonReady {
         state: crate::resources::SkeletonState,
         view: crate::ui::ModelViewKind,
+        progress: dualcube::skeleton::pipeline::Progress,
+        failure: Option<dualcube::skeleton::pipeline::Failure>,
     },
     /// A solution was imported (with its renders); resets the input resources and the view.
     Imported {
@@ -206,7 +208,12 @@ pub(crate) fn poll_jobs(
     info!("Finished job: {request}");
 
     match result {
-        JobResult::SkeletonReady { state, view } => {
+        JobResult::SkeletonReady {
+            state,
+            view,
+            progress,
+            failure,
+        } => {
             // New initialization: previous loops and their downstream results are stale.
             let current = &solution_resource.current_solution;
             let mut initialized = Solution::new(current.mesh_ref.clone());
@@ -224,7 +231,12 @@ pub(crate) fn poll_jobs(
             refresh.startup = job_state.startup;
             jobs.write(refresh);
             skeleton.state = Some(state);
-            skeleton.labeled = None;
+            skeleton.labeled = progress.labeled;
+            skeleton.labeling = progress.labeling;
+            skeleton.realized = progress.realized;
+            skeleton.optimized = progress.optimized;
+            skeleton.loops = progress.loops;
+            skeleton.initialization_failure = failure;
             model_view.show_when_ready(view);
         }
 
@@ -306,7 +318,11 @@ pub(crate) fn poll_jobs(
         JobResult::Refreshed(new_render_object_store) => {
             *render_object_store = new_render_object_store;
             if job_state.startup {
-                launch.finish(true, &mut model_view, &mut exit);
+                launch.finish(
+                    skeleton.initialization_failure.is_none(),
+                    &mut model_view,
+                    &mut exit,
+                );
             }
         }
     }

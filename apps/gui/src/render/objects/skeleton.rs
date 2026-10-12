@@ -114,21 +114,36 @@ fn build(mesh: &mehsh::prelude::Mesh<INPUT>, state: &SkeletonResource) -> Render
     let Some(extraction) = state.extraction() else {
         return object;
     };
+    let current = state
+        .labeling
+        .as_ref()
+        .map_or(&extraction.skeleton, |attempt| &attempt.skeleton);
     object.add(
         SkeletonLayer::Skeleton.label(),
-        RenderAsset::Mesh(graph(&extraction.skeleton, None, scale, translation)),
+        RenderAsset::Mesh(graph(current, None, scale, translation)),
     );
     object.add(
         SkeletonLayer::Raw.label(),
         RenderAsset::Mesh(graph(&extraction.raw, None, scale, translation)),
     );
-    if let Some(labeled) = &state.labeled {
+    if let Some(attempt) = &state.labeling {
+        object.add(
+            SkeletonLayer::Labeled.label(),
+            RenderAsset::Mesh(graph_with_labels(
+                &attempt.skeleton,
+                |e| attempt.labels.get(e).copied(),
+                true,
+                scale,
+                translation,
+            )),
+        );
+    } else if let Some(labeled) = &state.labeled {
         object.add(
             SkeletonLayer::Labeled.label(),
             RenderAsset::Mesh(graph(&labeled.skeleton, Some(labeled), scale, translation)),
         );
     }
-    let mut translucent = patches(mesh, &extraction.skeleton, scale, translation);
+    let mut translucent = patches(mesh, current, scale, translation);
     object.add(
         SkeletonLayer::Patches.label(),
         RenderAsset::Mesh(translucent.clone()),
@@ -145,7 +160,7 @@ fn build(mesh: &mehsh::prelude::Mesh<INPUT>, state: &SkeletonResource) -> Render
         RenderAsset::TranslucentMesh(translucent),
     );
     let mut boundaries = GizmoAsset::new();
-    for edge in extraction.skeleton.edges.values() {
+    for edge in current.edges.values() {
         let points: Vec<_> = edge
             .boundary
             .edge_midpoints
@@ -175,14 +190,28 @@ fn graph(
     scale: f64,
     translation: Vector3D,
 ) -> BevyMesh {
+    graph_with_labels(
+        skeleton,
+        |e| labeled.and_then(|s| s.labels.get(e)).copied(),
+        labeled.is_some(),
+        scale,
+        translation,
+    )
+}
+
+fn graph_with_labels(
+    skeleton: &Skeleton,
+    label: impl Fn(SkeletonEdgeID) -> Option<dualcube::skeleton::EdgeLabel>,
+    labeled: bool,
+    scale: f64,
+    translation: Vector3D,
+) -> BevyMesh {
     let mut builder = MeshBuilder::new();
     let position = |id| skeleton.nodes[id].position * scale + translation;
     let edge_color = |id: SkeletonEdgeID| {
-        labeled
-            .and_then(|s| s.labels.get(id))
-            .map_or(colors::LIGHT_GRAY, |label| {
-                colors::from_direction(label.direction, Some(Perspective::Primal), None)
-            })
+        label(id).map_or(colors::LIGHT_GRAY, |label| {
+            colors::from_direction(label.direction, Some(Perspective::Primal), None)
+        })
     };
     for (id, edge) in &skeleton.edges {
         tube(
@@ -194,7 +223,7 @@ fn graph(
         );
     }
     for (region, id) in skeleton.nodes.keys().enumerate() {
-        let color = if labeled.is_some() {
+        let color = if labeled {
             colors::LIGHT_GRAY
         } else {
             region_color(region)

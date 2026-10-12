@@ -22,7 +22,7 @@ fn startup_defaults_and_options() {
     ])
     .unwrap();
     assert_eq!(launch.path.unwrap(), PathBuf::from("models/a model.obj"));
-    assert_eq!(launch.stop, Some(SkeletonStage::Surgery));
+    assert_eq!(launch.stop, Some(SkeletonStage::Complete));
     assert!(!launch.options.refine_embedding);
     assert_eq!(launch.view, Some(ModelViewKind::Combined));
     assert!(!launch.quit);
@@ -37,7 +37,7 @@ fn startup_defaults_and_options() {
         "--iterations=7",
     ])
     .unwrap();
-    assert_eq!(launch.stop, Some(SkeletonStage::Surgery));
+    assert_eq!(launch.stop, Some(SkeletonStage::Complete));
     assert_eq!(launch.options.max_iterations, 7);
     assert_eq!(launch.options.surgery.shape_weight, 2.);
     assert_eq!(launch.options.surgery.sampling_weight, 0.);
@@ -51,6 +51,7 @@ fn stage_controls_and_invalid_combinations() {
         ("deflation", Some(SkeletonStage::Deflation)),
         ("surgery", Some(SkeletonStage::Surgery)),
         ("refinement", Some(SkeletonStage::Refinement)),
+        ("labeling", Some(SkeletonStage::Labeling)),
     ] {
         let launch = parse(&["--load=a.obj", "--stop-after", name]).unwrap();
         assert_eq!(launch.stop, stage);
@@ -63,7 +64,8 @@ fn stage_controls_and_invalid_combinations() {
         vec!["--auto-start=skeleton"],
         vec!["--load"],
         vec!["--load", "--auto-start=skeleton"],
-        vec!["--load=a.obj", "--stop-after=labeling"],
+        vec!["--load=a.obj", "--stop-after=unknown"],
+        vec!["--load=a.obj", "--stop-after=surgery", "--view=labeled"],
         vec!["--load=a.obj", "--stop-after=deflation", "--view=combined"],
         vec![
             "--load=a.obj",
@@ -132,6 +134,7 @@ fn startup_jobs_load_extract_select_view_and_report_failure() {
         SkeletonStage::Deflation,
         SkeletonStage::Surgery,
         SkeletonStage::Refinement,
+        SkeletonStage::Labeling,
     ] {
         let (app, exit) = run_startup(Launch {
             path: Some(path.clone()),
@@ -143,6 +146,17 @@ fn startup_jobs_load_extract_select_view_and_report_failure() {
         assert_eq!(exit, AppExit::Success);
         let state = app.world().resource::<SkeletonResource>();
         assert!(state.contracted_mesh().is_some());
+        assert_eq!(state.labeled.is_some(), stage == SkeletonStage::Labeling);
+        if let Some(labeled) = &state.labeled {
+            labeled
+                .validate(
+                    &app.world()
+                        .resource::<SolutionResource>()
+                        .current_solution
+                        .mesh_ref,
+                )
+                .unwrap();
+        }
         assert_eq!(
             state.extraction().is_some(),
             stage != SkeletonStage::Deflation
@@ -174,12 +188,66 @@ fn startup_jobs_load_extract_select_view_and_report_failure() {
 }
 
 #[test]
-fn refinement_remains_opt_in_for_full_extraction() {
+fn automatic_initialization_requests_the_full_pipeline_with_optional_refinement() {
     for action in ["--auto-start=skeleton", "--quit-after=skeleton"] {
         let launch = parse(&["--load=a.obj", action]).unwrap();
-        assert_eq!(launch.stop, Some(SkeletonStage::Surgery));
+        assert_eq!(launch.stop, Some(SkeletonStage::Complete));
         let launch = parse(&["--load=a.obj", action, "--refinement"]).unwrap();
-        assert_eq!(launch.stop, Some(SkeletonStage::Refinement));
+        assert_eq!(launch.stop, Some(SkeletonStage::Complete));
         assert!(launch.options.refine_embedding);
+    }
+}
+
+#[test]
+fn auto_start_runs_labeling_and_explicit_stop_still_wins() {
+    use crate::render::Objects;
+    use crate::render::store::RenderObjectSettingStore;
+    use crate::resources::SkeletonResource;
+    let path =
+        PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../crates/mehsh/assets/tetrahedron.obj");
+    for stop in [None, Some("surgery"), Some("labeling")] {
+        let mut args = vec![
+            OsString::from("--load"),
+            path.as_os_str().to_owned(),
+            OsString::from("--auto-start=skeleton"),
+            OsString::from("--view=combined"),
+        ];
+        if let Some(stop) = stop {
+            args.extend([OsString::from("--stop-after"), OsString::from(stop)]);
+        }
+        let mut launch = Launch::parse(args).unwrap().unwrap();
+        launch.quit = true;
+        let (app, exit) = run_startup(launch);
+        assert_eq!(
+            exit,
+            if stop.is_none() {
+                AppExit::error()
+            } else {
+                AppExit::Success
+            }
+        );
+        let state = app.world().resource::<SkeletonResource>();
+        if stop.is_none() {
+            assert_eq!(
+                state.initialization_failure.as_ref().unwrap().stage,
+                dualcube::skeleton::pipeline::Stage::CubePlacement
+            );
+            assert!(state.extraction().is_some());
+            assert!(state.labeling.is_some());
+            assert!(state.realized.is_none());
+        } else {
+            assert!(state.initialization_failure.is_none());
+        }
+        assert_eq!(
+            app.world().resource::<SkeletonResource>().labeled.is_some(),
+            stop != Some("surgery")
+        );
+        let settings = &app.world().resource::<RenderObjectSettingStore>().objects
+            [&Objects::InputMesh]
+            .settings;
+        assert_eq!(settings["skeleton"].visible, stop == Some("surgery"));
+        if stop != Some("surgery") {
+            assert!(settings["labeled skeleton"].visible);
+        }
     }
 }

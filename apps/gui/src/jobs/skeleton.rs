@@ -14,6 +14,8 @@ pub enum SkeletonStage {
     Deflation,
     Surgery,
     Refinement,
+    Labeling,
+    Complete,
 }
 
 impl SkeletonStage {
@@ -22,6 +24,7 @@ impl SkeletonStage {
             Self::Deflation => ModelViewKind::Deflated,
             Self::Surgery => ModelViewKind::Raw,
             Self::Refinement => ModelViewKind::Skeleton,
+            Self::Labeling | Self::Complete => ModelViewKind::Labeled,
         }
     }
 }
@@ -32,11 +35,7 @@ impl Job {
         options: Options,
         cache: ContractionCache,
     ) -> Self {
-        let stop = if options.refine_embedding {
-            SkeletonStage::Refinement
-        } else {
-            SkeletonStage::Surgery
-        };
+        let stop = SkeletonStage::Complete;
         Self::extract_skeleton_until(mesh, options, stop, cache)
     }
 
@@ -48,10 +47,38 @@ impl Job {
     ) -> Self {
         Self::new("extracting skeleton", move || {
             match extract_until(&mesh, options, stop, &cache) {
-                Ok(state) => Some(JobResult::SkeletonReady {
-                    state,
-                    view: stop.view(),
-                }),
+                Ok(state) => {
+                    let mut progress = dualcube::skeleton::pipeline::Progress::default();
+                    let mut failure = None;
+                    if matches!(stop, SkeletonStage::Labeling | SkeletonStage::Complete)
+                        && let SkeletonState::Extracted(extraction) = &state
+                    {
+                        progress = dualcube::skeleton::pipeline::Progress::from_skeleton(
+                            extraction.skeleton.clone(),
+                        );
+                        failure = if stop == SkeletonStage::Complete {
+                            progress.finish(&mesh).err()
+                        } else {
+                            progress.label(&mesh).err()
+                        };
+                    }
+                    if let Some(error) = &failure {
+                        warn!("Initialization stopped at {error}");
+                    }
+                    let view = if matches!(stop, SkeletonStage::Labeling | SkeletonStage::Complete)
+                        && progress.labeling.is_none()
+                    {
+                        ModelViewKind::Skeleton
+                    } else {
+                        stop.view()
+                    };
+                    Some(JobResult::SkeletonReady {
+                        state,
+                        view,
+                        progress,
+                        failure,
+                    })
+                }
                 Err(error) => {
                     warn!("Failed to extract skeleton: {error}");
                     None
@@ -73,7 +100,9 @@ fn extract_until(
     if stop == SkeletonStage::Deflation {
         return Ok(SkeletonState::Deflated((*contracted).clone()));
     }
-    options.refine_embedding = stop == SkeletonStage::Refinement;
+    options.refine_embedding = stop == SkeletonStage::Refinement
+        || (matches!(stop, SkeletonStage::Labeling | SkeletonStage::Complete)
+            && options.refine_embedding);
     let extraction = skeletonize::extract_from_contracted(mesh, (*contracted).clone(), options)?;
     info!(
         "Skeleton: {} nodes, {} edges",

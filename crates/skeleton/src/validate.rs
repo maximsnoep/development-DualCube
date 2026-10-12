@@ -159,10 +159,23 @@ fn analyze(skeleton: &Skeleton, mesh: &Mesh<INPUT>) -> SkeletonResult<Boundaries
 pub(crate) fn assign_boundaries(skeleton: &mut Skeleton, mesh: &Mesh<INPUT>) -> SkeletonResult<()> {
     let mut expected = analyze(skeleton, mesh)?;
     for (_, edge) in &mut skeleton.edges {
-        let cycle = expected
+        let candidates = expected
             .get_mut(&pair(edge.nodes[0], edge.nodes[1]))
-            .and_then(Vec::pop)
             .ok_or("Skeleton edge has no corresponding patch boundary")?;
+        let old: Vec<_> = edge
+            .boundary
+            .edge_midpoints
+            .iter()
+            .map(|&e| canonical(mesh, e))
+            .collect();
+        let index = candidates.iter().position(|cycle| same_cycle(&old, cycle));
+        let cycle = if let Some(index) = index {
+            candidates.swap_remove(index)
+        } else {
+            candidates
+                .pop()
+                .ok_or("Skeleton edge has no corresponding patch boundary")?
+        };
         edge.boundary = PatchBoundary {
             edge_midpoints: cycle,
         };
