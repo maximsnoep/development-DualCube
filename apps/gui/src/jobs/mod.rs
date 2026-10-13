@@ -220,14 +220,29 @@ pub(crate) fn poll_jobs(
             initialized.fields = current.fields.clone();
             initialized.flow_graphs = current.flow_graphs.clone();
             initialized.quality = configuration.quality;
+            if let Some(loops) = progress
+                .loops
+                .as_ref()
+                .or_else(|| progress.drawing.as_ref().map(|a| &a.loops))
+            {
+                initialized.replace_loops(loops.clone());
+            }
             solution_resource.current_solution = initialized;
             solution_resource.selected_corner = None;
             configuration.loop_anchors.clear();
             evolution_live.reset();
-            let mut refresh = Job::refresh(
-                solution_resource.current_solution.clone(),
-                configuration.clone(),
-            );
+            let complete = failure.is_none() && progress.loops.is_some();
+            let mut refresh = if complete {
+                Job::compute_dual(
+                    solution_resource.current_solution.clone(),
+                    configuration.clone(),
+                )
+            } else {
+                Job::refresh(
+                    solution_resource.current_solution.clone(),
+                    configuration.clone(),
+                )
+            };
             refresh.startup = job_state.startup;
             jobs.write(refresh);
             skeleton.state = Some(state);
@@ -235,9 +250,14 @@ pub(crate) fn poll_jobs(
             skeleton.labeling = progress.labeling;
             skeleton.realized = progress.realized;
             skeleton.optimized = progress.optimized;
+            skeleton.drawing = progress.drawing;
             skeleton.loops = progress.loops;
             skeleton.initialization_failure = failure;
-            model_view.show_when_ready(view);
+            model_view.show_when_ready(if complete {
+                crate::ui::ModelViewKind::Dual
+            } else {
+                view
+            });
         }
 
         JobResult::StageCompleted {
@@ -246,7 +266,9 @@ pub(crate) fn poll_jobs(
             configuration,
         } => {
             solution_resource.current_solution = solution.clone();
-            jobs.write(stage.next_job(solution, configuration));
+            let mut next = stage.next_job(solution, configuration);
+            next.startup = job_state.startup;
+            jobs.write(next);
         }
 
         JobResult::Imported {

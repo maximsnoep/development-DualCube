@@ -16,53 +16,29 @@ fn tetrahedron() -> Mesh<INPUT> {
 }
 
 #[test]
-fn full_run_retains_no_op_optimization_at_unimplemented_loop_drawing() {
+fn full_run_retains_no_op_optimization_and_valid_loops() {
     let mesh = tetrahedron();
-    let error = pipeline::run(&mesh).unwrap_err();
-    assert_eq!(error.failure.stage, Stage::LoopDrawing);
+    let run = pipeline::run(&mesh).unwrap();
+    assert!(!run.skeleton.nodes.is_empty());
+    run.labeled.validate(&mesh).unwrap();
+    run.realized.validate(&mesh).unwrap();
+    run.optimized.validate(&mesh).unwrap();
+    assert_eq!(run.optimized.node_positions, run.realized.node_positions);
     assert_eq!(
-        error
-            .failure
-            .error
-            .downcast_ref::<std::io::Error>()
-            .unwrap()
-            .kind(),
-        std::io::ErrorKind::Unsupported
+        run.optimized.cuboids.connections,
+        run.realized.cuboids.connections
     );
-    let skeleton = error.progress.skeleton.as_ref().unwrap();
-    assert!(!skeleton.nodes.is_empty());
-    assert!(!skeleton.surface.crossings.is_empty());
-    assert!(error.progress.labeling.is_some());
-    error
-        .progress
-        .labeled
-        .as_ref()
-        .unwrap()
-        .validate(&mesh)
-        .unwrap();
-    error
-        .progress
-        .realized
-        .as_ref()
-        .unwrap()
-        .validate(&mesh)
-        .unwrap();
-    let realized = error.progress.realized.as_ref().unwrap();
-    let optimized = error.progress.optimized.as_ref().unwrap();
-    optimized.validate(&mesh).unwrap();
-    assert_eq!(optimized.node_positions, realized.node_positions);
-    assert_eq!(optimized.cuboids.connections, realized.cuboids.connections);
     assert_eq!(
-        optimized.cuboids.cuboids.len(),
-        realized.cuboids.cuboids.len()
+        run.optimized.cuboids.cuboids.len(),
+        run.realized.cuboids.cuboids.len()
     );
-    for (id, cube) in &realized.cuboids.cuboids {
-        let other = &optimized.cuboids.cuboids[id];
-        assert_eq!(other.center, cube.center);
-        assert_eq!(other.size, cube.size);
-        assert_eq!(other.owner, cube.owner);
+    for (id, cuboid) in &run.realized.cuboids.cuboids {
+        let other = &run.optimized.cuboids.cuboids[id];
+        assert_eq!(other.center, cuboid.center);
+        assert_eq!(other.size, cuboid.size);
+        assert_eq!(other.owner, cuboid.owner);
     }
-    assert!(error.progress.loops.is_none());
+    dualcube_dual::Dual::from(std::sync::Arc::new(mesh), &run.loops).unwrap();
 }
 
 #[test]
@@ -72,10 +48,8 @@ fn explicit_labeling_stop_succeeds_and_continuation_keeps_it() {
     let before = skeleton.surface.edge_order.clone();
     let mut progress = Progress::from_skeleton(skeleton);
     progress.label(&mesh).unwrap();
-    assert_eq!(
-        progress.finish(&mesh).unwrap_err().stage,
-        Stage::LoopDrawing
-    );
+    progress.finish(&mesh).unwrap();
+    assert!(progress.loops.is_some());
     assert_eq!(
         progress.skeleton.as_ref().unwrap().surface.edge_order,
         before
@@ -97,8 +71,9 @@ fn extraction_failure_has_no_completed_downstream_stages() {
 fn replacing_labels_and_placing_again_discards_stale_downstream_state() {
     let mesh = tetrahedron();
     let mut progress = Progress::from_skeleton(skeleton::skeletonize::run(&mesh).unwrap());
-    progress.place(&mesh).unwrap();
+    progress.finish(&mesh).unwrap();
     let before = progress.realized.clone().unwrap();
+    assert!(progress.drawing.is_some());
     progress.optimized = Some(before.clone());
     progress.loops = Some(Default::default());
     for (_, label) in &mut progress.labeled.as_mut().unwrap().labels {
@@ -119,6 +94,7 @@ fn replacing_labels_and_placing_again_discards_stale_downstream_state() {
     );
     assert!(progress.optimized.is_none());
     assert!(progress.loops.is_none());
+    assert!(progress.drawing.is_none());
     progress.labeled.as_mut().unwrap().labels.clear();
     assert_eq!(
         progress.place(&mesh).unwrap_err().stage,

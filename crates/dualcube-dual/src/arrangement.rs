@@ -229,6 +229,116 @@ fn point_on_side(side: usize, t: f64) -> Point2 {
 }
 
 impl Arrangement {
+    pub(crate) fn isolated_sides(&self, id: LoopID) -> Option<[usize; 2]> {
+        for (&face, arr) in &self.faces {
+            if let Some((j, chord)) = arr.chords.iter().enumerate().find(|(_, c)| c.loop_id == id) {
+                let base = *self.cell_base.get_or_panic(face);
+                return arr
+                    .locate_beside(lerp(chord.from, chord.to, 0.5), j)
+                    .map(|p| p.map(|i| base + i));
+            }
+        }
+        None
+    }
+
+    /// Euler characteristic after cutting every chord, including nonseparating cuts.
+    pub(crate) fn region_euler(
+        &self,
+        mesh: &Mesh<INPUT>,
+        components: &[usize],
+        count: usize,
+    ) -> Result<Vec<i64>, PropertyViolationError> {
+        #[derive(Clone, Copy, PartialEq, Eq, Hash)]
+        enum End {
+            Vertex(VertID),
+            Crossing(EdgeID, LoopID),
+        }
+        let mut parent = Vec::new();
+        let mut owners = Vec::new();
+        let mut chi = vec![0i64; count];
+        let mut gaps = HashMap::<(EdgeID, End, End), (usize, usize, usize)>::new();
+        fn root(parent: &mut [usize], mut i: usize) -> usize {
+            while parent[i] != i {
+                parent[i] = parent[parent[i]];
+                i = parent[i];
+            }
+            i
+        }
+        for face in mesh.face_ids() {
+            let edges = sides(mesh, face)?;
+            let empty = (0..3)
+                .map(|i| CellCorner {
+                    position: CORNERS[i],
+                    point: CellPoint::Corner(i),
+                    side: CellSide::Side(i),
+                })
+                .collect_vec();
+            let cells = self
+                .faces
+                .get(&face)
+                .map_or_else(|| vec![empty], |a| a.cell_corners.clone());
+            let base = *self.cell_base.get_or_panic(face);
+            for (i, corners) in cells.iter().enumerate() {
+                let owner = components[base + i];
+                chi[owner] += 1 - corners.len() as i64;
+                let first = parent.len();
+                for _ in corners {
+                    parent.push(parent.len());
+                    owners.push(owner);
+                }
+                let endpoint = |corner: &CellCorner| -> Result<End, PropertyViolationError> {
+                    match corner.point {
+                        CellPoint::Corner(j) => Ok(End::Vertex(mesh.root(edges[j]))),
+                        CellPoint::ChordEnd(j, s) => Ok(End::Crossing(
+                            canonical(mesh, edges[s]),
+                            self.faces[&face].chords[j].loop_id,
+                        )),
+                        CellPoint::Crossing(..) => Err(PropertyViolationError::UnknownError),
+                    }
+                };
+                for (j, corner) in corners.iter().enumerate() {
+                    let CellSide::Side(side) = corner.side else {
+                        continue;
+                    };
+                    let next = (j + 1) % corners.len();
+                    let mut a = endpoint(corner)?;
+                    let mut b = endpoint(&corners[next])?;
+                    let mut u = first + j;
+                    let mut v = first + next;
+                    let edge = edges[side];
+                    let key = canonical(mesh, edge);
+                    if key != edge {
+                        std::mem::swap(&mut a, &mut b);
+                        std::mem::swap(&mut u, &mut v);
+                    }
+                    if let Some((x, y, other)) = gaps.remove(&(key, a, b)) {
+                        if owner != other {
+                            return Err(PropertyViolationError::UnknownError);
+                        }
+                        let ru = root(&mut parent, u);
+                        let rx = root(&mut parent, x);
+                        parent[ru] = rx;
+                        let rv = root(&mut parent, v);
+                        let ry = root(&mut parent, y);
+                        parent[rv] = ry;
+                        chi[owner] += 1;
+                    } else {
+                        gaps.insert((key, a, b), (u, v, owner));
+                    }
+                }
+            }
+        }
+        if !gaps.is_empty() {
+            return Err(PropertyViolationError::UnknownError);
+        }
+        for (i, &owner) in owners.iter().enumerate() {
+            if root(&mut parent, i) == i {
+                chi[owner] += 1;
+            }
+        }
+        Ok(chi)
+    }
+
     pub fn new(
         mesh: &Mesh<INPUT>,
         loops: &SlotMap<LoopID, Loop>,
@@ -504,13 +614,10 @@ impl Arrangement {
                             }
                         };
                         let edge = canonical(mesh, sides[side]);
-                        let position = self
-                            .loop_positions
-                            .get(&(edge, chord.loop_id))
-                            .map_or_else(
-                                || Self::to_3d(mesh, &sides, corner.position),
-                                |&t| mesh.midpoint_offset(edge, t),
-                            );
+                        let position = self.loop_positions.get(&(edge, chord.loop_id)).map_or_else(
+                            || Self::to_3d(mesh, &sides, corner.position),
+                            |&t| mesh.midpoint_offset(edge, t),
+                        );
                         (Key::EdgePoint(edge, chord.loop_id), position)
                     }
                     CellPoint::Crossing(i, j) => match crossing_ids.get(&(face, i, j)) {

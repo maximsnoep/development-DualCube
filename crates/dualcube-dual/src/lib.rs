@@ -1,6 +1,7 @@
 mod arrangement;
 pub mod dual;
 pub mod loops;
+pub mod partial;
 pub mod sampler;
 
 pub mod prelude {

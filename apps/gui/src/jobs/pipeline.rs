@@ -65,7 +65,7 @@ fn try_step<E: std::fmt::Debug>(
 // on the mesh).
 fn initialized(solution: &Solution, configuration: &Configuration) -> Option<Solution> {
     if configuration.initialization == crate::resources::Initialization::Skeleton {
-        warn!("Skeleton loop drawing is not implemented yet; extract a skeleton with Initialize");
+        warn!("Initialize the skeleton before starting evolution");
         return None;
     }
     if crate::resources::genus(&solution.mesh_ref) != Some(0) {

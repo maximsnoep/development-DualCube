@@ -52,6 +52,7 @@ pub struct Progress {
     pub labeled: Option<LabeledSkeleton>,
     pub realized: Option<RealizedSkeleton>,
     pub optimized: Option<RealizedSkeleton>,
+    pub drawing: Option<draw_loops::Attempt>,
     pub loops: Option<DualLoops>,
 }
 
@@ -68,6 +69,7 @@ impl Progress {
         self.labeled = None;
         self.realized = None;
         self.optimized = None;
+        self.drawing = None;
         self.loops = None;
         let fail = |error| Failure {
             stage: Stage::Labeling,
@@ -96,6 +98,7 @@ impl Progress {
     pub fn place(&mut self, mesh: &Mesh<INPUT>) -> Result<(), Failure> {
         self.realized = None;
         self.optimized = None;
+        self.drawing = None;
         self.loops = None;
         if self.labeled.is_none() {
             self.label(mesh)?;
@@ -126,14 +129,23 @@ impl Progress {
             );
         }
         if self.loops.is_none() {
-            self.loops = Some(
-                draw_loops::run(mesh, self.optimized.as_ref().unwrap()).map_err(|error| {
+            self.drawing = None;
+            self.drawing = Some(
+                draw_loops::attempt(mesh, self.optimized.as_ref().unwrap()).map_err(|error| {
                     Failure {
                         stage: Stage::LoopDrawing,
                         error,
                     }
                 })?,
             );
+            let attempt = self.drawing.as_ref().unwrap();
+            if let Some(error) = &attempt.failure {
+                return Err(Failure {
+                    stage: Stage::LoopDrawing,
+                    error: error.clone().into(),
+                });
+            }
+            self.loops = Some(attempt.loops.clone());
         }
         Ok(())
     }

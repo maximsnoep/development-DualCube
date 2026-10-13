@@ -1,16 +1,212 @@
-//! Surface dual loops from the optimized skeleton and its target cubes.
+//! Incremental surface routing, accepting only the template's marked region topology.
 
 use crate::{DualLoops, RealizedSkeleton, SkeletonResult};
-use dualcube_types::prelude::{INPUT, Mesh};
+use dualcube_dual::{Loop, LoopID, LoopSampler, LoopState, partial::PartialTopology};
+use dualcube_types::prelude::*;
 
-/// Draw loops on the original mesh to create a valid dual loop structure.
-///
-/// Patch boundaries are lifted to become dual loops, with their assigned direction from the labeling.
-/// All other loops are drawn using the target cubes as a template.
-pub fn run(_mesh: &Mesh<INPUT>, _skeleton: &RealizedSkeleton) -> SkeletonResult<DualLoops> {
-    Err(std::io::Error::new(
-        std::io::ErrorKind::Unsupported,
-        "Skeleton dual-loop drawing is not implemented yet",
-    )
-    .into())
+mod route;
+mod template;
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Reentry {
+    Edge(EdgeID),
+    Face(FaceID),
 }
+
+#[derive(Clone, Debug)]
+pub enum Failure {
+    UnsupportedReentry {
+        loop_id: LoopID,
+        at: Reentry,
+    },
+    BoundaryTopology,
+    SearchExhausted {
+        loop_id: LoopID,
+        candidates: usize,
+        topology_rejections: usize,
+        reentry: Option<Reentry>,
+    },
+    InvalidDual(String),
+}
+
+impl std::fmt::Display for Failure {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::UnsupportedReentry { loop_id, at } => write!(
+                f,
+                "Dual loop {loop_id:?} re-enters {at:?}; repeated edge/triangle visits are not supported"
+            ),
+            Self::BoundaryTopology => {
+                f.write_str("Lifted boundaries do not match the cuboid template topology")
+            }
+            Self::SearchExhausted {
+                loop_id,
+                candidates,
+                topology_rejections,
+                reentry,
+            } => write!(
+                f,
+                "Could not draw loop {loop_id:?} after {candidates} candidates ({topology_rejections} topology rejections, unsupported re-entry: {reentry:?}); retained the accepted partial drawing"
+            ),
+            Self::InvalidDual(error) => {
+                write!(f, "Completed loop structure failed validation: {error}")
+            }
+        }
+    }
+}
+impl std::error::Error for Failure {}
+
+#[derive(Clone, Debug)]
+pub struct Attempt {
+    pub loops: DualLoops,
+    pub planned: usize,
+    pub candidates: usize,
+    pub failure: Option<Failure>,
+}
+
+pub fn run(mesh: &Mesh<INPUT>, skeleton: &RealizedSkeleton) -> SkeletonResult<DualLoops> {
+    let attempt = attempt(mesh, skeleton)?;
+    match attempt.failure {
+        Some(error) => Err(error.into()),
+        None => Ok(attempt.loops),
+    }
+}
+
+pub fn attempt(mesh: &Mesh<INPUT>, realized: &RealizedSkeleton) -> SkeletonResult<Attempt> {
+    realized.validate(mesh)?;
+    let template = template::Template::build(realized)?;
+    let mut working = template.loops.clone();
+    let mut drawn = HashSet::new();
+    let mut result = Attempt {
+        loops: DualLoops::with_key(),
+        planned: working.len(),
+        candidates: 0,
+        failure: None,
+    };
+    for (edge, data) in &realized.labeled.skeleton.edges {
+        let id = template.boundaries[&edge];
+        let skeleton = &realized.labeled.skeleton;
+        let mut edges = Vec::new();
+        let mut offsets = Vec::new();
+        for &crossing in &data.boundary.crossings {
+            let exit = skeleton.surface.crossings[crossing].exit;
+            let canonical = crate::surface::canonical(mesh, exit);
+            let order = &skeleton.surface.edge_order[&canonical];
+            let rank = order.iter().position(|&c| c == crossing).unwrap();
+            let t = (rank + 1) as f64 / (order.len() + 1) as f64;
+            let t = if exit == canonical { t } else { 1. - t };
+            edges.extend([exit, mesh.twin(exit)]);
+            offsets.extend([t, 1. - t]);
+        }
+        if realized.labeled.labels[edge].sign == Sign::Negative {
+            edges.reverse();
+            offsets.reverse();
+        }
+        let l = Loop {
+            edges,
+            offsets,
+            direction: realized.labeled.labels[edge].direction,
+        };
+        if let Some(at) = reentry(mesh, &l) {
+            result.failure = Some(Failure::UnsupportedReentry { loop_id: id, at });
+            result.loops = subset(&working, &drawn);
+            return Ok(result);
+        }
+        working[id] = l;
+        drawn.insert(id);
+    }
+    result.loops = subset(&working, &drawn);
+    let expected = PartialTopology::new(&template.mesh, &subset(&template.loops, &drawn))?;
+    if !PartialTopology::new(mesh, &result.loops).is_ok_and(|actual| actual.equivalent(&expected)) {
+        result.failure = Some(Failure::BoundaryTopology);
+        return Ok(result);
+    }
+    let fields = dualcube_flow::Fields::new(mesh);
+    let graphs = dualcube_flow::build_flow_graphs(
+        mesh,
+        &fields,
+        dualcube_flow::GraphParams {
+            max_deviation: std::f64::consts::PI,
+            ..Default::default()
+        },
+    );
+    let full = PartialTopology::new(&template.mesh, &template.loops)?;
+    while drawn.len() < working.len() {
+        let id = working
+            .keys()
+            .filter(|id| !drawn.contains(id))
+            .max_by_key(|&id| {
+                let neighbors: Vec<_> = full.along[&id]
+                    .iter()
+                    .map(|&c| other(full.crossings[c], id))
+                    .filter(|id| drawn.contains(id))
+                    .collect();
+                (
+                    neighbors.iter().collect::<HashSet<_>>().len(),
+                    neighbors.len(),
+                    std::cmp::Reverse(id),
+                )
+            })
+            .unwrap();
+        let mut selected = drawn.clone();
+        selected.insert(id);
+        let expected = PartialTopology::new(&template.mesh, &subset(&template.loops, &selected))?;
+        let crossings: Vec<_> = full.along[&id]
+            .iter()
+            .map(|&c| other(full.crossings[c], id))
+            .filter(|id| drawn.contains(id))
+            .collect();
+        match route::find(
+            mesh,
+            &graphs,
+            &working,
+            &drawn,
+            id,
+            &crossings,
+            &expected,
+            &mut result.candidates,
+        ) {
+            Ok(l) => {
+                working[id] = l;
+                drawn.insert(id);
+                result.loops = subset(&working, &drawn);
+            }
+            Err(failure) => {
+                result.failure = Some(failure);
+                return Ok(result);
+            }
+        }
+        tracing::info!("Loop drawing: {}/{} loops", drawn.len(), working.len());
+    }
+    if let Err(error) = dualcube_dual::Dual::from(std::sync::Arc::new(mesh.clone()), &result.loops)
+    {
+        result.failure = Some(Failure::InvalidDual(error.to_string()));
+    }
+    Ok(result)
+}
+
+fn subset(loops: &DualLoops, selected: &HashSet<LoopID>) -> DualLoops {
+    let mut result = loops.clone();
+    result.retain(|id, _| selected.contains(&id));
+    result
+}
+fn other(pair: [LoopID; 2], id: LoopID) -> LoopID {
+    if pair[0] == id { pair[1] } else { pair[0] }
+}
+fn reentry(mesh: &Mesh<INPUT>, l: &Loop) -> Option<Reentry> {
+    let mut edges = HashSet::new();
+    let mut faces = HashSet::new();
+    for (i, &edge) in l.edges.iter().enumerate() {
+        if !edges.insert(edge) {
+            return Some(Reentry::Edge(edge));
+        }
+        let next = l.edges[(i + 1) % l.edges.len()];
+        if mesh.twin(edge) != next && !faces.insert(mesh.face(edge)) {
+            return Some(Reentry::Face(mesh.face(edge)));
+        }
+    }
+    None
+}
+
+#[cfg(test)]
+mod tests;

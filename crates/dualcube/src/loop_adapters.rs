@@ -6,6 +6,14 @@
 use crate::prelude::*;
 
 impl Solution {
+    /// Install a complete or diagnostic loop set, preserving valid crossing offsets.
+    pub fn replace_loops(&mut self, loops: slotmap::SlotMap<LoopID, Loop>) {
+        let state = LoopState::from_loops(&self.mesh_ref, loops);
+        self.clear();
+        self.loops = state.loops;
+        self.occupied = state.occupied;
+    }
+
     fn loop_state_mut(&mut self) -> LoopStateMut<'_> {
         LoopStateMut {
             mesh: self.mesh_ref.as_ref(),

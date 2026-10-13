@@ -6043,6 +6043,7 @@ name = "skeleton"
 version = "0.1.0"
 dependencies = [
  "dualcube-dual",
+ "dualcube-flow",
  "dualcube-types",
  "faer",
  "mehsh",

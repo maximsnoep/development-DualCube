@@ -220,20 +220,17 @@ fn auto_start_reaches_loop_drawing_and_explicit_stops_still_win() {
         let mut launch = Launch::parse(args).unwrap().unwrap();
         launch.quit = true;
         let (app, exit) = run_startup(launch);
-        assert_eq!(
-            exit,
-            if stop.is_none() {
-                AppExit::error()
-            } else {
-                AppExit::Success
-            }
-        );
+        assert_eq!(exit, AppExit::Success);
         let state = app.world().resource::<SkeletonResource>();
         if stop.is_none() {
-            assert_eq!(
-                state.initialization_failure.as_ref().unwrap().stage,
-                dualcube::skeleton::pipeline::Stage::LoopDrawing
-            );
+            assert!(state.initialization_failure.is_none());
+            assert!(state.loops.is_some());
+            let solution = &app
+                .world()
+                .resource::<crate::resources::SolutionResource>()
+                .current_solution;
+            assert_eq!(solution.loops.len(), state.loops.as_ref().unwrap().len());
+            assert!(solution.dual.is_ok());
             assert!(state.extraction().is_some());
             assert!(state.labeling.is_some());
             state

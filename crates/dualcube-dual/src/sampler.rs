@@ -46,6 +46,12 @@ impl HeuristicScale {
 /// the `i`th loop crossing the half-edge (counted from the root of the half-edge).
 pub type GapNode = (EdgeID, usize);
 
+#[derive(Clone, Copy, Debug)]
+pub enum CrossingRouteError {
+    NoRoute,
+    RepeatedEdge(EdgeID),
+}
+
 // Cost of crossing a loop of the same direction when inserting a loop into the existing loop orders.
 const SAME_DIRECTION_CROSSING_COST: f64 = 1e6;
 // Fraction of the gap between two neighboring loops that a new loop keeps free on both sides.
@@ -895,6 +901,45 @@ impl<'a> LoopSampler<'a> {
         self.construct_crossing_loop_retrying(axis, start, crossings, None, measure)
     }
 
+    /// One routing candidate, exposing unsupported re-entry instead of silently retrying it.
+    #[allow(clippy::type_complexity)]
+    pub fn crossing_candidate(
+        &self,
+        axis: Direction,
+        start: GapNode,
+        crossings: &[LoopID],
+        measure: &impl Fn(f64) -> OrderedFloat<f64>,
+    ) -> Result<(Vec<EdgeID>, f64, Vec<(usize, usize)>), CrossingRouteError> {
+        let proximity = self.proximity.get_or_init(|| self.loop_proximity());
+        if crossings.len() < 2 {
+            return Err(CrossingRouteError::NoRoute);
+        }
+        self.search_loop(
+            axis,
+            start,
+            start,
+            0usize,
+            crossings.len(),
+            |index, chord, _| {
+                if crossings.get(index) == Some(&chord.loop_id) {
+                    vec![index + 1]
+                } else {
+                    vec![]
+                }
+            },
+            measure,
+            proximity,
+            &HashSet::new(),
+            true,
+        )
+        .map_err(
+            |repeated| match repeated.and_then(|edges| edges.first().copied()) {
+                Some(edge) => CrossingRouteError::RepeatedEdge(edge),
+                None => CrossingRouteError::NoRoute,
+            },
+        )
+    }
+
     #[allow(clippy::type_complexity)]
     fn construct_crossing_loop_retrying(
         &self,
@@ -1014,6 +1059,7 @@ impl<'a> LoopSampler<'a> {
             measure,
             proximity,
             blocked,
+            false,
         )
     }
 
@@ -1055,6 +1101,7 @@ impl<'a> LoopSampler<'a> {
             measure,
             proximity,
             &blocked,
+            false,
         )
         .ok()
     }
@@ -1106,6 +1153,7 @@ impl<'a> LoopSampler<'a> {
             measure,
             proximity,
             blocked,
+            false,
         )
     }
 
@@ -1113,7 +1161,8 @@ impl<'a> LoopSampler<'a> {
     // node `end`, if it differs), where crossing a
     // loop (a chord of a face) advances the progress (`transition` gives the progress after crossing `chord` into the
     // gap node `target`, possibly several or none: not allowed) and the loop closes with progress `goal`. Never crosses
-    // the blocked half-edges, or two loops in one move. Moves near existing loops cost more (by `PROXIMITY_WEIGHT` times
+    // the blocked half-edges. Candidate routing can cross several chords in geometric order in one move.
+    // Moves near existing loops cost more (by `PROXIMITY_WEIGHT` times
     // their `proximity`), such that loops keep some distance from each other (running alongside a loop, or crossing a
     // loop at an existing intersection, leaves narrow corridors for the layout); every move costs at least its flow
     // cost, so the heuristic remains a lower bound.
@@ -1129,6 +1178,7 @@ impl<'a> LoopSampler<'a> {
         measure: &impl Fn(f64) -> OrderedFloat<f64>,
         proximity: &FxHashMap<FaceID, f64>,
         blocked: &HashSet<EdgeID>,
+        multiple_crossings: bool,
     ) -> Result<(Vec<EdgeID>, f64, Vec<(usize, usize)>), Option<Vec<EdgeID>>> {
         const MAX_EXPANSIONS: usize = 1_000_000;
         let timer = Instant::now();
@@ -1183,16 +1233,51 @@ impl<'a> LoopSampler<'a> {
                 let n_next = self.crossing_count(next);
                 for next_gap in 0..=n_next {
                     let q = self.gap_coord(next, next_gap);
-                    let mut crossed = chords.iter().filter(|chord| chord.separates(p, q));
-                    let first = crossed.next();
-                    if crossed.next().is_some() {
-                        continue;
+                    let mut crossed = chords
+                        .iter()
+                        .filter(|chord| chord.separates(p, q))
+                        .collect_vec();
+                    if crossed.len() > 1 {
+                        if !multiple_crossings {
+                            continue;
+                        }
+                        let point = |coord: u64| {
+                            let side = (coord >> 32) as usize;
+                            let sub = coord as u32 as usize;
+                            let e = mesh.edges(face).nth(side).unwrap();
+                            let list = self.loops_on_edge_ref(e);
+                            let at = |i: usize| self.loops[list[i]].offset(e).unwrap();
+                            let rank = sub / 2;
+                            let t = if sub % 2 == 1 {
+                                at(rank)
+                            } else {
+                                (if rank == 0 { 0. } else { at(rank - 1) }
+                                    + if rank == list.len() { 1. } else { at(rank) })
+                                    / 2.
+                            };
+                            mesh.position(mesh.root(e)) * (1. - t) + mesh.position(mesh.toor(e)) * t
+                        };
+                        let from = point(p);
+                        let delta = point(q) - from;
+                        let normal = mesh.normal(face);
+                        let parameter = |chord: &FaceChord| {
+                            let a = point(chord.ends[0]);
+                            let d = point(chord.ends[1]) - a;
+                            (a - from).cross(&d).dot(&normal) / delta.cross(&d).dot(&normal)
+                        };
+                        crossed.sort_by(|a, b| parameter(a).total_cmp(&parameter(b)));
                     }
                     let target = (mesh.twin(next), n_next - next_gap);
-                    let next_progress = match first {
-                        None => vec![progress],
-                        Some(chord) => transition(progress, chord, target),
-                    };
+                    let mut next_progress = vec![progress];
+                    for chord in crossed {
+                        next_progress = next_progress
+                            .into_iter()
+                            .flat_map(|p| transition(p, chord, target))
+                            .collect();
+                        if next_progress.is_empty() {
+                            break;
+                        }
+                    }
                     let new_cost = cost + step;
                     for next_progress in next_progress {
                         let state = (target, next_progress);

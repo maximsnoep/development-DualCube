@@ -197,6 +197,7 @@ pub struct SkeletonResource {
     pub labeling: Option<dualcube::skeleton::label::Attempt>,
     pub realized: Option<dualcube::skeleton::RealizedSkeleton>,
     pub optimized: Option<dualcube::skeleton::RealizedSkeleton>,
+    pub drawing: Option<dualcube::skeleton::draw_loops::Attempt>,
     pub loops: Option<dualcube::skeleton::DualLoops>,
     pub initialization_failure: Option<dualcube::skeleton::pipeline::Failure>,
 }
