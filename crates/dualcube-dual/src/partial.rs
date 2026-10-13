@@ -61,6 +61,16 @@ impl PartialTopology {
     /// Exact correspondence preserving loop IDs, orientation, boundary cycles, and region genus.
     /// Cyclic starting points along loops and unmarked crossing IDs may differ.
     pub fn equivalent(&self, other: &Self) -> bool {
+        self.region_correspondence(other).is_some()
+    }
+
+    /// Region IDs in `other`, indexed by this arrangement's regions.
+    pub fn region_correspondence(&self, other: &Self) -> Option<Vec<usize>> {
+        self.region_correspondences(other, 1).into_iter().next()
+    }
+
+    /// Bounded alternatives for symmetric partial arrangements.
+    pub fn region_correspondences(&self, other: &Self, limit: usize) -> Vec<Vec<usize>> {
         if self.regions != other.regions
             || self.crossings.len() != other.crossings.len()
             || self.along.len() != other.along.len()
@@ -69,7 +79,7 @@ impl PartialTopology {
                 .iter()
                 .any(|(id, a)| other.along.get(id).is_none_or(|b| a.len() != b.len()))
         {
-            return false;
+            return vec![];
         }
         let mut regions = vec![None; self.regions];
         for (&id, along) in &self.along {
@@ -81,10 +91,76 @@ impl PartialTopology {
                     &mut regions,
                 )
             {
-                return false;
+                return vec![];
             }
         }
-        self.match_crossings(other, vec![None; self.crossings.len()], regions)
+        let mut result = Vec::new();
+        self.match_crossings(
+            other,
+            vec![None; self.crossings.len()],
+            regions,
+            limit,
+            &mut result,
+        );
+        result
+    }
+
+    /// Region at every mesh-edge gap, for constraining incremental routing.
+    pub fn gap_regions(
+        mesh: &Mesh<INPUT>,
+        loops: &SlotMap<LoopID, Loop>,
+    ) -> Result<HashMap<crate::GapNode, usize>, PropertyViolationError> {
+        let arrangement = Arrangement::new(mesh, loops)?;
+        let (components, _, _) = arrangement.components(mesh)?;
+        let mut offsets = HashMap::<EdgeID, Vec<f64>>::new();
+        for l in loops.values() {
+            for (&edge, &offset) in l.edges.iter().zip(&l.offsets) {
+                offsets.entry(edge).or_default().push(offset);
+            }
+        }
+        let mut result = HashMap::new();
+        for edge in mesh.edge_ids() {
+            let mut bounds = offsets.remove(&edge).unwrap_or_default();
+            bounds.sort_by(f64::total_cmp);
+            bounds.insert(0, 0.);
+            bounds.push(1.);
+            for (gap, pair) in bounds.windows(2).enumerate() {
+                let cell = arrangement
+                    .locate_on_edge(mesh, edge, (pair[0] + pair[1]) / 2.)
+                    .ok_or(PropertyViolationError::UnknownError)?;
+                result.insert((edge, gap), components[cell]);
+            }
+        }
+        Ok(result)
+    }
+
+    /// Crossing partners and outgoing old regions along one newly inserted loop.
+    pub fn insertion_itinerary(
+        mesh: &Mesh<INPUT>,
+        before: &SlotMap<LoopID, Loop>,
+        after: &SlotMap<LoopID, Loop>,
+        id: LoopID,
+    ) -> Result<Vec<(LoopID, usize)>, PropertyViolationError> {
+        let old = Arrangement::new(mesh, before)?;
+        let (components, _, _) = old.components(mesh)?;
+        let new = Arrangement::new(mesh, after)?;
+        new.loop_crossings[&id]
+            .iter()
+            .map(|&crossing| {
+                let c = &new.crossings[crossing];
+                let face = &new.faces[&c.face];
+                let partner = c
+                    .chords
+                    .iter()
+                    .map(|&i| face.chords[i].loop_id)
+                    .find(|&i| i != id)
+                    .unwrap();
+                let region = new
+                    .region_after_in(&old, &components, id, crossing)
+                    .ok_or(PropertyViolationError::UnknownError)?;
+                Ok((partner, region))
+            })
+            .collect()
     }
 
     fn match_sides(
@@ -117,25 +193,29 @@ impl PartialTopology {
         other: &Self,
         map: Vec<Option<usize>>,
         regions: Vec<Option<usize>>,
-    ) -> bool {
+        limit: usize,
+        results: &mut Vec<Vec<usize>>,
+    ) {
+        if results.len() >= limit {
+            return;
+        }
         let Some(start) = map.iter().position(Option::is_none) else {
-            let mut a: Vec<_> = self
-                .chi
-                .iter()
-                .enumerate()
-                .filter(|(i, _)| regions[*i].is_none())
-                .map(|(_, &x)| x)
-                .collect();
-            let mut b: Vec<_> = other
-                .chi
-                .iter()
-                .enumerate()
-                .filter(|(i, _)| !regions.contains(&Some(*i)))
-                .map(|(_, &x)| x)
-                .collect();
-            a.sort();
-            b.sort();
-            return a == b;
+            let mut result = regions;
+            for i in 0..result.len() {
+                if result[i].is_none() {
+                    let Some(j) = (0..other.regions)
+                        .find(|&j| !result.contains(&Some(j)) && self.chi[i] == other.chi[j])
+                    else {
+                        return;
+                    };
+                    result[i] = Some(j);
+                }
+            }
+            let result = result.into_iter().map(Option::unwrap).collect();
+            if !results.contains(&result) {
+                results.push(result);
+            }
+            return;
         };
         for target in 0..other.crossings.len() {
             if map.contains(&Some(target)) {
@@ -187,10 +267,12 @@ impl PartialTopology {
                     break;
                 }
             }
-            if valid && self.match_crossings(other, mapping, region_mapping) {
-                return true;
+            if valid {
+                self.match_crossings(other, mapping, region_mapping, limit, results);
+            }
+            if results.len() >= limit {
+                return;
             }
         }
-        false
     }
 }

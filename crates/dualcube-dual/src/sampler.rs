@@ -49,7 +49,23 @@ pub type GapNode = (EdgeID, usize);
 #[derive(Clone, Copy, Debug)]
 pub enum CrossingRouteError {
     NoRoute,
+    ExpansionLimit,
     RepeatedEdge(EdgeID),
+}
+
+enum SearchFailure {
+    NoRoute,
+    ExpansionLimit,
+    RepeatedEdges(Vec<EdgeID>),
+}
+
+impl SearchFailure {
+    fn repeated_edges(self) -> Option<Vec<EdgeID>> {
+        match self {
+            Self::RepeatedEdges(edges) => Some(edges),
+            Self::NoRoute | Self::ExpansionLimit => None,
+        }
+    }
 }
 
 // Cost of crossing a loop of the same direction when inserting a loop into the existing loop orders.
@@ -334,13 +350,14 @@ impl<'a> LoopSampler<'a> {
     /// Add a cost per face to the constructions (on top of the proximity of the loops; in units of
     /// `PROXIMITY_WEIGHT`, see `loop_proximity`).
     #[must_use]
-    pub fn with_extra_proximity(self, extra: &HashMap<FaceID, f64>) -> Self {
-        let mut proximity = self.loop_proximity();
+    pub fn with_extra_proximity(&self, extra: &HashMap<FaceID, f64>) -> Self {
+        let mut proximity = self.proximity.get_or_init(|| self.loop_proximity()).clone();
         for (&face, &value) in extra {
             *proximity.entry(face).or_default() += value;
         }
-        let _ = self.proximity.set(proximity);
-        self
+        let result = Self::new(self.mesh_ref, self.loops, self.occupied, self.flow_graphs);
+        let _ = result.proximity.set(proximity);
+        result
     }
 
     /// The positions of loop `l` on all its edges (in order).
@@ -910,6 +927,19 @@ impl<'a> LoopSampler<'a> {
         crossings: &[LoopID],
         measure: &impl Fn(f64) -> OrderedFloat<f64>,
     ) -> Result<(Vec<EdgeID>, f64, Vec<(usize, usize)>), CrossingRouteError> {
+        self.crossing_candidate_in_regions(axis, start, crossings, None, measure)
+    }
+
+    /// Route through the prescribed old region after each crossing, when provided.
+    #[allow(clippy::type_complexity)]
+    pub fn crossing_candidate_in_regions(
+        &self,
+        axis: Direction,
+        start: GapNode,
+        crossings: &[LoopID],
+        regions: Option<(&[usize], &HashMap<GapNode, usize>)>,
+        measure: &impl Fn(f64) -> OrderedFloat<f64>,
+    ) -> Result<(Vec<EdgeID>, f64, Vec<(usize, usize)>), CrossingRouteError> {
         let proximity = self.proximity.get_or_init(|| self.loop_proximity());
         if crossings.len() < 2 {
             return Err(CrossingRouteError::NoRoute);
@@ -931,13 +961,18 @@ impl<'a> LoopSampler<'a> {
             proximity,
             &HashSet::new(),
             true,
-        )
-        .map_err(
-            |repeated| match repeated.and_then(|edges| edges.first().copied()) {
-                Some(edge) => CrossingRouteError::RepeatedEdge(edge),
-                None => CrossingRouteError::NoRoute,
+            |index, gap| {
+                regions.is_none_or(|(after, gaps)| {
+                    after.len() == crossings.len()
+                        && gaps.get(&gap) == after.get((index + after.len() - 1) % after.len())
+                })
             },
         )
+        .map_err(|error| match error {
+            SearchFailure::NoRoute => CrossingRouteError::NoRoute,
+            SearchFailure::ExpansionLimit => CrossingRouteError::ExpansionLimit,
+            SearchFailure::RepeatedEdges(edges) => CrossingRouteError::RepeatedEdge(edges[0]),
+        })
     }
 
     #[allow(clippy::type_complexity)]
@@ -1060,7 +1095,9 @@ impl<'a> LoopSampler<'a> {
             proximity,
             blocked,
             false,
+            |_, _| true,
         )
+        .map_err(SearchFailure::repeated_edges)
     }
 
     /// The cheapest path of the given axis from the gap node `from` to the gap node `to` (ending with the half-edge
@@ -1102,6 +1139,7 @@ impl<'a> LoopSampler<'a> {
             proximity,
             &blocked,
             false,
+            |_, _| true,
         )
         .ok()
     }
@@ -1154,7 +1192,9 @@ impl<'a> LoopSampler<'a> {
             proximity,
             blocked,
             false,
+            |_, _| true,
         )
+        .map_err(SearchFailure::repeated_edges)
     }
 
     // The search of the loop constructions: the cheapest loop from the gap node `start` back to it (or a path to the gap
@@ -1179,13 +1219,14 @@ impl<'a> LoopSampler<'a> {
         proximity: &FxHashMap<FaceID, f64>,
         blocked: &HashSet<EdgeID>,
         multiple_crossings: bool,
-    ) -> Result<(Vec<EdgeID>, f64, Vec<(usize, usize)>), Option<Vec<EdgeID>>> {
+        allowed: impl Fn(P, GapNode) -> bool,
+    ) -> Result<(Vec<EdgeID>, f64, Vec<(usize, usize)>), SearchFailure> {
         const MAX_EXPANSIONS: usize = 1_000_000;
         let timer = Instant::now();
         let mesh = self.mesh_ref;
-        let graph = self.flow_graph(axis).ok_or(None)?;
-        if !graph.node_exists(start.0) {
-            return Err(None);
+        let graph = self.flow_graph(axis).ok_or(SearchFailure::NoRoute)?;
+        if !graph.node_exists(start.0) || !allowed(initial, start) {
+            return Err(SearchFailure::NoRoute);
         }
 
         let heuristic_scale = self.flow_graph_heuristic_scale(graph, measure);
@@ -1215,7 +1256,7 @@ impl<'a> LoopSampler<'a> {
             }
             expansions += 1;
             if expansions > MAX_EXPANSIONS {
-                break;
+                return Err(SearchFailure::ExpansionLimit);
             }
             let (edge, gap) = node;
             let face = mesh.face(edge);
@@ -1280,6 +1321,9 @@ impl<'a> LoopSampler<'a> {
                     }
                     let new_cost = cost + step;
                     for next_progress in next_progress {
+                        if !allowed(next_progress, target) {
+                            continue;
+                        }
                         let state = (target, next_progress);
                         if best.get(&state).is_none_or(|&c| new_cost < c - 1e-12) {
                             best.insert(state, new_cost);
@@ -1300,7 +1344,7 @@ impl<'a> LoopSampler<'a> {
                 "b_loops::search_loop: no path axis={axis:?} expansions={expansions} elapsed_ms={:.3}",
                 elapsed_ms(timer)
             );
-            return Err(None);
+            return Err(SearchFailure::NoRoute);
         };
         // Reconstruct: every transition is a move inside a face (from the entry half-edge to the exit half-edge, at a
         // gap) followed by crossing the exit half-edge.
@@ -1342,7 +1386,11 @@ impl<'a> LoopSampler<'a> {
                 "b_loops::construct_valid_loop: rejected (loop revisits {} edges) axis={axis:?}",
                 revisited.len()
             );
-            return Err((!revisited.is_empty()).then_some(revisited));
+            return Err(if revisited.is_empty() {
+                SearchFailure::NoRoute
+            } else {
+                SearchFailure::RepeatedEdges(revisited)
+            });
         }
         debug!(
             "b_loops::search_loop: ok axis={axis:?} edges={} cost={cost:.4} expansions={expansions} elapsed_ms={:.3}",

@@ -287,3 +287,60 @@ fn draws_a_junction_preserving_boundary_topology() {
     let expected = PartialTopology::new(&template.mesh, &template.loops).unwrap();
     assert!(actual.equivalent(&expected));
 }
+
+#[test]
+fn reconstructs_each_missing_loop_on_a_six_way_template() {
+    let template = star_template(&crate::label::Port::ALL);
+    let fields = dualcube_flow::Fields::new(&template.mesh);
+    let graphs = dualcube_flow::build_flow_graphs(
+        &template.mesh,
+        &fields,
+        dualcube_flow::GraphParams {
+            max_deviation: std::f64::consts::PI,
+            ..Default::default()
+        },
+    );
+    let expected = PartialTopology::new(&template.mesh, &template.loops).unwrap();
+    for id in template.loops.keys() {
+        let drawn: HashSet<_> = template.loops.keys().filter(|&other| other != id).collect();
+        let before = subset(&template.loops, &drawn);
+        let itinerary =
+            PartialTopology::insertion_itinerary(&template.mesh, &before, &template.loops, id)
+                .unwrap();
+        let crossings: Vec<_> = itinerary.iter().map(|&(l, _)| l).collect();
+        let regions: Vec<_> = itinerary.iter().map(|&(_, r)| r).collect();
+        let gaps = PartialTopology::gap_regions(&template.mesh, &before).unwrap();
+        let result = route::find(
+            &template.mesh,
+            &graphs,
+            &template.loops,
+            &drawn,
+            id,
+            &crossings,
+            &regions,
+            &gaps,
+            &expected,
+            &[],
+            &mut 0,
+        );
+        assert!(result.is_ok(), "{id:?}: {result:?}");
+        let old = result.unwrap();
+        let alternative = route::find(
+            &template.mesh,
+            &graphs,
+            &template.loops,
+            &drawn,
+            id,
+            &crossings,
+            &regions,
+            &gaps,
+            &expected,
+            &[old],
+            &mut 0,
+        );
+        assert!(
+            alternative.is_ok(),
+            "No alternative for {id:?}: {alternative:?}"
+        );
+    }
+}

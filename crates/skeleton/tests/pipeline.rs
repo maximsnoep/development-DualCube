@@ -16,28 +16,16 @@ fn tetrahedron() -> Mesh<INPUT> {
 }
 
 #[test]
-fn full_run_retains_no_op_optimization_and_valid_loops() {
+fn full_run_retains_placement_and_valid_optimized_loops() {
     let mesh = tetrahedron();
     let run = pipeline::run(&mesh).unwrap();
     assert!(!run.skeleton.nodes.is_empty());
     run.labeled.validate(&mesh).unwrap();
     run.realized.validate(&mesh).unwrap();
     run.optimized.validate(&mesh).unwrap();
-    assert_eq!(run.optimized.node_positions, run.realized.node_positions);
-    assert_eq!(
-        run.optimized.cuboids.connections,
-        run.realized.cuboids.connections
+    assert!(
+        run.optimized.labeled.skeleton.nodes.len() <= run.realized.labeled.skeleton.nodes.len()
     );
-    assert_eq!(
-        run.optimized.cuboids.cuboids.len(),
-        run.realized.cuboids.cuboids.len()
-    );
-    for (id, cuboid) in &run.realized.cuboids.cuboids {
-        let other = &run.optimized.cuboids.cuboids[id];
-        assert_eq!(other.center, cuboid.center);
-        assert_eq!(other.size, cuboid.size);
-        assert_eq!(other.owner, cuboid.owner);
-    }
     dualcube_dual::Dual::from(std::sync::Arc::new(mesh), &run.loops).unwrap();
 }
 

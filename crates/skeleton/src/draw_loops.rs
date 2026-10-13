@@ -13,6 +13,18 @@ pub enum Reentry {
     Face(FaceID),
 }
 
+#[derive(Clone, Debug, Default)]
+pub struct SearchStats {
+    pub searches: usize,
+    pub no_route: usize,
+    pub expansion_limit: usize,
+    pub repeated_edge: usize,
+    pub repeated_face: usize,
+    pub duplicates: usize,
+    pub invalid_arrangement: usize,
+    pub topology_rejections: usize,
+}
+
 #[derive(Clone, Debug)]
 pub enum Failure {
     UnsupportedReentry {
@@ -22,8 +34,7 @@ pub enum Failure {
     BoundaryTopology,
     SearchExhausted {
         loop_id: LoopID,
-        candidates: usize,
-        topology_rejections: usize,
+        stats: SearchStats,
         reentry: Option<Reentry>,
     },
     InvalidDual(String),
@@ -41,12 +52,19 @@ impl std::fmt::Display for Failure {
             }
             Self::SearchExhausted {
                 loop_id,
-                candidates,
-                topology_rejections,
+                stats,
                 reentry,
             } => write!(
                 f,
-                "Could not draw loop {loop_id:?} after {candidates} candidates ({topology_rejections} topology rejections, unsupported re-entry: {reentry:?}); retained the accepted partial drawing"
+                "Could not draw loop {loop_id:?} after {} searches ({} no route, {} search limits, {} edge re-entries, {} face re-entries, {} duplicates, {} invalid arrangements, {} topology rejections; last re-entry: {reentry:?}); retained the accepted partial drawing",
+                stats.searches,
+                stats.no_route,
+                stats.expansion_limit,
+                stats.repeated_edge,
+                stats.repeated_face,
+                stats.duplicates,
+                stats.invalid_arrangement,
+                stats.topology_rejections
             ),
             Self::InvalidDual(error) => {
                 write!(f, "Completed loop structure failed validation: {error}")
@@ -60,7 +78,7 @@ impl std::error::Error for Failure {}
 pub struct Attempt {
     pub loops: DualLoops,
     pub planned: usize,
-    pub candidates: usize,
+    pub searches: usize,
     pub failure: Option<Failure>,
 }
 
@@ -80,7 +98,7 @@ pub fn attempt(mesh: &Mesh<INPUT>, realized: &RealizedSkeleton) -> SkeletonResul
     let mut result = Attempt {
         loops: DualLoops::with_key(),
         planned: working.len(),
-        candidates: 0,
+        searches: 0,
         failure: None,
     };
     for (edge, data) in &realized.labeled.skeleton.edges {
@@ -131,6 +149,10 @@ pub fn attempt(mesh: &Mesh<INPUT>, realized: &RealizedSkeleton) -> SkeletonResul
         },
     );
     let full = PartialTopology::new(&template.mesh, &template.loops)?;
+    let mut history = Vec::<LoopID>::new();
+    let mut alternatives = HashMap::<LoopID, Vec<Loop>>::new();
+    let mut backtracks = 0;
+    let mut failures = HashMap::<LoopID, usize>::new();
     while drawn.len() < working.len() {
         let id = working
             .keys()
@@ -151,27 +173,99 @@ pub fn attempt(mesh: &Mesh<INPUT>, realized: &RealizedSkeleton) -> SkeletonResul
         let mut selected = drawn.clone();
         selected.insert(id);
         let expected = PartialTopology::new(&template.mesh, &subset(&template.loops, &selected))?;
-        let crossings: Vec<_> = full.along[&id]
-            .iter()
-            .map(|&c| other(full.crossings[c], id))
-            .filter(|id| drawn.contains(id))
-            .collect();
-        match route::find(
-            mesh,
-            &graphs,
-            &working,
-            &drawn,
+        let before = subset(&template.loops, &drawn);
+        let old = PartialTopology::new(&template.mesh, &before)?;
+        let actual = PartialTopology::new(mesh, &result.loops)?;
+        let mut mappings = old.region_correspondences(&actual, 16);
+        if mappings.is_empty() {
+            return Err("Lost partial topology correspondence".into());
+        }
+        let itinerary = PartialTopology::insertion_itinerary(
+            &template.mesh,
+            &before,
+            &subset(&template.loops, &selected),
             id,
-            &crossings,
-            &expected,
-            &mut result.candidates,
-        ) {
+        )?;
+        let crossings: Vec<_> = itinerary.iter().map(|&(partner, _)| partner).collect();
+        let gaps = PartialTopology::gap_regions(mesh, &result.loops)?;
+        let mut gap_counts = vec![0usize; actual.regions];
+        for &r in gaps.values() {
+            gap_counts[r] += 1;
+        }
+        mappings.sort_by_key(|mapping| {
+            std::cmp::Reverse(
+                itinerary
+                    .iter()
+                    .map(|&(_, r)| gap_counts[mapping[r]])
+                    .min()
+                    .unwrap_or(0),
+            )
+        });
+        let mut routed = None;
+        for mapping in mappings {
+            let regions: Vec<_> = itinerary.iter().map(|&(_, r)| mapping[r]).collect();
+            let candidate = route::find(
+                mesh,
+                &graphs,
+                &working,
+                &drawn,
+                id,
+                &crossings,
+                &regions,
+                &gaps,
+                &expected,
+                alternatives.get(&id).map_or(&[], Vec::as_slice),
+                &mut result.searches,
+            );
+            let success = candidate.is_ok();
+            routed = Some(candidate);
+            if success {
+                break;
+            }
+        }
+        match routed.unwrap() {
             Ok(l) => {
                 working[id] = l;
                 drawn.insert(id);
+                history.push(id);
                 result.loops = subset(&working, &drawn);
             }
             Err(failure) => {
+                let neighbors: Vec<_> = history
+                    .iter()
+                    .enumerate()
+                    .rev()
+                    .filter(|(_, previous)| crossings.contains(previous))
+                    .map(|(i, _)| i)
+                    .collect();
+                let failed = failures.entry(id).or_default();
+                let index = if neighbors.is_empty() {
+                    None
+                } else {
+                    Some(neighbors[(*failed / 2) % neighbors.len()])
+                };
+                *failed += 1;
+                if backtracks < 24
+                    && let Some(index) = index
+                {
+                    let previous = history[index];
+                    alternatives
+                        .entry(previous)
+                        .or_default()
+                        .push(working[previous].clone());
+                    for undone in history.drain(index..) {
+                        drawn.remove(&undone);
+                        if undone != previous {
+                            alternatives.remove(&undone);
+                        }
+                    }
+                    result.loops = subset(&working, &drawn);
+                    backtracks += 1;
+                    tracing::info!(
+                        "Loop drawing: reconsidering {previous:?} after {id:?} failed ({backtracks}/24 retries)"
+                    );
+                    continue;
+                }
                 result.failure = Some(failure);
                 return Ok(result);
             }

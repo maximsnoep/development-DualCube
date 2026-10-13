@@ -148,7 +148,7 @@ fn build(mesh: &mehsh::prelude::Mesh<INPUT>, state: &SkeletonResource) -> Render
             RenderAsset::Mesh(graph(&labeled.skeleton, Some(labeled), scale, translation)),
         );
     }
-    if let Some(realized) = &state.realized {
+    if let Some(realized) = state.optimized.as_ref().or(state.realized.as_ref()) {
         cubes::add(&mut object, realized);
     }
     match dualcube::skeleton::geometry::SurfaceGeometry::build(mesh, current) {

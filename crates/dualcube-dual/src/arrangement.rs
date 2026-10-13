@@ -725,6 +725,20 @@ impl Arrangement {
             .map(|[a, b]| [base + a, base + b])
     }
 
+    pub(crate) fn region_after_in(
+        &self,
+        before: &Self,
+        components: &[usize],
+        id: LoopID,
+        crossing: usize,
+    ) -> Option<usize> {
+        let face = self.crossings[crossing].face;
+        let cell = self.cells_after_crossing(id, crossing)?[0];
+        let local = cell - *self.cell_base.get_or_panic(face);
+        let point = centroid(&self.faces[&face].cells[local].1);
+        Some(components[before.locate(face, point)?])
+    }
+
     /// Partition all cells into connected components (loop regions), by gluing cells across the mesh edges.
     /// Returns the component of every cell, the number of components, and the component of every mesh vertex.
     pub fn components(&self, mesh: &Mesh<INPUT>) -> Result<Components, PropertyViolationError> {
