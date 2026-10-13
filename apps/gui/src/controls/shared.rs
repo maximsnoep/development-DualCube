@@ -1,7 +1,7 @@
 use crate::colors;
 use crate::render::gizmos::{PerpetualGizmos, world_to_view};
 use crate::resources::InputResource;
-use bevy::prelude::*;
+use bevy::prelude::{Color, *};
 use dualcube::prelude::*;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -71,7 +71,7 @@ pub fn draw_polyline_gradient(
     let last = positions.len().saturating_sub(1).max(1) as f32;
     for i in 0..positions.len() {
         let t = i as f32 / last;
-        let segment_color = bevy::color::Color::srgba(color[0], color[1], color[2], 1.0 - t);
+        let segment_color = Color::srgba(color[0], color[1], color[2], 1.0 - t);
         let (u, v) = (positions[i], positions[(i + 1) % positions.len()]);
         gizmos.line(
             world_to_view(
