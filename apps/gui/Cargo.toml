@@ -64,8 +64,6 @@ bevy = { workspace = true, features = [
     # Diagnostics
     "sysinfo_plugin",
 
-    # Windows desktop backend
-    "raw_vulkan_init",
 ] }
 
 # Egui UI
@@ -79,6 +77,10 @@ bevy-orbit-camera = { path = "../../crates/bevy-orbit-camera" }
 bevy-axes-gizmo = { path = "../../crates/bevy-axes-gizmo" }
 bevy-toon = { path = "../../crates/bevy-toon" }
 bevy-wicon = { path = "../../crates/bevy-wicon" }
+
+[target.'cfg(windows)'.dependencies]
+# Windows desktop backend
+bevy = { workspace = true, features = ["raw_vulkan_init"] }
 
 [lints]
 workspace = true
