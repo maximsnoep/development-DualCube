@@ -31,7 +31,7 @@ use bevy::tasks::futures_lite::future;
 use bevy::tasks::{AsyncComputeTaskPool, Task};
 use dualcube::prelude::*;
 use pipeline::Stage;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex, mpsc};
 
 pub use evolution::EvolutionLive;
 pub use skeleton::{ContractionCache, SkeletonStage};
@@ -67,6 +67,7 @@ pub struct JobState {
     pub request: Option<&'static str>,
     current: Option<Task<Option<JobResult>>>,
     startup: bool,
+    updates: Option<Mutex<mpsc::Receiver<skeleton::Update>>>,
 }
 
 /// A unit of background work: a description (shown in the UI while running)
@@ -79,13 +80,20 @@ pub struct Job {
     description: &'static str,
     preempt: bool,
     startup: bool,
-    run: Arc<dyn Fn() -> Option<JobResult> + Send + Sync>,
+    run: Arc<dyn Fn(&mpsc::Sender<skeleton::Update>) -> Option<JobResult> + Send + Sync>,
 }
 
 impl Job {
     fn new(
         description: &'static str,
         run: impl Fn() -> Option<JobResult> + Send + Sync + 'static,
+    ) -> Self {
+        Self::with_updates(description, move |_| run())
+    }
+
+    fn with_updates(
+        description: &'static str,
+        run: impl Fn(&mpsc::Sender<skeleton::Update>) -> Option<JobResult> + Send + Sync + 'static,
     ) -> Self {
         Self {
             description,
@@ -164,7 +172,10 @@ fn submit_jobs(
         job_state.request = Some(job.description);
         job_state.startup = job.startup;
         let job = job.clone();
-        let task = AsyncComputeTaskPool::get().spawn(async move { (job.run)() });
+        // A fresh channel also discards updates from a preempted worker.
+        let (sender, receiver) = mpsc::channel();
+        job_state.updates = Some(Mutex::new(receiver));
+        let task = AsyncComputeTaskPool::get().spawn(async move { (job.run)(&sender) });
         job_state.current = Some(task);
     }
 }
@@ -189,13 +200,20 @@ pub(crate) fn poll_jobs(
         return;
     };
 
-    let Some(result) = future::block_on(future::poll_once(&mut task)) else {
+    let result = future::block_on(future::poll_once(&mut task));
+    if let Some(updates) = &job_state.updates {
+        for update in updates.lock().unwrap().try_iter() {
+            update.apply(&mut skeleton);
+        }
+    }
+    let Some(result) = result else {
         // Not finished yet; put the job back.
         job_state.request = Some(request);
         job_state.current = Some(task);
         return;
     };
 
+    job_state.updates = None;
     let Some(result) = result else {
         if job_state.startup {
             launch.finish(false, &mut model_view, &mut exit);

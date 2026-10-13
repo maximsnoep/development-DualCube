@@ -112,8 +112,8 @@ impl Progress {
         Ok(())
     }
 
-    /// Continue the actual stage sequence; errors leave all earlier results available.
-    pub fn finish(&mut self, mesh: &Mesh<INPUT>) -> Result<(), Failure> {
+    /// Ensure placement and optimization are complete before drawing loops.
+    pub fn optimize(&mut self, mesh: &Mesh<INPUT>) -> Result<(), Failure> {
         if self.labeled.is_none() {
             self.label(mesh)?;
         }
@@ -128,6 +128,12 @@ impl Progress {
                 })?,
             );
         }
+        Ok(())
+    }
+
+    /// Continue the actual stage sequence; errors leave all earlier results available.
+    pub fn finish(&mut self, mesh: &Mesh<INPUT>) -> Result<(), Failure> {
+        self.optimize(mesh)?;
         if self.loops.is_none() {
             self.drawing = None;
             self.drawing = Some(
