@@ -814,6 +814,22 @@ impl Layout {
                 OrderedFloat(min_barycentric(point, a, b, c))
             })
             .unwrap();
+        // Arrangement cell centers can already be vertices of the derived mesh.
+        let scale = self
+            .granulated_mesh
+            .edges(piece)
+            .map(|e| self.granulated_mesh.size(e))
+            .fold(0., f64::max);
+        if let Some(vert) = self.granulated_mesh.vertices(piece).find(|&v| {
+            self.vert_to_corner.get_by_right(&v).is_none()
+                && self
+                    .regions
+                    .as_ref()
+                    .is_none_or(|r| !r.on_loop.contains(&v))
+                && (self.granulated_mesh.position(v) - point).norm() <= scale * 1e-12
+        }) {
+            return vert;
+        }
         let (vert, new_faces) = self.granulated_mesh.split_face(piece);
         self.granulated_mesh.set_position(vert, point);
         if let Some(regions) = &mut self.regions {
@@ -1581,9 +1597,11 @@ impl Layout {
                 // check if edge between them exists
                 let edge = self.granulated_mesh.edge_between_verts(a, b);
                 if edge.is_none() {
+                    debug!(?a, ?b, "Path contains a missing edge");
                     return Err(LayoutError::InvalidPath);
                 }
                 if self.granulated_mesh.size(edge.unwrap().0) == 0. {
+                    debug!(?a, ?b, "Path contains a zero-length edge");
                     return Err(LayoutError::InvalidPath);
                 }
             }

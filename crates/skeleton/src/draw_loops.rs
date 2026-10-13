@@ -7,19 +7,11 @@ use dualcube_types::prelude::*;
 mod route;
 mod template;
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum Reentry {
-    Edge(EdgeID),
-    Face(FaceID),
-}
-
 #[derive(Clone, Debug, Default)]
 pub struct SearchStats {
     pub searches: usize,
     pub no_route: usize,
     pub expansion_limit: usize,
-    pub repeated_edge: usize,
-    pub repeated_face: usize,
     pub duplicates: usize,
     pub invalid_arrangement: usize,
     pub topology_rejections: usize,
@@ -27,41 +19,23 @@ pub struct SearchStats {
 
 #[derive(Clone, Debug)]
 pub enum Failure {
-    UnsupportedReentry {
-        loop_id: LoopID,
-        at: Reentry,
-    },
     BoundaryTopology,
-    SearchExhausted {
-        loop_id: LoopID,
-        stats: SearchStats,
-        reentry: Option<Reentry>,
-    },
+    SearchExhausted { loop_id: LoopID, stats: SearchStats },
     InvalidDual(String),
 }
 
 impl std::fmt::Display for Failure {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            Self::UnsupportedReentry { loop_id, at } => write!(
-                f,
-                "Dual loop {loop_id:?} re-enters {at:?}; repeated edge/triangle visits are not supported"
-            ),
             Self::BoundaryTopology => {
                 f.write_str("Lifted boundaries do not match the cuboid template topology")
             }
-            Self::SearchExhausted {
-                loop_id,
-                stats,
-                reentry,
-            } => write!(
+            Self::SearchExhausted { loop_id, stats } => write!(
                 f,
-                "Could not draw loop {loop_id:?} after {} searches ({} no route, {} search limits, {} edge re-entries, {} face re-entries, {} duplicates, {} invalid arrangements, {} topology rejections; last re-entry: {reentry:?}); retained the accepted partial drawing",
+                "Could not draw loop {loop_id:?} after {} searches ({} no route, {} search limits, {} duplicates, {} invalid arrangements, {} topology rejections); retained the accepted partial drawing",
                 stats.searches,
                 stats.no_route,
                 stats.expansion_limit,
-                stats.repeated_edge,
-                stats.repeated_face,
                 stats.duplicates,
                 stats.invalid_arrangement,
                 stats.topology_rejections
@@ -91,6 +65,7 @@ pub fn run(mesh: &Mesh<INPUT>, skeleton: &RealizedSkeleton) -> SkeletonResult<Du
 }
 
 pub fn attempt(mesh: &Mesh<INPUT>, realized: &RealizedSkeleton) -> SkeletonResult<Attempt> {
+    let timer = std::time::Instant::now();
     realized.validate(mesh)?;
     let template = template::Template::build(realized)?;
     let mut working = template.loops.clone();
@@ -101,34 +76,13 @@ pub fn attempt(mesh: &Mesh<INPUT>, realized: &RealizedSkeleton) -> SkeletonResul
         searches: 0,
         failure: None,
     };
-    for (edge, data) in &realized.labeled.skeleton.edges {
+    let geometry = crate::geometry::SurfaceGeometry::build(mesh, &realized.labeled.skeleton)?;
+    for boundary in geometry.boundaries {
+        let edge = boundary.edge;
         let id = template.boundaries[&edge];
-        let skeleton = &realized.labeled.skeleton;
-        let mut edges = Vec::new();
-        let mut offsets = Vec::new();
-        for &crossing in &data.boundary.crossings {
-            let exit = skeleton.surface.crossings[crossing].exit;
-            let canonical = crate::surface::canonical(mesh, exit);
-            let order = &skeleton.surface.edge_order[&canonical];
-            let rank = order.iter().position(|&c| c == crossing).unwrap();
-            let t = (rank + 1) as f64 / (order.len() + 1) as f64;
-            let t = if exit == canonical { t } else { 1. - t };
-            edges.extend([exit, mesh.twin(exit)]);
-            offsets.extend([t, 1. - t]);
-        }
+        let mut l = Loop::from_surface(realized.labeled.labels[edge].direction, boundary.arcs);
         if realized.labeled.labels[edge].sign == Sign::Negative {
-            edges.reverse();
-            offsets.reverse();
-        }
-        let l = Loop {
-            edges,
-            offsets,
-            direction: realized.labeled.labels[edge].direction,
-        };
-        if let Some(at) = reentry(mesh, &l) {
-            result.failure = Some(Failure::UnsupportedReentry { loop_id: id, at });
-            result.loops = subset(&working, &drawn);
-            return Ok(result);
+            l.reverse();
         }
         working[id] = l;
         drawn.insert(id);
@@ -187,9 +141,9 @@ pub fn attempt(mesh: &Mesh<INPUT>, realized: &RealizedSkeleton) -> SkeletonResul
             id,
         )?;
         let crossings: Vec<_> = itinerary.iter().map(|&(partner, _)| partner).collect();
-        let gaps = PartialTopology::gap_regions(mesh, &result.loops)?;
+        let router = dualcube_dual::surface_router::SurfaceRouter::new(mesh, &result.loops)?;
         let mut gap_counts = vec![0usize; actual.regions];
-        for &r in gaps.values() {
+        for &r in &router.regions {
             gap_counts[r] += 1;
         }
         mappings.sort_by_key(|mapping| {
@@ -212,7 +166,7 @@ pub fn attempt(mesh: &Mesh<INPUT>, realized: &RealizedSkeleton) -> SkeletonResul
                 id,
                 &crossings,
                 &regions,
-                &gaps,
+                &router,
                 &expected,
                 alternatives.get(&id).map_or(&[], Vec::as_slice),
                 &mut result.searches,
@@ -276,6 +230,12 @@ pub fn attempt(mesh: &Mesh<INPUT>, realized: &RealizedSkeleton) -> SkeletonResul
     {
         result.failure = Some(Failure::InvalidDual(error.to_string()));
     }
+    tracing::info!(
+        "Loop drawing complete: {} loops, {} searches, {backtracks} backtracks (elapsed {:.2}s)",
+        result.loops.len(),
+        result.searches,
+        timer.elapsed().as_secs_f64()
+    );
     Ok(result)
 }
 
@@ -286,20 +246,6 @@ fn subset(loops: &DualLoops, selected: &HashSet<LoopID>) -> DualLoops {
 }
 fn other(pair: [LoopID; 2], id: LoopID) -> LoopID {
     if pair[0] == id { pair[1] } else { pair[0] }
-}
-fn reentry(mesh: &Mesh<INPUT>, l: &Loop) -> Option<Reentry> {
-    let mut edges = HashSet::new();
-    let mut faces = HashSet::new();
-    for (i, &edge) in l.edges.iter().enumerate() {
-        if !edges.insert(edge) {
-            return Some(Reentry::Edge(edge));
-        }
-        let next = l.edges[(i + 1) % l.edges.len()];
-        if mesh.twin(edge) != next && !faces.insert(mesh.face(edge)) {
-            return Some(Reentry::Face(mesh.face(edge)));
-        }
-    }
-    None
 }
 
 #[cfg(test)]

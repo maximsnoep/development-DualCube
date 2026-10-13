@@ -13,26 +13,17 @@ fn isolated_cube_template_has_three_loops_and_eight_regions() {
 }
 
 #[test]
-fn repeated_boundary_crossing_fails_explicitly() {
+fn draws_returning_boundary_arcs_without_refining_the_input() {
     let (mesh, skeleton) = crate::surface::tests::lenses(1);
+    let vertices = mesh.nr_verts();
+    let faces = mesh.nr_faces();
     let labeled = crate::label::run(&mesh, &skeleton).unwrap();
     let realized = crate::place_cubes::run(&mesh, &labeled).unwrap();
-    let attempt = attempt(&mesh, &realized).unwrap();
-    assert!(matches!(
-        attempt.failure,
-        Some(Failure::UnsupportedReentry { .. })
-    ));
-    let mut progress = crate::pipeline::Progress::from_skeleton(skeleton);
-    progress.labeled = Some(labeled);
-    progress.realized = Some(realized);
-    let error = progress.finish(&mesh).unwrap_err();
-    assert_eq!(error.stage, crate::pipeline::Stage::LoopDrawing);
-    assert!(progress.optimized.is_some());
-    assert!(matches!(
-        progress.drawing.unwrap().failure,
-        Some(Failure::UnsupportedReentry { .. })
-    ));
-    assert!(progress.loops.is_none());
+    let result = attempt(&mesh, &realized).unwrap();
+    assert!(result.failure.is_none(), "{:?}", result.failure);
+    dualcube_dual::Dual::from(std::sync::Arc::new(mesh.clone()), &result.loops).unwrap();
+    assert!(result.loops.values().all(|l| !l.surface.is_empty()));
+    assert_eq!((mesh.nr_verts(), mesh.nr_faces()), (vertices, faces));
 }
 
 #[test]
@@ -309,7 +300,8 @@ fn reconstructs_each_missing_loop_on_a_six_way_template() {
                 .unwrap();
         let crossings: Vec<_> = itinerary.iter().map(|&(l, _)| l).collect();
         let regions: Vec<_> = itinerary.iter().map(|&(_, r)| r).collect();
-        let gaps = PartialTopology::gap_regions(&template.mesh, &before).unwrap();
+        let router =
+            dualcube_dual::surface_router::SurfaceRouter::new(&template.mesh, &before).unwrap();
         let result = route::find(
             &template.mesh,
             &graphs,
@@ -318,7 +310,7 @@ fn reconstructs_each_missing_loop_on_a_six_way_template() {
             id,
             &crossings,
             &regions,
-            &gaps,
+            &router,
             &expected,
             &[],
             &mut 0,
@@ -333,7 +325,7 @@ fn reconstructs_each_missing_loop_on_a_six_way_template() {
             id,
             &crossings,
             &regions,
-            &gaps,
+            &router,
             &expected,
             &[old],
             &mut 0,
@@ -343,4 +335,28 @@ fn reconstructs_each_missing_loop_on_a_six_way_template() {
             "No alternative for {id:?}: {alternative:?}"
         );
     }
+}
+
+#[test]
+fn route_duplicates_ignore_cyclic_start_and_orientation() {
+    let (mesh, _) = crate::surface::tests::lenses(0);
+    let face = mesh.face_ids()[0];
+    let points = [[0.2, 0.2], [0.5, 0.2], [0.2, 0.5]];
+    let original = Loop::from_surface(
+        Direction::X,
+        (0..3)
+            .map(|i| dualcube_dual::SurfaceArc {
+                face,
+                from: points[i],
+                to: points[(i + 1) % 3],
+            })
+            .collect(),
+    );
+    let mut shifted = original.clone();
+    shifted.surface.rotate_left(1);
+    assert!(route::same_geometry(&original, &shifted));
+    shifted.reverse();
+    assert!(route::same_geometry(&original, &shifted));
+    shifted.surface[0].from[0] += 0.01;
+    assert!(!route::same_geometry(&original, &shifted));
 }

@@ -107,7 +107,11 @@ pub fn show(
             if !can_optimize {
                 label(
                     ui,
-                    "Initialize a loop layout before starting evolution.",
+                    if solution.current_solution.has_surface_curves() {
+                        "Evolution of surface curves is not available yet."
+                    } else {
+                        "Initialize a loop layout before starting evolution."
+                    },
                     TEXT_COLOR2,
                 );
             }

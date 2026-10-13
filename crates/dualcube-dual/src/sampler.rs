@@ -363,6 +363,13 @@ impl<'a> LoopSampler<'a> {
     /// The positions of loop `l` on all its edges (in order).
     pub fn get_coordinates_of_loop(&self, l: LoopID) -> Vec<Vector3D> {
         let lewp = &self.loops[l];
+        if !lewp.surface.is_empty() {
+            return lewp
+                .surface
+                .iter()
+                .map(|a| crate::SurfaceArc::position(self.mesh_ref, a.face, a.from))
+                .collect();
+        }
         lewp.edges
             .iter()
             .enumerate()
@@ -1221,6 +1228,9 @@ impl<'a> LoopSampler<'a> {
         multiple_crossings: bool,
         allowed: impl Fn(P, GapNode) -> bool,
     ) -> Result<(Vec<EdgeID>, f64, Vec<(usize, usize)>), SearchFailure> {
+        if self.loops.values().any(|l| !l.surface.is_empty()) {
+            return Err(SearchFailure::NoRoute);
+        }
         const MAX_EXPANSIONS: usize = 1_000_000;
         let timer = Instant::now();
         let mesh = self.mesh_ref;
@@ -1945,6 +1955,9 @@ impl<'a> LoopSampler<'a> {
         measure: impl Fn(f64) -> OrderedFloat<f64> + Sync + Send,
         score: impl Fn((&[EdgeID], f64)) -> f64 + Sync + Send,
     ) -> Vec<Vec<EdgeID>> {
+        if self.loops.values().any(|l| !l.surface.is_empty()) {
+            return vec![];
+        }
         let timer = Instant::now();
         if n == 0 {
             return Vec::new();

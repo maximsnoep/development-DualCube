@@ -1,13 +1,13 @@
 //! The arrangement of a collection of loops on the input mesh.
 //!
-//! Any number of loops may cross the same mesh edge. The loops crossing an edge are ordered along
-//! it, at the positions given by their offsets. Inside every face, a loop is a
-//! straight chord between its two positions on the boundary of the face. Loop intersections are the
-//! crossings of chords inside faces, and loop regions are formed by the pieces (cells) of faces
-//! that the chords cut out, glued together across the mesh edges.
+//! Legacy loops use straight chords between edge offsets. Explicit surface curves use finite
+//! segments with interior bends and repeated visits; `general` builds their arrangement.
+//! Both paths provide crossings and connected regions from face cells glued across mesh edges.
 //!
 //! All geometry inside a face is computed in a (orientation preserving) affine frame, in which the
 //! corners of the face are (0, 0), (1, 0), and (0, 1).
+
+pub(crate) mod general;
 
 use crate::PropertyViolationError;
 use crate::loops::{Loop, LoopID};
@@ -143,6 +143,7 @@ pub(crate) struct FaceArrangement {
     // The corners of every cell (as in `cells`, with what they are).
     pub cell_corners: Vec<Vec<CellCorner>>,
     cell_index: HashMap<Vec<bool>, usize>,
+    explicit: bool,
 }
 
 impl FaceArrangement {
@@ -156,11 +157,28 @@ impl FaceArrangement {
 
     // The cell containing a point (that does not lie on any chord).
     pub fn locate(&self, p: Point2) -> Option<usize> {
+        if self.explicit {
+            return self
+                .cells
+                .iter()
+                .position(|(_, polygon)| general::contains(polygon, p));
+        }
         self.cell_index.get(&self.signs(p, None)).copied()
     }
 
     // The two cells on either side of a point on chord `j`.
     pub fn locate_beside(&self, p: Point2, j: usize) -> Option<[usize; 2]> {
+        if self.explicit {
+            let chord = &self.chords[j];
+            let mut found = [None, None];
+            for (i, (_, polygon)) in self.cells.iter().enumerate() {
+                if general::contains(polygon, p) {
+                    let left = orient(chord.from, chord.to, centroid(polygon)) > 0.;
+                    found[usize::from(!left)] = Some(i);
+                }
+            }
+            return Some([found[0]?, found[1]?]);
+        }
         let mut signs = self.signs(p, Some(j));
         signs[j] = true;
         let left = self.cell_index.get(&signs).copied()?;
@@ -207,6 +225,7 @@ pub(crate) struct Arrangement {
     // Global cell ids: faces without chords have a single cell.
     cell_base: ids::SecMap<FACE, INPUT, usize>,
     cell_count: usize,
+    pub(crate) general: Option<general::Cells>,
 }
 
 fn canonical(mesh: &Mesh<INPUT>, edge: EdgeID) -> EdgeID {
@@ -248,6 +267,9 @@ impl Arrangement {
         components: &[usize],
         count: usize,
     ) -> Result<Vec<i64>, PropertyViolationError> {
+        if let Some(cells) = &self.general {
+            return cells.euler(components, count);
+        }
         #[derive(Clone, Copy, PartialEq, Eq, Hash)]
         enum End {
             Vertex(VertID),
@@ -343,6 +365,9 @@ impl Arrangement {
         mesh: &Mesh<INPUT>,
         loops: &SlotMap<LoopID, Loop>,
     ) -> Result<Self, PropertyViolationError> {
+        if loops.values().any(|l| !l.surface.is_empty()) {
+            return general::build(mesh, loops);
+        }
         // The crossings of every loop with the mesh edges: (index of the exiting half-edge in the loop).
         let mut loop_exits: HashMap<LoopID, Vec<usize>> = HashMap::new();
         let mut per_edge: HashMap<EdgeID, Vec<(OrderedFloat<f64>, LoopID)>> = HashMap::new();
@@ -409,6 +434,7 @@ impl Arrangement {
                             cells: vec![],
                             cell_corners: vec![],
                             cell_index: HashMap::new(),
+                            explicit: false,
                         })
                     }
                 };
@@ -540,6 +566,7 @@ impl Arrangement {
             loop_positions: position,
             cell_base,
             cell_count,
+            general: None,
         })
     }
 
@@ -549,6 +576,9 @@ impl Arrangement {
     /// identified by what they are (see `CellPoint`), not by their positions, so nearly coinciding points (e.g., a
     /// loop crossing an edge very close to a vertex) stay apart.
     pub fn refine(&self, mesh: &Mesh<INPUT>) -> Option<Refinement> {
+        if let Some(cells) = &self.general {
+            return Some(cells.refine());
+        }
         #[derive(Clone, Copy, PartialEq, Eq, Hash)]
         enum Key {
             Vert(VertID),
@@ -661,7 +691,7 @@ impl Arrangement {
     }
 
     // Global id of the cell containing the point (given in the frame of the face).
-    fn locate(&self, face: FaceID, p: Point2) -> Option<usize> {
+    pub(crate) fn locate(&self, face: FaceID, p: Point2) -> Option<usize> {
         let base = *self.cell_base.get_or_panic(face);
         match self.faces.get(&face) {
             Some(arrangement) => arrangement.locate(p).map(|i| base + i),
@@ -742,6 +772,9 @@ impl Arrangement {
     /// Partition all cells into connected components (loop regions), by gluing cells across the mesh edges.
     /// Returns the component of every cell, the number of components, and the component of every mesh vertex.
     pub fn components(&self, mesh: &Mesh<INPUT>) -> Result<Components, PropertyViolationError> {
+        if let Some(cells) = &self.general {
+            return cells.components();
+        }
         let mut parent = (0..self.cell_count).collect_vec();
         fn find(parent: &mut [usize], mut x: usize) -> usize {
             while parent[x] != x {

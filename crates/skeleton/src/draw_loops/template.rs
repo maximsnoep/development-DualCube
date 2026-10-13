@@ -145,6 +145,7 @@ impl Template {
                 }
             }
             let id = loops.insert(Loop {
+                surface: vec![],
                 edges,
                 offsets,
                 direction: start.0,

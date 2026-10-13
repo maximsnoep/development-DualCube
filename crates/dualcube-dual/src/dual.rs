@@ -102,6 +102,8 @@ pub enum PropertyViolationError {
     #[default]
     #[error("Unknown error")]
     UnknownError,
+    #[error("Invalid surface curve: {0}")]
+    InvalidSurfaceCurve(crate::surface_curve::SurfaceCurveError),
     #[error("Face has degree less than three")]
     FaceWithDegreeLessThanThree,
     #[error("Face has degree more than six")]

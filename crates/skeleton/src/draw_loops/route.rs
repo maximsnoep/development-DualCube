@@ -1,10 +1,11 @@
 use super::*;
-use dualcube_dual::{CrossingRouteError, FlowGraph};
+use dualcube_dual::{
+    FlowGraph,
+    surface_router::{RouteError, SurfaceRouter},
+};
 
-// TODO: Route through arrangement cells once shared dual loops support interior arcs/re-entry.
-// TODO: Tune the backtracking, candidate budgets, and flow objective.
-const MAX_SEARCHES: usize = 2048;
-const MAX_CANDIDATES: usize = 128;
+// TODO: Tune the candidate budget, backtracking choices, and geometric objective.
+const MAX_CANDIDATES: usize = 64;
 
 #[allow(clippy::too_many_arguments)]
 pub(super) fn find(
@@ -15,228 +16,245 @@ pub(super) fn find(
     id: LoopID,
     crossings: &[LoopID],
     regions: &[usize],
-    gap_regions: &HashMap<dualcube_dual::GapNode, usize>,
+    router: &SurfaceRouter,
     expected: &PartialTopology,
     avoid: &[Loop],
     total: &mut usize,
 ) -> Result<Loop, Failure> {
     let loops = subset(working, drawn);
-    let state = LoopState::from_loops(mesh, loops);
     let axis = working[id].direction;
-    let mut phases: Vec<_> = (0..crossings.len()).collect();
-    phases.sort_by_key(|&i| state.loops[crossings[i]].edges.len());
-    let mut sequences = HashSet::new();
-    let anchors: Vec<_> = phases
-        .into_iter()
-        .filter_map(|i| {
-            let mut sequence = crossings.to_vec();
-            sequence.rotate_left(i);
-            let mut after = regions.to_vec();
-            after.rotate_left(i);
-            if !sequences.insert((sequence.clone(), after.clone())) {
-                return None;
-            }
-            let mut starts = Vec::new();
-            for &edge in &state.loops[sequence[0]].edges {
-                for gap in 0..=state.occupied.get(&edge).map_or(0, Vec::len) {
-                    if gap_regions.get(&(edge, gap)) == after.last() {
-                        starts.push((edge, gap));
-                    }
-                }
-            }
-            if starts.is_empty() {
-                return None;
-            }
-            Some((sequence, after, starts))
-        })
-        .take(8)
-        .collect();
-    let base_sampler = LoopSampler::new(mesh, &state.loops, &state.occupied, Some(graphs));
-    let mut extra = HashMap::new();
-    for l in avoid {
-        for &edge in &l.edges {
-            *extra.entry(mesh.face(edge)).or_insert(0.) += 4.;
-        }
-    }
-    let mut failed_starts = HashSet::new();
     let mut stats = SearchStats::default();
-    let mut candidates = 0;
-    let mut last_reentry = None;
-    let mut seen = HashSet::new();
-    let mut seed = Vec::new();
-    if crossings.is_empty() {
-        let sampler = LoopSampler::new(mesh, &state.loops, &state.occupied, Some(graphs));
-        seed = sampler.sample_loops(16, axis, OrderedFloat, |(edges, _)| {
-            -sampler.separated_area(edges)
-        });
+    let mut penalties = HashMap::<FaceID, f64>::new();
+    for l in avoid {
+        for face in l.surface.iter().map(|a| a.face).collect::<HashSet<_>>() {
+            *penalties.entry(face).or_default() += 4.;
+        }
     }
-    let count = if crossings.is_empty() {
-        seed.len()
-    } else {
-        if anchors.is_empty() { 0 } else { MAX_SEARCHES }
+    let fields = dualcube_flow::Fields::new(mesh);
+    let field = match axis {
+        Direction::X => &fields.field_x,
+        Direction::Y => &fields.field_y,
+        Direction::Z => &fields.field_z,
     };
-    for attempt in 0..count {
-        if candidates >= MAX_CANDIDATES {
-            break;
-        }
-
-        let sampler = base_sampler.with_extra_proximity(&extra);
-        let (edges, gaps) = if crossings.is_empty() {
-            *total += 1;
-            stats.searches += 1;
-            let edges = seed[attempt].clone();
-            let gaps = sampler.assign_gaps(&edges, axis);
-            (edges, gaps)
-        } else {
-            // Cycle through local anchors; progressively cover each anchor's gaps.
-            let phase = (attempt / 128) % anchors.len();
-            let (sequence, after, starts) = &anchors[phase];
-            let round = attempt / (128 * anchors.len());
-            let index = round * 128 + attempt % 128;
-            let start = starts[spread(index, starts.len())];
-            if failed_starts.contains(&(phase, start)) {
-                continue;
-            }
-            *total += 1;
-            stats.searches += 1;
-            match sampler.crossing_candidate_in_regions(
-                axis,
-                start,
-                sequence,
-                Some((after, gap_regions)),
-                &OrderedFloat,
-            ) {
-                Ok((edges, _, gaps)) => (edges, gaps),
-                Err(CrossingRouteError::RepeatedEdge(edge)) => {
-                    stats.repeated_edge += 1;
-                    last_reentry = Some(Reentry::Edge(edge));
-                    *extra.entry(mesh.face(edge)).or_insert(0.) += 1.;
-                    continue;
-                }
-                Err(CrossingRouteError::ExpansionLimit) => {
-                    stats.expansion_limit += 1;
-                    continue;
-                }
-                Err(CrossingRouteError::NoRoute) => {
-                    stats.no_route += 1;
-                    failed_starts.insert((phase, start));
-                    continue;
-                }
-            }
-        };
-        if edges.is_empty() {
+    let flow: HashMap<_, _> = mesh
+        .face_ids()
+        .into_iter()
+        .map(|f| {
+            (
+                f,
+                mesh.vertices(f)
+                    .filter_map(|v| field.vector_at(v))
+                    .sum::<Vector3D>()
+                    / 3.,
+            )
+        })
+        .collect();
+    let mut phases = vec![];
+    let mut distinct = HashSet::new();
+    for i in 0..crossings.len() {
+        let mut seq = crossings.to_vec();
+        seq.rotate_left(i);
+        let mut after = regions.to_vec();
+        after.rotate_left(i);
+        if !distinct.insert((seq.clone(), after.clone())) {
             continue;
         }
-        let (_, offsets) = sampler.place_loop_in_gaps(&edges, axis, gaps.clone());
-        let l = Loop {
-            edges,
-            offsets,
-            direction: axis,
-        };
-        for &edge in &l.edges {
-            *extra.entry(mesh.face(edge)).or_insert(0.) += 0.5;
+        let anchors = router.anchors(seq[0], *after.last().unwrap(), after[0]);
+        if !anchors.is_empty() {
+            phases.push((seq, after, anchors));
         }
-        if let Some(at) = reentry(mesh, &l) {
-            stats.repeated_face += 1;
-            last_reentry = Some(at);
-            continue;
-        }
-        if !seen.insert((l.edges.clone(), gaps.clone())) {
-            stats.duplicates += 1;
-            continue;
-        }
-        candidates += 1;
-        let mut arrangement_valid = false;
-        let mut topology_valid = false;
-        let mut middle = vec![0.; l.edges.len()];
-        for (exit, gap) in gaps {
-            let edge = l.edges[exit];
-            let order = sampler.loops_on_edge(edge);
-            let lo = if gap == 0 {
-                0.
-            } else {
-                state.loops[order[gap - 1]].offset(edge).unwrap()
-            };
-            let hi = if gap == order.len() {
-                1.
-            } else {
-                state.loops[order[gap]].offset(edge).unwrap()
-            };
-            middle[exit] = (lo + hi) / 2.;
-            middle[(exit + 1) % l.edges.len()] = 1. - middle[exit];
-        }
-        for offsets in [l.offsets.clone(), middle] {
-            let mut l = Loop {
-                edges: l.edges.clone(),
+    }
+    phases.sort_by_key(|p| p.2.len());
+    let mut seeds = vec![];
+    if crossings.is_empty() {
+        let state = LoopState::from_loops(mesh, loops.clone());
+        let sampler = LoopSampler::new(mesh, &state.loops, &state.occupied, Some(graphs));
+        for edges in
+            sampler.sample_loops(16, axis, OrderedFloat, |(e, _)| -sampler.separated_area(e))
+        {
+            let (_, offsets) = sampler.place_loop(&edges, axis);
+            let l = Loop {
+                edges,
                 offsets,
                 direction: axis,
+                surface: vec![],
             };
+            if let Ok(arcs) = l.surface_arcs(mesh) {
+                seeds.push(Loop::from_surface(axis, arcs));
+            }
+        }
+    }
+    let count = if crossings.is_empty() {
+        seeds.len()
+    } else if phases.is_empty() {
+        0
+    } else {
+        MAX_CANDIDATES
+    };
+    let mut seen = Vec::new();
+    for attempt in 0..count {
+        stats.searches += 1;
+        *total += 1;
+        let candidate = if crossings.is_empty() {
+            Ok(seeds.get(attempt).unwrap().clone())
+        } else {
+            let phase = attempt % phases.len();
+            let (seq, after, anchors) = &phases[phase];
+            let index = attempt / phases.len();
+            let anchor =
+                anchors[(index * anchors.len() / MAX_CANDIDATES.max(1) + index) % anchors.len()];
+            router.route(axis, seq, after, anchor, |face, delta| {
+                let length = delta.norm();
+                let f = flow[&face];
+                let confidence = f.norm().min(1.);
+                let alignment = if length > 0. && confidence > 1e-12 {
+                    (delta.dot(&f) / (length * f.norm())).clamp(-1., 1.)
+                } else {
+                    1.
+                };
+                length
+                    * (1.
+                        + 5. * confidence * (1. - alignment)
+                        + penalties.get(&face).copied().unwrap_or(0.))
+            })
+        };
+        let l = match candidate {
+            Ok(l) => l,
+            Err(RouteError::NoRoute) => {
+                stats.no_route += 1;
+                continue;
+            }
+            Err(RouteError::ExpansionLimit) => {
+                stats.expansion_limit += 1;
+                continue;
+            }
+            Err(RouteError::Degenerate) => {
+                stats.invalid_arrangement += 1;
+                continue;
+            }
+        };
+        for face in l.surface.iter().map(|a| a.face).collect::<HashSet<_>>() {
+            *penalties.entry(face).or_default() += 0.5;
+        }
+        let mut valid = false;
+        let shorter = shortcut(mesh, &l, &loops);
+        for mut l in [shorter, l] {
+            if avoid.iter().chain(&seen).any(|old| same_geometry(old, &l)) {
+                stats.duplicates += 1;
+                continue;
+            }
+            seen.push(l.clone());
             for _ in 0..2 {
                 let mut candidate = working.clone();
                 candidate[id] = l.clone();
                 let mut selected = drawn.clone();
                 selected.insert(id);
                 let candidate = subset(&candidate, &selected);
-                if let Ok(topology) = PartialTopology::new(mesh, &candidate) {
-                    arrangement_valid = true;
-                    if topology.equivalent(expected) {
-                        topology_valid = true;
-                        if !avoid.iter().any(|old| same_geometry(old, &l)) {
-                            tracing::debug!(?id, ?stats, "Accepted loop route");
-                            return Ok(l);
-                        }
-                    }
+                let Ok(topology) = PartialTopology::new(mesh, &candidate) else {
+                    // Reversal cannot repair an invalid geometric arrangement.
+                    break;
+                };
+                valid = true;
+                if topology.equivalent(expected) {
+                    tracing::debug!(?id, ?stats, "Accepted surface route");
+                    return Ok(l);
                 }
-                // The template determines orientation; input-space flow is only a geometric cost.
-                l.edges.reverse();
-                l.offsets.reverse();
+                l.reverse();
             }
         }
-        if topology_valid {
-            stats.duplicates += 1;
-        } else if arrangement_valid {
+        if valid {
             stats.topology_rejections += 1;
         } else {
             stats.invalid_arrangement += 1;
         }
     }
-    Err(Failure::SearchExhausted {
-        loop_id: id,
-        stats,
-        reentry: last_reentry,
-    })
+    Err(Failure::SearchExhausted { loop_id: id, stats })
 }
 
-// A coprime stride visits every start before repeating, while spreading nearby attempts.
-fn spread(index: usize, count: usize) -> usize {
-    let mut stride = count / 2 + 1;
-    while gcd(stride, count) != 1 {
-        stride += 1;
-    }
-    index * stride % count
-}
-fn gcd(mut a: usize, mut b: usize) -> usize {
-    while b != 0 {
-        (a, b) = (b, a % b);
-    }
-    a
-}
-
-fn same_geometry(a: &Loop, b: &Loop) -> bool {
-    if a.edges.len() != b.edges.len() {
+pub(super) fn same_geometry(a: &Loop, b: &Loop) -> bool {
+    let n = a.surface.len();
+    if n != b.surface.len() || n == 0 {
         return false;
     }
-    let Some(start) = a.edges.iter().position(|&e| e == b.edges[0]) else {
-        return false;
-    };
-    [false, true].into_iter().any(|reverse| {
-        (0..b.edges.len()).all(|i| {
-            let j = if reverse {
-                (start + a.edges.len() - i) % a.edges.len()
-            } else {
-                (start + i) % a.edges.len()
-            };
-            a.edges[j] == b.edges[i] && (a.offsets[j] - b.offsets[i]).abs() < 1e-8
+    let close = |p: [f64; 2], q: [f64; 2]| (p[0] - q[0]).abs().max((p[1] - q[1]).abs()) < 1e-12;
+    (0..n).any(|start| {
+        [false, true].into_iter().any(|reverse| {
+            a.surface.iter().enumerate().all(|(i, x)| {
+                let y = &b.surface[if reverse {
+                    (start + n - i) % n
+                } else {
+                    (start + i) % n
+                }];
+                let (from, to) = if reverse {
+                    (y.to, y.from)
+                } else {
+                    (y.from, y.to)
+                };
+                x.face == y.face && close(x.from, from) && close(x.to, to)
+            })
         })
     })
+}
+
+// Remove construction bends when the ordered intersections in that triangle stay identical.
+fn shortcut(mesh: &Mesh<INPUT>, l: &Loop, loops: &DualLoops) -> Loop {
+    let mut obstacles = HashMap::<FaceID, Vec<_>>::new();
+    for (id, old) in loops {
+        if let Ok(arcs) = old.surface_arcs(mesh) {
+            for (i, a) in arcs.into_iter().enumerate() {
+                obstacles.entry(a.face).or_default().push((id, i, a));
+            }
+        }
+    }
+    let cross = |a: [f64; 2], b: [f64; 2]| a[0] * b[1] - a[1] * b[0];
+    let hits = |arcs: &[dualcube_dual::SurfaceArc]| {
+        let mut result = Vec::new();
+        for a in arcs {
+            let d = [a.to[0] - a.from[0], a.to[1] - a.from[1]];
+            let mut local = vec![];
+            for (id, i, b) in obstacles.get(&a.face).into_iter().flatten() {
+                let e = [b.to[0] - b.from[0], b.to[1] - b.from[1]];
+                let delta = [b.from[0] - a.from[0], b.from[1] - a.from[1]];
+                let det = cross(d, e);
+                if det.abs() < 1e-15 {
+                    continue;
+                }
+                let t = cross(delta, e) / det;
+                let u = cross(delta, d) / det;
+                if t > 0. && t < 1. && u > 0. && u < 1. {
+                    local.push((OrderedFloat(t), (*id, *i, det > 0.)));
+                }
+            }
+            local.sort();
+            result.extend(local.into_iter().map(|x| x.1));
+        }
+        result
+    };
+    let mut arcs = l.surface.clone();
+    if let Some(start) =
+        (0..arcs.len()).find(|&i| arcs[i].face != arcs[(i + arcs.len() - 1) % arcs.len()].face)
+    {
+        arcs.rotate_left(start);
+    } else {
+        return l.clone();
+    }
+    let mut out = vec![];
+    let mut i = 0;
+    while i < arcs.len() {
+        let end = (i + 1..arcs.len())
+            .find(|&j| arcs[j].face != arcs[i].face)
+            .unwrap_or(arcs.len());
+        let direct = dualcube_dual::SurfaceArc {
+            face: arcs[i].face,
+            from: arcs[i].from,
+            to: arcs[end - 1].to,
+        };
+        if direct.from != direct.to && hits(std::slice::from_ref(&direct)) == hits(&arcs[i..end]) {
+            out.push(direct);
+        } else {
+            out.extend_from_slice(&arcs[i..end]);
+        }
+        i = end;
+    }
+    Loop::from_surface(l.direction, out)
 }

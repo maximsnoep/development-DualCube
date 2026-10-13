@@ -12,6 +12,14 @@ struct LoopsSerialization {
     verts: Vec<(f64, f64, f64)>,           // list of vertex positions
 }
 
+// Version two preserves explicit face segments and legacy edge offsets.
+#[derive(Encode, Decode)]
+struct LoopsV2 {
+    base: LoopsSerialization,
+    surface: Vec<Vec<(usize, [f64; 2], [f64; 2])>>,
+    offsets: Vec<Vec<f64>>,
+}
+
 impl crate::Export for Loops {
     fn export(solution: &Solution, path: &std::path::Path) -> anyhow::Result<()> {
         // Mesh to a list of faces and vertices (positions)
@@ -27,7 +35,9 @@ impl crate::Export for Loops {
         }
 
         let mut faces = vec![];
+        let mut face_ids = HashMap::new();
         for face_id in solution.mesh_ref.face_ids() {
+            face_ids.insert(face_id, faces.len());
             let face_verts = solution
                 .mesh_ref
                 .vertices(face_id)
@@ -72,11 +82,26 @@ impl crate::Export for Loops {
 
         let path_save = path.with_extension("loops");
         let mut file = std::fs::File::create(&path_save)?;
-        let serialized = bitcode::encode(&LoopsSerialization {
+        let base = LoopsSerialization {
             loops,
             faces,
             verts: positions,
-        });
+        };
+        let mut serialized = b"DCL2".to_vec();
+        serialized.extend(bitcode::encode(&LoopsV2 {
+            base,
+            surface: solution
+                .loops
+                .values()
+                .map(|l| {
+                    l.surface
+                        .iter()
+                        .map(|a| (face_ids[&a.face], a.from, a.to))
+                        .collect()
+                })
+                .collect(),
+            offsets: solution.loops.values().map(|l| l.offsets.clone()).collect(),
+        }));
         let compressed = zstd::stream::encode_all(std::io::Cursor::new(&serialized), 0)?;
         file.write_all(&compressed)?;
         Ok(())
@@ -88,7 +113,20 @@ impl crate::Import for Loops {
         let file = std::fs::File::open(path)?;
         let reader = std::io::BufReader::new(file);
         let decompressed = zstd::decode_all(reader)?;
-        let serialized: LoopsSerialization = bitcode::decode(&decompressed)?;
+        let (serialized, surface, offsets) = if let Some(bytes) = decompressed.strip_prefix(b"DCL2")
+        {
+            let v: LoopsV2 = bitcode::decode(bytes)?;
+            if v.surface.len() != v.base.loops.len() || v.offsets.len() != v.base.loops.len() {
+                anyhow::bail!("inconsistent loop geometry counts");
+            }
+            (v.base, v.surface, v.offsets)
+        } else {
+            (
+                bitcode::decode::<LoopsSerialization>(&decompressed)?,
+                vec![],
+                vec![],
+            )
+        };
 
         let positions = serialized
             .verts
@@ -97,7 +135,7 @@ impl crate::Import for Loops {
             .collect::<Vec<_>>();
 
         // Create the mesh
-        let (mesh, vert_map, _face_map) = match Mesh::<INPUT>::from(&serialized.faces, &positions) {
+        let (mesh, vert_map, face_map) = match Mesh::<INPUT>::from(&serialized.faces, &positions) {
             Ok(ok) => ok,
             Err(e) => anyhow::bail!("reading invalid mesh from {}: {:?}", path.display(), e),
         };
@@ -105,7 +143,8 @@ impl crate::Import for Loops {
         let mut solution = Solution::new(Arc::new(mesh.clone()));
 
         // Reconstruct the loops
-        for (loop_dir, loop_edges) in serialized.loops {
+        let mut result = slotmap::SlotMap::with_key();
+        for (index, (loop_dir, loop_edges)) in serialized.loops.into_iter().enumerate() {
             let edges = loop_edges
                 .into_iter()
                 .map(|(start, end)| {
@@ -123,9 +162,42 @@ impl crate::Import for Loops {
                     path.display()
                 ),
             };
-            solution.add_loop(Loop::new(edges, direction));
+            let mut l = Loop::new(edges, direction);
+            if let Some(arcs) = surface.get(index) {
+                l.surface = arcs
+                    .iter()
+                    .map(|&(face, from, to)| {
+                        let mapped = face_map
+                            .key(face)
+                            .copied()
+                            .ok_or_else(|| anyhow::anyhow!("invalid curve face index"))?;
+                        let corners = mesh
+                            .vertices(mapped)
+                            .map(|v| vert_map.id(&v).copied().unwrap())
+                            .collect_vec();
+                        let transform = |p: [f64; 2]| {
+                            let weights = [1. - p[0] - p[1], p[0], p[1]];
+                            let at = |i: usize| {
+                                weights[serialized.faces[face]
+                                    .iter()
+                                    .position(|&v| v == corners[i])
+                                    .unwrap()]
+                            };
+                            [at(1), at(2)]
+                        };
+                        Ok(SurfaceArc {
+                            face: mapped,
+                            from: transform(from),
+                            to: transform(to),
+                        })
+                    })
+                    .collect::<anyhow::Result<Vec<_>>>()?;
+                l.offsets = offsets[index].clone();
+            }
+            result.insert(l);
         }
 
+        solution.replace_loops(result);
         Ok(solution)
     }
 }

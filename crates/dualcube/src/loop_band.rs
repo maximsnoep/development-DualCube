@@ -28,7 +28,24 @@ impl Solution {
     #[must_use]
     pub fn loop_frames(&self, loop_id: LoopID) -> Vec<LoopFrame> {
         let mesh = self.mesh_ref.as_ref();
-        let edges = &self.loops[loop_id].edges;
+        let curve = &self.loops[loop_id];
+        if !curve.surface.is_empty() {
+            let points: Vec<_> = curve
+                .surface
+                .iter()
+                .map(|a| SurfaceArc::position(mesh, a.face, a.from))
+                .collect();
+            let segments: Vec<_> = curve.surface.iter().map(|a| mesh.normal(a.face)).collect();
+            let normals: Vec<_> = (0..segments.len())
+                .map(|i| {
+                    (segments[i] + segments[(i + segments.len() - 1) % segments.len()])
+                        .try_normalize(1e-12)
+                        .unwrap_or(segments[i])
+                })
+                .collect();
+            return frames(&points, &normals, &segments, true);
+        }
+        let edges = &curve.edges;
         let positions = self.get_coordinates_of_loop(loop_id);
         let n = positions.len().min(edges.len());
         if n < 2 {

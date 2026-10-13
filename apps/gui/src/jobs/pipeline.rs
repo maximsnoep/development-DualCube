@@ -91,6 +91,9 @@ fn completed(stage: Stage, solution: Solution, configuration: &Configuration) ->
 #[allow(dead_code)]
 impl Job {
     pub fn can_optimize(solution: &Solution, configuration: &Configuration) -> bool {
+        if solution.has_surface_curves() {
+            return false;
+        }
         (solution.layout.is_some() && solution.loops.len() >= 3)
             || (configuration.initialization == crate::resources::Initialization::Minimal
                 && crate::resources::genus(&solution.mesh_ref) == Some(0))

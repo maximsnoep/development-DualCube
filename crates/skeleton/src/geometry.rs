@@ -27,6 +27,7 @@ pub struct BoundaryCurve {
     pub edge: SkeletonEdgeID,
     /// Oriented closed polyline, with the first point repeated at the end.
     pub points: Vec<Vector3D>,
+    pub arcs: Vec<dualcube_dual::SurfaceArc>,
 }
 
 #[derive(Clone, Debug, Default)]
@@ -151,12 +152,38 @@ impl SurfaceGeometry {
         }
         for (id, edge) in &skeleton.edges {
             let mut points = Vec::new();
+            let mut surface = Vec::new();
             for start in &edge.boundary.crossings {
                 let arc = &arcs[start];
                 points.extend_from_slice(&arc[..arc.len() - 1]);
+                let face = mesh.face(mesh.twin(skeleton.surface.crossings[*start].exit));
+                let corners: Vec<_> = mesh.vertices(face).map(|v| mesh.position(v)).collect();
+                let u = corners[1] - corners[0];
+                let v = corners[2] - corners[0];
+                let uu = u.dot(&u);
+                let uv = u.dot(&v);
+                let vv = v.dot(&v);
+                let det = uu * vv - uv * uv;
+                let coordinates = |p: Vector3D| {
+                    let d = p - corners[0];
+                    let a = d.dot(&u);
+                    let b = d.dot(&v);
+                    [(a * vv - b * uv) / det, (b * uu - a * uv) / det]
+                };
+                for pair in arc.windows(2) {
+                    surface.push(dualcube_dual::SurfaceArc {
+                        face,
+                        from: coordinates(pair[0]),
+                        to: coordinates(pair[1]),
+                    });
+                }
             }
             points.push(points[0]);
-            result.boundaries.push(BoundaryCurve { edge: id, points });
+            result.boundaries.push(BoundaryCurve {
+                edge: id,
+                points,
+                arcs: surface,
+            });
         }
         // Also detects regions too small for this floating-point realization.
         if result.centroids()?.len() != skeleton.nodes.len() {

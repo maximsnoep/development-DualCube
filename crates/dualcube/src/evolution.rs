@@ -1040,6 +1040,10 @@ impl Solution {
         params: &EvolutionParams,
         monitor: &EvolutionMonitor,
     ) -> Result<Self, SolutionError> {
+        // TODO: Migrate mutations to occurrence-aware surface curves.
+        if self.has_surface_curves() {
+            return Err(SolutionError::SurfaceCurveEvolution);
+        }
         let (mut live, mut mu, mut lambda) = params.live(monitor);
         let Some(initial_quality) = self.get_quality() else {
             return Err(SolutionError::NoPrimal);

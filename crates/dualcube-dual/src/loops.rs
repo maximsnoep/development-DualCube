@@ -1,4 +1,5 @@
 use crate::sampler::LoopSampler;
+use crate::surface_curve::SurfaceArc;
 use dualcube_types::prelude::*;
 use serde::{Deserialize, Serialize};
 use slotmap::SlotMap;
@@ -12,6 +13,10 @@ slotmap::new_key_type! {
 pub struct Loop {
     pub edges: Vec<EdgeID>,
     pub direction: Direction,
+    /// Explicit oriented segments in input triangles. When present, these define the curve;
+    /// `edges` and `offsets` belong only to the legacy straight-chord representation.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub surface: Vec<SurfaceArc>,
     // Any number of loops may cross the same mesh edge. For every half-edge in `edges`, this stores
     // the relative position (in (0, 1), from root to tip) at which the loop crosses that half-edge.
     // The positions define the order of all loops crossing the same edge (and the geometry of the loop).
@@ -199,14 +204,18 @@ impl LoopStateMut<'_> {
 
     fn insert(&mut self, l: Loop) -> LoopID {
         let loop_id = self.loops.insert(l);
-        self.place(loop_id, None);
+        if self.loops[loop_id].surface.is_empty() {
+            self.place(loop_id, None);
+        }
         loop_id
     }
 
     /// Add a loop into the given gaps of the existing loop orders (see `LoopSampler::construct_valid_loop`).
     pub fn add_loop_in_gaps(&mut self, l: Loop, gaps: Vec<(usize, usize)>) -> LoopID {
         let loop_id = self.loops.insert(l);
-        self.place(loop_id, Some(gaps));
+        if self.loops[loop_id].surface.is_empty() {
+            self.place(loop_id, Some(gaps));
+        }
         loop_id
     }
 
@@ -272,6 +281,7 @@ impl Loop {
             edges,
             direction,
             offsets: vec![],
+            surface: vec![],
         }
     }
 

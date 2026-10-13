@@ -513,6 +513,7 @@ fn input_loop(
         return None;
     }
     Some(Loop {
+        surface: vec![],
         edges,
         direction,
         offsets,

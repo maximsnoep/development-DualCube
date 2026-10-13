@@ -6,6 +6,10 @@
 use crate::prelude::*;
 
 impl Solution {
+    pub fn has_surface_curves(&self) -> bool {
+        self.loops.values().any(|l| !l.surface.is_empty())
+    }
+
     /// Install a complete or diagnostic loop set, preserving valid crossing offsets.
     pub fn replace_loops(&mut self, loops: slotmap::SlotMap<LoopID, Loop>) {
         let state = LoopState::from_loops(&self.mesh_ref, loops);
@@ -63,9 +67,12 @@ impl Solution {
             dual.has_locator()
                 && dual.loops_ref.len() == self.loops.len()
                 && self.loops.iter().all(|(id, l)| {
-                    dual.loops_ref
-                        .get(id)
-                        .is_some_and(|d| d.edges == l.edges && d.offsets == l.offsets)
+                    dual.loops_ref.get(id).is_some_and(|d| {
+                        d.edges == l.edges
+                            && d.offsets == l.offsets
+                            && d.surface == l.surface
+                            && d.direction == l.direction
+                    })
                 })
         })
     }
