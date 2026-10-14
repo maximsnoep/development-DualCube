@@ -93,15 +93,7 @@ pub fn attempt(mesh: &Mesh<INPUT>, realized: &RealizedSkeleton) -> SkeletonResul
         result.failure = Some(Failure::BoundaryTopology);
         return Ok(result);
     }
-    let fields = dualcube_flow::Fields::new(mesh);
-    let graphs = dualcube_flow::build_flow_graphs(
-        mesh,
-        &fields,
-        dualcube_flow::GraphParams {
-            max_deviation: std::f64::consts::PI,
-            ..Default::default()
-        },
-    );
+    let flows = route::Flows::new(mesh, drawn.is_empty());
     let full = PartialTopology::new(&template.mesh, &template.loops)?;
     let mut history = Vec::<LoopID>::new();
     let mut alternatives = HashMap::<LoopID, Vec<Loop>>::new();
@@ -129,7 +121,8 @@ pub fn attempt(mesh: &Mesh<INPUT>, realized: &RealizedSkeleton) -> SkeletonResul
         let expected = PartialTopology::new(&template.mesh, &subset(&template.loops, &selected))?;
         let before = subset(&template.loops, &drawn);
         let old = PartialTopology::new(&template.mesh, &before)?;
-        let actual = PartialTopology::new(mesh, &result.loops)?;
+        let (router, actual) =
+            dualcube_dual::surface_router::SurfaceRouter::with_topology(mesh, &result.loops)?;
         let mut mappings = old.region_correspondences(&actual, 16);
         if mappings.is_empty() {
             return Err("Lost partial topology correspondence".into());
@@ -141,7 +134,6 @@ pub fn attempt(mesh: &Mesh<INPUT>, realized: &RealizedSkeleton) -> SkeletonResul
             id,
         )?;
         let crossings: Vec<_> = itinerary.iter().map(|&(partner, _)| partner).collect();
-        let router = dualcube_dual::surface_router::SurfaceRouter::new(mesh, &result.loops)?;
         let mut gap_counts = vec![0usize; actual.regions];
         for &r in &router.regions {
             gap_counts[r] += 1;
@@ -160,7 +152,7 @@ pub fn attempt(mesh: &Mesh<INPUT>, realized: &RealizedSkeleton) -> SkeletonResul
             let regions: Vec<_> = itinerary.iter().map(|&(_, r)| mapping[r]).collect();
             let candidate = route::find(
                 mesh,
-                &graphs,
+                &flows,
                 &working,
                 &drawn,
                 id,

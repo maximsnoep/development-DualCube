@@ -16,3 +16,6 @@ pub use pipeline::{SkeletonRun, run};
 
 /// Result of an initialization step.
 pub type SkeletonResult<T> = Result<T, Box<dyn std::error::Error + Send + Sync>>;
+
+#[cfg(test)]
+mod reference_drawing;

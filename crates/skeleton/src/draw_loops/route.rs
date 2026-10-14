@@ -4,13 +4,63 @@ use dualcube_dual::{
     surface_router::{RouteError, SurfaceRouter},
 };
 
+#[derive(Default, Debug)]
+struct Timings {
+    setup: std::time::Duration,
+    search: std::time::Duration,
+    shortcut: std::time::Duration,
+    validation: std::time::Duration,
+    equivalence: std::time::Duration,
+}
+impl Drop for Timings {
+    fn drop(&mut self) {
+        tracing::debug!(?self, "Surface route timings");
+    }
+}
+
+pub(super) struct Flows {
+    vectors: [HashMap<FaceID, Vector3D>; 3],
+    graphs: Option<[FlowGraph; 3]>,
+}
+
+impl Flows {
+    pub(super) fn new(mesh: &Mesh<INPUT>, needs_seed: bool) -> Self {
+        let fields = dualcube_flow::Fields::new(mesh);
+        let vectors = [&fields.field_x, &fields.field_y, &fields.field_z].map(|field| {
+            mesh.face_ids()
+                .into_iter()
+                .map(|f| {
+                    (
+                        f,
+                        mesh.vertices(f)
+                            .filter_map(|v| field.vector_at(v))
+                            .sum::<Vector3D>()
+                            / 3.,
+                    )
+                })
+                .collect()
+        });
+        let graphs = needs_seed.then(|| {
+            dualcube_flow::build_flow_graphs(
+                mesh,
+                &fields,
+                dualcube_flow::GraphParams {
+                    max_deviation: std::f64::consts::PI,
+                    ..Default::default()
+                },
+            )
+        });
+        Self { vectors, graphs }
+    }
+}
+
 // TODO: Tune the candidate budget, backtracking choices, and geometric objective.
 const MAX_CANDIDATES: usize = 64;
 
 #[allow(clippy::too_many_arguments)]
 pub(super) fn find(
     mesh: &Mesh<INPUT>,
-    graphs: &[FlowGraph; 3],
+    flows: &Flows,
     working: &DualLoops,
     drawn: &HashSet<LoopID>,
     id: LoopID,
@@ -21,6 +71,8 @@ pub(super) fn find(
     avoid: &[Loop],
     total: &mut usize,
 ) -> Result<Loop, Failure> {
+    let mut timing = Timings::default();
+    let setup = std::time::Instant::now();
     let loops = subset(working, drawn);
     let axis = working[id].direction;
     let mut stats = SearchStats::default();
@@ -30,25 +82,11 @@ pub(super) fn find(
             *penalties.entry(face).or_default() += 4.;
         }
     }
-    let fields = dualcube_flow::Fields::new(mesh);
-    let field = match axis {
-        Direction::X => &fields.field_x,
-        Direction::Y => &fields.field_y,
-        Direction::Z => &fields.field_z,
-    };
-    let flow: HashMap<_, _> = mesh
-        .face_ids()
-        .into_iter()
-        .map(|f| {
-            (
-                f,
-                mesh.vertices(f)
-                    .filter_map(|v| field.vector_at(v))
-                    .sum::<Vector3D>()
-                    / 3.,
-            )
-        })
-        .collect();
+    let flow = &flows.vectors[match axis {
+        Direction::X => 0,
+        Direction::Y => 1,
+        Direction::Z => 2,
+    }];
     let mut phases = vec![];
     let mut distinct = HashSet::new();
     for i in 0..crossings.len() {
@@ -68,7 +106,7 @@ pub(super) fn find(
     let mut seeds = vec![];
     if crossings.is_empty() {
         let state = LoopState::from_loops(mesh, loops.clone());
-        let sampler = LoopSampler::new(mesh, &state.loops, &state.occupied, Some(graphs));
+        let sampler = LoopSampler::new(mesh, &state.loops, &state.occupied, flows.graphs.as_ref());
         for edges in
             sampler.sample_loops(16, axis, OrderedFloat, |(e, _)| -sampler.separated_area(e))
         {
@@ -91,10 +129,12 @@ pub(super) fn find(
     } else {
         MAX_CANDIDATES
     };
+    timing.setup += setup.elapsed();
     let mut seen = Vec::new();
     for attempt in 0..count {
         stats.searches += 1;
         *total += 1;
+        let search = std::time::Instant::now();
         let candidate = if crossings.is_empty() {
             Ok(seeds.get(attempt).unwrap().clone())
         } else {
@@ -118,6 +158,7 @@ pub(super) fn find(
                         + penalties.get(&face).copied().unwrap_or(0.))
             })
         };
+        timing.search += search.elapsed();
         let l = match candidate {
             Ok(l) => l,
             Err(RouteError::NoRoute) => {
@@ -137,29 +178,37 @@ pub(super) fn find(
             *penalties.entry(face).or_default() += 0.5;
         }
         let mut valid = false;
+        let short = std::time::Instant::now();
         let shorter = shortcut(mesh, &l, &loops);
+        timing.shortcut += short.elapsed();
         for mut l in [shorter, l] {
             if avoid.iter().chain(&seen).any(|old| same_geometry(old, &l)) {
                 stats.duplicates += 1;
                 continue;
             }
             seen.push(l.clone());
+            let mut candidate = working.clone();
+            candidate[id] = l.clone();
+            let mut selected = drawn.clone();
+            selected.insert(id);
+            let candidate = subset(&candidate, &selected);
+            let validation = std::time::Instant::now();
+            let topology = PartialTopology::new(mesh, &candidate);
+            timing.validation += validation.elapsed();
+            let Ok(mut topology) = topology else {
+                continue;
+            };
+            valid = true;
             for _ in 0..2 {
-                let mut candidate = working.clone();
-                candidate[id] = l.clone();
-                let mut selected = drawn.clone();
-                selected.insert(id);
-                let candidate = subset(&candidate, &selected);
-                let Ok(topology) = PartialTopology::new(mesh, &candidate) else {
-                    // Reversal cannot repair an invalid geometric arrangement.
-                    break;
-                };
-                valid = true;
-                if topology.equivalent(expected) {
+                let matching = std::time::Instant::now();
+                let equivalent = topology.equivalent(expected);
+                timing.equivalence += matching.elapsed();
+                if equivalent {
                     tracing::debug!(?id, ?stats, "Accepted surface route");
                     return Ok(l);
                 }
                 l.reverse();
+                topology.reverse_loop(id);
             }
         }
         if valid {

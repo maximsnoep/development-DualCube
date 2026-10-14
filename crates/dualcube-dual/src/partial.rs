@@ -19,7 +19,13 @@ impl PartialTopology {
         mesh: &Mesh<INPUT>,
         loops: &SlotMap<LoopID, Loop>,
     ) -> Result<Self, PropertyViolationError> {
-        let arrangement = Arrangement::new(mesh, loops)?;
+        Self::from_arrangement(mesh, &Arrangement::new(mesh, loops)?)
+    }
+
+    pub(crate) fn from_arrangement(
+        mesh: &Mesh<INPUT>,
+        arrangement: &Arrangement,
+    ) -> Result<Self, PropertyViolationError> {
         let (components, regions, _) = arrangement.components(mesh)?;
         let chi = arrangement.region_euler(mesh, &components, regions)?;
         let mut sides = HashMap::new();
@@ -49,13 +55,36 @@ impl PartialTopology {
             }
         }
         Ok(Self {
-            along: arrangement.loop_crossings,
+            along: arrangement.loop_crossings.clone(),
             crossings,
             positive,
             sides,
             regions,
             chi,
         })
+    }
+
+    /// Reverse one loop's traversal without changing its geometry or rebuilding the arrangement.
+    pub fn reverse_loop(&mut self, id: LoopID) {
+        let along = self
+            .along
+            .get_mut(&id)
+            .expect("loop belongs to this topology");
+        if along.is_empty() {
+            self.sides.get_mut(&(id, 0)).unwrap().swap(0, 1);
+            return;
+        }
+        let count = along.len();
+        let sides: Vec<_> = (0..count).map(|i| self.sides[&(id, i)]).collect();
+        for &crossing in along.iter() {
+            self.positive[crossing] = !self.positive[crossing];
+        }
+        along.reverse();
+        for i in 0..count {
+            // After a reversed crossing is the interval before its original occurrence.
+            let [left, right] = sides[(2 * count - 2 - i) % count];
+            self.sides.insert((id, i), [right, left]);
+        }
     }
 
     /// Exact correspondence preserving loop IDs, orientation, boundary cycles, and region genus.
@@ -276,3 +305,6 @@ impl PartialTopology {
         }
     }
 }
+
+#[cfg(test)]
+mod tests;

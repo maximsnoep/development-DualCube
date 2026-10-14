@@ -29,7 +29,24 @@ impl SurfaceRouter {
         mesh: &Mesh<INPUT>,
         loops: &SlotMap<LoopID, Loop>,
     ) -> Result<Self, PropertyViolationError> {
-        let mut old = Arrangement::new(mesh, loops)?;
+        Self::from_arrangement(mesh, loops, Arrangement::new(mesh, loops)?)
+    }
+
+    /// Share arrangement construction with the topology used to constrain this router.
+    pub fn with_topology(
+        mesh: &Mesh<INPUT>,
+        loops: &SlotMap<LoopID, Loop>,
+    ) -> Result<(Self, crate::partial::PartialTopology), PropertyViolationError> {
+        let arrangement = Arrangement::new(mesh, loops)?;
+        let topology = crate::partial::PartialTopology::from_arrangement(mesh, &arrangement)?;
+        Ok((Self::from_arrangement(mesh, loops, arrangement)?, topology))
+    }
+
+    fn from_arrangement(
+        mesh: &Mesh<INPUT>,
+        loops: &SlotMap<LoopID, Loop>,
+        mut old: Arrangement,
+    ) -> Result<Self, PropertyViolationError> {
         let (components, _, _) = old.components(mesh)?;
         let (cells, regions) = if let Some(cells) = old.general.take() {
             (cells, components)

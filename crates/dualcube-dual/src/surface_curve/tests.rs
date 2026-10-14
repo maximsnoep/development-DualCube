@@ -199,7 +199,10 @@ fn routes_through_a_region_entirely_inside_one_triangle() {
             })
             .collect(),
     ));
-    let router = crate::surface_router::SurfaceRouter::new(&mesh, &loops).unwrap();
+    let (router, topology) = crate::surface_router::SurfaceRouter::with_topology(&mesh, &loops).unwrap();
+    let separate = crate::surface_router::SurfaceRouter::new(&mesh, &loops).unwrap();
+    assert_eq!(router.regions, separate.regions);
+    assert!(topology.equivalent(&crate::partial::PartialTopology::new(&mesh, &loops).unwrap()));
     let mut found = false;
     for before in 0..2 {
         let after = 1 - before;
