@@ -103,15 +103,12 @@ pub struct CornerHint {
     region_of: HashMap<VertID, usize>,
     sizes: Vec<usize>,
     positions: Vec<Vector3D>,
-    // The styles of the paths (by the regions of their corners, both orientations).
-    styles: HashMap<(usize, usize), PathStyle>,
 }
 
-/// The targets of a layout from a `CornerHint`: positions of the corners per region, and styles of the paths.
+/// The targets of a layout from a `CornerHint`: positions of the corners per region.
 #[derive(Debug, Default)]
 pub struct LayoutTargets {
     pub corners: HashMap<LoopRegionID, Vector3D>,
-    pub styles: HashMap<EdgeKey<POLYCUBE>, PathStyle>,
 }
 
 // The fraction of the vertices that two regions must share to be the same region (see `CornerHint`).
@@ -127,7 +124,6 @@ impl CornerHint {
             region_of: HashMap::new(),
             sizes: vec![],
             positions: vec![],
-            styles: HashMap::new(),
         };
         let mut index_of = HashMap::new();
         for region in dual.loop_structure.face_ids() {
@@ -149,24 +145,13 @@ impl CornerHint {
                 hint.region_of.insert(v, index);
             }
         }
-        let structure = &layout.polycube_ref.structure;
-        for (&edge, &style) in &layout.path_styles {
-            if let Some([u, v]) = structure.vertices(edge).collect_array::<2>()
-                && let (Some(&a), Some(&b)) = (index_of.get(&u), index_of.get(&v))
-            {
-                hint.styles.insert((a, b), style);
-                hint.styles.insert((b, a), style);
-            }
-        }
         Some(hint)
     }
 
-    /// The targets of the corners of the regions of a (similar) dual structure, and of the styles of the paths
-    /// between matched corners.
+    /// The targets of the corners of the regions of a (similar) dual structure.
     #[must_use]
     pub fn targets(&self, dual: &Dual, polycube: &Polycube) -> LayoutTargets {
         let mut targets = LayoutTargets::default();
-        let mut matched = HashMap::new();
         for region in dual.loop_structure.face_ids() {
             if polycube.region_to_vertex.get_by_left(&region).is_none() {
                 continue;
@@ -183,17 +168,6 @@ impl CornerHint {
                 && count as f64 >= HINT_OVERLAP * self.sizes[index] as f64
             {
                 targets.corners.insert(region, self.positions[index]);
-                if let Some(&corner) = polycube.region_to_vertex.get_by_left(&region) {
-                    matched.insert(corner, index);
-                }
-            }
-        }
-        for edge in polycube.structure.edge_ids() {
-            if let Some([u, v]) = polycube.structure.vertices(edge).collect_array::<2>()
-                && let (Some(&a), Some(&b)) = (matched.get(&u), matched.get(&v))
-                && let Some(&style) = self.styles.get(&(a, b))
-            {
-                targets.styles.insert(edge, style);
             }
         }
         targets

@@ -83,7 +83,7 @@ impl DualPhase {
                 &polycube,
                 params.candidates,
                 attempt,
-                targets.as_ref().map(|t| (&t.corners, &t.styles)),
+                targets.as_ref().map(|t| &t.corners),
             ) {
                 Ok(ok_layout) => {
                     layout = Some(ok_layout);

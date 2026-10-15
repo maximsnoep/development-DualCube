@@ -117,35 +117,6 @@ pub struct Patch {
 /// smooth surface).
 pub const SHARP_ANGLE: f64 = std::f64::consts::PI / 3.;
 
-/// How the path of a polycube edge is computed: the cost per unit of length of the shortest path between its corners.
-/// Which style is best differs per edge; the layout evolution tries them (see `Layout::set_path_style`).
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash, Serialize, Deserialize)]
-pub enum PathStyle {
-    /// Cheaper along ridges of the mesh whose dihedral angle matches that of the polycube edge (the original method).
-    #[default]
-    Ridge,
-    /// The shortest path.
-    Shortest,
-    /// Cheaper in the direction of the polycube edge (its axis).
-    Axis,
-    /// Cheaper along sharp features of the mesh (edges with a large dihedral angle, whatever the polycube edge).
-    Feature,
-}
-
-impl PathStyle {
-    pub const ALL: [Self; 4] = [Self::Ridge, Self::Shortest, Self::Axis, Self::Feature];
-
-    // The smallest cost per unit of length (a lower bound for the A* heuristic).
-    const fn min_factor(self) -> f64 {
-        match self {
-            Self::Ridge => 0.5,
-            Self::Shortest => 1.,
-            Self::Axis => 0.5,
-            Self::Feature => 0.3,
-        }
-    }
-}
-
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct Layout {
     // TODO: make this an actual (arc) reference
@@ -165,9 +136,6 @@ pub struct Layout {
 
     #[serde(skip)]
     pub regions: Option<RegionTracking>,
-    /// The style of every path (both orientations of an edge); `PathStyle::default()` if missing.
-    #[serde(skip)]
-    pub path_styles: HashMap<EdgeKey<POLYCUBE>, PathStyle>,
     /// Per patch: the area and the alignment (normal . label) of each of its triangles (see `compute_quality`), such
     /// that quality terms over the triangles need no geometry, and only changed patches are computed again.
     #[serde(skip)]
@@ -203,7 +171,6 @@ impl Layout {
             alignment_per_triangle: ids::SecMap::new(),
             alignment: None,
             regions: None,
-            path_styles: HashMap::new(),
             patch_triangles: HashMap::new(),
             patch_normals: HashMap::new(),
             patch_bounds: None,
@@ -223,7 +190,6 @@ impl Layout {
             alignment_per_triangle: ids::SecMap::new(),
             alignment: None,
             regions: None,
-            path_styles: HashMap::new(),
             patch_triangles: HashMap::new(),
             patch_normals: HashMap::new(),
             patch_bounds: None,
@@ -271,23 +237,16 @@ impl Layout {
     }
 
     /// See `embed_best_attempt`; the corners of the regions with a target are placed as close as possible to it (e.g.,
-    /// the positions of the corners of a similar layout, see `place_all_corners_near`), and the paths get the given
-    /// styles.
+    /// the positions of the corners of a similar layout, see `place_all_corners_near`).
     pub fn embed_best_attempt_near(
         dual_ref: &Dual,
         polycube_ref: &Polycube,
         candidates: usize,
         attempt: usize,
-        targets: Option<(
-            &HashMap<LoopRegionID, Vector3D>,
-            &HashMap<EdgeKey<POLYCUBE>, PathStyle>,
-        )>,
+        targets: Option<&HashMap<LoopRegionID, Vector3D>>,
     ) -> Result<Self, LayoutError> {
         let mut layout = Self::new(dual_ref, polycube_ref);
-        if let Some((_, styles)) = targets {
-            layout.path_styles = styles.clone();
-        }
-        layout.place_all_corners_near(None, targets.map(|(corners, _)| corners));
+        layout.place_all_corners_near(None, targets);
         layout.place_paths_best_attempt(candidates, attempt)?;
         Ok(layout)
     }
@@ -958,20 +917,7 @@ impl Layout {
         let normal_on_right = polycube.normal(polycube.face(polycube.twin(edge_id)));
 
         let angle_between_normals = normal_on_left.angle(&normal_on_right);
-        let style = self.path_styles.get(&edge_id).copied().unwrap_or_default();
 
-        // The direction of the polycube edge (an axis).
-        let axis = (polycube.position(pv) - polycube.position(pu)).normalize();
-        // The dihedral angle at the mesh edge between two vertices.
-        let dihedral = |a: VertID, b: VertID| {
-            granulated_mesh
-                .edge_between_verts(a, b)
-                .map_or(0., |(edge1, edge2)| {
-                    granulated_mesh
-                        .normal(granulated_mesh.face(edge1))
-                        .angle(&granulated_mesh.normal(granulated_mesh.face(edge2)))
-                })
-        };
         let (unit_left, unit_right) = (normal_on_left.normalize(), normal_on_right.normalize());
         let ridge_function = |a: NodeType, b: NodeType| {
             if normal_on_left == normal_on_right {
@@ -1031,38 +977,18 @@ impl Layout {
                 1.
             }
         };
-        let factor = |a: NodeType, b: NodeType| {
-            match style {
-                PathStyle::Ridge => ridge_function(a, b),
-                PathStyle::Shortest => 1.,
-                PathStyle::Axis => {
-                    // From 0.5 (along the axis) to 1.5 (orthogonal to it).
-                    let direction = nodetype_to_pos(b) - nodetype_to_pos(a);
-                    let norm = direction.norm();
-                    if norm > 0. {
-                        1.5 - direction.dot(&axis).abs() / norm
-                    } else {
-                        1.
-                    }
-                }
-                PathStyle::Feature => match (a, b) {
-                    (NodeType::Vertex(a), NodeType::Vertex(b)) if dihedral(a, b) > SHARP_ANGLE => {
-                        0.3
-                    }
-                    _ => 1.,
-                },
-            }
-        };
+        let factor = ridge_function;
         let w_function = |(a, b)| {
             OrderedFloat(factor(a, b) * nodetype_to_pos(a).metric_distance(&nodetype_to_pos(b)))
         };
-        let heuristic_scale = if style == PathStyle::Ridge && normal_on_left == normal_on_right {
+        // (Along ridges an edge costs half its length; between coplanar faces there are no ridges.)
+        let heuristic_scale = if normal_on_left == normal_on_right {
             1.0
         } else {
-            style.min_factor()
+            0.5
         };
         let h_function = |(a, b)| {
-            // Edge weights are at least `heuristic_scale * Euclidean distance` (see `PathStyle::min_factor`).
+            // Edge weights are at least `heuristic_scale * Euclidean distance` .
             OrderedFloat(heuristic_scale * nodetype_to_pos(a).metric_distance(&nodetype_to_pos(b)))
         };
 
@@ -1825,25 +1751,6 @@ impl Layout {
     /// Remove the path of a polycube edge and compute it again (with all other paths in place, which may have changed
     /// since it was placed), and re-assign the patches.
     pub fn reroute_path(&mut self, edge: EdgeKey<POLYCUBE>) -> Result<(), LayoutError> {
-        self.reroute_path_with(edge, None)
-    }
-
-    /// Set the style of the path of a polycube edge (both orientations); it is used whenever the path is computed.
-    pub fn set_path_style(&mut self, edge: EdgeKey<POLYCUBE>, style: PathStyle) {
-        let twin = self.polycube_ref.structure.twin(edge);
-        self.path_styles.insert(edge, style);
-        self.path_styles.insert(twin, style);
-    }
-
-    /// See `reroute_path`; with a new style for the path (if given).
-    pub fn reroute_path_with(
-        &mut self,
-        edge: EdgeKey<POLYCUBE>,
-        style: Option<PathStyle>,
-    ) -> Result<(), LayoutError> {
-        if let Some(style) = style {
-            self.set_path_style(edge, style);
-        }
         self.edge_to_path.remove(&edge);
         self.edge_to_path
             .remove(&self.polycube_ref.structure.twin(edge));

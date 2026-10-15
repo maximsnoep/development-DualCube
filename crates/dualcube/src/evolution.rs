@@ -15,8 +15,6 @@
 //! - a `free loops` mutation adds the cheapest valid loop over all sequences of regions (see `EvolutionParams`),
 //! - a `replace` mutation searches the cheapest path for a loop that crosses the same loops in the same order (it
 //!   keeps the loop structure, and only moves the loop),
-//! - a `reroute` mutation routes the worse half of a loop again, freely (crossing any loops of other axes, in any
-//!   order; the loop structure may change),
 //! - a `merge` mutation replaces two neighboring loops of the same axis by one loop that crosses everything that they
 //!   cross (the union of their crossings), or the crossings of one of them, preferably for loops that run alongside
 //!   each other (crossing the same loops, close together),
@@ -48,16 +46,19 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard};
 use std::time::Instant;
 
+mod annealing;
+pub use annealing::AnnealParams;
+
 /// The phases of the evolution of the loops: each uses its own mix of the mutations (see `LoopPhase::prior`).
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub enum LoopPhase {
     /// Many new initial loop structures, each with a few generations of additions; the best is kept (see
     /// `Solution::optimize`).
     Initialization,
-    /// Mostly additions, and moving loops (replace, reroute); sometimes merges.
+    /// Mostly additions, and moving loops (replace); sometimes merges.
     #[default]
     Growth,
-    /// Moving loops (replace, reroute), merges, and removals; no additions.
+    /// Moving loops (replace), merges, and removals; no additions.
     Optimization,
     /// Mostly removals, and merges. Not chosen, but an interlude of growth and optimization: it starts by itself when
     /// they did not improve for `EvolutionParams::phase_patience` generations, and lasts
@@ -122,30 +123,17 @@ impl LoopPhase {
                 ("feature", 0.1),
                 ("free loops", 0.1),
                 ("replace", 0.2),
-                ("reroute", 0.2),
                 ("merge", 0.05),
             ],
-            Self::Optimization => &[
-                ("replace", 0.35),
-                ("reroute", 0.35),
-                ("merge", 0.15),
-                ("remove", 0.15),
-            ],
+            Self::Optimization => &[("replace", 0.35), ("merge", 0.15), ("remove", 0.15)],
             Self::Pruning => &[("remove", 0.6), ("merge", 0.4)],
         }
     }
 }
 
 /// The mutations of the loops, by their names in the statistics (see the module documentation).
-pub const LOOP_MUTATIONS: [&str; 7] = [
-    "add",
-    "remove",
-    "replace",
-    "reroute",
-    "merge",
-    "feature",
-    "free loops",
-];
+pub const LOOP_MUTATIONS: [&str; 6] =
+    ["add", "remove", "replace", "merge", "feature", "free loops"];
 
 // The prior weight of a mutation that is switched on in a phase that does not use it by default.
 const OFF_PHASE_WEIGHT: f64 = 0.1;
@@ -326,7 +314,11 @@ const MERGE_DISTANCE: f64 = 0.05;
 fn relative_distance(a: &[Vector3D], b: &[Vector3D]) -> f64 {
     let nearest = |from: &[Vector3D], to: &[Vector3D]| {
         from.iter()
-            .map(|p| to.iter().map(|q| (p - q).norm()).fold(f64::INFINITY, f64::min))
+            .map(|p| {
+                to.iter()
+                    .map(|q| (p - q).norm())
+                    .fold(f64::INFINITY, f64::min)
+            })
             .sum::<f64>()
             / from.len().max(1) as f64
     };
@@ -382,7 +374,13 @@ fn union_order(first: &[LoopID], second: &[LoopID]) -> Vec<LoopID> {
         .iter()
         .flat_map(|b| {
             (0..b.len().max(1)).map(move |r| {
-                let rotated = b.iter().cycle().skip(r).take(b.len()).copied().collect_vec();
+                let rotated = b
+                    .iter()
+                    .cycle()
+                    .skip(r)
+                    .take(b.len())
+                    .copied()
+                    .collect_vec();
                 supersequence(first, &rotated)
             })
         })
@@ -419,6 +417,25 @@ pub(crate) fn pick_weighted<T: Copy>(items: impl IntoIterator<Item = (T, f64)>) 
         }
     }
     items.last().map(|(item, _)| *item)
+}
+
+// Report the chances of all mutations to the monitor (those not used, with chance 0).
+fn report_chances(
+    monitor: &EvolutionMonitor,
+    selection: &MutationSelection,
+    chances: &[(&'static str, f64)],
+) {
+    let reported = LOOP_MUTATIONS
+        .iter()
+        .map(|&name| {
+            let chance = chances
+                .iter()
+                .find(|(mutation, _)| *mutation == name)
+                .map_or(0., |&(_, chance)| chance);
+            (name, chance)
+        })
+        .collect_vec();
+    monitor.record_chances(&selection.report(&reported));
 }
 
 /// A random mutation with the given chances.
@@ -467,7 +484,14 @@ impl EvolutionParams {
                     .iter()
                     .find(|(mutation, _)| *mutation == name)
                     .map_or(OFF_PHASE_WEIGHT, |&(_, weight)| weight);
-                (name, if self.is_enabled(phase, name) { weight } else { 0. })
+                (
+                    name,
+                    if self.is_enabled(phase, name) {
+                        weight
+                    } else {
+                        0.
+                    },
+                )
             })
             .collect()
     }
@@ -787,7 +811,10 @@ impl EvolutionMonitor {
         let next = match state.phase {
             Some(phase) if state.chosen == Some(chosen) => {
                 if advance_after > 0 && state.stale >= advance_after {
-                    info!("optimize: no improvement for {} generations: next phase", state.stale);
+                    info!(
+                        "optimize: no improvement for {} generations: next phase",
+                        state.stale
+                    );
                     phase.next()
                 } else {
                     phase
@@ -1053,23 +1080,7 @@ impl Solution {
         } else {
             monitor.begin_phase(initial_quality, || self.clone());
         }
-        let mut seed = self.clone();
-        seed.prepare_flow();
-        // Score the seed like the offspring (fast embedding near the corners of its layout), such that they are
-        // compared fairly; its layout (e.g., optimized) is largely kept.
-        let mut seed_quality = initial_quality;
-        let mut fast_seed = seed.clone();
-        let hint = CornerHint::of(&seed);
-        if fast_seed
-            .reconstruct_near(true, LayoutParams::fast(), hint.as_ref())
-            .is_ok()
-            && let Some(quality) = fast_seed.get_quality()
-        {
-            seed = fast_seed;
-            seed_quality = quality;
-        }
-
-        seed.compact_for_evolution(true);
+        let (seed, seed_quality) = self.evolution_seed(initial_quality);
         let context = MutationContext::new(&seed);
         let seed_signature = seed.loop_signature();
         let mut seen: HashSet<LoopSignature> = HashSet::from([seed_signature.clone()]);
@@ -1128,7 +1139,12 @@ impl Solution {
             "evolve: start mu={mu} lambda={lambda} population={} initial_quality={initial_quality}",
             population.len()
         );
-        monitor.record(generation_stats(0, &population, phase_of(&live, pruning), started_at));
+        monitor.record(generation_stats(
+            0,
+            &population,
+            phase_of(&live, pruning),
+            started_at,
+        ));
         // Show the best of the population if it is better than the input (scored with its own layout).
         monitor.offer_best(population[0].1, || self.embedded_copy(&population[0].0));
 
@@ -1142,18 +1158,7 @@ impl Solution {
             // Parents among the best (see `PARENTS`).
             let n = population.len().min(PARENTS);
             let chances = selection.chances(&live.mutation_prior(phase));
-            // (All mutations are reported: those not used in this phase with chance 0.)
-            let reported = LOOP_MUTATIONS
-                .iter()
-                .map(|&name| {
-                    let chance = chances
-                        .iter()
-                        .find(|(mutation, _)| *mutation == name)
-                        .map_or(0., |&(_, chance)| chance);
-                    (name, chance)
-                })
-                .collect_vec();
-            monitor.record_chances(&selection.report(&reported));
+            report_chances(monitor, &selection, &chances);
             let mutation_timer = Instant::now();
             // Every try: the chosen mutation, and the child (if the mutation succeeded).
             let attempts = (0..lambda)
@@ -1275,9 +1280,35 @@ impl Solution {
             population[0].0.loops.len(),
             started_at.elapsed()
         );
-        // Embed the best solution (without optimizations). The full embedding may fail where the fast one succeeded;
-        // then fall back to more attempts, the fast embedding, and finally the next best solution.
-        for (candidate, _) in population {
+        Ok(self.embed_result(population.into_iter().map(|(candidate, _)| candidate)))
+    }
+
+    // The start of an evolution: this solution with the given quality, scored like the offspring (fast embedding near
+    // the corners of its layout, such that they are compared fairly; its layout, e.g. optimized, is largely kept),
+    // compacted.
+    fn evolution_seed(&self, quality: f64) -> (Self, f64) {
+        let mut seed = self.clone();
+        seed.prepare_flow();
+        let mut seed_quality = quality;
+        let mut fast_seed = seed.clone();
+        let hint = CornerHint::of(&seed);
+        if fast_seed
+            .reconstruct_near(true, LayoutParams::fast(), hint.as_ref())
+            .is_ok()
+            && let Some(quality) = fast_seed.get_quality()
+        {
+            seed = fast_seed;
+            seed_quality = quality;
+        }
+        seed.compact_for_evolution(true);
+        (seed, seed_quality)
+    }
+
+    // The first of the candidates (from the best) that can be embedded (without optimizations), with the loops of the
+    // candidate; this solution if none can. The full embedding may fail where the fast one succeeded; then fall back
+    // to more attempts, the fast embedding, and finally the next candidate.
+    fn embed_result(&self, candidates: impl IntoIterator<Item = Self>) -> Self {
+        for candidate in candidates {
             let mut result = self.clone();
             result.loops = candidate.loops;
             result.occupied = candidate.occupied;
@@ -1296,12 +1327,12 @@ impl Solution {
                     .is_ok()
                     && result.get_quality().is_some()
                 {
-                    return Ok(result);
+                    return result;
                 }
                 warn!("evolve: embedding the result failed with {layout_params:?}; retrying");
             }
         }
-        Ok(self.clone())
+        self.clone()
     }
 
     // The result of an optimization, unless it scores worse than this (input) solution.
@@ -1395,10 +1426,6 @@ impl Solution {
         if enough && op == "replace" {
             child.dual = self.dual.clone();
             return child.replace(self).map(|()| (child, "replace"));
-        }
-        if enough && op == "reroute" {
-            child.dual = self.dual.clone();
-            return child.reroute(self).map(|()| (child, "reroute"));
         }
 
         // The dual structure of the parent is up to date for the child (until loops are added or removed).
@@ -1567,10 +1594,16 @@ impl Solution {
         // One loop that crosses everything that the two cross (the union of their crossings, see `union_order`), or
         // (in random order) the crossings of one of the two: searched like a replace, from where the first of the two
         // was. Otherwise, the cheapest valid loop from a region between them.
-        let order = if rand::random::<bool>() { [a, b] } else { [b, a] };
+        let order = if rand::random::<bool>() {
+            [a, b]
+        } else {
+            [b, a]
+        };
         let sequence_of = |keep: LoopID| {
             let list = &crossings[&keep];
-            (1..=list.len()).map(|i| list[i % list.len()].1).collect_vec()
+            (1..=list.len())
+                .map(|i| list[i % list.len()].1)
+                .collect_vec()
         };
         let union = union_order(&sequence_of(order[0]), &sequence_of(order[1]));
         let attempts = [
@@ -1603,7 +1636,10 @@ impl Solution {
             if let Ok(dual) = Dual::from(trial.mesh_ref.clone(), &trial.loops) {
                 trial.dual = Ok(dual);
                 *self = trial;
-                debug!("mutation: operation=merge axis={axis:?} crossings={}", sequence.len());
+                debug!(
+                    "mutation: operation=merge axis={axis:?} crossings={}",
+                    sequence.len()
+                );
                 return Some(());
             }
         }
@@ -1642,103 +1678,6 @@ impl Solution {
             .filter_map(|(face, other)| position.get(&face).map(|&i| (i, other)))
             .sorted()
             .collect()
-    }
-
-    // Reroute: route the worse half of a loop again, freely. A loop is chosen by its penalty (see `loop_penalty`), and cut
-    // in two halves (by its faces); the half to route again is chosen with probability proportional to its penalty
-    // (by the penalties of its faces, see `compact_for_evolution`). The cheapest path of the loop's axis between the ends
-    // of the other half replaces it: it crosses any loops of other axes in any order, and never runs through the faces
-    // of the kept half (see `Solution::construct_open_path`). The loop structure may change; the result is checked.
-    fn reroute(&mut self, parent: &Self) -> Option<()> {
-        let loop_id = parent.badly_aligned_loop(&parent.loops.keys().collect_vec())?;
-        let old = parent.loops[loop_id].clone();
-        let mesh = self.mesh_ref.clone();
-        let len = old.edges.len();
-        if old.offsets.len() != len {
-            return None;
-        }
-        // The half-edges through which the loop enters a face (one per face).
-        let entries = (0..len)
-            .filter(|&i| mesh.twin(old.edges[(i + len - 1) % len]) == old.edges[i])
-            .collect_vec();
-        let m = entries.len();
-        if m < 6 {
-            return None;
-        }
-        let half = m / 2;
-        let penalties: HashMap<FaceID, f64> = parent
-            .targets
-            .as_ref()
-            .map(|targets| targets.iter().copied().collect())
-            .unwrap_or_default();
-        let face_penalty = entries
-            .iter()
-            .map(|&i| penalties.get(&mesh.face(old.edges[i])).copied().unwrap_or(0.))
-            .collect_vec();
-        // The halves: the faces from the k-th on, and their penalties (a sliding window).
-        let mut window: f64 = face_penalty[..half].iter().sum();
-        let mut halves = Vec::with_capacity(m);
-        for k in 0..m {
-            halves.push((k, window));
-            window += face_penalty[(k + half) % m] - face_penalty[k];
-        }
-        let k = pick_weighted(halves)?;
-        // The loop runs again from the first face of the cut half (`cut`) to the first face of the kept half (`kept`).
-        let (cut, kept) = (entries[k], entries[(k + half) % m]);
-        let kept_indices = (0..(cut + len - kept) % len)
-            .map(|i| (kept + i) % len)
-            .collect_vec();
-        self.del_loop(loop_id);
-        // The gap of the old loop along a half-edge, among the other loops.
-        let gap = |solution: &Self, index: usize| {
-            let edge = old.edges[index];
-            solution
-                .loops_on_edge(edge)
-                .iter()
-                .filter(|&&other| {
-                    solution.loops[other]
-                        .offset(edge)
-                        .is_some_and(|offset| offset < old.offsets[index])
-                })
-                .count()
-        };
-        let from = (old.edges[cut], gap(self, cut));
-        let to = (old.edges[kept], gap(self, kept));
-        let avoid: HashSet<FaceID> = kept_indices
-            .iter()
-            .map(|&i| mesh.face(old.edges[i]))
-            .collect();
-        let (path, _, path_gaps) = self.construct_open_path(old.direction, from, to, &avoid)?;
-        let cut_edges = (0..(kept + len - cut) % len)
-            .map(|i| old.edges[(cut + i) % len])
-            .collect_vec();
-        if path == cut_edges {
-            return None;
-        }
-        // The kept half (with its gaps), then the new path.
-        let mut edges = kept_indices.iter().map(|&i| old.edges[i]).collect_vec();
-        let mut gaps = kept_indices
-            .iter()
-            .enumerate()
-            .filter(|&(_, &i)| mesh.twin(old.edges[i]) == old.edges[(i + 1) % len])
-            .map(|(position, &i)| (position, gap(self, i)))
-            .collect_vec();
-        let offset = edges.len();
-        edges.extend(path);
-        gaps.extend(path_gaps.into_iter().map(|(i, g)| (i + offset, g)));
-        self.check_loop(&edges).ok()?;
-        let new_id = self.add_loop_in_gaps(Loop::new(edges, old.direction), gaps);
-        match Dual::from(self.mesh_ref.clone(), &self.loops) {
-            Ok(dual) => {
-                self.dual = Ok(dual);
-                debug!("mutation: operation=reroute axis={:?}", old.direction);
-                Some(())
-            }
-            Err(_) => {
-                self.del_loop(new_id);
-                None
-            }
-        }
     }
 
     // Replace: a loop (chosen by its penalty, see `loop_penalty`) is searched again as the cheapest loop of its axis that
@@ -2094,7 +2033,10 @@ mod mutation_tests {
     #[test]
     fn merge_replaces_two_loops_by_one() {
         let path = std::env::var("DUALCUBE_TEST_MESH").map_or_else(
-            |_| std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../mehsh/assets/blub001k.obj"),
+            |_| {
+                std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+                    .join("../mehsh/assets/blub001k.obj")
+            },
             std::path::PathBuf::from,
         );
         let mesh = Arc::new(Mesh::<INPUT>::from_obj(&path).unwrap().0);
@@ -2118,40 +2060,6 @@ mod mutation_tests {
         }
         println!(
             "merge: {succeeded}/{tried} valid ({} loops) in {:?}",
-            evolved.loops.len(),
-            timer.elapsed()
-        );
-    }
-
-    // A reroute keeps the number of loops, and keeps the structure valid (checked by `Dual::from`).
-    #[test]
-    fn reroute_routes_part_of_a_loop_again() {
-        let path = std::env::var("DUALCUBE_TEST_MESH").map_or_else(
-            |_| std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../mehsh/assets/blub001k.obj"),
-            std::path::PathBuf::from,
-        );
-        let mesh = Arc::new(Mesh::<INPUT>::from_obj(&path).unwrap().0);
-        let mut solution = Solution::new(mesh);
-        solution.initialize();
-        let params = EvolutionParams {
-            max_generations: 15,
-            ..EvolutionParams::default()
-        };
-        let evolved = solution.evolve(&params).unwrap();
-        let (mut tried, mut succeeded) = (0, 0);
-        let timer = std::time::Instant::now();
-        for _ in 0..40 {
-            let mut child = evolved.clone_loop_state();
-            child.dual = evolved.dual.clone();
-            tried += 1;
-            if child.reroute(&evolved).is_some() {
-                succeeded += 1;
-                assert_eq!(child.loops.len(), evolved.loops.len());
-                assert!(child.dual.is_ok());
-            }
-        }
-        println!(
-            "reroute: {succeeded}/{tried} valid ({} loops) in {:?}",
             evolved.loops.len(),
             timer.elapsed()
         );

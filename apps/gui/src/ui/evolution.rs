@@ -1,4 +1,5 @@
-//! The optimization window (see `Solution::optimize`): the phase of the loops (see `LoopPhase`), the generations per
+//! The optimization window (see `Solution::optimize`): the method of the loops (simulated annealing, with its
+//! temperature and restarts; or the evolution, with its phase, see `LoopPhase`), the generations (steps) per
 //! cycle of the loops and of the layout, the population sizes, buttons to start, stop, and continue the optimization, its progress (generation, best and mean
 //! quality), a chart of the quality per generation (over all runs so far), and tables of the mutations (of the loops,
 //! and of the layout): a toggle per mutation, its statistics, and its current chance to be chosen. The settings can be
@@ -13,35 +14,40 @@ use super::widgets::{
     bold_label, collapsed, label, sep, sleek_button, sleek_button_warn, space, window_title,
 };
 use crate::jobs::{EvolutionLive, Job, JobState};
-use crate::resources::{Configuration, SolutionResource};
+use crate::resources::{Configuration, LoopMethod, SolutionResource};
 use bevy::prelude::*;
 use bevy_egui::egui::{self, Color32, Grid, Pos2, Rect, RichText, Sense, Stroke, Vec2};
 use dualcube::prelude::*;
 use std::collections::{BTreeSet, HashMap};
 
 /// The mutations of the layout, by their names in the statistics.
-const LAYOUT_MUTATIONS: [&str; 8] = [
-    "corner",
-    "edge",
-    "exchange",
-    "path (ridge)",
-    "path (shortest)",
-    "path (axis)",
-    "path (feature)",
-    "reroute paths",
-];
+const LAYOUT_MUTATIONS: [&str; 2] = ["corner", "path"];
 
 // Sliders for the weights of the quality criterion, with a button to restore the defaults.
+// A button of a choice (e.g., the method or the phase); the chosen one in gray (not in the selection color). Whether it
+// was clicked.
+fn choice(ui: &mut egui::Ui, name: &str, selected: bool) -> bool {
+    let (color, fill) = if selected {
+        (TEXT_COLOR, Color32::from_gray(70))
+    } else {
+        (TEXT_COLOR2, Color32::TRANSPARENT)
+    };
+    let button = egui::Button::new(RichText::new(name).color(color).size(TEXT_SIZE))
+        .fill(fill)
+        .stroke(Stroke::NONE);
+    ui.add(button).clicked()
+}
+
 fn quality_weights(ui: &mut egui::Ui, weights: &mut QualityWeights) {
     let defaults = QualityWeights::default();
     for (name, value, max) in [
         ("fidelity", &mut weights.fidelity, 5.),
-        ("path regularity", &mut weights.path_regularity, 2.),
+        ("path regularity", &mut weights.path_regularity, 10.),
         ("coherence", &mut weights.coherence, 10.),
         ("rectangularity", &mut weights.rectangularity, 2.),
         ("corner regularity", &mut weights.corner_regularity, 5.),
         ("non-degeneracy", &mut weights.non_degeneracy, 5.),
-        ("correspondence", &mut weights.correspondence, 2.),
+        ("correspondence", &mut weights.correspondence, 5.),
         ("complexity (per loop)", &mut weights.complexity, 0.1),
     ] {
         ui.add(egui::Slider::new(value, 0.0..=max).text(text(name)));
@@ -128,47 +134,67 @@ pub fn show(
             });
             space(ui);
 
-            // The phase of the loops (pruning starts by itself, see `LoopPhase`); can be switched while running. It
-            // follows the phase that runs (which moves on when it stalls, see `LiveSettings::advance_after`).
-            if running
-                && let Some(phase) = monitor.as_ref().and_then(EvolutionMonitor::phase)
-                && live.seen_phase != Some(phase)
-            {
-                live.seen_phase = Some(phase);
-                conf.evolution.phase = phase;
-            }
+            // The method of the loops (from the next start), each with its own settings.
             ui.horizontal(|ui| {
-                label(ui, "phase", TEXT_COLOR2);
-                for phase in LoopPhase::CHOSEN {
-                    // The chosen phase in gray (not in the selection color).
-                    let selected = conf.evolution.phase == phase;
-                    let (color, fill) = if selected {
-                        (TEXT_COLOR, Color32::from_gray(70))
-                    } else {
-                        (TEXT_COLOR2, Color32::TRANSPARENT)
-                    };
-                    let button =
-                        egui::Button::new(RichText::new(phase.name()).color(color).size(TEXT_SIZE))
-                            .fill(fill)
-                            .stroke(Stroke::NONE);
-                    if ui.add(button).clicked() {
-                        conf.evolution.phase = phase;
+                label(ui, "method", TEXT_COLOR2);
+                for (method, name) in [
+                    (LoopMethod::Annealing, "annealing"),
+                    (LoopMethod::Evolution, "evolution"),
+                ] {
+                    if choice(ui, name, conf.method == method) && !running {
+                        conf.method = method;
                     }
                 }
             });
-            // When growth or shaping switch to pruning (mostly removals), and for how long (0: never).
-            ui.horizontal(|ui| {
-                label(ui, "prune after", TEXT_COLOR2);
-                ui.add(egui::DragValue::new(&mut conf.evolution.phase_patience).range(1..=50));
-                label(ui, "generations without improvement, for", TEXT_COLOR2);
-                ui.add(egui::DragValue::new(&mut conf.evolution.prune_generations).range(0..=50));
-            });
-            // When the optimization moves on to the next phase (0: never).
-            ui.horizontal(|ui| {
-                label(ui, "next phase after", TEXT_COLOR2);
-                ui.add(egui::DragValue::new(&mut conf.advance_after).range(0..=1000));
-                label(ui, "generations without improvement", TEXT_COLOR2);
-            });
+            let annealing = conf.method == LoopMethod::Annealing;
+            if annealing {
+                // The temperature at the start of every cycle (falling to 0 over its steps), and the restarts from
+                // the best solution (0: never); from the next start.
+                ui.horizontal(|ui| {
+                    label(ui, "temperature", TEXT_COLOR2);
+                    ui.add(
+                        egui::DragValue::new(&mut conf.anneal.temperature)
+                            .range(0.0..=0.5)
+                            .speed(0.001),
+                    );
+                    label(ui, "back to the best after", TEXT_COLOR2);
+                    ui.add(egui::DragValue::new(&mut conf.anneal.restart).range(0..=1000));
+                    label(ui, "steps without improvement", TEXT_COLOR2);
+                });
+            } else {
+                // The phase of the loops (pruning starts by itself, see `LoopPhase`); can be switched while running.
+                // It follows the phase that runs (which moves on when it stalls, see `LiveSettings::advance_after`).
+                if running
+                    && let Some(phase) = monitor.as_ref().and_then(EvolutionMonitor::phase)
+                    && live.seen_phase != Some(phase)
+                {
+                    live.seen_phase = Some(phase);
+                    conf.evolution.phase = phase;
+                }
+                ui.horizontal(|ui| {
+                    label(ui, "phase", TEXT_COLOR2);
+                    for phase in LoopPhase::CHOSEN {
+                        if choice(ui, phase.name(), conf.evolution.phase == phase) {
+                            conf.evolution.phase = phase;
+                        }
+                    }
+                });
+                // When growth or shaping switch to pruning (mostly removals), and for how long (0: never).
+                ui.horizontal(|ui| {
+                    label(ui, "prune after", TEXT_COLOR2);
+                    ui.add(egui::DragValue::new(&mut conf.evolution.phase_patience).range(1..=50));
+                    label(ui, "generations without improvement, for", TEXT_COLOR2);
+                    ui.add(
+                        egui::DragValue::new(&mut conf.evolution.prune_generations).range(0..=50),
+                    );
+                });
+                // When the optimization moves on to the next phase (0: never).
+                ui.horizontal(|ui| {
+                    label(ui, "next phase after", TEXT_COLOR2);
+                    ui.add(egui::DragValue::new(&mut conf.advance_after).range(0..=1000));
+                    label(ui, "generations without improvement", TEXT_COLOR2);
+                });
+            }
             // The shown solutions (also while optimizing) with smoothed paths; the solutions keep their paths.
             if ui
                 .checkbox(&mut conf.smooth_paths, text("smooth paths"))
@@ -182,8 +208,9 @@ pub fn show(
             }
             sep(ui);
 
-            // The settings of the evolutionary algorithm (each foldable).
-            // Per cycle: the generations of the loops and of the layout; and the population sizes of both.
+            // The settings of the method (each foldable).
+            // Per cycle: the generations (annealing: steps) of the loops and of the layout; and the population sizes
+            // of both (annealing: one solution, and the children per step).
             egui::CollapsingHeader::new(text("generations and populations"))
                 .default_open(false)
                 .show(ui, |ui| {
@@ -196,17 +223,29 @@ pub fn show(
                             }
                             ui.end_row();
                             label(ui, "loops", TEXT_COLOR);
-                            ui.add(egui::DragValue::new(&mut conf.loop_generations).range(0..=200));
-                            ui.add(
-                                egui::DragValue::new(&mut conf.evolution.population).range(1..=30),
-                            );
-                            ui.add(
-                                egui::DragValue::new(&mut conf.evolution.offspring).range(1..=100),
-                            );
+                            if annealing {
+                                ui.add(egui::DragValue::new(&mut conf.anneal.steps).range(0..=1000));
+                                label(ui, "1", TEXT_COLOR2);
+                                ui.add(
+                                    egui::DragValue::new(&mut conf.anneal.offspring).range(1..=100),
+                                );
+                            } else {
+                                ui.add(
+                                    egui::DragValue::new(&mut conf.loop_generations).range(0..=200),
+                                );
+                                ui.add(
+                                    egui::DragValue::new(&mut conf.evolution.population)
+                                        .range(1..=30),
+                                );
+                                ui.add(
+                                    egui::DragValue::new(&mut conf.evolution.offspring)
+                                        .range(1..=100),
+                                );
+                            }
                             ui.end_row();
                             label(ui, "layout", TEXT_COLOR);
                             ui.add(
-                                egui::DragValue::new(&mut conf.layout_generations).range(0..=200),
+                                egui::DragValue::new(&mut conf.layout_generations).range(0..=1000),
                             );
                             ui.add(
                                 egui::DragValue::new(&mut conf.layout_evolution.population)
@@ -251,6 +290,19 @@ pub fn show(
             egui::CollapsingHeader::new(text("loop mutations"))
                 .default_open(false)
                 .show(ui, |ui| {
+                    // The annealing switches its mutations on and off in all its mixes at once.
+                    if annealing {
+                        label(ui, "switched on in annealing", TEXT_COLOR2);
+                        mutation_table(
+                            ui,
+                            "loop mutations",
+                            &LOOP_MUTATIONS,
+                            &stats,
+                            &chances,
+                            &mut conf.anneal_disabled,
+                        );
+                        return;
+                    }
                     label(
                         ui,
                         &format!("switched on in {} (every phase has its own)", shown.name()),
@@ -300,10 +352,16 @@ pub fn show(
             chart(ui, &runs);
         });
 
+    // (The annealing: one solution, its steps as the generations, and no phases.)
+    let annealing = conf.method == LoopMethod::Annealing;
     let settings = LiveSettings {
         loops: PhaseSettings {
-            population: conf.evolution.population,
-            offspring: conf.evolution.offspring,
+            population: if annealing { 1 } else { conf.evolution.population },
+            offspring: if annealing {
+                conf.anneal.offspring
+            } else {
+                conf.evolution.offspring
+            },
             disabled: BTreeSet::new(),
         },
         layout: PhaseSettings {
@@ -311,13 +369,21 @@ pub fn show(
             offspring: conf.layout_evolution.offspring,
             disabled: conf.layout_disabled.clone(),
         },
-        loop_generations: conf.loop_generations,
+        loop_generations: if annealing {
+            conf.anneal.steps
+        } else {
+            conf.loop_generations
+        },
         layout_generations: conf.layout_generations,
         phase_patience: conf.evolution.phase_patience,
         prune_generations: conf.evolution.prune_generations,
         phase: conf.evolution.phase,
-        loop_enabled: Some(conf.evolution.enabled),
-        advance_after: conf.advance_after,
+        loop_enabled: Some(if annealing {
+            conf.anneal_params().mutations.enabled
+        } else {
+            conf.evolution.enabled
+        }),
+        advance_after: if annealing { 0 } else { conf.advance_after },
     };
     if running && let Some(m) = &monitor {
         // Applied from the next generation (or cycle).

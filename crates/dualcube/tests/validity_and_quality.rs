@@ -313,3 +313,37 @@ fn evolution_produces_a_valid_solution() {
     // Scored with a fast layout during the search; allow for the difference of the final (full) layout.
     assert!(quality > initial - 0.05, "{initial} -> {quality}");
 }
+
+#[test]
+fn annealing_produces_a_valid_solution() {
+    let solution = initialized();
+    let initial = solution.get_quality().unwrap();
+    let params = AnnealParams {
+        offspring: 6,
+        steps: 4,
+        ..AnnealParams::default()
+    };
+    let annealed = solution.anneal(&params, &EvolutionMonitor::default()).unwrap();
+    assert!(annealed.dual_is_ok());
+    // Never worse than the input.
+    assert!(annealed.get_quality().unwrap() >= initial);
+}
+
+#[test]
+fn coupled_annealing_produces_a_valid_solution() {
+    let solution = initialized();
+    let initial = solution.get_quality().unwrap();
+    let params = CoupledParams {
+        anneal: Some(AnnealParams {
+            offspring: 4,
+            ..AnnealParams::default()
+        }),
+        loop_generations: 3,
+        layout_generations: 2,
+        max_cycles: 2,
+        ..CoupledParams::default()
+    };
+    let optimized = solution.optimize(&params, &EvolutionMonitor::default()).unwrap();
+    assert!(optimized.dual_is_ok());
+    assert!(optimized.get_quality().unwrap() >= initial);
+}

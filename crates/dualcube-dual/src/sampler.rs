@@ -1017,48 +1017,6 @@ impl<'a> LoopSampler<'a> {
         )
     }
 
-    /// The cheapest path of the given axis from the gap node `from` to the gap node `to` (ending with the half-edge
-    /// through which it enters the face of `to.0`), e.g., to route part of a loop again. It crosses any loops except
-    /// those of its own axis (in any order), and never enters the given faces (except the face of `to.0`, through
-    /// `to.0`). Returns the edges (from `from.0` to the twin of `to.0`), the cost, and the gaps of its crossings (by the
-    /// index of the half-edge through which it leaves a face, see `construct_valid_loop`).
-    #[allow(clippy::type_complexity)]
-    pub fn construct_open_path(
-        &self,
-        axis: Direction,
-        from: GapNode,
-        to: GapNode,
-        avoid: &HashSet<FaceID>,
-        measure: &impl Fn(f64) -> OrderedFloat<f64>,
-    ) -> Option<(Vec<EdgeID>, f64, Vec<(usize, usize)>)> {
-        let mesh = self.mesh_ref;
-        let proximity = self.proximity.get_or_init(|| self.loop_proximity());
-        // Leaving a face through a blocked half-edge would enter an avoided face.
-        let mut blocked: HashSet<EdgeID> = avoid
-            .iter()
-            .flat_map(|&face| mesh.edges(face).map(|edge| mesh.twin(edge)).collect_vec())
-            .collect();
-        blocked.remove(&mesh.twin(to.0));
-        self.search_loop(
-            axis,
-            from,
-            to,
-            (),
-            (),
-            |(), chord: &FaceChord, _| {
-                if self.loops[chord.loop_id].direction == axis {
-                    vec![]
-                } else {
-                    vec![()]
-                }
-            },
-            measure,
-            proximity,
-            &blocked,
-        )
-        .ok()
-    }
-
     // The cheapest valid loop of the given axis from `start` over all sequences of regions (the free search of
     // `free_valid_loop`): the loop is assumed to have entered the start region through `entry` (a segment of its
     // boundary), crosses a loop only where that is a valid exit (see `Dual::valid_exit`) from the segment it last

@@ -79,17 +79,26 @@ pub struct QualityWeights {
     pub complexity: f64,
 }
 
+// From two studies (Oct 2026). On 494 solutions of 26 models, the quality of the quad mesh (scaled Jacobian, size
+// and aspect of the quads, warp) follows the regularity of the paths and the shape of the patches (non-degeneracy,
+// correspondence), not fidelity; fidelity (given the number of loops) gives the alignment of the paper. Coherence
+// (nearly the same as fidelity), rectangularity and corner regularity added nothing: they are off. The balance was
+// then chosen with evolutions on 8 models: against the weights before (fidelity 1, paths 0.1, coherence 2,
+// rectangularity 0.2, corners 1, non-degeneracy 1, correspondence 0.5, 0.005 per loop) the same alignment (0.86)
+// with fewer loops (11 against 13.5) and better quads (5% of them with a scaled Jacobian above 0.60, against 0.50).
+// Heavier weights on the paths and the patches (10, 3, 3, 0.02 per loop) gave still better quads, but too few loops
+// (alignment 0.81).
 impl Default for QualityWeights {
     fn default() -> Self {
         Self {
             fidelity: 1.,
-            path_regularity: 0.1,
-            coherence: 2.,
-            rectangularity: 0.2,
-            corner_regularity: 1.,
+            path_regularity: 3.,
+            coherence: 0.,
+            rectangularity: 0.,
+            corner_regularity: 0.,
             non_degeneracy: 1.,
-            correspondence: 0.5,
-            complexity: 0.005,
+            correspondence: 1.,
+            complexity: 0.01,
         }
     }
 }

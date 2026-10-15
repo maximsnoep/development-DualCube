@@ -1,7 +1,8 @@
 //! Coupled optimization of the loops and the layout (see `Solution::optimize`): cycles of
 //!
-//! 1. some generations of the evolution of the loops (`Solution::evolve`, in the chosen phase, see `LoopPhase`), from
-//!    the best solution so far;
+//! 1. some generations of the evolution of the loops (`Solution::evolve`, in the chosen phase, see `LoopPhase`), or
+//!    some steps of their simulated annealing (`Solution::anneal`, see `CoupledParams::anneal`), from the best
+//!    solution so far;
 //! 2. some generations of the evolution of the layout (`Solution::optimize_layout`) of the result;
 //! 3. every loop moved to the middle of the patches of that layout (see `Solution::medial_loops`), with the layout
 //!    embedded again on the same corners;
@@ -28,6 +29,10 @@ pub struct CoupledParams {
     pub layout_generations: usize,
     /// Maximum number of cycles.
     pub max_cycles: usize,
+    /// If given, the loops of every cycle are annealed (see `Solution::anneal`, from the best solution so far: a
+    /// restart, for `loop_generations` steps) instead of evolved; there is no initialization phase then.
+    #[serde(default)]
+    pub anneal: Option<AnnealParams>,
 }
 
 impl Default for CoupledParams {
@@ -36,8 +41,9 @@ impl Default for CoupledParams {
             loops: EvolutionParams::default(),
             layout: LayoutEvolutionParams::default(),
             loop_generations: 10,
-            layout_generations: 40,
+            layout_generations: 160,
             max_cycles: usize::MAX,
+            anneal: None,
         }
     }
 }
@@ -87,7 +93,7 @@ impl Solution {
             }
 
             // Initialization: new initial structures, each with some generations of additions.
-            if phase == LoopPhase::Initialization {
+            if phase == LoopPhase::Initialization && params.anneal.is_none() {
                 monitor.set_activity(format!("cycle {cycle}: initialization"));
                 let loops = EvolutionParams {
                     max_generations: loop_generations,
@@ -139,13 +145,27 @@ impl Solution {
                 } else {
                     phase
                 };
-                monitor.set_activity(format!("cycle {cycle}: {}", current.name()));
-                let loops = EvolutionParams {
-                    max_generations: loop_generations,
-                    patience: usize::MAX,
-                    ..params.loops
+                let evolved = if let Some(anneal) = &params.anneal {
+                    // The loop generations are the steps; the children per step can change while running.
+                    monitor.set_activity(format!("cycle {cycle}: annealing"));
+                    let anneal = AnnealParams {
+                        steps: loop_generations,
+                        offspring: monitor
+                            .settings()
+                            .map_or(anneal.offspring, |settings| settings.loops.offspring),
+                        ..*anneal
+                    };
+                    best.anneal_phase(&anneal, monitor)
+                } else {
+                    monitor.set_activity(format!("cycle {cycle}: {}", current.name()));
+                    let loops = EvolutionParams {
+                        max_generations: loop_generations,
+                        patience: usize::MAX,
+                        ..params.loops
+                    };
+                    best.evolve_phase(&loops, monitor)
                 };
-                if let Ok(evolved) = best.evolve_phase(&loops, monitor)
+                if let Ok(evolved) = evolved
                     && evolved.loop_signature() != best.loop_signature()
                 {
                     candidate = evolved;

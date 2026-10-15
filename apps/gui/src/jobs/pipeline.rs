@@ -6,7 +6,7 @@
 
 use super::{Job, JobResult};
 use crate::render;
-use crate::resources::Configuration;
+use crate::resources::{Configuration, LoopMethod};
 use bevy::prelude::*;
 use dualcube::prelude::*;
 #[cfg(feature = "hex")]
@@ -120,9 +120,14 @@ impl Job {
                     ..configuration.evolution
                 },
                 layout: configuration.layout_evolution,
-                loop_generations: configuration.loop_generations,
+                loop_generations: match configuration.method {
+                    LoopMethod::Annealing => configuration.anneal.steps,
+                    LoopMethod::Evolution => configuration.loop_generations,
+                },
                 layout_generations: configuration.layout_generations,
                 max_cycles: usize::MAX,
+                anneal: (configuration.method == LoopMethod::Annealing)
+                    .then(|| configuration.anneal_params()),
             };
             match solution.optimize(&params, &monitor) {
                 // The result is embedded (dual, layout, polycube): only the polycube and quad mesh follow.

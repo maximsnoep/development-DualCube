@@ -8,12 +8,7 @@
 //!
 //! - `corner`: move a corner to a candidate position inside the patches around it (near the intersection of its fitted zone
 //!   planes, near the position aligned with its neighbors, or a random nearby vertex; see `Layout::corner_candidates`),
-//! - `edge`: move both corners of a polycube edge,
-//! - `exchange`: move a corner to (near) its position in another layout of the population (like a crossover),
-//! - `path`: remove one path and compute it again with a random style (shortest, along ridges, along the axis, or
-//!   along features; see `PathStyle`), with all other paths in place (see `Layout::reroute_path_with`). The style
-//!   sticks to the path (it is used whenever the path is computed again),
-//! - `reroute`: re-place all paths in a random order (keeping the corners).
+//! - `path`: remove one path and compute it again, with all other paths in place (see `Layout::reroute_path`).
 //!
 //! Selection is as in the evolution of the loops (rank-based parents, plus-selection). The quality is that of the
 //! solution (`Solution::get_quality`). The result is never worse than the input. Smoothing the paths is a separate
@@ -37,84 +32,53 @@ pub struct LayoutEvolutionParams {
     pub patience: usize,
     /// Relative frequencies of the mutations (0 disables a mutation).
     pub corner: f64,
-    pub edge: f64,
-    pub exchange: f64,
     pub path: f64,
-    pub reroute: f64,
 }
 
 impl Default for LayoutEvolutionParams {
     fn default() -> Self {
         Self {
-            population: 8,
-            offspring: 32,
-            max_generations: 60,
-            patience: 10,
+            // A (1+8) strategy: in tests on 13 models (same number of offspring) it was as good as or better than
+            // larger populations (2+8, 4+16, 8+32), as the layouts of a population hardly differ.
+            population: 1,
+            offspring: 8,
+            max_generations: 240,
+            patience: 40,
             corner: 0.4,
-            edge: 0.2,
-            exchange: 0.15,
             path: 0.15,
-            reroute: 0.1,
         }
     }
 }
 
 impl LayoutEvolutionParams {
-    // The prior weights of the mutations (the fixed probabilities; the path mutation split over the enabled styles).
-    fn mutation_prior(&self, styles: &[PathStyle]) -> Vec<(&'static str, f64)> {
-        let mut prior = vec![
-            ("corner", self.corner),
-            ("edge", self.edge),
-            ("exchange", self.exchange),
-            ("reroute paths", self.reroute),
-        ];
-        for &style in styles {
-            prior.push((path_operation(style), self.path / styles.len() as f64));
-        }
-        prior
+    // The prior weights of the mutations (the fixed probabilities).
+    fn mutation_prior(&self) -> Vec<(&'static str, f64)> {
+        vec![("corner", self.corner), ("path", self.path)]
     }
 
-    /// These parameters without the given mutations (by their names in the statistics, see `path_operation`).
+    /// These parameters without the given mutations (by their names in the statistics).
     #[must_use]
     pub fn without(mut self, disabled: &std::collections::BTreeSet<String>) -> Self {
-        for name in disabled {
-            match name.as_str() {
-                "corner" => self.corner = 0.,
-                "edge" => self.edge = 0.,
-                "exchange" => self.exchange = 0.,
-                "reroute paths" => self.reroute = 0.,
-                _ => {}
-            }
+        if disabled.contains("corner") {
+            self.corner = 0.;
+        }
+        if disabled.contains("path") {
+            self.path = 0.;
         }
         self
     }
 
-    // The parameters, population size, number of offspring, and path styles, with the changes made while running (if
-    // any).
-    fn live(&self, monitor: &EvolutionMonitor) -> (Self, usize, usize, Vec<PathStyle>) {
-        let (mut params, styles) = match monitor.settings() {
-            Some(settings) => (
-                Self {
-                    population: settings.layout.population,
-                    offspring: settings.layout.offspring,
-                    ..self.without(&settings.layout.disabled)
-                },
-                PathStyle::ALL
-                    .into_iter()
-                    .filter(|&style| !settings.layout.disabled.contains(path_operation(style)))
-                    .collect_vec(),
-            ),
-            None => (*self, PathStyle::ALL.to_vec()),
+    // The parameters, population size, and number of offspring, with the changes made while running (if any).
+    fn live(&self, monitor: &EvolutionMonitor) -> (Self, usize, usize) {
+        let params = match monitor.settings() {
+            Some(settings) => Self {
+                population: settings.layout.population,
+                offspring: settings.layout.offspring,
+                ..self.without(&settings.layout.disabled)
+            },
+            None => *self,
         };
-        if styles.is_empty() {
-            params.path = 0.;
-        }
-        (
-            params,
-            params.population.max(1),
-            params.offspring.max(1),
-            styles,
-        )
+        (params, params.population.max(1), params.offspring.max(1))
     }
 }
 
@@ -137,7 +101,7 @@ impl Solution {
         monitor: &EvolutionMonitor,
     ) -> Result<Self, SolutionError> {
         let started_at = Instant::now();
-        let (_, mu, lambda, _) = params.live(monitor);
+        let (_, mu, lambda) = params.live(monitor);
         let input_quality = self.get_quality().ok_or(SolutionError::NoPrimal)?;
         let mut seed = self.layout.clone().ok_or(SolutionError::NoPrimal)?;
         // Corner moves need paths restricted to loop regions (which smoothed paths may not be): re-embed if needed.
@@ -154,7 +118,40 @@ impl Solution {
             QualityReport::compute(loop_count, layout, &quality_params, terms).score(&weights)
         };
 
-        let seed_quality = score(&seed).ok_or(SolutionError::NoPrimal)?;
+        let mut seed_quality = score(&seed).ok_or(SolutionError::NoPrimal)?;
+        // Every path computed again once (the worst first, by their penalties), kept where the score improves: when a
+        // layout is built, every path is placed before the paths after it, and is then often far from where the score
+        // wants it (on CAD models, computing a path again in the final layout improves the score for most paths).
+        let penalties = element_penalties(&seed, &weights);
+        let structure = &seed.polycube_ref.structure;
+        let mut edges = structure
+            .edge_ids()
+            .into_iter()
+            .filter(|&edge| edge < structure.twin(edge))
+            .map(|edge| (edge, penalties.paths.get(&edge).copied().unwrap_or(0.)))
+            .collect_vec();
+        edges.sort_by(|(_, a), (_, b)| b.total_cmp(a));
+        let replaced_at = Instant::now();
+        let mut replaced = 0;
+        for (edge, _) in edges {
+            let mut child = seed.clone();
+            child.begin_mutation();
+            let placed = child.reroute_path(edge).is_ok();
+            child.end_mutation();
+            if placed
+                && child.is_complete()
+                && let Some(quality) = score(&child)
+                && quality > seed_quality
+            {
+                seed = child;
+                seed_quality = quality;
+                replaced += 1;
+            }
+        }
+        info!(
+            "optimize_layout: {replaced} paths computed again (quality {seed_quality}) in {:?}",
+            replaced_at.elapsed()
+        );
         let corners = seed.vert_to_corner.len();
         let mut population = vec![(Member::new(seed), seed_quality)];
         let mut stats = monitor.mutation_stats_map();
@@ -170,10 +167,10 @@ impl Solution {
         info!("optimize_layout: start mu={mu} lambda={lambda} quality={seed_quality}");
 
         for generation in 0..params.max_generations {
-            let (live, mu, lambda, styles) = params.live(monitor);
-            let chances = selection.chances(&live.mutation_prior(&styles));
+            let (live, mu, lambda) = params.live(monitor);
+            let chances = selection.chances(&live.mutation_prior());
             monitor.record_chances(&selection.report(&chances));
-            // Parents (and donors) among the best (see `PARENTS`).
+            // Parents among the best (see `PARENTS`).
             let n = population.len().min(PARENTS);
             // Every try: the chosen mutation, and the scored child (if the mutation succeeded).
             let attempts = (0..lambda)
@@ -181,13 +178,11 @@ impl Solution {
                 .into_par()
                 .filter_map(|_| {
                     let (parent, parent_quality) = &population[rank_pick(n)];
-                    let donor = &population[rank_pick(n)].0.layout;
                     let op = choose_mutation(&chances)?;
                     let child = mutate_layout(
                         &parent.layout,
                         parent.levels(),
                         parent.penalties(&weights),
-                        donor,
                         op,
                     )
                     .and_then(|(child, op)| {
@@ -295,7 +290,6 @@ fn mutate_layout(
     parent: &Layout,
     levels: &HashMap<ZoneID, f64>,
     penalties: &ElementPenalties,
-    donor: &Layout,
     op: &'static str,
 ) -> Option<(Layout, &'static str)> {
     let mut child = parent.clone();
@@ -319,57 +313,21 @@ fn mutate_layout(
                 .map(|edge| (edge, penalties.paths.get(&edge).copied().unwrap_or(0.))),
         )
     };
-    // Move a corner to one of its candidate positions (near the given targets, or the default targets).
-    let move_corner =
-        |layout: &mut Layout, corner: VertKey<POLYCUBE>, targets: Option<Vec<Vector3D>>| {
-            let targets = targets.unwrap_or_else(|| layout.corner_targets(corner, levels));
-            let candidate = layout
-                .corner_candidates(corner, &targets, 2, 3)
-                .into_iter()
-                .choose(&mut rand::rng())?;
-            layout.move_corner(corner, candidate).ok()
-        };
+    // Move a corner to one of its candidate positions (near its targets).
+    let move_corner = |layout: &mut Layout, corner: VertKey<POLYCUBE>| {
+        let targets = layout.corner_targets(corner, levels);
+        let candidate = layout
+            .corner_candidates(corner, &targets, 2, 3)
+            .into_iter()
+            .choose(&mut rand::rng())?;
+        layout.move_corner(corner, candidate).ok()
+    };
     match op {
-        "corner" => move_corner(&mut child, random_corner()?, None)?,
-        "edge" => {
-            let edge = random_edge()?;
-            let [u, v] = structure.vertices(edge).collect_array::<2>()?;
-            move_corner(&mut child, u, None)?;
-            move_corner(&mut child, v, None)?;
-        }
-        "exchange" => {
-            let corner = random_corner()?;
-            let &vert = donor.vert_to_corner.get_by_left(&corner)?;
-            let target = donor.granulated_mesh.position(vert);
-            move_corner(&mut child, corner, Some(vec![target]))?;
-        }
-        "reroute paths" => {
-            // All paths in a random insertion order.
-            child
-                .place_paths_best_attempt(1, 1 + rand::random_range(0..1000))
-                .ok()?;
-        }
-        _ => {
-            // A path with the style of the operation.
-            let style = PathStyle::ALL
-                .into_iter()
-                .find(|&style| path_operation(style) == op)?;
-            let edge = random_edge()?;
-            child.reroute_path_with(edge, Some(style)).ok()?;
-        }
+        "corner" => move_corner(&mut child, random_corner()?)?,
+        _ => child.reroute_path(random_edge()?).ok()?,
     }
     child.end_mutation();
     child.is_complete().then_some((child, op))
-}
-
-// The name of the path mutation with the given style (for the statistics per mutation).
-const fn path_operation(style: PathStyle) -> &'static str {
-    match style {
-        PathStyle::Ridge => "path (ridge)",
-        PathStyle::Shortest => "path (shortest)",
-        PathStyle::Axis => "path (axis)",
-        PathStyle::Feature => "path (feature)",
-    }
 }
 
 // A layout of the population, with the levels of its zones (computed once, when it is first mutated).

@@ -123,20 +123,6 @@ impl Solution {
         sampler.construct_crossing_loop(axis, (edge, gap), crossings, &OrderedFloat)
     }
 
-    /// The cheapest path of the given axis between two gap nodes that avoids the given faces (see
-    /// `LoopSampler::construct_open_path`). Returns the edges, cost, and gaps (indices into the edges).
-    #[allow(clippy::type_complexity)]
-    pub fn construct_open_path(
-        &self,
-        axis: Direction,
-        from: GapNode,
-        to: GapNode,
-        avoid: &HashSet<FaceID>,
-    ) -> Option<(Vec<EdgeID>, f64, Vec<(usize, usize)>)> {
-        self.loop_sampler()
-            .construct_open_path(axis, from, to, avoid, &OrderedFloat)
-    }
-
     /// See `construct_crossing_loop`; with an extra cost per face (see `LoopSampler::with_extra_proximity`).
     pub fn construct_crossing_loop_with_cost(
         &self,

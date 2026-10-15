@@ -37,6 +37,11 @@ pub struct Configuration {
     pub loop_generations: usize,
     pub layout_generations: usize,
     pub advance_after: usize,
+    /// How the loops are optimized, and the parameters of the simulated annealing (see `CoupledParams::anneal`; its
+    /// mutations that are switched off are listed separately, by name).
+    pub method: LoopMethod,
+    pub anneal: AnnealParams,
+    pub anneal_disabled: BTreeSet<String>,
 
     pub loop_anchors: Vec<[EdgeID; 2]>,
 
@@ -51,6 +56,26 @@ pub struct Configuration {
     pub camera_up: Vec3,
 
     pub clear_color: [u8; 3],
+}
+
+/// How the loops are optimized: simulated annealing (see `Solution::anneal`) or the evolution (see `Solution::evolve`).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum LoopMethod {
+    Annealing,
+    Evolution,
+}
+
+impl Configuration {
+    /// The parameters of the annealing, with the mutations that are switched off (in all its mixes).
+    pub fn anneal_params(&self) -> AnnealParams {
+        let mut anneal = self.anneal;
+        for phase in LoopPhase::ALL {
+            for name in &self.anneal_disabled {
+                anneal.mutations.set_enabled(phase, name, false);
+            }
+        }
+        anneal
+    }
 }
 
 impl Default for Configuration {
@@ -78,6 +103,9 @@ impl Default for Configuration {
             loop_generations: CoupledParams::default().loop_generations,
             layout_generations: CoupledParams::default().layout_generations,
             advance_after: 20,
+            method: LoopMethod::Annealing,
+            anneal: AnnealParams::default(),
+            anneal_disabled: BTreeSet::new(),
 
             loop_anchors: vec![],
 
