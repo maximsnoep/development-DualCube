@@ -233,7 +233,10 @@ fn canonical(mesh: &Mesh<INPUT>, edge: EdgeID) -> EdgeID {
     if edge.raw() < twin.raw() { edge } else { twin }
 }
 
-fn sides(mesh: &Mesh<INPUT>, face: FaceID) -> Result<[EdgeID; 3], PropertyViolationError> {
+pub(crate) fn sides(
+    mesh: &Mesh<INPUT>,
+    face: FaceID,
+) -> Result<[EdgeID; 3], PropertyViolationError> {
     mesh.edges(face)
         .collect_array::<3>()
         .ok_or(PropertyViolationError::UnknownError)
@@ -753,20 +756,6 @@ impl Arrangement {
         arrangement
             .locate_beside(p, chord)
             .map(|[a, b]| [base + a, base + b])
-    }
-
-    pub(crate) fn region_after_in(
-        &self,
-        before: &Self,
-        components: &[usize],
-        id: LoopID,
-        crossing: usize,
-    ) -> Option<usize> {
-        let face = self.crossings[crossing].face;
-        let cell = self.cells_after_crossing(id, crossing)?[0];
-        let local = cell - *self.cell_base.get_or_panic(face);
-        let point = centroid(&self.faces[&face].cells[local].1);
-        Some(components[before.locate(face, point)?])
     }
 
     /// Partition all cells into connected components (loop regions), by gluing cells across the mesh edges.

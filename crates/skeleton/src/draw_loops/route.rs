@@ -1,20 +1,20 @@
 use super::*;
 use dualcube_dual::{
     FlowGraph,
-    surface_router::{RouteError, SurfaceRouter},
+    insertion::{DrawError, Plan, Step},
+    loop_map::LoopMap,
+    partial::Correspondence,
 };
 
 #[derive(Default, Debug)]
 struct Timings {
     setup: std::time::Duration,
     search: std::time::Duration,
-    shortcut: std::time::Duration,
     validation: std::time::Duration,
-    equivalence: std::time::Duration,
 }
 impl Drop for Timings {
     fn drop(&mut self) {
-        tracing::debug!(?self, "Surface route timings");
+        tracing::debug!(?self, "Loop route timings");
     }
 }
 
@@ -57,28 +57,36 @@ impl Flows {
 // TODO: Tune the candidate budget, backtracking choices, and geometric objective.
 const MAX_CANDIDATES: usize = 64;
 
+/// Template steps for one correspondence, with the plan that draws them.
+pub(super) struct Target<'a> {
+    pub plan: &'a Plan,
+    pub correspondence: &'a Correspondence,
+    pub steps: Vec<Step>,
+}
+
+/// Insert loop `id` into `map` so that the result has the `expected` topology. `avoid` lists
+/// triangles of earlier drawings to stay away from.
 #[allow(clippy::too_many_arguments)]
 pub(super) fn find(
     mesh: &Mesh<INPUT>,
     flows: &Flows,
-    working: &DualLoops,
-    drawn: &HashSet<LoopID>,
+    map: &LoopMap,
+    actual: &PartialTopology,
+    axis: Direction,
     id: LoopID,
-    crossings: &[LoopID],
-    regions: &[usize],
-    router: &SurfaceRouter,
+    target: &Target<'_>,
     expected: &PartialTopology,
-    avoid: &[Loop],
+    avoid: &[HashSet<FaceID>],
     total: &mut usize,
-) -> Result<Loop, Failure> {
+) -> Result<LoopMap, Failure> {
     let mut timing = Timings::default();
     let setup = std::time::Instant::now();
-    let loops = subset(working, drawn);
-    let axis = working[id].direction;
+    let steps = &target.steps;
+    let k = steps.len();
     let mut stats = SearchStats::default();
     let mut penalties = HashMap::<FaceID, f64>::new();
-    for l in avoid {
-        for face in l.surface.iter().map(|a| a.face).collect::<HashSet<_>>() {
+    for triangles in avoid {
+        for &face in triangles {
             *penalties.entry(face).or_default() += 4.;
         }
     }
@@ -87,42 +95,28 @@ pub(super) fn find(
         Direction::Y => 1,
         Direction::Z => 2,
     }];
+    // Starting crossings with their anchors, fewest first.
     let mut phases = vec![];
     let mut distinct = HashSet::new();
-    for i in 0..crossings.len() {
-        let mut seq = crossings.to_vec();
+    for i in 0..k {
+        let mut seq = steps.clone();
         seq.rotate_left(i);
-        let mut after = regions.to_vec();
-        after.rotate_left(i);
-        if !distinct.insert((seq.clone(), after.clone())) {
+        if !distinct.insert(seq) {
             continue;
         }
-        let anchors = router.anchors(seq[0], *after.last().unwrap(), after[0]);
+        let anchors = target.plan.anchors(map, actual, steps, i);
         if !anchors.is_empty() {
-            phases.push((seq, after, anchors));
+            phases.push((i, anchors));
         }
     }
-    phases.sort_by_key(|p| p.2.len());
-    let mut seeds = vec![];
-    if crossings.is_empty() {
-        let state = LoopState::from_loops(mesh, loops.clone());
-        let sampler = LoopSampler::new(mesh, &state.loops, &state.occupied, flows.graphs.as_ref());
-        for edges in
-            sampler.sample_loops(16, axis, OrderedFloat, |(e, _)| -sampler.separated_area(e))
-        {
-            let (_, offsets) = sampler.place_loop(&edges, axis);
-            let l = Loop {
-                edges,
-                offsets,
-                direction: axis,
-                surface: vec![],
-            };
-            if let Ok(arcs) = l.surface_arcs(mesh) {
-                seeds.push(Loop::from_surface(axis, arcs));
-            }
-        }
-    }
-    let count = if crossings.is_empty() {
+    phases.sort_by_key(|p| p.1.len());
+    // A loop crossing nothing starts from sampled seeds, on an empty surface only.
+    let seeds = if k == 0 && actual.along.is_empty() {
+        seeds(mesh, flows, map, id, axis)
+    } else {
+        vec![]
+    };
+    let count = if k == 0 {
         seeds.len()
     } else if phases.is_empty() {
         0
@@ -130,180 +124,114 @@ pub(super) fn find(
         MAX_CANDIDATES
     };
     timing.setup += setup.elapsed();
-    let mut seen = Vec::new();
     for attempt in 0..count {
         stats.searches += 1;
         *total += 1;
         let search = std::time::Instant::now();
-        let candidate = if crossings.is_empty() {
-            Ok(seeds.get(attempt).unwrap().clone())
+        let candidate = if k == 0 {
+            Ok(seeds[attempt].clone())
         } else {
-            let phase = attempt % phases.len();
-            let (seq, after, anchors) = &phases[phase];
+            let (start, anchors) = &phases[attempt % phases.len()];
             let index = attempt / phases.len();
             let anchor =
                 anchors[(index * anchors.len() / MAX_CANDIDATES.max(1) + index) % anchors.len()];
-            router.route(axis, seq, after, anchor, |face, delta| {
-                let length = delta.norm();
-                let f = flow[&face];
-                let confidence = f.norm().min(1.);
-                let alignment = if length > 0. && confidence > 1e-12 {
-                    (delta.dot(&f) / (length * f.norm())).clamp(-1., 1.)
-                } else {
-                    1.
-                };
-                length
-                    * (1.
-                        + 5. * confidence * (1. - alignment)
-                        + penalties.get(&face).copied().unwrap_or(0.))
-            })
+            target.plan.draw(
+                map,
+                actual,
+                target.correspondence,
+                steps,
+                *start,
+                anchor,
+                |face, delta, _| {
+                    let length = delta.norm();
+                    let f = flow[&face];
+                    let confidence = f.norm().min(1.);
+                    let alignment = if length > 0. && confidence > 1e-12 {
+                        (delta.dot(&f) / (length * f.norm())).clamp(-1., 1.)
+                    } else {
+                        1.
+                    };
+                    length
+                        * (1.
+                            + 5. * confidence * (1. - alignment)
+                            + penalties.get(&face).copied().unwrap_or(0.))
+                },
+            )
         };
         timing.search += search.elapsed();
-        let l = match candidate {
-            Ok(l) => l,
-            Err(RouteError::NoRoute) => {
+        let mut drawn = match candidate {
+            Ok(drawn) => drawn,
+            Err(DrawError::NoRoute(_)) => {
                 stats.no_route += 1;
                 continue;
             }
-            Err(RouteError::ExpansionLimit) => {
+            Err(DrawError::ExpansionLimit(_)) => {
                 stats.expansion_limit += 1;
                 continue;
             }
-            Err(RouteError::Degenerate) => {
+            Err(DrawError::Mismatch(_)) => {
+                stats.arc_mismatches += 1;
+                continue;
+            }
+            Err(DrawError::Revisit(_)) => {
                 stats.invalid_arrangement += 1;
                 continue;
             }
         };
-        for face in l.surface.iter().map(|a| a.face).collect::<HashSet<_>>() {
-            *penalties.entry(face).or_default() += 0.5;
-        }
-        let mut valid = false;
-        let short = std::time::Instant::now();
-        let shorter = shortcut(mesh, &l, &loops);
-        timing.shortcut += short.elapsed();
-        for mut l in [shorter, l] {
-            if avoid.iter().chain(&seen).any(|old| same_geometry(old, &l)) {
-                stats.duplicates += 1;
-                continue;
-            }
-            seen.push(l.clone());
-            let mut candidate = working.clone();
-            candidate[id] = l.clone();
-            let mut selected = drawn.clone();
-            selected.insert(id);
-            let candidate = subset(&candidate, &selected);
-            let validation = std::time::Instant::now();
-            let topology = PartialTopology::new(mesh, &candidate);
-            timing.validation += validation.elapsed();
-            let Ok(mut topology) = topology else {
-                continue;
-            };
-            valid = true;
-            for _ in 0..2 {
-                let matching = std::time::Instant::now();
-                let equivalent = topology.equivalent(expected);
-                timing.equivalence += matching.elapsed();
-                if equivalent {
-                    tracing::debug!(?id, ?stats, "Accepted surface route");
-                    return Ok(l);
-                }
-                l.reverse();
+        let validation = std::time::Instant::now();
+        let mut topology = PartialTopology::from_map(&drawn);
+        timing.validation += validation.elapsed();
+        for reversed in [false, true] {
+            if reversed {
                 topology.reverse_loop(id);
             }
+            if topology.equivalent(expected) {
+                if reversed {
+                    drawn.reverse_loop(id);
+                }
+                tracing::debug!(?id, ?stats, "Accepted loop route");
+                return Ok(drawn);
+            }
         }
-        if valid {
-            stats.topology_rejections += 1;
-        } else {
-            stats.invalid_arrangement += 1;
+        for face in drawn.triangles(id) {
+            *penalties.entry(face).or_default() += 0.5;
         }
+        stats.topology_rejections += 1;
     }
     Err(Failure::SearchExhausted { loop_id: id, stats })
 }
 
-pub(super) fn same_geometry(a: &Loop, b: &Loop) -> bool {
-    let n = a.surface.len();
-    if n != b.surface.len() || n == 0 {
-        return false;
-    }
-    let close = |p: [f64; 2], q: [f64; 2]| (p[0] - q[0]).abs().max((p[1] - q[1]).abs()) < 1e-12;
-    (0..n).any(|start| {
-        [false, true].into_iter().any(|reverse| {
-            a.surface.iter().enumerate().all(|(i, x)| {
-                let y = &b.surface[if reverse {
-                    (start + n - i) % n
-                } else {
-                    (start + i) % n
-                }];
-                let (from, to) = if reverse {
-                    (y.to, y.from)
-                } else {
-                    (y.from, y.to)
-                };
-                x.face == y.face && close(x.from, from) && close(x.to, to)
-            })
-        })
-    })
-}
-
-// Remove construction bends when the ordered intersections in that triangle stay identical.
-fn shortcut(mesh: &Mesh<INPUT>, l: &Loop, loops: &DualLoops) -> Loop {
-    let mut obstacles = HashMap::<FaceID, Vec<_>>::new();
-    for (id, old) in loops {
-        if let Ok(arcs) = old.surface_arcs(mesh) {
-            for (i, a) in arcs.into_iter().enumerate() {
-                obstacles.entry(a.face).or_default().push((id, i, a));
-            }
+// Loops sampled along the flow field, each added alone to `map`.
+fn seeds(
+    mesh: &Mesh<INPUT>,
+    flows: &Flows,
+    map: &LoopMap,
+    id: LoopID,
+    axis: Direction,
+) -> Vec<LoopMap> {
+    let empty = DualLoops::with_key();
+    let state = LoopState::from_loops(mesh, empty);
+    let sampler = LoopSampler::new(mesh, &state.loops, &state.occupied, flows.graphs.as_ref());
+    let mut result = vec![];
+    for edges in sampler.sample_loops(16, axis, OrderedFloat, |(e, _)| -sampler.separated_area(e)) {
+        let len = edges.len();
+        let exits: Vec<_> = (0..len)
+            .filter(|&i| mesh.twin(edges[i]) == edges[(i + 1) % len])
+            .map(|i| edges[i])
+            .collect();
+        // A sampled loop crosses every edge at most once.
+        let order = exits
+            .iter()
+            .enumerate()
+            .map(|(o, &e)| (e, vec![o]))
+            .collect();
+        let mut seeded = map.clone();
+        if seeded
+            .add_disjoint(mesh, &[(id, (0..exits.len()).collect())], &exits, &order)
+            .is_ok()
+        {
+            result.push(seeded);
         }
     }
-    let cross = |a: [f64; 2], b: [f64; 2]| a[0] * b[1] - a[1] * b[0];
-    let hits = |arcs: &[dualcube_dual::SurfaceArc]| {
-        let mut result = Vec::new();
-        for a in arcs {
-            let d = [a.to[0] - a.from[0], a.to[1] - a.from[1]];
-            let mut local = vec![];
-            for (id, i, b) in obstacles.get(&a.face).into_iter().flatten() {
-                let e = [b.to[0] - b.from[0], b.to[1] - b.from[1]];
-                let delta = [b.from[0] - a.from[0], b.from[1] - a.from[1]];
-                let det = cross(d, e);
-                if det.abs() < 1e-15 {
-                    continue;
-                }
-                let t = cross(delta, e) / det;
-                let u = cross(delta, d) / det;
-                if t > 0. && t < 1. && u > 0. && u < 1. {
-                    local.push((OrderedFloat(t), (*id, *i, det > 0.)));
-                }
-            }
-            local.sort();
-            result.extend(local.into_iter().map(|x| x.1));
-        }
-        result
-    };
-    let mut arcs = l.surface.clone();
-    if let Some(start) =
-        (0..arcs.len()).find(|&i| arcs[i].face != arcs[(i + arcs.len() - 1) % arcs.len()].face)
-    {
-        arcs.rotate_left(start);
-    } else {
-        return l.clone();
-    }
-    let mut out = vec![];
-    let mut i = 0;
-    while i < arcs.len() {
-        let end = (i + 1..arcs.len())
-            .find(|&j| arcs[j].face != arcs[i].face)
-            .unwrap_or(arcs.len());
-        let direct = dualcube_dual::SurfaceArc {
-            face: arcs[i].face,
-            from: arcs[i].from,
-            to: arcs[end - 1].to,
-        };
-        if direct.from != direct.to && hits(std::slice::from_ref(&direct)) == hits(&arcs[i..end]) {
-            out.push(direct);
-        } else {
-            out.extend_from_slice(&arcs[i..end]);
-        }
-        i = end;
-    }
-    Loop::from_surface(l.direction, out)
+    result
 }

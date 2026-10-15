@@ -1,10 +1,11 @@
 mod arrangement;
 pub mod dual;
+pub mod insertion;
+pub mod loop_map;
 pub mod loops;
 pub mod partial;
 pub mod sampler;
 pub mod surface_curve;
-pub mod surface_router;
 
 pub mod prelude {
     pub use crate::dual::*;

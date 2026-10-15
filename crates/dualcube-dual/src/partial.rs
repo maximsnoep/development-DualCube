@@ -4,6 +4,23 @@ use crate::{Loop, LoopID, PropertyViolationError, arrangement::Arrangement};
 use dualcube_types::prelude::*;
 use slotmap::SlotMap;
 
+/// Identifies another topology's regions and crossings, indexed by this topology's.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Correspondence {
+    pub regions: Vec<usize>,
+    pub crossings: Vec<usize>,
+}
+
+/// One crossing of a loop inserted into an arrangement (see `insertion::Plan`).
+#[derive(Clone, Copy, Debug)]
+pub struct Insertion {
+    pub partner: LoopID,
+    /// Index in the partner's previous `along` of the crossing preceding this one, if any.
+    pub after: Option<usize>,
+    /// Previous region entered by this crossing.
+    pub region: usize,
+}
+
 #[derive(Clone, Debug)]
 pub struct PartialTopology {
     pub along: HashMap<LoopID, Vec<usize>>,
@@ -12,6 +29,8 @@ pub struct PartialTopology {
     sides: HashMap<(LoopID, usize), [usize; 2]>,
     positive: Vec<bool>,
     chi: Vec<i64>,
+    /// The loop-map vertex of every crossing, when built from a map.
+    pub vertices: Vec<usize>,
 }
 
 impl PartialTopology {
@@ -61,7 +80,77 @@ impl PartialTopology {
             sides,
             regions,
             chi,
+            vertices: vec![],
         })
+    }
+
+    /// Exact topology of closed loops in a loop map.
+    pub fn from_map(map: &crate::loop_map::LoopMap) -> Self {
+        use crate::loop_map::{Piece, Point};
+        let (region, regions) = map.regions();
+        let chi = map.euler(&region, regions);
+        let chains = map.chains();
+        let mut index = HashMap::new();
+        let mut crossings = Vec::new();
+        let mut positive = Vec::new();
+        let mut along = HashMap::new();
+        let mut sides = HashMap::new();
+        let mut vertices = Vec::new();
+        let mut ids: Vec<_> = chains.keys().copied().collect();
+        ids.sort();
+        for &id in &ids {
+            let chain = &chains[&id];
+            let mut list = vec![];
+            for &h in chain {
+                let v = map.halves[h].origin;
+                if map.points[v] != Point::Crossing {
+                    continue;
+                }
+                let c = *index.entry(v).or_insert_with(|| {
+                    // The other loop's direction, counterclockwise from this one's.
+                    let out = map.outgoing(v);
+                    let p = out.iter().position(|&o| o == h).unwrap();
+                    let (other, forward) = (1..out.len())
+                        .find_map(|d| match map.halves[out[(p + d) % out.len()]].piece {
+                            Piece::Loop(l, f) if l != id => Some((l, f)),
+                            _ => None,
+                        })
+                        .unwrap();
+                    crossings.push([id, other]);
+                    positive.push(forward);
+                    vertices.push(v);
+                    crossings.len() - 1
+                });
+                sides.insert(
+                    (id, list.len()),
+                    [
+                        region[map.halves[h].face],
+                        region[map.halves[map.halves[h].twin].face],
+                    ],
+                );
+                list.push(c);
+            }
+            if list.is_empty() {
+                let h = chain[0];
+                sides.insert(
+                    (id, 0),
+                    [
+                        region[map.halves[h].face],
+                        region[map.halves[map.halves[h].twin].face],
+                    ],
+                );
+            }
+            along.insert(id, list);
+        }
+        Self {
+            along,
+            crossings,
+            regions,
+            sides,
+            positive,
+            chi,
+            vertices,
+        }
     }
 
     /// Reverse one loop's traversal without changing its geometry or rebuilding the arrangement.
@@ -95,11 +184,14 @@ impl PartialTopology {
 
     /// Region IDs in `other`, indexed by this arrangement's regions.
     pub fn region_correspondence(&self, other: &Self) -> Option<Vec<usize>> {
-        self.region_correspondences(other, 1).into_iter().next()
+        self.correspondences(other, 1)
+            .into_iter()
+            .next()
+            .map(|c| c.regions)
     }
 
     /// Bounded alternatives for symmetric partial arrangements.
-    pub fn region_correspondences(&self, other: &Self, limit: usize) -> Vec<Vec<usize>> {
+    pub fn correspondences(&self, other: &Self, limit: usize) -> Vec<Correspondence> {
         if self.regions != other.regions
             || self.crossings.len() != other.crossings.len()
             || self.along.len() != other.along.len()
@@ -163,35 +255,6 @@ impl PartialTopology {
         Ok(result)
     }
 
-    /// Crossing partners and outgoing old regions along one newly inserted loop.
-    pub fn insertion_itinerary(
-        mesh: &Mesh<INPUT>,
-        before: &SlotMap<LoopID, Loop>,
-        after: &SlotMap<LoopID, Loop>,
-        id: LoopID,
-    ) -> Result<Vec<(LoopID, usize)>, PropertyViolationError> {
-        let old = Arrangement::new(mesh, before)?;
-        let (components, _, _) = old.components(mesh)?;
-        let new = Arrangement::new(mesh, after)?;
-        new.loop_crossings[&id]
-            .iter()
-            .map(|&crossing| {
-                let c = &new.crossings[crossing];
-                let face = &new.faces[&c.face];
-                let partner = c
-                    .chords
-                    .iter()
-                    .map(|&i| face.chords[i].loop_id)
-                    .find(|&i| i != id)
-                    .unwrap();
-                let region = new
-                    .region_after_in(&old, &components, id, crossing)
-                    .ok_or(PropertyViolationError::UnknownError)?;
-                Ok((partner, region))
-            })
-            .collect()
-    }
-
     fn match_sides(
         &self,
         other: &Self,
@@ -223,7 +286,7 @@ impl PartialTopology {
         map: Vec<Option<usize>>,
         regions: Vec<Option<usize>>,
         limit: usize,
-        results: &mut Vec<Vec<usize>>,
+        results: &mut Vec<Correspondence>,
     ) {
         if results.len() >= limit {
             return;
@@ -240,7 +303,10 @@ impl PartialTopology {
                     result[i] = Some(j);
                 }
             }
-            let result = result.into_iter().map(Option::unwrap).collect();
+            let result = Correspondence {
+                regions: result.into_iter().map(Option::unwrap).collect(),
+                crossings: map.into_iter().map(Option::unwrap).collect(),
+            };
             if !results.contains(&result) {
                 results.push(result);
             }

@@ -287,94 +287,39 @@ fn reconstructs_each_missing_loop_on_a_six_way_template() {
     for id in template.loops.keys() {
         let drawn: HashSet<_> = template.loops.keys().filter(|&other| other != id).collect();
         let before = subset(&template.loops, &drawn);
-        let itinerary =
-            PartialTopology::insertion_itinerary(&template.mesh, &before, &template.loops, id)
-                .unwrap();
-        let crossings: Vec<_> = itinerary.iter().map(|&(l, _)| l).collect();
-        let regions: Vec<_> = itinerary.iter().map(|&(_, r)| r).collect();
-        let router =
-            dualcube_dual::surface_router::SurfaceRouter::new(&template.mesh, &before).unwrap();
-        let result = route::find(
-            &template.mesh,
-            &flows,
-            &template.loops,
-            &drawn,
-            id,
-            &crossings,
-            &regions,
-            &router,
-            &expected,
-            &[],
-            &mut 0,
-        );
-        assert!(result.is_ok(), "{id:?}: {result:?}");
-        let old = result.unwrap();
-        let alternative = route::find(
-            &template.mesh,
-            &flows,
-            &template.loops,
-            &drawn,
-            id,
-            &crossings,
-            &regions,
-            &router,
-            &expected,
-            &[old],
-            &mut 0,
-        );
+        let plan = Plan::new(&template.mesh, &before, &template.loops, id).unwrap();
+        let map = LoopMap::from_loops(&template.mesh, &before).unwrap();
+        let actual = PartialTopology::from_map(&map);
+        let correspondence = &plan.before.correspondences(&actual, 1)[0];
+        let target = route::Target {
+            plan: &plan,
+            correspondence,
+            steps: plan.steps(correspondence),
+        };
+        assert!(target.steps.iter().all(|s| s.segment.is_some()));
+        let find = |avoid: &[HashSet<FaceID>]| {
+            route::find(
+                &template.mesh,
+                &flows,
+                &map,
+                &actual,
+                template.loops[id].direction,
+                id,
+                &target,
+                &expected,
+                avoid,
+                &mut 0,
+            )
+        };
+        let accepted = find(&[]);
+        assert!(accepted.is_ok(), "{id:?}: {:?}", accepted.err());
+        let accepted = accepted.unwrap();
+        assert!(PartialTopology::from_map(&accepted).equivalent(&expected));
+        let alternative = find(&[accepted.triangles(id)]);
         assert!(
             alternative.is_ok(),
-            "No alternative for {id:?}: {alternative:?}"
+            "No alternative for {id:?}: {:?}",
+            alternative.err()
         );
-    }
-}
-
-#[test]
-fn route_duplicates_ignore_cyclic_start_and_orientation() {
-    let (mesh, _) = crate::surface::tests::lenses(0);
-    let face = mesh.face_ids()[0];
-    let points = [[0.2, 0.2], [0.5, 0.2], [0.2, 0.5]];
-    let original = Loop::from_surface(
-        Direction::X,
-        (0..3)
-            .map(|i| dualcube_dual::SurfaceArc {
-                face,
-                from: points[i],
-                to: points[(i + 1) % 3],
-            })
-            .collect(),
-    );
-    let mut shifted = original.clone();
-    shifted.surface.rotate_left(1);
-    assert!(route::same_geometry(&original, &shifted));
-    shifted.reverse();
-    assert!(route::same_geometry(&original, &shifted));
-    shifted.surface[0].from[0] += 0.01;
-    assert!(!route::same_geometry(&original, &shifted));
-}
-
-#[test]
-#[ignore]
-fn routing_comparison() {
-    let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
-        .join("../../../meshes/dataset/a.bouba_zero/airplane1.stl");
-    let mesh = Mesh::<INPUT>::from_stl(&path).unwrap().0;
-    let skeleton = crate::skeletonize::run(&mesh).unwrap();
-    let mut progress = crate::pipeline::Progress::from_skeleton(skeleton);
-    progress.optimize(&mesh).unwrap();
-    let realized = progress.optimized.unwrap();
-    for repeat in 0..2 {
-        let start = std::time::Instant::now();
-        let old = crate::reference_drawing::attempt(&mesh, &realized).unwrap();
-        let old_time = start.elapsed();
-        assert!(old.failure.is_none(), "{:?}", old.failure);
-        let start = std::time::Instant::now();
-        let new = attempt(&mesh, &realized).unwrap();
-        let new_time = start.elapsed();
-        assert!(new.failure.is_none(), "{:?}", new.failure);
-        assert!(PartialTopology::new(&mesh, &old.loops).unwrap()
-            .equivalent(&PartialTopology::new(&mesh, &new.loops).unwrap()));
-        eprintln!("COMPARISON repeat={repeat} before={:.3} after={:.3} searches={}/{} loops={}/{}",
-            old_time.as_secs_f64(), new_time.as_secs_f64(),old.searches,new.searches,old.loops.len(),new.loops.len());
     }
 }

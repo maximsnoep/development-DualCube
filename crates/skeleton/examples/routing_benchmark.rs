@@ -3,6 +3,10 @@ use dualcube_types::prelude::*;
 use std::{path::PathBuf, time::Instant};
 
 fn main() {
+    tracing_subscriber::fmt()
+        .with_writer(std::io::stderr)
+        .with_max_level(tracing::Level::INFO)
+        .init();
     let mut args = std::env::args().skip(1);
     let path = PathBuf::from(args.next().expect("mesh path"));
     let repetitions: usize = args.next().map_or(1, |s| s.parse().unwrap());

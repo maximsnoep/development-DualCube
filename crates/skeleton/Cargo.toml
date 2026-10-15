@@ -19,5 +19,8 @@ serde = { workspace = true, features = ["derive"] }
 slotmap.workspace = true
 tracing.workspace = true
 
+[dev-dependencies]
+tracing-subscriber = { version = "0.3.20", features = ["fmt"] }
+
 [lints]
 workspace = true

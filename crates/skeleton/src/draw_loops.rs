@@ -1,9 +1,13 @@
 //! Incremental surface routing, accepting only the template's marked region topology.
 
 use crate::{DualLoops, RealizedSkeleton, SkeletonResult};
-use dualcube_dual::{Loop, LoopID, LoopSampler, LoopState, partial::PartialTopology};
+use dualcube_dual::{
+    Loop, LoopID, LoopSampler, LoopState, insertion::Plan, loop_map::LoopMap,
+    partial::PartialTopology,
+};
 use dualcube_types::prelude::*;
 
+mod lift;
 mod route;
 mod template;
 
@@ -15,6 +19,8 @@ pub struct SearchStats {
     pub duplicates: usize,
     pub invalid_arrangement: usize,
     pub topology_rejections: usize,
+    /// Drawings stopped because the regions after an arc differed from the template.
+    pub arc_mismatches: usize,
 }
 
 #[derive(Clone, Debug)]
@@ -32,13 +38,14 @@ impl std::fmt::Display for Failure {
             }
             Self::SearchExhausted { loop_id, stats } => write!(
                 f,
-                "Could not draw loop {loop_id:?} after {} searches ({} no route, {} search limits, {} duplicates, {} invalid arrangements, {} topology rejections); retained the accepted partial drawing",
+                "Could not draw loop {loop_id:?} after {} searches ({} no route, {} search limits, {} duplicates, {} invalid arrangements, {} topology rejections, {} arc mismatches); retained the accepted partial drawing",
                 stats.searches,
                 stats.no_route,
                 stats.expansion_limit,
                 stats.duplicates,
                 stats.invalid_arrangement,
-                stats.topology_rejections
+                stats.topology_rejections,
+                stats.arc_mismatches
             ),
             Self::InvalidDual(error) => {
                 write!(f, "Completed loop structure failed validation: {error}")
@@ -68,39 +75,37 @@ pub fn attempt(mesh: &Mesh<INPUT>, realized: &RealizedSkeleton) -> SkeletonResul
     let timer = std::time::Instant::now();
     realized.validate(mesh)?;
     let template = template::Template::build(realized)?;
-    let mut working = template.loops.clone();
-    let mut drawn = HashSet::new();
+    let mut drawn: HashSet<_> = template.boundaries.values().copied().collect();
     let mut result = Attempt {
         loops: DualLoops::with_key(),
-        planned: working.len(),
+        planned: template.loops.len(),
         searches: 0,
         failure: None,
     };
-    let geometry = crate::geometry::SurfaceGeometry::build(mesh, &realized.labeled.skeleton)?;
-    for boundary in geometry.boundaries {
-        let edge = boundary.edge;
-        let id = template.boundaries[&edge];
-        let mut l = Loop::from_surface(realized.labeled.labels[edge].direction, boundary.arcs);
-        if realized.labeled.labels[edge].sign == Sign::Negative {
-            l.reverse();
+    // Topology lives in the loop map; curves are drawn from it only for output.
+    let mut map = lift::boundaries(mesh, realized, &template)?;
+    let output = |map: &LoopMap, drawn: &HashSet<LoopID>| -> SkeletonResult<DualLoops> {
+        let mut loops = subset(&template.loops, drawn);
+        for (id, arcs) in map.realize(mesh)? {
+            loops[id] = Loop::from_surface(template.loops[id].direction, arcs);
         }
-        working[id] = l;
-        drawn.insert(id);
-    }
-    result.loops = subset(&working, &drawn);
+        Ok(loops)
+    };
     let expected = PartialTopology::new(&template.mesh, &subset(&template.loops, &drawn))?;
-    if !PartialTopology::new(mesh, &result.loops).is_ok_and(|actual| actual.equivalent(&expected)) {
+    if !PartialTopology::from_map(&map).equivalent(&expected) {
+        result.loops = output(&map, &drawn)?;
         result.failure = Some(Failure::BoundaryTopology);
         return Ok(result);
     }
     let flows = route::Flows::new(mesh, drawn.is_empty());
     let full = PartialTopology::new(&template.mesh, &template.loops)?;
-    let mut history = Vec::<LoopID>::new();
-    let mut alternatives = HashMap::<LoopID, Vec<Loop>>::new();
+    let mut history = Vec::<(LoopID, LoopMap)>::new();
+    let mut alternatives = HashMap::<LoopID, Vec<HashSet<FaceID>>>::new();
     let mut backtracks = 0;
     let mut failures = HashMap::<LoopID, usize>::new();
-    while drawn.len() < working.len() {
-        let id = working
+    while drawn.len() < template.loops.len() {
+        let id = template
+            .loops
             .keys()
             .filter(|id| !drawn.contains(id))
             .max_by_key(|&id| {
@@ -119,46 +124,48 @@ pub fn attempt(mesh: &Mesh<INPUT>, realized: &RealizedSkeleton) -> SkeletonResul
         let mut selected = drawn.clone();
         selected.insert(id);
         let expected = PartialTopology::new(&template.mesh, &subset(&template.loops, &selected))?;
-        let before = subset(&template.loops, &drawn);
-        let old = PartialTopology::new(&template.mesh, &before)?;
-        let (router, actual) =
-            dualcube_dual::surface_router::SurfaceRouter::with_topology(mesh, &result.loops)?;
-        let mut mappings = old.region_correspondences(&actual, 16);
-        if mappings.is_empty() {
-            return Err("Lost partial topology correspondence".into());
-        }
-        let itinerary = PartialTopology::insertion_itinerary(
+        let plan = Plan::new(
             &template.mesh,
-            &before,
+            &subset(&template.loops, &drawn),
             &subset(&template.loops, &selected),
             id,
         )?;
-        let crossings: Vec<_> = itinerary.iter().map(|&(partner, _)| partner).collect();
-        let mut gap_counts = vec![0usize; actual.regions];
-        for &r in &router.regions {
-            gap_counts[r] += 1;
+        let actual = PartialTopology::from_map(&map);
+        let correspondences = plan.before.correspondences(&actual, 16);
+        if correspondences.is_empty() {
+            return Err("Lost partial topology correspondence".into());
         }
-        mappings.sort_by_key(|mapping| {
-            std::cmp::Reverse(
-                itinerary
-                    .iter()
-                    .map(|&(_, r)| gap_counts[mapping[r]])
-                    .min()
-                    .unwrap_or(0),
-            )
+        let crossings: Vec<_> = plan.itinerary.iter().map(|i| i.partner).collect();
+        let (regions, _) = map.regions();
+        let mut room = vec![0usize; actual.regions];
+        for &r in &regions {
+            room[r] += 1;
+        }
+        // Distinct correspondences can prescribe identical steps.
+        let mut options: Vec<route::Target<'_>> = Vec::new();
+        for correspondence in &correspondences {
+            let steps = plan.steps(correspondence);
+            if !options.iter().any(|o| o.steps == steps) {
+                options.push(route::Target {
+                    plan: &plan,
+                    correspondence,
+                    steps,
+                });
+            }
+        }
+        options.sort_by_key(|o| {
+            std::cmp::Reverse(o.steps.iter().map(|s| room[s.region]).min().unwrap_or(0))
         });
         let mut routed = None;
-        for mapping in mappings {
-            let regions: Vec<_> = itinerary.iter().map(|&(_, r)| mapping[r]).collect();
+        for target in &options {
             let candidate = route::find(
                 mesh,
                 &flows,
-                &working,
-                &drawn,
+                &map,
+                &actual,
+                template.loops[id].direction,
                 id,
-                &crossings,
-                &regions,
-                &router,
+                target,
                 &expected,
                 alternatives.get(&id).map_or(&[], Vec::as_slice),
                 &mut result.searches,
@@ -170,18 +177,16 @@ pub fn attempt(mesh: &Mesh<INPUT>, realized: &RealizedSkeleton) -> SkeletonResul
             }
         }
         match routed.unwrap() {
-            Ok(l) => {
-                working[id] = l;
+            Ok(next) => {
+                history.push((id, std::mem::replace(&mut map, next)));
                 drawn.insert(id);
-                history.push(id);
-                result.loops = subset(&working, &drawn);
             }
             Err(failure) => {
                 let neighbors: Vec<_> = history
                     .iter()
                     .enumerate()
                     .rev()
-                    .filter(|(_, previous)| crossings.contains(previous))
+                    .filter(|(_, (previous, _))| crossings.contains(previous))
                     .map(|(i, _)| i)
                     .collect();
                 let failed = failures.entry(id).or_default();
@@ -194,31 +199,44 @@ pub fn attempt(mesh: &Mesh<INPUT>, realized: &RealizedSkeleton) -> SkeletonResul
                 if backtracks < 24
                     && let Some(index) = index
                 {
-                    let previous = history[index];
+                    let previous = history[index].0;
                     alternatives
                         .entry(previous)
                         .or_default()
-                        .push(working[previous].clone());
-                    for undone in history.drain(index..) {
+                        .push(map.triangles(previous));
+                    for (undone, before) in history.drain(index..).rev() {
                         drawn.remove(&undone);
                         if undone != previous {
                             alternatives.remove(&undone);
                         }
+                        map = before;
                     }
-                    result.loops = subset(&working, &drawn);
                     backtracks += 1;
                     tracing::info!(
                         "Loop drawing: reconsidering {previous:?} after {id:?} failed ({backtracks}/24 retries)"
                     );
                     continue;
                 }
+                result.loops = output(&map, &drawn)?;
                 result.failure = Some(failure);
                 return Ok(result);
             }
         }
-        tracing::info!("Loop drawing: {}/{} loops", drawn.len(), working.len());
+        tracing::info!(
+            "Loop drawing: {}/{} loops",
+            drawn.len(),
+            template.loops.len()
+        );
     }
-    if let Err(error) = dualcube_dual::Dual::from(std::sync::Arc::new(mesh.clone()), &result.loops)
+    result.loops = output(&map, &drawn)?;
+    // Drawing is for output only, but must keep the map's topology.
+    let drawn_topology = PartialTopology::new(mesh, &result.loops);
+    if !drawn_topology.is_ok_and(|t| t.equivalent(&full)) {
+        result.failure = Some(Failure::InvalidDual(
+            "Drawn curves lost the loop map's topology".into(),
+        ));
+    } else if let Err(error) =
+        dualcube_dual::Dual::from(std::sync::Arc::new(mesh.clone()), &result.loops)
     {
         result.failure = Some(Failure::InvalidDual(error.to_string()));
     }

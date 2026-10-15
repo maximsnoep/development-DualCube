@@ -17,14 +17,16 @@ pub(crate) struct Link {
     pub cells: [usize; 2],
     pub sides: [usize; 2],
     pub wall: Option<LoopID>,
+    // Index into `cells` of the cell left of the wall loop.
+    pub left: usize,
 }
 
 #[derive(Clone, Debug, Default)]
 pub(crate) struct Cells {
     pub cells: Vec<Cell>,
     pub links: Vec<Link>,
-    positions: Vec<Vector3D>,
-    original: Vec<Option<VertID>>,
+    pub positions: Vec<Vector3D>,
+    pub original: Vec<Option<VertID>>,
     on_loop: Vec<bool>,
 }
 
@@ -76,7 +78,7 @@ fn cut(polygon: &[Point2], a: Point2, b: Point2, sign: f64) -> Vec<Point2> {
     }
     result
 }
-fn side_at(p: Point2) -> Option<(usize, f64)> {
+pub(crate) fn side_at(p: Point2) -> Option<(usize, f64)> {
     if p[1].abs() < TOL {
         Some((0, p[0]))
     } else if (p[0] + p[1] - 1.).abs() < TOL {
@@ -152,7 +154,11 @@ pub(crate) fn build(
         }
     }
     let mut crossings = Vec::new();
-    for (&face, arr) in &faces {
+    // Sorted faces keep crossing IDs reproducible.
+    let mut order: Vec<_> = faces.keys().copied().collect();
+    order.sort_by_key(|f| f.raw());
+    for face in order {
+        let arr = &faces[&face];
         for i in 0..arr.chords.len() {
             for j in i + 1..arr.chords.len() {
                 let a = &arr.chords[i];
@@ -377,20 +383,30 @@ pub(crate) fn build(
                 cell.points[(j + 1) % cell.points.len()],
                 0.5,
             );
-            let wall = faces[&cell.face]
+            let chord = faces[&cell.face]
                 .chords
                 .iter()
-                .find(|c| on(c.from, c.to, p))
-                .map(|c| c.loop_id);
+                .find(|c| on(c.from, c.to, p));
+            let wall = chord.map(|c| c.loop_id);
             let key = (a.min(b), a.max(b));
             if let Some((other, side, other_wall)) = paired.remove(&key) {
                 if wall != other_wall {
                     return Err(bad(SurfaceCurveError::InconsistentBarrier));
                 }
+                // Convex cells contain their vertex average.
+                let left = chord.map_or(0, |c| {
+                    let n = cell.points.len() as f64;
+                    let inner = cell
+                        .points
+                        .iter()
+                        .fold([0., 0.], |s, q| [s[0] + q[0] / n, s[1] + q[1] / n]);
+                    usize::from(orient(c.from, c.to, inner) > 0.)
+                });
                 data.links.push(Link {
                     cells: [other, i],
                     sides: [side, j],
                     wall,
+                    left,
                 });
             } else {
                 paired.insert(key, (i, j, wall));
