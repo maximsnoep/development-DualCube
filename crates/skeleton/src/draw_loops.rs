@@ -18,6 +18,8 @@ pub struct SearchStats {
     pub expansion_limit: usize,
     pub duplicates: usize,
     pub invalid_arrangement: usize,
+    /// Drawings stopped because an arc could not be placed as routed; never expected.
+    pub revisits: usize,
     pub topology_rejections: usize,
     /// Drawings stopped because the regions after an arc differed from the template.
     pub arc_mismatches: usize,
@@ -38,12 +40,13 @@ impl std::fmt::Display for Failure {
             }
             Self::SearchExhausted { loop_id, stats } => write!(
                 f,
-                "Could not draw loop {loop_id:?} after {} searches ({} no route, {} search limits, {} duplicates, {} invalid arrangements, {} topology rejections, {} arc mismatches); retained the accepted partial drawing",
+                "Could not draw loop {loop_id:?} after {} searches ({} no route, {} search limits, {} duplicates, {} invalid arrangements, {} revisits, {} topology rejections, {} arc mismatches); retained the accepted partial drawing",
                 stats.searches,
                 stats.no_route,
                 stats.expansion_limit,
                 stats.duplicates,
                 stats.invalid_arrangement,
+                stats.revisits,
                 stats.topology_rejections,
                 stats.arc_mismatches
             ),

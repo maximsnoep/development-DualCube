@@ -32,7 +32,7 @@ pub enum DrawError {
     ExpansionLimit(usize),
     /// The regions after this arc differ from the template's.
     Mismatch(usize),
-    /// The route revisits a face it already split.
+    /// The arc could not be placed as routed; never expected, since arcs are made simple.
     Revisit(usize),
 }
 
@@ -550,31 +550,50 @@ impl Plan {
                 self.arriving(&expected, &next, arc),
                 &next,
             );
-            // A route through some face twice could cross itself there; avoid such faces.
-            let mut avoid = HashSet::new();
-            let mut path = vec![];
-            for _ in 0..8 {
-                path = drawing.route(tip.1, &goal, sides.as_ref(), &avoid, arc, &cost)?;
-                let mut visited = HashSet::from([tip.1]);
-                let repeated: Vec<_> = path
-                    .iter()
-                    .map(|&h| drawing.map.halves[drawing.map.halves[h].twin].face)
-                    .filter(|&f| !visited.insert(f))
-                    .collect();
-                if repeated.is_empty() {
-                    break;
-                }
-                avoid.extend(repeated);
-            }
-            let first = drawing.map.halves.len();
-            tip = drawing.insert(self.id, tip, &path, &goal, arc)?;
-            // The first piece added: after a split's two half-edges, if any.
-            last = Some(if path.is_empty() { first } else { first + 2 });
+            let path = drawing.route(tip.1, &goal, sides.as_ref(), arc, &cost)?;
+            let piece;
+            (tip, piece) = drawing.insert(self.id, tip, &path, &goal, arc)?;
+            last = Some(piece);
             if let Goal::Cross(_) = goal {
                 labels.new.insert(tip.0, (arc + 1) % k);
             }
         }
         Ok(drawing.map)
+    }
+}
+
+/// Reconnect a curve where two of its chords cross, until none do. Chord `j` joins `points[j]`
+/// and `points[j + 1]` in `faces[j]`; `position` orders points around the boundary of a face.
+/// The two chords are replaced by the non-crossing pair that keeps one curve, reversing the
+/// part between them. Ends and points stay, and crossings strictly decrease.
+pub(crate) fn uncross<P: Copy, K: Ord>(
+    points: &mut [P],
+    faces: &mut [usize],
+    position: impl Fn(P, usize) -> K,
+) {
+    // Whether chords (a, b) and (c, d) of one face interleave around its boundary.
+    let interleave = |a: &K, b: &K, c: &K, d: &K| {
+        let inside = |x: &K| (a < x && x < b) || (b < a && (x > a || x < b));
+        a != b && ![a, b].contains(&c) && ![a, b].contains(&d) && inside(c) != inside(d)
+    };
+    let crossing = |points: &[P], faces: &[usize]| {
+        for j in 0..faces.len() {
+            for i in 0..j {
+                let f = faces[i];
+                if faces[j] != f {
+                    continue;
+                }
+                let [a, b, c, d] = [i, i + 1, j, j + 1].map(|s| position(points[s], f));
+                if interleave(&a, &b, &c, &d) {
+                    return Some((i, j));
+                }
+            }
+        }
+        None
+    };
+    while let Some((i, j)) = crossing(points, faces) {
+        points[i + 1..=j].reverse();
+        faces[i + 1..j].reverse();
     }
 }
 
@@ -646,11 +665,12 @@ impl Drawing {
         (x, self.map.halves.len() - 1)
     }
 
-    fn connect(&mut self, a: usize, b: usize, piece: Piece) {
+    fn connect(&mut self, a: usize, b: usize, piece: Piece) -> usize {
         let face = self.map.halves[a].face;
-        self.map.connect(a, b, piece);
+        let h = self.map.connect(a, b, piece);
         self.segment.extend([None, None]);
         self.region.push(self.region[face]);
+        h
     }
 
     // A cut of free edges from vertex `from` of face `start` to vertex `to` of face `end`,
@@ -792,12 +812,9 @@ impl Drawing {
         start: usize,
         goal: &Goal,
         sides: Option<&Sides>,
-        avoid: &HashSet<usize>,
         arc: usize,
         cost: &impl Fn(FaceID, Vector3D, usize) -> f64,
     ) -> Result<Vec<usize>, DrawError> {
-        // Entering an avoided face costs as much as a long detour.
-        const AVOIDED: f64 = 1e3;
         let map = &self.map;
         // Crossing the next partner ends the arc: such states carry `EXITED` instead of bits.
         const EXITED: u32 = u32::MAX;
@@ -834,11 +851,8 @@ impl Drawing {
                 let next = map.halves[half.twin].face;
                 let portal = self.middle(h);
                 let there = center(next);
-                let mut step_cost = cost(map.faces[face].triangle, portal - here, arc)
+                let step_cost = cost(map.faces[face].triangle, portal - here, arc)
                     + cost(map.faces[next].triangle, there - portal, arc);
-                if avoid.contains(&next) {
-                    step_cost *= AVOIDED;
-                }
                 if !step_cost.is_finite() || step_cost <= 0. {
                     continue;
                 }
@@ -886,8 +900,10 @@ impl Drawing {
         Ok(path)
     }
 
-    // Add the arc from the tip (vertex, face beyond it) across the half-edges of `path`.
-    // Returns the new tip.
+    // Add the arc from the tip (vertex, face beyond it) across the half-edges of `path`, as a
+    // simple curve. Returns the new tip and the arc's first piece. Each pass through a face is a
+    // chord between points on its boundary; points on an edge crossed repeatedly keep a fixed
+    // order, and interleaving chords are reconnected by `uncross`.
     fn insert(
         &mut self,
         id: LoopID,
@@ -895,47 +911,125 @@ impl Drawing {
         path: &[usize],
         goal: &Goal,
         arc: usize,
-    ) -> Result<(usize, usize), DrawError> {
-        let (mut vertex, mut face) = tip;
-        let mut added = HashSet::new();
-        for &crossed in path {
-            // An edge crossed before in this arc is split; cross its piece on this side.
-            let mut h = crossed;
-            while self.map.halves[h].face != face {
-                let v = self.map.target(h);
-                let piece = self.map.halves[h].piece;
-                let back = self.map.halves[h].twin;
-                h = added
-                    .contains(&v)
-                    .then(|| {
-                        self.map
-                            .outgoing(v)
-                            .into_iter()
-                            .find(|&o| o != back && self.map.halves[o].piece == piece)
-                    })
-                    .flatten()
-                    .ok_or(DrawError::Revisit(arc))?;
+    ) -> Result<((usize, usize), usize), DrawError> {
+        let halves = &self.map.halves;
+        // Points: the start corner, crossings by index into `path`, the closing corner.
+        #[derive(Clone, Copy)]
+        enum Spot {
+            Corner(usize),
+            Cross(usize),
+        }
+        let start = self.leaving(tip.0, tip.1).ok_or(DrawError::Revisit(arc))?;
+        let mut spots = vec![Spot::Corner(start)];
+        spots.extend((0..path.len()).map(Spot::Cross));
+        // Chord `j` runs from `spots[j]` to `spots[j + 1]` in face `faces[j]`.
+        let mut faces = vec![tip.1];
+        faces.extend(path.iter().map(|&h| halves[halves[h].twin].face));
+        // Beyond the last crossing, where the next arc starts.
+        let beyond = match goal {
+            Goal::Close(closing) => {
+                if halves[*closing].face != *faces.last().unwrap() {
+                    return Err(DrawError::Revisit(arc));
+                }
+                spots.push(Spot::Corner(halves[*closing].next));
+                None
             }
-            let point = match self.map.halves[h].piece {
-                Piece::Mesh(_) => Point::OnEdge,
-                Piece::Loop(..) => Point::Crossing,
-                Piece::Free => Point::Other,
+            Goal::Cross(_) => faces.pop(),
+        };
+        // Crossings of every edge (by its lesser half-edge), ordered from that half's origin.
+        let key = |h: usize| h.min(halves[h].twin);
+        let mut along = HashMap::<usize, Vec<usize>>::new();
+        for (o, &h) in path.iter().enumerate() {
+            along.entry(key(h)).or_default().push(o);
+        }
+        let mut rank = vec![0; path.len()];
+        for list in along.values() {
+            for (r, &o) in list.iter().enumerate() {
+                rank[o] = r;
+            }
+        }
+        // Position of a point along the boundary of face `f`.
+        let mut indices = HashMap::<usize, HashMap<usize, usize>>::new();
+        for &f in &faces {
+            indices.entry(f).or_insert_with(|| {
+                self.boundary(f)
+                    .into_iter()
+                    .enumerate()
+                    .map(|(i, h)| (h, i))
+                    .collect()
+            });
+        }
+        let position = |spot: Spot, f: usize| -> (usize, usize) {
+            match spot {
+                Spot::Corner(h) => (indices[&f][&h], 0),
+                Spot::Cross(o) => {
+                    let h = path[o];
+                    let side = if halves[h].face == f {
+                        h
+                    } else {
+                        halves[h].twin
+                    };
+                    let r = rank[o];
+                    let n = along[&key(h)].len();
+                    (
+                        indices[&f][&side],
+                        1 + if side == key(h) { r } else { n - 1 - r },
+                    )
+                }
+            }
+        };
+        uncross(&mut spots, &mut faces, position);
+        // Split every edge at its crossings in order.
+        let mut vertex = vec![0; path.len()];
+        let mut keys: Vec<_> = along.keys().copied().collect();
+        keys.sort();
+        for e in keys {
+            let mut h = e;
+            for &o in &along[&e] {
+                let point = match self.map.halves[h].piece {
+                    Piece::Mesh(_) => Point::OnEdge,
+                    Piece::Loop(..) => Point::Crossing,
+                    Piece::Free => Point::Other,
+                };
+                (vertex[o], _) = self.split(h, point);
+                // The piece beyond the new vertex, on the same side.
+                h = self.map.halves.len() - 2;
+            }
+        }
+        // Connect the chords, each in the part of its face that its ends share.
+        // The face of the path that every face added here lies in.
+        let mut family: HashMap<usize, usize> = HashMap::new();
+        let family_of = |family: &HashMap<usize, usize>, f: usize| *family.get(&f).unwrap_or(&f);
+        let corner =
+            |map: &LoopMap, family: &HashMap<usize, usize>, spot: Spot, f: usize| match spot {
+                Spot::Corner(h) => Some(h),
+                Spot::Cross(o) => map
+                    .outgoing(vertex[o])
+                    .into_iter()
+                    .find(|&h| family_of(family, map.halves[h].face) == f),
             };
-            let from = self.leaving(vertex, face).ok_or(DrawError::Revisit(arc))?;
-            let (x, beyond) = self.split(h, point);
-            added.insert(x);
-            let to = self.map.halves[h].next;
-            self.connect(from, to, Piece::Loop(id, true));
-            vertex = x;
-            face = self.map.halves[beyond].face;
+        let mut first = None;
+        for (j, &f) in faces.iter().enumerate() {
+            let a = corner(&self.map, &family, spots[j], f).ok_or(DrawError::Revisit(arc))?;
+            let b = corner(&self.map, &family, spots[j + 1], f).ok_or(DrawError::Revisit(arc))?;
+            let face = self.map.halves[a].face;
+            if self.map.halves[b].face != face || family_of(&family, face) != f {
+                return Err(DrawError::Revisit(arc));
+            }
+            let h = self.connect(a, b, Piece::Loop(id, true));
+            family.insert(self.map.faces.len() - 1, f);
+            first.get_or_insert(h);
         }
-        if let Goal::Close(closing) = goal {
-            let target = self.map.target(*closing);
-            let from = self.leaving(vertex, face).ok_or(DrawError::Revisit(arc))?;
-            let to = self.leaving(target, face).ok_or(DrawError::Revisit(arc))?;
-            self.connect(from, to, Piece::Loop(id, true));
-        }
-        Ok((vertex, face))
+        let first = first.ok_or(DrawError::Revisit(arc))?;
+        let tip = match goal {
+            Goal::Close(_) => tip,
+            // Nothing is added beyond the partner, so that face is unchanged.
+            Goal::Cross(_) => (
+                vertex[path.len() - 1],
+                beyond.ok_or(DrawError::Revisit(arc))?,
+            ),
+        };
+        Ok((tip, first))
     }
 
     // Cuts from every other boundary of the tip's region to the partner interval arriving at
@@ -1040,3 +1134,6 @@ impl Drawing {
         })
     }
 }
+
+#[cfg(test)]
+mod tests;

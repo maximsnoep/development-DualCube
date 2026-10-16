@@ -174,7 +174,7 @@ pub(super) fn find(
                 continue;
             }
             Err(DrawError::Revisit(_)) => {
-                stats.invalid_arrangement += 1;
+                stats.revisits += 1;
                 continue;
             }
         };
