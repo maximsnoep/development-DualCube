@@ -284,3 +284,10 @@ fn placement_stop_and_cube_view_succeed_without_running_optimization() {
     assert!(!settings["lambert"].visible);
     assert!(parse(&["--load=a.obj", "--stop-after=labeling", "--view=cubes"]).is_err());
 }
+
+#[test]
+fn optimized_view_needs_complete_initialization() {
+    let launch = parse(&["--load=a.obj", "--auto-start=skeleton", "--view=optimized"]).unwrap();
+    assert_eq!(launch.view, Some(ModelViewKind::Optimized));
+    assert!(parse(&["--load=a.obj", "--stop-after=placement", "--view=optimized"]).is_err());
+}

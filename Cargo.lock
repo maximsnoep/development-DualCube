@@ -6054,6 +6054,7 @@ dependencies = [
  "skeleton-numerics",
  "slotmap",
  "tracing",
+ "tracing-subscriber",
 ]
 
 [[package]]

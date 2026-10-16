@@ -211,3 +211,47 @@ fn cube_view_distinguishes_stretched_edges_and_keeps_finite_geometry() {
             .contains_key(SkeletonLayer::CubeEdges.label())
     );
 }
+
+#[test]
+fn optimized_patches_keep_original_colors() {
+    let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("../../crates/mehsh/assets/tetrahedron.obj");
+    let solution = io::import_solution(&path).unwrap();
+    let mesh = &solution.mesh_ref;
+    let extraction = dualcube::skeleton::skeletonize::extract(mesh, Default::default()).unwrap();
+    let mut progress =
+        dualcube::skeleton::pipeline::Progress::from_skeleton(extraction.skeleton.clone());
+    progress.optimize(mesh).unwrap();
+    let state = SkeletonResource {
+        state: Some(crate::resources::SkeletonState::Extracted(extraction)),
+        labeled: progress.labeled,
+        labeling: progress.labeling,
+        realized: progress.realized,
+        optimized: progress.optimized,
+        ..default()
+    };
+    let object = build(mesh, &state);
+    let colors = |label: &str| {
+        let RenderAsset::Mesh(mesh) = &object.features[label] else {
+            panic!("Missing {label}");
+        };
+        let Some(VertexAttributeValues::Float32x4(colors)) =
+            mesh.attribute(BevyMesh::ATTRIBUTE_COLOR)
+        else {
+            panic!("Missing colors of {label}");
+        };
+        colors
+            .iter()
+            .map(|c| c.map(f32::to_bits))
+            .collect::<HashSet<_>>()
+    };
+    let original = colors(SkeletonLayer::Patches.label());
+    let optimized = colors(SkeletonLayer::OptimizedPatches.label());
+    assert!(!optimized.is_empty() && optimized.is_subset(&original));
+    assert!(
+        object
+            .features
+            .contains_key(SkeletonLayer::OptimizedBoundaries.label())
+    );
+    assert!(SkeletonLayer::OptimizedPatches.is_surface());
+}

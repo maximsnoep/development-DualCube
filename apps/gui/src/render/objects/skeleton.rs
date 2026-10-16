@@ -19,19 +19,23 @@ pub enum SkeletonLayer {
     Patches,
     TranslucentPatches,
     Boundaries,
+    OptimizedPatches,
+    OptimizedBoundaries,
     Deflated,
     Cubes,
     CubeEdges,
 }
 
 impl SkeletonLayer {
-    pub const ALL: [Self; 9] = [
+    pub const ALL: [Self; 11] = [
         Self::Skeleton,
         Self::Raw,
         Self::Labeled,
         Self::Patches,
         Self::TranslucentPatches,
         Self::Boundaries,
+        Self::OptimizedPatches,
+        Self::OptimizedBoundaries,
         Self::Deflated,
         Self::Cubes,
         Self::CubeEdges,
@@ -45,6 +49,8 @@ impl SkeletonLayer {
             Self::Patches => "patches",
             Self::TranslucentPatches => "translucent patches",
             Self::Boundaries => "patch boundaries",
+            Self::OptimizedPatches => "optimized patches",
+            Self::OptimizedBoundaries => "optimized patch boundaries",
             Self::Deflated => "deflated",
             Self::Cubes => "placed cubes",
             Self::CubeEdges => "cube edges",
@@ -58,7 +64,11 @@ impl SkeletonLayer {
     pub fn is_surface(self) -> bool {
         matches!(
             self,
-            Self::Patches | Self::TranslucentPatches | Self::Boundaries
+            Self::Patches
+                | Self::TranslucentPatches
+                | Self::Boundaries
+                | Self::OptimizedPatches
+                | Self::OptimizedBoundaries
         )
     }
 }
@@ -151,49 +161,75 @@ fn build(mesh: &mehsh::prelude::Mesh<INPUT>, state: &SkeletonResource) -> Render
     if let Some(realized) = state.optimized.as_ref().or(state.realized.as_ref()) {
         cubes::add(&mut object, realized);
     }
-    match dualcube::skeleton::geometry::SurfaceGeometry::build(mesh, current) {
-        Ok(geometry) => add_surface(&mut object, current, &geometry, scale, translation),
-        Err(error) => warn!("Could not build skeleton surface geometry: {error}"),
+    // Patches keep their color after optimization; absorbed ones take their neighbor's.
+    let colors: HashMap<_, _> = current
+        .nodes
+        .keys()
+        .enumerate()
+        .map(|(i, id)| (id, region_color(i)))
+        .collect();
+    let surfaces = [
+        (
+            Some(current),
+            SkeletonLayer::Patches,
+            SkeletonLayer::Boundaries,
+        ),
+        (
+            state.optimized.as_ref().map(|o| &o.labeled.skeleton),
+            SkeletonLayer::OptimizedPatches,
+            SkeletonLayer::OptimizedBoundaries,
+        ),
+    ];
+    for (skeleton, patches, boundaries) in surfaces {
+        let Some(skeleton) = skeleton else {
+            continue;
+        };
+        match dualcube::skeleton::geometry::SurfaceGeometry::build(mesh, skeleton) {
+            Ok(geometry) => {
+                let layers = (patches, boundaries);
+                add_surface(&mut object, &colors, &geometry, layers, scale, translation);
+            }
+            Err(error) => warn!("Could not build {} geometry: {error}", patches.label()),
+        }
     }
     object
 }
 
 fn add_surface(
     object: &mut RenderObject,
-    skeleton: &Skeleton,
+    colors: &HashMap<dualcube::skeleton::SkeletonNodeID, [f32; 3]>,
     geometry: &dualcube::skeleton::geometry::SurfaceGeometry,
+    (patch_layer, boundary_layer): (SkeletonLayer, SkeletonLayer),
     scale: f64,
     translation: Vector3D,
 ) {
-    let colors: HashMap<_, _> = skeleton
-        .nodes
-        .keys()
-        .enumerate()
-        .map(|(i, id)| (id, region_color(i)))
-        .collect();
     let mut patches = MeshBuilder::new();
     for triangle in &geometry.triangles {
         let [a, b, c] = triangle.points;
         let normal = (b - a).cross(&(c - a)).normalize();
-        patches.add_triangle(triangle.points, [normal; 3], colors[&triangle.node]);
+        let color = colors
+            .get(&triangle.node)
+            .copied()
+            .unwrap_or(colors::LIGHT_GRAY);
+        patches.add_triangle(triangle.points, [normal; 3], color);
     }
     patches.normalize(scale, translation);
     let mut patches = patches.build();
-    object.add(
-        SkeletonLayer::Patches.label(),
-        RenderAsset::Mesh(patches.clone()),
-    );
-    if let Some(VertexAttributeValues::Float32x4(colors)) =
-        patches.attribute_mut(BevyMesh::ATTRIBUTE_COLOR)
-    {
-        for color in colors {
-            color[3] = 0.3;
+    object.add(patch_layer.label(), RenderAsset::Mesh(patches.clone()));
+    // Only the original patches have a translucent variant, for the combined view.
+    if patch_layer == SkeletonLayer::Patches {
+        if let Some(VertexAttributeValues::Float32x4(colors)) =
+            patches.attribute_mut(BevyMesh::ATTRIBUTE_COLOR)
+        {
+            for color in colors {
+                color[3] = 0.3;
+            }
         }
+        object.add(
+            SkeletonLayer::TranslucentPatches.label(),
+            RenderAsset::TranslucentMesh(patches),
+        );
     }
-    object.add(
-        SkeletonLayer::TranslucentPatches.label(),
-        RenderAsset::TranslucentMesh(patches),
-    );
     let mut boundaries = GizmoAsset::new();
     for boundary in &geometry.boundaries {
         for pair in boundary.points.windows(2) {
@@ -204,7 +240,7 @@ fn add_surface(
             );
         }
     }
-    object.gizmo(boundaries, 1.5, -0.001, SkeletonLayer::Boundaries.label());
+    object.gizmo(boundaries, 1.5, -0.001, boundary_layer.label());
 }
 
 fn graph(
