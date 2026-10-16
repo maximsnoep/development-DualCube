@@ -1,4 +1,5 @@
 use crate::arrangement::Arrangement;
+use crate::loop_map::{Embedding, LoopMap, Piece, Point};
 use crate::loops::*;
 use dualcube_types::prelude::*;
 use grapff::Grapff;
@@ -140,10 +141,25 @@ pub struct RefinedMesh {
     pub face_pieces: HashMap<FaceID, Vec<FaceID>>,
 }
 
-// The arrangement of the loops on the mesh, with the loop region of every cell.
+// The cells of the loops on the mesh: of their geometric arrangement, or the faces of a loop map.
+#[derive(Clone, Debug)]
+enum Cells {
+    Arrangement(Box<Arrangement>),
+    Map(Arc<MapCells>),
+}
+
+#[derive(Debug)]
+struct MapCells {
+    map: LoopMap,
+    embedding: Embedding,
+    // The map faces beside the pieces of every input half-edge, from its root.
+    edges: HashMap<EdgeID, Vec<usize>>,
+}
+
+// The cells of the loops on the mesh, with the loop region of every cell.
 #[derive(Debug)]
 struct RegionLocator {
-    arrangement: Arrangement,
+    cells: Cells,
     cell_regions: Vec<Option<LoopRegionID>>,
     // The refined mesh (see `Dual::refined_mesh`), computed once (shared by all clones of the dual structure).
     refined: std::sync::OnceLock<Option<RefinedMesh>>,
@@ -174,7 +190,7 @@ impl Dual {
         // For each loop region, find its actual subsurface (on the mesh)
         let cell_regions = dual.assign_subsurfaces(&arrangement, &crossing_to_intersection)?;
         dual.locator = Some(Arc::new(RegionLocator {
-            arrangement,
+            cells: Cells::Arrangement(Box::new(arrangement)),
             cell_regions,
             refined: std::sync::OnceLock::new(),
         }));
@@ -188,6 +204,213 @@ impl Dual {
         // Assign levels to the loop structure
         dual.assign_levels();
 
+        Ok(dual)
+    }
+
+    /// The dual structure of the loops of a loop map. Intersections, their order along the loops
+    /// and the loop regions are read from the map, exactly; `loops_ref` are its drawn curves,
+    /// kept for output, and give the loops' axes. Positions come from the map's drawing.
+    pub fn from_map(
+        mesh_ref: Arc<Mesh<INPUT>>,
+        map: &LoopMap,
+        loops_ref: &SlotMap<LoopID, Loop>,
+    ) -> Result<Self, PropertyViolationError> {
+        let mut dual = Self {
+            mesh_ref,
+            loops_ref: loops_ref.clone(),
+            loop_structure: Mesh::default(),
+            level_graphs: LevelGraphs::default(),
+            intersections: HashMap::new(),
+            locator: None,
+            loop_segments: HashMap::new(),
+            loop_regions: HashMap::new(),
+        };
+        let mesh = dual.mesh_ref.clone();
+        let embedding = map.embedding(&mesh)?;
+        let at = |v: usize| -> (FaceID, Vector3D) {
+            let triangle = map.faces[map.halves[map.outgoing(v)[0]].face].triangle;
+            let position = embedding
+                .vertex
+                .get(&(triangle, v))
+                .map_or(map.positions[v], |&p| {
+                    crate::SurfaceArc::position(&mesh, triangle, p)
+                });
+            (triangle, position)
+        };
+
+        // Crossings in order along every loop.
+        let chains = map.chains();
+        if chains.len() != loops_ref.len() || loops_ref.keys().any(|id| !chains.contains_key(&id)) {
+            return Err(PropertyViolationError::UnknownError);
+        }
+        let mut vertices = vec![];
+        let mut index = HashMap::new();
+        let mut along = HashMap::<LoopID, Vec<usize>>::new();
+        for (&id, chain) in &chains {
+            let list = chain
+                .iter()
+                .map(|&h| map.halves[h].origin)
+                .filter(|&v| map.points[v] == Point::Crossing)
+                .map(|v| {
+                    *index.entry(v).or_insert_with(|| {
+                        vertices.push(v);
+                        vertices.len() - 1
+                    })
+                })
+                .collect();
+            along.insert(id, list);
+        }
+        if along.values().any(|list| list.len() < 4) {
+            return Err(PropertyViolationError::LoopHasTooFewIntersections);
+        }
+        let mut position = HashMap::new();
+        for (&id, list) in &along {
+            for (i, &c) in list.iter().enumerate() {
+                position.insert((id, c), i);
+            }
+        }
+
+        // Around every crossing, the pieces of both loops alternate counterclockwise.
+        let mut adjacency = vec![];
+        let mut info = vec![];
+        for (c, &v) in vertices.iter().enumerate() {
+            let arms: Vec<_> = map
+                .outgoing(v)
+                .into_iter()
+                .filter_map(|h| match map.halves[h].piece {
+                    Piece::Loop(id, forward) => Some((id, forward)),
+                    _ => None,
+                })
+                .collect();
+            let Ok(arms) = <[_; 4]>::try_from(arms) else {
+                return Err(PropertyViolationError::UnknownError);
+            };
+            if (0..4).any(|i| arms[i].0 == arms[(i + 1) % 4].0) {
+                return Err(PropertyViolationError::UnknownError);
+            }
+            let adjacent = arms.map(|(id, forward)| {
+                let list = &along[&id];
+                let (i, n) = (position[&(id, c)], list.len());
+                if forward {
+                    (id, list[(i + 1) % n], Sign::Positive)
+                } else {
+                    (id, list[(i + n - 1) % n], Sign::Negative)
+                }
+            });
+            adjacency.push(adjacent);
+            let (face, position) = at(v);
+            info.push(LoopIntersection {
+                loops: [arms[0].0, arms[1].0],
+                face,
+                position,
+            });
+        }
+        let crossing_to_intersection = dual.build_loop_structure(&adjacency, info)?;
+        let intersection_to_crossing: HashMap<_, _> = crossing_to_intersection
+            .iter()
+            .enumerate()
+            .map(|(c, &x)| (x, c))
+            .collect();
+
+        // Every segment's region is the map region left of its first piece.
+        let (region, count) = map.regions();
+        if count != dual.loop_structure.face_ids().len() {
+            return Err(PropertyViolationError::UnknownError);
+        }
+        let mut region_of = vec![None; count];
+        for segment in dual.loop_structure.edge_ids() {
+            let (start, _) = dual.segment_to_endpoints(segment);
+            let piece = Piece::Loop(
+                dual.segment_to_loop(segment),
+                dual.segment_to_orientation(segment) == Sign::Positive,
+            );
+            let v = vertices[intersection_to_crossing[&start]];
+            let h = map
+                .outgoing(v)
+                .into_iter()
+                .find(|&h| map.halves[h].piece == piece)
+                .ok_or(PropertyViolationError::UnknownError)?;
+            let face = dual.loop_structure.face(segment);
+            match &mut region_of[region[map.halves[h].face]] {
+                Some(f) if *f != face => return Err(PropertyViolationError::UnknownError),
+                slot => *slot = Some(face),
+            }
+        }
+        let region_of = region_of
+            .into_iter()
+            .collect::<Option<Vec<_>>>()
+            .filter(|faces| faces.iter().collect::<HashSet<_>>().len() == count)
+            .ok_or(PropertyViolationError::UnknownError)?;
+        for face in dual.loop_structure.face_ids() {
+            dual.loop_regions.insert(face, LoopRegion::default());
+        }
+        for (v, point) in map.points.iter().enumerate() {
+            if let Point::Input(input) = *point {
+                let r = region[map.halves[map.outgoing(v)[0]].face];
+                dual.loop_regions
+                    .get_mut(&region_of[r])
+                    .unwrap()
+                    .verts
+                    .insert(input);
+            }
+        }
+        // A point inside every face of a triangle that loops pass through.
+        let crossed: HashSet<_> = map
+            .halves
+            .iter()
+            .filter(|h| h.piece.wall().is_some())
+            .map(|h| map.faces[h.face].triangle)
+            .collect();
+        for (f, face) in map.faces.iter().enumerate() {
+            if !crossed.contains(&face.triangle) {
+                continue;
+            }
+            let Some(&p) = embedding.center.get(&f) else {
+                continue;
+            };
+            dual.loop_regions
+                .get_mut(&region_of[region[f]])
+                .unwrap()
+                .points
+                .push((
+                    face.triangle,
+                    crate::SurfaceArc::position(&mesh, face.triangle, p),
+                ));
+        }
+
+        // The map faces along every input half-edge, for locating points on it.
+        let starts = map.edge_starts();
+        let mut edges = HashMap::new();
+        for (&edge, &start) in &starts {
+            let mut pieces = vec![];
+            let mut h = start;
+            loop {
+                pieces.push(map.halves[h].face);
+                let v = map.target(h);
+                if matches!(map.points[v], Point::Input(_)) {
+                    break;
+                }
+                h = map
+                    .outgoing(v)
+                    .into_iter()
+                    .find(|&o| map.halves[o].piece == Piece::Mesh(edge))
+                    .ok_or(PropertyViolationError::UnknownError)?;
+            }
+            edges.insert(edge, pieces);
+        }
+        dual.locator = Some(Arc::new(RegionLocator {
+            cells: Cells::Map(Arc::new(MapCells {
+                map: map.clone(),
+                embedding,
+                edges,
+            })),
+            cell_regions: region.iter().map(|&r| Some(region_of[r])).collect(),
+            refined: std::sync::OnceLock::new(),
+        }));
+
+        dual.assign_level_graphs();
+        dual.verify_properties()?;
+        dual.assign_levels();
         Ok(dual)
     }
 
@@ -292,21 +515,34 @@ impl Dual {
                 ]
             };
 
-            if ordered_adjacent_intersections
-                .iter()
-                .map(|x| x.1)
-                .collect::<HashSet<_>>()
-                .len()
-                != 4
-            {
-                debug!(
-                    "Invalid intersection: adjacent intersections are not unique. {:?}",
-                    ordered_adjacent_intersections
-                );
+            intersections.push(ordered_adjacent_intersections);
+        }
+        let info = crossings
+            .iter()
+            .map(|crossing| {
+                let face = &arrangement.faces[&crossing.face];
+                LoopIntersection {
+                    loops: crossing.chords.map(|c| face.chords[c].loop_id),
+                    face: crossing.face,
+                    position: Arrangement::to_3d(&self.mesh_ref, &face.sides, crossing.point),
+                }
+            })
+            .collect();
+        self.build_loop_structure(&intersections, info)
+    }
+
+    // The loop structure of intersections given by their adjacent intersections, counterclockwise
+    // (loop, intersection, orientation). Returns the loop structure vertex of every intersection.
+    fn build_loop_structure(
+        &mut self,
+        intersections: &[[(LoopID, usize, Sign); 4]],
+        info: Vec<LoopIntersection>,
+    ) -> Result<Vec<LoopIntersectionID>, PropertyViolationError> {
+        for adjacent in intersections {
+            if adjacent.iter().map(|x| x.1).collect::<HashSet<_>>().len() != 4 {
+                debug!("Invalid intersection: adjacent intersections are not unique. {adjacent:?}");
                 return Err(PropertyViolationError::UnknownError);
             }
-
-            intersections.push(ordered_adjacent_intersections);
         }
 
         // Create DCEL based on the intersections and loop regions
@@ -354,20 +590,12 @@ impl Dual {
         };
         assert!(4 * douconel.vert_ids().len() == douconel.edge_ids().len());
 
-        let mut crossing_to_intersection = vec![LoopIntersectionID::default(); crossings.len()];
+        let mut crossing_to_intersection = vec![LoopIntersectionID::default(); intersections.len()];
         for vertex_id in douconel.vert_ids() {
             let crossing_id = vmap.id(&vertex_id).unwrap().to_owned();
             crossing_to_intersection[crossing_id] = vertex_id;
-            let crossing = &crossings[crossing_id];
-            let face = &arrangement.faces[&crossing.face];
-            self.intersections.insert(
-                vertex_id,
-                LoopIntersection {
-                    loops: crossing.chords.map(|c| face.chords[c].loop_id),
-                    face: crossing.face,
-                    position: Arrangement::to_3d(&self.mesh_ref, &face.sides, crossing.point),
-                },
-            );
+            self.intersections
+                .insert(vertex_id, info[crossing_id].clone());
         }
         for edge_id in douconel.edge_ids() {
             let Some([this, next]) = douconel.vertices(edge_id).collect_array::<2>() else {
@@ -828,9 +1056,16 @@ impl Dual {
     #[must_use]
     pub fn region_on_edge(&self, edge: EdgeID, t: f64) -> Option<LoopRegionID> {
         let locator = self.locator.as_ref()?;
-        let cell = locator
-            .arrangement
-            .locate_on_edge(&self.mesh_ref, edge, t)?;
+        let cell = match &locator.cells {
+            Cells::Arrangement(arrangement) => {
+                arrangement.locate_on_edge(&self.mesh_ref, edge, t)?
+            }
+            // Loop points are spaced uniformly along input edges, as drawn.
+            Cells::Map(cells) => {
+                let pieces = cells.edges.get(&edge)?;
+                pieces[((t * pieces.len() as f64) as usize).min(pieces.len() - 1)]
+            }
+        };
         locator.cell_regions.get(cell).copied().flatten()
     }
 
@@ -851,7 +1086,7 @@ impl Dual {
             && locator.refined.get().is_some()
         {
             self.locator = Some(Arc::new(RegionLocator {
-                arrangement: locator.arrangement.clone(),
+                cells: locator.cells.clone(),
                 cell_regions: locator.cell_regions.clone(),
                 refined: std::sync::OnceLock::new(),
             }));
@@ -860,7 +1095,11 @@ impl Dual {
 
     fn build_refined_mesh(&self) -> Option<RefinedMesh> {
         let locator = self.locator.as_ref()?;
-        let Some(refinement) = locator.arrangement.refine(&self.mesh_ref) else {
+        let refinement = match &locator.cells {
+            Cells::Arrangement(arrangement) => arrangement.refine(&self.mesh_ref),
+            Cells::Map(cells) => Some(cells.map.refine(&self.mesh_ref, &cells.embedding)),
+        };
+        let Some(refinement) = refinement else {
             warn!("refined_mesh: the faces cannot be split into their cells");
             return None;
         };

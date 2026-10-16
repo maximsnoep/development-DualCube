@@ -17,6 +17,9 @@ fn explicit_skeleton_curves_reconstruct_without_zero_length_edges() {
     let run = skeleton::pipeline::run(&mesh).unwrap();
     let mut solution = Solution::new(Arc::new(mesh));
     solution.replace_loops(run.loops);
+    // The drawing's dual structure stays current for the installed curves.
+    solution.dual = Ok(run.dual.unwrap());
+    assert!(solution.dual_is_current());
     solution.construct_dual_and_polycube().unwrap();
     solution.place_corners().unwrap();
     let layout = solution.layout.as_ref().unwrap();

@@ -165,6 +165,8 @@ pub struct SkeletonRun {
     pub realized: RealizedSkeleton,
     pub optimized: RealizedSkeleton,
     pub loops: DualLoops,
+    /// The dual structure of the loops, read from the drawing's loop map.
+    pub dual: Option<dualcube_dual::Dual>,
 }
 
 /// The original stage error plus all results obtained before it.
@@ -203,5 +205,6 @@ pub fn run(mesh: &Mesh<INPUT>) -> Result<SkeletonRun, RunError> {
         realized: progress.realized.unwrap(),
         optimized: progress.optimized.unwrap(),
         loops: progress.loops.unwrap(),
+        dual: progress.drawing.and_then(|a| a.dual),
     })
 }

@@ -61,6 +61,8 @@ impl std::error::Error for Failure {}
 #[derive(Clone, Debug)]
 pub struct Attempt {
     pub loops: DualLoops,
+    /// The dual structure of a complete drawing, read from its loop map.
+    pub dual: Option<dualcube_dual::Dual>,
     pub planned: usize,
     pub searches: usize,
     pub failure: Option<Failure>,
@@ -81,6 +83,7 @@ pub fn attempt(mesh: &Mesh<INPUT>, realized: &RealizedSkeleton) -> SkeletonResul
     let mut drawn: HashSet<_> = template.boundaries.values().copied().collect();
     let mut result = Attempt {
         loops: DualLoops::with_key(),
+        dual: None,
         planned: template.loops.len(),
         searches: 0,
         failure: None,
@@ -232,16 +235,14 @@ pub fn attempt(mesh: &Mesh<INPUT>, realized: &RealizedSkeleton) -> SkeletonResul
         );
     }
     result.loops = output(&map, &drawn)?;
-    // Drawing is for output only, but must keep the map's topology.
-    let drawn_topology = PartialTopology::new(mesh, &result.loops);
-    if !drawn_topology.is_ok_and(|t| t.equivalent(&full)) {
-        result.failure = Some(Failure::InvalidDual(
-            "Drawn curves lost the loop map's topology".into(),
-        ));
-    } else if let Err(error) =
-        dualcube_dual::Dual::from(std::sync::Arc::new(mesh.clone()), &result.loops)
-    {
-        result.failure = Some(Failure::InvalidDual(error.to_string()));
+    // The dual structure comes from the map; drawn curves are for output only.
+    match dualcube_dual::Dual::from_map(std::sync::Arc::new(mesh.clone()), &map, &result.loops) {
+        Ok(dual) => result.dual = Some(dual),
+        Err(error) => result.failure = Some(Failure::InvalidDual(error.to_string())),
+    }
+    // Rebuilding the dual from the curves alone (e.g. after loading them) relies on geometry.
+    if !PartialTopology::new(mesh, &result.loops).is_ok_and(|t| t.equivalent(&full)) {
+        tracing::warn!("Drawn curves do not reproduce the loop map's topology geometrically");
     }
     tracing::info!(
         "Loop drawing complete: {} loops, {} searches, {backtracks} backtracks (elapsed {:.2}s)",

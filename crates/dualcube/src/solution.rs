@@ -328,8 +328,16 @@ impl Solution {
         self.layout = None;
         self.polycube = None;
 
-        let dual_phase =
-            DualPhase::from_loops(InputPhase::new(self.mesh_ref.clone()), self.loops.clone())?;
+        // Reuse the dual structure if it is up to date (e.g., read from a drawing's loop map).
+        let input = InputPhase::new(self.mesh_ref.clone());
+        let dual_phase = match &self.dual {
+            Ok(dual) if self.dual_is_current() => DualPhase {
+                input,
+                loops: self.loops.clone(),
+                dual: dual.clone(),
+            },
+            _ => DualPhase::from_loops(input, self.loops.clone())?,
+        };
         let polycube = dual_phase.compute_polycube();
 
         if let Err(err) = validate_polycube(&polycube) {

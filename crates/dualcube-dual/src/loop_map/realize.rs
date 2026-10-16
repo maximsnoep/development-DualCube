@@ -39,22 +39,24 @@ fn straighten(arcs: Vec<SurfaceArc>) -> Vec<SurfaceArc> {
     result
 }
 
+/// Planar positions of a map's vertices, interior edge midpoints and face centers, in the frame
+/// of their triangle.
+#[derive(Clone, Debug, Default)]
+pub(crate) struct Embedding {
+    pub vertex: HashMap<(FaceID, usize), [f64; 2]>,
+    /// By either half-edge; edges along input edges have none.
+    pub middle: HashMap<usize, [f64; 2]>,
+    pub center: HashMap<usize, [f64; 2]>,
+}
+
 impl LoopMap {
-    /// Explicit curves of all closed loops, in their directions.
-    pub fn realize(
+    /// The barycentric embedding of every triangle's faces, with the sides fixed.
+    pub(crate) fn embedding(
         &self,
         mesh: &Mesh<INPUT>,
-    ) -> Result<HashMap<LoopID, Vec<SurfaceArc>>, PropertyViolationError> {
+    ) -> Result<Embedding, PropertyViolationError> {
         // Frame positions of vertices on input edges and corners, per triangle.
-        let starts: HashMap<_, _> = self
-            .halves
-            .iter()
-            .enumerate()
-            .filter_map(|(i, h)| match h.piece {
-                Piece::Mesh(e) if matches!(self.points[h.origin], Point::Input(_)) => Some((e, i)),
-                _ => None,
-            })
-            .collect();
+        let starts = self.edge_starts();
         let mut fixed = HashMap::<(FaceID, usize), [f64; 2]>::new();
         for face in mesh.face_ids() {
             let sides = sides(mesh, face)?;
@@ -71,17 +73,23 @@ impl LoopMap {
         for (f, face) in self.faces.iter().enumerate() {
             by_triangle.entry(face.triangle).or_default().push(f);
         }
-        let mut position = HashMap::<(FaceID, usize), [f64; 2]>::new();
-        let mut middle = HashMap::<usize, [f64; 2]>::new();
+        let mut embedding = Embedding::default();
         for (&triangle, faces) in &by_triangle {
-            let placed = self.embed(triangle, faces, &fixed)?;
-            for (key, p) in placed.0 {
-                position.insert((triangle, key), p);
-            }
-            for (h, p) in placed.1 {
-                middle.insert(h, p);
-            }
+            self.embed(triangle, faces, &fixed, &mut embedding);
         }
+        Ok(embedding)
+    }
+
+    /// Explicit curves of all closed loops, in their directions.
+    pub fn realize(
+        &self,
+        mesh: &Mesh<INPUT>,
+    ) -> Result<HashMap<LoopID, Vec<SurfaceArc>>, PropertyViolationError> {
+        let Embedding {
+            vertex: position,
+            middle,
+            ..
+        } = self.embedding(mesh)?;
         let mut curves = HashMap::new();
         for (id, chain) in self.chains() {
             let mut arcs = vec![];
@@ -116,6 +124,18 @@ impl LoopMap {
             curves.insert(id, straighten(arcs));
         }
         Ok(curves)
+    }
+
+    // The half-edge leaving the root of every input half-edge, along it.
+    pub(crate) fn edge_starts(&self) -> HashMap<EdgeID, usize> {
+        self.halves
+            .iter()
+            .enumerate()
+            .filter_map(|(i, h)| match h.piece {
+                Piece::Mesh(e) if matches!(self.points[h.origin], Point::Input(_)) => Some((e, i)),
+                _ => None,
+            })
+            .collect()
     }
 
     // The vertices along an input half-edge, from its root to its tip.
@@ -172,15 +192,14 @@ impl LoopMap {
         ])
     }
 
-    // Barycentric embedding of one triangle's faces: positions of map vertices, and of the
-    // midpoint of every interior edge (by either half-edge).
-    #[allow(clippy::type_complexity)]
+    // Barycentric embedding of one triangle's faces, added to `embedding`.
     fn embed(
         &self,
         triangle: FaceID,
         faces: &[usize],
         fixed: &HashMap<(FaceID, usize), [f64; 2]>,
-    ) -> Result<(HashMap<usize, [f64; 2]>, HashMap<usize, [f64; 2]>), PropertyViolationError> {
+        embedding: &mut Embedding,
+    ) {
         // Nodes: map vertices, interior edge midpoints, and face centers.
         #[derive(Clone, Copy, PartialEq, Eq, Hash)]
         enum Node {
@@ -249,20 +268,19 @@ impl LoopMap {
                 break;
             }
         }
-        let mut vertices = HashMap::new();
-        let mut middle = HashMap::new();
         for (node, p) in placed {
             match node {
                 Node::Vertex(v) => {
-                    vertices.insert(v, p);
+                    embedding.vertex.insert((triangle, v), p);
                 }
                 Node::Middle(h) => {
-                    middle.insert(h, p);
-                    middle.insert(self.halves[h].twin, p);
+                    embedding.middle.insert(h, p);
+                    embedding.middle.insert(self.halves[h].twin, p);
                 }
-                Node::Center(_) => {}
+                Node::Center(f) => {
+                    embedding.center.insert(f, p);
+                }
             }
         }
-        Ok((vertices, middle))
     }
 }

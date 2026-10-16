@@ -522,6 +522,8 @@ impl LoopMap {
 }
 
 mod realize;
+mod refine;
+pub(crate) use realize::Embedding;
 
 #[cfg(test)]
 mod tests;

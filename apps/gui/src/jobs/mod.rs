@@ -245,6 +245,10 @@ pub(crate) fn poll_jobs(
             {
                 initialized.replace_loops(loops.clone());
             }
+            // The drawing's dual structure, read from its loop map; used while it is current.
+            if let Some(dual) = progress.drawing.as_ref().and_then(|a| a.dual.clone()) {
+                initialized.dual = Ok(dual);
+            }
             solution_resource.current_solution = initialized;
             solution_resource.selected_corner = None;
             configuration.loop_anchors.clear();
