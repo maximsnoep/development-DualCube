@@ -1,17 +1,24 @@
 mod colors;
 mod controls;
+mod diagnostics;
 mod jobs;
 mod render;
 mod resources;
+mod sound;
 mod ui;
 
-use bevy::diagnostic::{FrameTimeDiagnosticsPlugin, SystemInformationDiagnosticsPlugin};
+use bevy::diagnostic::FrameTimeDiagnosticsPlugin;
 use bevy::log::{Level, LogPlugin};
 use bevy::prelude::*;
 use bevy::ui::UiScale;
 use bevy::window::{WindowMode, WindowResolution};
 use dualcube::prelude::*;
 use resources::{Configuration, InputResource, SolutionResource};
+
+// A faster allocator than that of the system, also with many threads allocating at once (in tests, the optimization
+// was 20-40% faster).
+#[global_allocator]
+static GLOBAL: mimalloc::MiMalloc = mimalloc::MiMalloc;
 
 fn main() {
     let axis_color = |direction| {
@@ -47,7 +54,12 @@ fn main() {
                     ..Default::default()
                 })
                 .set(LogPlugin {
-                    level: Level::TRACE,
+                    // (Release builds only have levels up to info, see `release_max_level_info`.)
+                    level: if cfg!(debug_assertions) {
+                        Level::TRACE
+                    } else {
+                        Level::INFO
+                    },
                     // Quiet in release builds (`RUST_LOG` overrides this).
                     filter: if cfg!(debug_assertions) {
                         "info,dualcube=debug"
@@ -58,15 +70,16 @@ fn main() {
                     ..default()
                 }),
         )
-        // Plugin for diagnostics
+        // Plugins for diagnostics
         .add_plugins((
             FrameTimeDiagnosticsPlugin::default(),
-            SystemInformationDiagnosticsPlugin,
+            diagnostics::UsagePlugin,
         ))
         // My cool plugins c:
         .add_plugins((
             bevy_orbit_camera::OrbitCameraPlugin,
             bevy_toon::ToonPlugin,
+            sound::SoundPlugin,
             bevy_axes_gizmo::AxesGizmoPlugin {
                 colors: [
                     axis_color(Direction::X),
@@ -76,7 +89,10 @@ fn main() {
                 width: 3.,
                 ..default()
             },
-            bevy_wicon::WindowIconPlugin::with_path("apps/gui/assets/logo-32.png"),
+            bevy_wicon::WindowIconPlugin::new(
+                include_bytes!("../assets/logo-32.png"),
+                include_bytes!("../assets/logo-512.png"),
+            ),
         ))
         // The application itself: jobs, rendering, UI, and controls.
         .add_plugins((

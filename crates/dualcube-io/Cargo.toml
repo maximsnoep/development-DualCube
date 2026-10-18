@@ -5,8 +5,10 @@ edition = "2024"
 license.workspace = true
 
 [dependencies]
+rustc-hash = "2.1.1"
 dualcube = { path = "../dualcube" }
 serde = { version = "1.0.219", features = ["rc", "derive"] }
+serde_json = "1"
 bimap = "0.6.3"
 bitcode = "0.6.6"
 zstd = { version = "0.14.0", default-features = false }

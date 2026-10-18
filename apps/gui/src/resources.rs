@@ -13,7 +13,6 @@ use std::sync::Arc;
 pub struct Configuration {
     pub direction: Direction,
 
-    pub unit: bool,
     pub omega: usize,
     /// Show the paths of the layout smoothed (see `render::refresh`).
     pub smooth_paths: bool,
@@ -24,19 +23,18 @@ pub struct Configuration {
     pub figure_format: FigureFormat,
     pub figure_label: bool,
 
-    /// The criterion used to compare solutions (initialization, evolution, corner optimization).
+    /// The criterion used to compare solutions (initialization, optimization).
     pub quality: QualityParams,
-    /// The parameters of the evolutions: of the loops with the mutations switched on per phase (see
-    /// `EvolutionParams::enabled`); of the layout with all mutations on, and the switched-off ones listed separately (by
-    /// name, see `LiveSettings`). Both can be changed while an evolution runs.
-    pub evolution: EvolutionParams,
+    /// The optimization (see `Solution::optimize`): the annealing of the loops (its steps per cycle), and the
+    /// optimization of the layout and its generations per cycle; the mutations of both that are switched off, by name
+    /// (see `LiveSettings`). They can be changed while it runs.
+    pub anneal: AnnealParams,
+    pub anneal_disabled: BTreeSet<String>,
     pub layout_evolution: LayoutEvolutionParams,
-    pub layout_disabled: BTreeSet<String>,
-    /// The optimization (see `Solution::optimize`): generations per cycle of the loops and of the layout, and after how
-    /// many generations without improvement it moves on to the next phase (see `LiveSettings::advance_after`).
-    pub loop_generations: usize,
     pub layout_generations: usize,
-    pub advance_after: usize,
+    pub layout_disabled: BTreeSet<String>,
+    /// Cycles without a new best solution after which the optimization stops (0: never).
+    pub patience: usize,
 
     pub loop_anchors: Vec<[EdgeID; 2]>,
 
@@ -58,26 +56,21 @@ impl Default for Configuration {
         Self {
             direction: Direction::X,
 
-            unit: false,
             omega: 5,
-            smooth_paths: false,
+            smooth_paths: true,
             loop_width: 0.006,
 
             figure_format: FigureFormat::Pdf,
             figure_label: false,
 
             quality: QualityParams::default(),
-            // Starts with initialization (see `LoopPhase`).
-            evolution: EvolutionParams {
-                phase: LoopPhase::Initialization,
-                ..EvolutionParams::default()
-            },
-            // All mutations of the layout on (the adaptive selection chooses among them).
+            // All mutations on (the adaptive selection chooses among them).
+            anneal: AnnealParams::default(),
+            anneal_disabled: BTreeSet::new(),
             layout_evolution: LayoutEvolutionParams::default(),
-            layout_disabled: BTreeSet::new(),
-            loop_generations: CoupledParams::default().loop_generations,
             layout_generations: CoupledParams::default().layout_generations,
-            advance_after: 20,
+            layout_disabled: BTreeSet::new(),
+            patience: CoupledParams::default().patience,
 
             loop_anchors: vec![],
 

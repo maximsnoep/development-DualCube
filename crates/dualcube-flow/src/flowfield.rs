@@ -46,7 +46,7 @@ impl<T: Tag> Fields<T> {
         let ids = mesh.vert_ids();
         let [field_x, field_y, field_z] = AXES.map(|axis| {
             let mut field = Field {
-                map: HashMap::with_capacity(ids.len()),
+                map: HashMap::with_capacity_and_hasher(ids.len(), Default::default()),
                 vectors: SlotMap::with_key(),
             };
             for &id in &ids {

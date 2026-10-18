@@ -1,5 +1,5 @@
 //! Times path smoothing and quad-mesh construction on a model: `cargo run --release -p dualcube --example quad_bench -- <mesh.obj|stl> [omega] [generations]`
-//! (with generations, the solution is evolved first, for a realistic number of loops).
+//! (with generations, the solution is annealed first, for a realistic number of loops).
 use dualcube::prelude::*;
 use std::{path::PathBuf, sync::Arc, time::Instant};
 
@@ -16,12 +16,13 @@ fn main() {
     solution.initialize();
     if generations > 0 {
         solution = solution
-            .evolve(&EvolutionParams {
-                max_generations: generations,
-                population: 10,
-                offspring: 30,
-                ..EvolutionParams::default()
-            })
+            .anneal(
+                &AnnealParams {
+                    steps: generations,
+                    ..AnnealParams::default()
+                },
+                &OptimizationMonitor::default(),
+            )
             .unwrap();
     }
     solution.reconstruct_solution(true).unwrap();

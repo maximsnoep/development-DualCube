@@ -83,7 +83,7 @@ impl DualPhase {
                 &polycube,
                 params.candidates,
                 attempt,
-                targets.as_ref().map(|t| (&t.corners, &t.styles)),
+                targets.as_ref().map(|t| &t.corners),
             ) {
                 Ok(ok_layout) => {
                     layout = Some(ok_layout);
@@ -128,7 +128,7 @@ impl Default for LayoutParams {
 }
 
 impl LayoutParams {
-    /// Cheap parameters, e.g., for scoring many candidate solutions during evolution.
+    /// Cheap parameters, e.g., for scoring many candidate solutions during the annealing.
     #[must_use]
     pub fn fast() -> Self {
         Self {

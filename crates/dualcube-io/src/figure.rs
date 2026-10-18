@@ -14,7 +14,7 @@
 
 use anyhow::{Context, anyhow, bail};
 use dualcube::prelude::*;
-use std::collections::HashMap;
+use rustc_hash::FxHashMap as HashMap;
 use std::fmt::Write as _;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, OnceLock};
@@ -687,7 +687,7 @@ fn segmentation(
     let (layout, polycube) = (solution.layout.as_ref()?, solution.polycube.as_ref()?);
     let mesh = &layout.granulated_mesh;
     let structure = &polycube.structure;
-    let mut colors = HashMap::new();
+    let mut colors = HashMap::default();
     for (&patch_id, patch) in &layout.face_to_patch {
         let (direction, _) = to_principal_direction(structure.normal(patch_id));
         for &face in &patch.faces {

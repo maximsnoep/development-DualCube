@@ -8,7 +8,7 @@ use bevy::prelude::*;
 use bevy_toon::ToonMaterial;
 use mehsh::prelude::*;
 use mehsh_bevy;
-use std::collections::HashMap;
+use rustc_hash::FxHashMap as HashMap;
 
 #[derive(Default, Debug, Clone)]
 pub struct MeshProperties {
@@ -42,7 +42,10 @@ pub struct RenderObject {
 impl RenderObject {
     pub fn add(&mut self, label: &str, asset: RenderAsset) -> &mut Self {
         self.labels.push(label.to_owned());
-        self.features.insert(label.to_owned(), asset);
+        // (An empty mesh, e.g. the loops of an axis without loops, is not rendered: Bevy warns about it.)
+        if !matches!(&asset, RenderAsset::Mesh(mesh) if mesh.count_vertices() == 0) {
+            self.features.insert(label.to_owned(), asset);
+        }
         self
     }
 
@@ -132,8 +135,9 @@ pub fn update_render_settings(
             let mut settings = render_settings_store
                 .objects
                 .get(object)
-                .map_or_else(HashMap::new, |s| s.settings.clone());
-            for feature_label in render_object.features.keys() {
+                .map_or_else(HashMap::default, |s| s.settings.clone());
+            // (Also for features without content yet, e.g. empty meshes: a view chosen now sets their visibility.)
+            for feature_label in &render_object.labels {
                 settings
                     .entry(feature_label.clone())
                     .or_insert(RenderFeatureSetting {
@@ -162,13 +166,13 @@ enum SpawnedAsset {
 pub struct Spawned {
     features: HashMap<(Objects, String), (Entity, SpawnedAsset)>,
     covers: HashMap<Objects, Entity>,
-    materials: Option<[Handle<StandardMaterial>; 2]>,
+    materials: Option<[Handle<StandardMaterial>; 3]>,
     toon_material: Option<Handle<ToonMaterial>>,
 }
 
 /// Keeps the spawned entities in sync with the object store and the visibility settings. Features that stay visible
 /// keep their entities: on new data their assets are replaced in place, so the view never shows an empty frame
-/// (despawning and respawning everything made the renders flicker on every update, e.g. during an evolution).
+/// (despawning and respawning everything made the renders flicker on every update, e.g. during an optimization).
 #[allow(unused_qualifications)]
 pub fn sync_renders(
     mut commands: Commands<'_, '_>,
@@ -188,8 +192,9 @@ pub fn sync_renders(
         return;
     }
 
-    // The shared materials (created once; the background follows the configured color).
-    let [flat_material, background_material] = spawned
+    // The shared materials (created once; the background follows the configured color): flat, background, and for the
+    // loops (unlit and blended, for the glow on their negative side, see `add_loop_band`).
+    let [flat_material, background_material, loop_material] = spawned
         .materials
         .get_or_insert_with(|| {
             [
@@ -199,6 +204,12 @@ pub fn sync_renders(
                 }),
                 materials.add(StandardMaterial {
                     unlit: true,
+                    ..default()
+                }),
+                materials.add(StandardMaterial {
+                    unlit: true,
+                    alpha_mode: AlphaMode::Blend,
+                    cull_mode: None,
                     ..default()
                 }),
             ]
@@ -298,8 +309,10 @@ pub fn sync_renders(
                         Mesh3d(handle.clone()),
                         Transform::from_translation(translation),
                     ));
-                    // The polycube-like objects are unlit; the surface meshes are toon-shaded.
-                    if matches!(object, Objects::Polycube | Objects::PolycubeMap) {
+                    // The loops glow (blended); the polycube-like objects are unlit; the surface meshes are toon-shaded.
+                    if label.ends_with("loops") {
+                        entity.insert(MeshMaterial3d(loop_material.clone()));
+                    } else if matches!(object, Objects::Polycube | Objects::PolycubeMap) {
                         entity.insert(MeshMaterial3d(flat_material.clone()));
                     } else {
                         entity.insert(MeshMaterial3d(toon_material.clone()));

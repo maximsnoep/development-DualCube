@@ -1,14 +1,14 @@
 //! Render object for the input (triangle) mesh.
 
 use super::super::gizmos::{
-    DirectionalGizmos, add_band, axis_index, band_colors, flow_graph_gizmos, lambert_color_map,
+    DirectionalGizmos, add_loop_band, axis_index, flow_graph_gizmos, lambert_color_map,
     path_strips, segmentation_color_map, uniform_color_map, world_to_view,
 };
 use super::super::store::{RenderAsset, RenderObject};
 use crate::{colors, resources::Configuration};
 use bevy::prelude::*;
 use dualcube::prelude::*;
-use std::collections::HashMap;
+use rustc_hash::FxHashMap as HashMap;
 
 const PRINCIPAL_DIRECTIONS: [Direction; 3] = DIRECTIONS;
 
@@ -39,7 +39,7 @@ pub(in crate::render) fn build(
     let [paths, flat_paths] = path_strips(
         |spacing| solution.path_bands(spacing),
         half,
-        0.8 * half,
+        0.4 * half,
         translation,
         scale,
     );
@@ -48,8 +48,8 @@ pub(in crate::render) fn build(
     let empty_mesh = mehsh::prelude::Mesh::<INPUT>::default();
     let mut granulated_mesh = &empty_mesh;
     let mut granulated_mesh_gizmos = GizmoAsset::new();
-    let mut color_map_segmentation = HashMap::new();
-    let mut color_map_alignment = HashMap::new();
+    let mut color_map_segmentation = HashMap::default();
+    let mut color_map_alignment = HashMap::default();
 
     if let (Some(layout), Some(polycube)) = (&solution.layout, &solution.polycube) {
         granulated_mesh = &layout.granulated_mesh;
@@ -147,9 +147,9 @@ pub(in crate::render) fn build(
     )
 }
 
-/// The loops as bands on the surface, per principal direction: a strip of `half` wide on either side of every loop, its
-/// positive side in the loop's color and its negative side lighter (see `Solution::loop_band`). The bands float slightly
-/// above the surface, so that it does not cover them where it curves.
+/// The loops on the surface, per principal direction: a line in the loop's color with a glow on its negative side (see
+/// `add_loop_band` and `Solution::loop_band`), floating slightly above the surface, so that it does not cover them
+/// where it curves.
 #[allow(unused_qualifications)]
 fn loop_bands(
     solution: &Solution,
@@ -168,14 +168,9 @@ fn loop_bands(
             .copied()
             .zip(frames.iter().copied().cycle().skip(1));
         // The axes at slightly different heights, so that crossing bands do not flicker.
-        let lift = (0.5 + 0.1 * axis as f64) * half;
-        add_band(
-            &mut builders[axis],
-            segments,
-            half,
-            lift,
-            band_colors(direction),
-        );
+        // (Low, so that the bands stay on the surface, also where it curves.)
+        let lift = (0.2 + 0.05 * axis as f64) * half;
+        add_loop_band(&mut builders[axis], segments, half, lift, direction);
     }
     builders.map(|mut builder| {
         builder.normalize(scale, translation);

@@ -1,5 +1,9 @@
 use std::env;
 
+// A faster allocator than that of the system, also with many threads allocating at once.
+#[global_allocator]
+static GLOBAL: mimalloc::MiMalloc = mimalloc::MiMalloc;
+
 fn main() {
     // Log events (of all crates, through `tracing`) from INFO on, to stderr: level, target, and message.
     tracing_subscriber::fmt()

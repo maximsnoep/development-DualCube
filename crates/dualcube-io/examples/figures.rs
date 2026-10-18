@@ -1,5 +1,5 @@
 //! Exports the figures of a model (see `io::figure`):
-//! `cargo run --release -p io --example figures -- <mesh.obj|stl|dc> <output dir> [svg|pdf|png] [--label] [--evolve N] [--raw]`
+//! `cargo run --release -p io --example figures -- <mesh.obj|stl|dc> <output dir> [svg|pdf|png] [--label] [--anneal N] [--raw]`
 //! (a mesh is initialized first, and evolved for N generations; the paths are smoothed unless `--raw`).
 use dualcube::prelude::*;
 use io::figure::{Annotation, FigureParams, FigureStyle, export_figures, today};
@@ -11,9 +11,9 @@ fn main() -> anyhow::Result<()> {
     let dir = PathBuf::from(&args[2]);
     let extension = args.get(3).map_or("svg", String::as_str);
     let label = args.iter().any(|a| a == "--label");
-    let generations = args
+    let steps = args
         .iter()
-        .position(|a| a == "--evolve")
+        .position(|a| a == "--anneal")
         .and_then(|i| args.get(i + 1)?.parse::<usize>().ok());
 
     let mut solution = io::import_solution(&path)?;
@@ -23,11 +23,14 @@ fn main() -> anyhow::Result<()> {
         }
         solution.reconstruct_solution(false)?;
     }
-    if let Some(generations) = generations {
-        solution = solution.evolve(&EvolutionParams {
-            max_generations: generations,
-            ..EvolutionParams::default()
-        })?;
+    if let Some(steps) = steps {
+        solution = solution.anneal(
+            &AnnealParams {
+                steps,
+                ..AnnealParams::default()
+            },
+            &OptimizationMonitor::default(),
+        )?;
         solution.reconstruct_solution(false)?;
     }
     // The paths smoothed, as the GUI shows them (unless `--raw`).

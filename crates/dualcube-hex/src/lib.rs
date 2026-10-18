@@ -80,7 +80,7 @@ impl Hex {
         };
 
         // Enumerate primal loops.
-        let mut edge_to_loops = HashMap::new();
+        let mut edge_to_loops = HashMap::default();
 
         for edge in polycube.structure.edge_ids_iter() {
             let mut loop_edges = Vec::new();

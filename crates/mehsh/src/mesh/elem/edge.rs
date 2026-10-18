@@ -1,6 +1,6 @@
 use crate::prelude::*;
 use core::panic;
-use std::collections::HashSet;
+use rustc_hash::FxHashSet as HashSet;
 
 impl<M: Tag> Mesh<M> {
     #[must_use]
@@ -151,7 +151,7 @@ impl<M: Tag> HasNeighbors<EDGE, M> for Mesh<M> {
         id: ids::Key<EDGE, M>,
         k: usize,
     ) -> impl Iterator<Item = ids::Key<EDGE, M>> {
-        let mut visited: HashSet<ids::Key<EDGE, M>> = HashSet::new();
+        let mut visited: HashSet<ids::Key<EDGE, M>> = HashSet::default();
         visited.insert(id);
         let mut frontier = vec![id];
         for _ in 0..k {
@@ -175,7 +175,7 @@ use std::collections::VecDeque;
 // More correct neighbors:
 impl<M: Tag> Mesh<M> {
     pub fn neighbors2(&self, id: EdgeKey<M>) -> HashSet<EdgeKey<M>> {
-        let mut out = HashSet::new();
+        let mut out = HashSet::default();
         for f in self.faces(id) {
             for e in self.edges(f) {
                 if e != id {
@@ -187,7 +187,7 @@ impl<M: Tag> Mesh<M> {
     }
 
     pub fn neighbors2_k(&self, id: EdgeKey<M>, k: usize) -> HashSet<EdgeKey<M>> {
-        let mut visited = HashSet::new();
+        let mut visited = HashSet::default();
         let mut q = VecDeque::new();
 
         visited.insert(id);

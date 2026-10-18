@@ -19,13 +19,11 @@ pub enum Command {
         reconstruct: bool,
         unit: bool,
     },
-    Evolve {
+    Anneal {
         input: PathBuf,
         output: Option<PathBuf>,
-        iterations: Option<usize>,
-        pool1: Option<usize>,
-        pool2: Option<usize>,
-        patience: Option<usize>,
+        steps: Option<usize>,
+        offspring: Option<usize>,
         quality: QualityParams,
         reconstruct: bool,
         unit: bool,
@@ -44,6 +42,17 @@ pub enum Command {
         input: PathBuf,
         output: Option<PathBuf>,
         format: String,
+    },
+    Benchmark {
+        /// Models (obj/stl files), and folders of models.
+        inputs: Vec<PathBuf>,
+        output: PathBuf,
+        name: String,
+        runs: usize,
+        seconds: f64,
+        quality: QualityParams,
+        /// A session folder to continue (the other options are those of the session).
+        resume: Option<PathBuf>,
     },
 }
 
@@ -100,13 +109,50 @@ impl Args {
                     unit,
                 }
             }
-            "evolve" => {
+            "benchmark" => {
+                let mut inputs = vec![];
+                let mut output = PathBuf::from("benchmarks");
+                let mut name = "benchmark".to_owned();
+                let mut runs = 1;
+                let mut seconds = 60.;
+                let mut quality = QualityParams::default();
+                let mut resume = None;
+
+                parse_kv_flags(it.collect(), |flag, value| {
+                    if parse_quality_flag(flag, value, &mut quality)? {
+                        return Ok(());
+                    }
+                    match flag {
+                        "--resume" => resume = Some(PathBuf::from(require_value(flag, value)?)),
+                        "--input" | "-i" => inputs.push(PathBuf::from(require_value(flag, value)?)),
+                        "--output" | "-o" => output = PathBuf::from(require_value(flag, value)?),
+                        "--name" => name = require_value(flag, value)?.to_owned(),
+                        "--runs" => runs = require_value(flag, value)?.parse::<usize>()?,
+                        "--seconds" => seconds = require_value(flag, value)?.parse::<f64>()?,
+                        other => anyhow::bail!("unknown flag for benchmark: {other}"),
+                    }
+                    Ok(())
+                })?;
+
+                anyhow::ensure!(
+                    !inputs.is_empty() || resume.is_some(),
+                    "missing required --input (a model or a folder), or --resume (a session folder)"
+                );
+                Command::Benchmark {
+                    inputs,
+                    output,
+                    name,
+                    runs,
+                    seconds,
+                    quality,
+                    resume,
+                }
+            }
+            "anneal" => {
                 let mut input = None;
                 let mut output = None;
-                let mut iterations = None;
-                let mut pool1 = None;
-                let mut pool2 = None;
-                let mut patience = None;
+                let mut steps = None;
+                let mut offspring = None;
                 let mut quality = QualityParams::default();
                 let mut reconstruct = false;
                 let mut unit = true;
@@ -122,34 +168,26 @@ impl Args {
                         "--output" | "-o" => {
                             output = Some(PathBuf::from(require_value(flag, value)?));
                         }
-                        "--iterations" => {
-                            iterations = Some(require_value(flag, value)?.parse::<usize>()?);
+                        "--steps" => {
+                            steps = Some(require_value(flag, value)?.parse::<usize>()?);
                         }
-                        "--pool1" => {
-                            pool1 = Some(require_value(flag, value)?.parse::<usize>()?);
-                        }
-                        "--pool2" => {
-                            pool2 = Some(require_value(flag, value)?.parse::<usize>()?);
-                        }
-                        "--patience" => {
-                            patience = Some(require_value(flag, value)?.parse::<usize>()?);
+                        "--offspring" => {
+                            offspring = Some(require_value(flag, value)?.parse::<usize>()?);
                         }
                         "--reconstruct" => reconstruct = true,
                         "--no-unit" => unit = false,
                         "--unit" => unit = true,
-                        other => anyhow::bail!("unknown flag for evolve: {other}"),
+                        other => anyhow::bail!("unknown flag for anneal: {other}"),
                     }
                     Ok(())
                 })?;
 
                 let input = input.ok_or_else(|| anyhow::anyhow!("missing required --input"))?;
-                Command::Evolve {
+                Command::Anneal {
                     input,
                     output,
-                    iterations,
-                    pool1,
-                    pool2,
-                    patience,
+                    steps,
+                    offspring,
                     quality,
                     reconstruct,
                     unit,
@@ -300,6 +338,12 @@ where
                 | "-f"
                 | "--beta"
                 | "--csv"
+                | "--steps"
+                | "--offspring"
+                | "--name"
+                | "--runs"
+                | "--seconds"
+                | "--resume"
         );
 
         let value = if takes_value {

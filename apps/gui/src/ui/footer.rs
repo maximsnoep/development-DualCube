@@ -10,14 +10,14 @@ use bevy::diagnostic::{
     SystemInformationDiagnosticsPlugin,
 };
 use bevy::prelude::*;
-use bevy_egui::egui::{Align, Color32, Layout, Panel, text};
+use bevy_egui::egui::{Align, Layout, Panel, text};
 use dualcube::prelude::*;
 
 const STAT_SIZE: f32 = 8.0;
-
-fn usage_color(value: f64) -> Color32 {
-    if value < 70.0 { TEXT_COLOR } else { WARN_RED }
-}
+// Warn above this share of the memory of the system in use (%), and above this share of the processors used by other
+// programs (%).
+const MEMORY_WARNING: f64 = 85.;
+const OTHERS_WARNING: f64 = 25.;
 
 /// Shows the bottom panel.
 pub fn show(
@@ -84,20 +84,30 @@ pub fn show(
                     }
                     ui.label(tripod);
 
-                    // Performance, mode, and job status.
+                    // The usage of this program (the processors it keeps busy, its memory), warnings when the memory
+                    // of the system is nearly full or other programs take much of the processors, the mode, and the
+                    // job status. All measurements (and the frame rate) on hover.
                     let measure = |path: &DiagnosticPath| {
                         diagnostics
                             .get(path)
                             .and_then(|d| d.smoothed())
                             .unwrap_or(0.0)
                     };
-                    let usage = |label: &str, path: &DiagnosticPath| {
-                        let value = measure(path);
-                        (format!("{label} {value:>3.0}%"), usage_color(value))
-                    };
-
+                    let system_cpu = measure(&SystemInformationDiagnosticsPlugin::SYSTEM_CPU_USAGE);
+                    let system_memory = measure(&SystemInformationDiagnosticsPlugin::SYSTEM_MEM_USAGE);
+                    let process_cpu = measure(&SystemInformationDiagnosticsPlugin::PROCESS_CPU_USAGE);
+                    let process_memory = measure(&SystemInformationDiagnosticsPlugin::PROCESS_MEM_USAGE);
+                    let processors =
+                        std::thread::available_parallelism().map_or(1, usize::from);
+                    let others = (system_cpu - process_cpu).max(0.);
                     let fps = measure(&FrameTimeDiagnosticsPlugin::FPS);
-                    let fps_color = if fps < 30.0 { WARN_RED } else { TEXT_COLOR };
+                    let details = format!(
+                        "this program: {process_cpu:.0}% of the processors ({:.1} of {processors}), \
+                         {process_memory:.2} GiB of memory\n\
+                         system: {system_cpu:.0}% of the processors, {system_memory:.0}% of the memory in use\n\
+                         {fps:.0} frames per second",
+                        process_cpu / 100. * processors as f64
+                    );
 
                     let mode = match conf.interactive_mode {
                         InteractiveMode::None => "automatic",
@@ -109,27 +119,24 @@ pub fn show(
                         |request| format!("{request}  {}", timer_animation(&time)),
                     );
 
-                    let entries = [
-                        (format!("fps {fps:>3.0}"), fps_color),
-                        usage(
-                            "scpu",
-                            &SystemInformationDiagnosticsPlugin::SYSTEM_CPU_USAGE,
+                    let mut entries = vec![
+                        (
+                            format!(
+                                "CPU {:.0}/{processors}",
+                                process_cpu / 100. * processors as f64
+                            ),
+                            TEXT_COLOR,
                         ),
-                        usage(
-                            "smem",
-                            &SystemInformationDiagnosticsPlugin::SYSTEM_MEM_USAGE,
-                        ),
-                        usage(
-                            "pcpu",
-                            &SystemInformationDiagnosticsPlugin::PROCESS_CPU_USAGE,
-                        ),
-                        usage(
-                            "pmem",
-                            &SystemInformationDiagnosticsPlugin::PROCESS_MEM_USAGE,
-                        ),
-                        (mode.to_string(), TEXT_COLOR),
-                        (job_status, TEXT_COLOR),
+                        (format!("{process_memory:.1} GiB"), TEXT_COLOR),
                     ];
+                    if system_memory > MEMORY_WARNING {
+                        entries.push((format!("memory {system_memory:.0}% full"), WARN_RED));
+                    }
+                    if others > OTHERS_WARNING {
+                        entries.push((format!("other programs {others:.0}% CPU"), WARN_RED));
+                    }
+                    entries.push((mode.to_string(), TEXT_COLOR));
+                    entries.push((job_status, TEXT_COLOR));
 
                     let mut stats = text::LayoutJob::default();
                     if v > 0 {
@@ -142,7 +149,7 @@ pub fn show(
                         stats.append("  |  ", 0.0, sized_text_format(9.0, TEXT_COLOR));
                         stats.append(&entry, 0.0, sized_text_format(STAT_SIZE, color));
                     }
-                    ui.label(stats);
+                    ui.label(stats).on_hover_text(details);
                 });
 
                 ui.with_layout(Layout::right_to_left(Align::TOP), |ui| {

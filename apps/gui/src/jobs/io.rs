@@ -8,6 +8,17 @@ use dualcube::prelude::*;
 use io::figure::{Annotation, FigureParams, FigureStyle};
 use std::path::PathBuf;
 
+/// The colors of the figures: those of the GUI.
+pub fn figure_style() -> FigureStyle {
+    let axes = DIRECTIONS;
+    FigureStyle {
+        primal: axes.map(|d| colors::from_direction(d, Some(Perspective::Primal), None)),
+        light_mix: render::LIGHT_MIX,
+        dual: axes.map(|d| colors::from_direction(d, Some(Perspective::Dual), None)),
+        ..FigureStyle::default()
+    }
+}
+
 impl Job {
     /// Import a mesh or a solution; stops the running jobs.
     pub fn import(path: PathBuf, configuration: Configuration) -> Self {
@@ -64,13 +75,7 @@ impl Job {
                 }),
                 ..FigureParams::default()
             };
-            let axes = DIRECTIONS;
-            let style = FigureStyle {
-                primal: axes.map(|d| colors::from_direction(d, Some(Perspective::Primal), None)),
-                light_mix: render::LIGHT_MIX,
-                dual: axes.map(|d| colors::from_direction(d, Some(Perspective::Dual), None)),
-                ..FigureStyle::default()
-            };
+            let style = figure_style();
             let extension = configuration.figure_format.extension();
             match io::figure::export_figures(solution, &dir, &name, extension, &params, &style) {
                 Ok(saved) => {

@@ -234,8 +234,8 @@ impl Arrangement {
         loops: &SlotMap<LoopID, Loop>,
     ) -> Result<Self, PropertyViolationError> {
         // The crossings of every loop with the mesh edges: (index of the exiting half-edge in the loop).
-        let mut loop_exits: HashMap<LoopID, Vec<usize>> = HashMap::new();
-        let mut per_edge: HashMap<EdgeID, Vec<(OrderedFloat<f64>, LoopID)>> = HashMap::new();
+        let mut loop_exits: HashMap<LoopID, Vec<usize>> = HashMap::default();
+        let mut per_edge: HashMap<EdgeID, Vec<(OrderedFloat<f64>, LoopID)>> = HashMap::default();
         for (loop_id, lewp) in loops {
             let len = lewp.edges.len();
             let exits = (0..len)
@@ -258,8 +258,8 @@ impl Arrangement {
         }
 
         // The positions along the canonical half-edges.
-        let mut position: HashMap<(EdgeID, LoopID), f64> = HashMap::new();
-        let mut edge_positions = HashMap::new();
+        let mut position: HashMap<(EdgeID, LoopID), f64> = HashMap::default();
+        let mut edge_positions = HashMap::default();
         for (edge_c, mut list) in per_edge {
             list.sort();
             let positions = list
@@ -278,7 +278,7 @@ impl Arrangement {
         };
 
         // The chords of every loop.
-        let mut faces: HashMap<FaceID, FaceArrangement> = HashMap::new();
+        let mut faces: HashMap<FaceID, FaceArrangement> = HashMap::default();
         for (loop_id, lewp) in loops {
             let len = lewp.edges.len();
             let exits = &loop_exits[&loop_id];
@@ -298,7 +298,7 @@ impl Arrangement {
                             chords: vec![],
                             cells: vec![],
                             cell_corners: vec![],
-                            cell_index: HashMap::new(),
+                            cell_index: HashMap::default(),
                         })
                     }
                 };
@@ -447,7 +447,7 @@ impl Arrangement {
             // Two chords that cut each other in a cell, but are not a crossing (nearly degenerate configurations).
             Cut(FaceID, usize, usize),
         }
-        let mut index: HashMap<Key, usize> = HashMap::new();
+        let mut index: HashMap<Key, usize> = HashMap::default();
         let mut refinement = Refinement::default();
         let mut vertex = |key: Key, position: Vector3D, refinement: &mut Refinement| -> usize {
             *index.entry(key).or_insert_with(|| {
@@ -460,7 +460,7 @@ impl Arrangement {
                 refinement.positions.len() - 1
             })
         };
-        let mut crossing_ids: HashMap<(FaceID, usize, usize), usize> = HashMap::new();
+        let mut crossing_ids: HashMap<(FaceID, usize, usize), usize> = HashMap::default();
         for (id, crossing) in self.crossings.iter().enumerate() {
             let [i, j] = crossing.chords;
             crossing_ids.insert((crossing.face, i.min(j), i.max(j)), id);
@@ -673,7 +673,7 @@ impl Arrangement {
             }
         }
 
-        let mut component_ids = HashMap::new();
+        let mut component_ids = HashMap::default();
         let components = (0..self.cell_count)
             .map(|cell| {
                 let root = find(&mut parent, cell);
@@ -682,7 +682,7 @@ impl Arrangement {
             })
             .collect_vec();
 
-        let mut vert_components = HashMap::new();
+        let mut vert_components = HashMap::default();
         for vert in mesh.vert_ids() {
             let Some(face) = mesh.faces(vert).next() else {
                 continue;

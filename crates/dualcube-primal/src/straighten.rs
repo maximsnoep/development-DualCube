@@ -20,8 +20,18 @@ use std::time::Instant;
 const STRAIGHT: f64 = PI - 1e-6;
 // Paths along sharp features are kept (see `SHARP_ANGLE`).
 const FEATURE_ANGLE: f64 = crate::layout::SHARP_ANGLE;
+// Straightening stops when a sweep over all paths shortens them by less than this fraction of their length (nearly
+// converged: the last sweeps of the exact straightening move the paths very little, at a high cost).
+const CONVERGED: f64 = 1e-4;
+// The fallback of straightening one path at a time (see `straighten_paths`) stops after this many seconds (keeping the
+// paths straightened so far).
+const FALLBACK_SECONDS: f64 = 2.;
+// The straightening (of all attempts) stops shortening the paths after this many seconds: the paths are then as
+// straight as they got (e.g., on large meshes with many paths, where it could take many minutes).
+const MAX_SECONDS: f64 = 10.;
 
-// Why a straightening failed: paths too close to each other (their indices), or anything else.
+// Why a straightening failed: paths that cannot be traced over or cut into the mesh (their indices; e.g., paths
+// numerically too close to each other), or anything else.
 enum Failure {
     Conflict(HashSet<usize>),
     Other,
@@ -254,8 +264,8 @@ impl Network {
         let mut network = Self {
             triangulation,
             paths,
-            path_verts: HashMap::new(),
-            path_edges: HashSet::new(),
+            path_verts: HashMap::default(),
+            path_edges: HashSet::default(),
             pinned,
             flips: 0,
         };
@@ -369,6 +379,8 @@ impl Network {
             for record in records.iter().rev() {
                 self.triangulation.undo(record);
             }
+            // (Undone flips cost as much: they count toward the budget.)
+            self.flips += 2 * records.len();
             return false;
         }
 
@@ -389,14 +401,16 @@ impl Network {
         true
     }
 
-    // Shorten all paths until every (flexible) joint is straight, or the budget of flips is used.
-    fn straighten(&mut self, max_sweeps: usize, max_flips: usize) {
+    // Shorten all paths until every (flexible) joint is straight, a sweep hardly shortens them (see `CONVERGED`), the
+    // budget of flips is used (also by the attempts that are undone), or the deadline has passed.
+    fn straighten(&mut self, max_sweeps: usize, max_flips: usize, deadline: Instant) {
+        let mut length = self.length();
         for _ in 0..max_sweeps {
             let mut changed = false;
             for p in 0..self.paths.len() {
                 let mut i = 1;
                 while i < self.paths[p].len() {
-                    if self.flips > max_flips {
+                    if self.flips > max_flips || Instant::now() > deadline {
                         return;
                     }
                     if self.flip_out(p, i) {
@@ -407,9 +421,11 @@ impl Network {
                     }
                 }
             }
-            if !changed {
+            let shorter = self.length();
+            if !changed || length - shorter < CONVERGED * length {
                 break;
             }
+            length = shorter;
         }
     }
 }
@@ -652,12 +668,13 @@ impl Layout {
             return Err(LayoutError::InvalidPath);
         }
         let backup = self.clone();
-        // Paths that are straightened (numerically) too close to each other cannot be cut into the mesh: they are kept
-        // as they are (frozen) and the others are straightened again.
-        let mut frozen = HashSet::new();
+        let deadline = timer + std::time::Duration::from_secs_f64(MAX_SECONDS);
+        // Paths that cannot be traced over or cut into the mesh (e.g., straightened numerically too close to each other)
+        // are kept as they are (frozen) and the others are straightened again.
+        let mut frozen = HashSet::default();
         let mut result = Err(LayoutError::InvalidPath);
-        for _ in 0..8 {
-            match self.straighten_paths_inner(&frozen) {
+        for _ in 0..16 {
+            match self.straighten_paths_inner(&frozen, deadline) {
                 Ok(stats) => {
                     result = Ok(stats);
                     break;
@@ -673,27 +690,50 @@ impl Layout {
             }
         }
         if result.is_err() {
-            // One path at a time: every path is straightened together with those straightened so far, if that works.
+            // Groups of paths: a group is straightened together with those straightened so far, if that works, and
+            // else its two halves are tried (down to single paths). With a few paths that cannot be straightened,
+            // this takes a few attempts per such path, instead of one attempt per path.
             let structure = &backup.polycube_ref.structure;
             let count = structure
                 .edge_ids()
                 .into_iter()
                 .filter(|&e| e.raw() < structure.twin(e).raw())
                 .count();
-            let mut straight: HashSet<usize> = HashSet::new();
+            let mut straight: HashSet<usize> = HashSet::default();
             let mut best: Option<(Self, StraightenStats)> = None;
-            for path in 0..count {
+            // (All paths together failed already: the two halves first.)
+            let all = (0..count).collect_vec();
+            let (first, second) = all.split_at(count / 2);
+            let mut groups = vec![second.to_vec(), first.to_vec()];
+            let mut attempts = 0;
+            while let Some(group) = groups.pop() {
+                if group.is_empty() {
+                    continue;
+                }
+                if timer.elapsed().as_secs_f64() > FALLBACK_SECONDS {
+                    break;
+                }
+                attempts += 1;
+                let members: HashSet<usize> = group.iter().copied().collect();
                 let frozen = (0..count)
-                    .filter(|&q| q != path && !straight.contains(&q))
+                    .filter(|q| !members.contains(q) && !straight.contains(q))
                     .collect();
                 *self = backup.clone();
-                if let Ok(stats) = self.straighten_paths_inner(&frozen) {
-                    straight.insert(path);
-                    best = Some((self.clone(), stats));
+                match self.straighten_paths_inner(&frozen, deadline) {
+                    Ok(stats) => {
+                        straight.extend(members);
+                        best = Some((self.clone(), stats));
+                    }
+                    Err(_) if group.len() > 1 => {
+                        let (a, b) = group.split_at(group.len() / 2);
+                        groups.push(b.to_vec());
+                        groups.push(a.to_vec());
+                    }
+                    Err(_) => {}
                 }
             }
             info!(
-                "Layout::straighten_paths: straightened {} of {count} paths one at a time",
+                "Layout::straighten_paths: straightened {} of {count} paths in groups ({attempts} attempts)",
                 straight.len()
             );
             match best {
@@ -715,6 +755,7 @@ impl Layout {
     fn straighten_paths_inner(
         &mut self,
         frozen: &HashSet<usize>,
+        deadline: Instant,
     ) -> Result<StraightenStats, Failure> {
         let fail = |reason: &str| {
             debug!("Layout::straighten_paths: {reason}");
@@ -765,7 +806,7 @@ impl Layout {
         let length_before = network.length();
         // Typically, the number of flips grows like m^1.5 for paths of m edges (Sharp and Crane), so this is generous.
         let path_edges = network.paths.iter().map(Vec::len).sum::<usize>();
-        network.straighten(100, 1_000_000.max(200 * path_edges));
+        network.straighten(100, 1_000_000.max(200 * path_edges), deadline);
         let length_after = network.length();
 
         // Trace the paths over the granulated mesh: every path is a sequence of vertices and crossings,
@@ -778,15 +819,20 @@ impl Layout {
         }
         let face_of = |h: usize| mesh.face(input_edges[h]);
         let mut traced_paths = vec![];
-        for path in &network.paths {
+        // (A path that cannot be traced is frozen, and the others are straightened again.)
+        for (path_index, path) in network.paths.iter().enumerate() {
             let t = &network.triangulation;
             let mut points = vec![Point::Vertex(t.root[path[0]])];
             let mut pieces = vec![];
             for &h in path {
-                let (end, crossings) = trace(&input, t.root[h], t.signpost[h], t.length[h])
-                    .ok_or_else(|| fail("tracing an edge failed"))?;
+                let Some((end, crossings)) = trace(&input, t.root[h], t.signpost[h], t.length[h])
+                else {
+                    debug!("Layout::straighten_paths: tracing an edge failed");
+                    return Err(Failure::Conflict(HashSet::from_iter([path_index])));
+                };
                 if end != t.tip(h) {
-                    return Err(fail("a traced edge ends at the wrong vertex"));
+                    debug!("Layout::straighten_paths: a traced edge ends at the wrong vertex");
+                    return Err(Failure::Conflict(HashSet::from_iter([path_index])));
                 }
                 // The piece up to a crossing lies in the face that is exited.
                 for &(e, along) in &crossings {
@@ -808,10 +854,10 @@ impl Layout {
         let mut positions = verts.iter().map(|&v| mesh.position(v)).collect_vec();
         let mut point_ids: Vec<Vec<usize>> = vec![];
         // For every input edge (canonical halfedge), the crossings on it: (position along it, vertex id).
-        let mut edge_points: HashMap<usize, Vec<(f64, usize)>> = HashMap::new();
+        let mut edge_points: HashMap<usize, Vec<(f64, usize)>> = HashMap::default();
         // The pieces of the paths inside every input face (chords between two points on its boundary).
         // The pieces of the paths inside every input face (chords between two points on its boundary), with their path.
-        let mut face_chords: HashMap<FaceID, Vec<([usize; 2], usize)>> = HashMap::new();
+        let mut face_chords: HashMap<FaceID, Vec<([usize; 2], usize)>> = HashMap::default();
         for (path_index, (points, pieces)) in traced_paths.iter().enumerate() {
             let ids = points
                 .iter()
@@ -901,9 +947,12 @@ impl Layout {
             }
 
             for polygon in polygons {
-                for triangle in
-                    triangulate(&polygon).ok_or_else(|| fail("triangulating a polygon failed"))?
-                {
+                // (If this fails, the paths through this face are frozen, and the others are straightened again.)
+                let Some(triangles) = triangulate(&polygon) else {
+                    debug!("Layout::straighten_paths: triangulating a polygon failed");
+                    return Err(Failure::Conflict(chords.iter().map(|&(_, p)| p).collect()));
+                };
+                for triangle in triangles {
                     faces.push(triangle.to_vec());
                 }
             }
@@ -915,11 +964,11 @@ impl Layout {
         let key = |id: usize| vmap.key(id).copied().ok_or(Failure::Other);
 
         // Update the layout.
-        let mut vert_to_corner = bimap::BiHashMap::new();
+        let mut vert_to_corner = crate::polycube::BiHashMap::default();
         for (&corner, vert) in &self.vert_to_corner {
             vert_to_corner.insert(corner, key(vert_index[vert])?);
         }
-        let mut edge_to_path = HashMap::new();
+        let mut edge_to_path = HashMap::default();
         for (&edge, ids) in polycube_edges.iter().zip(&point_ids) {
             let path = ids
                 .iter()

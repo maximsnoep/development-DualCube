@@ -1,5 +1,5 @@
 //! Regression tests for the validity checks (condition 4, local loop removal), the quality criterion, the
-//! initialization methods, the evolutionary algorithm, and the corner optimization.
+//! initialization methods, the annealing, and the corner optimization.
 
 mod common;
 
@@ -246,9 +246,6 @@ fn quality_matches_the_formula() {
     let w = solution.quality.weights;
     let penalty = w.fidelity * report.fidelity.unwrap()
         + w.path_regularity * report.path_regularity().unwrap()
-        + w.coherence * report.coherence.unwrap()
-        + w.rectangularity * report.rectangularity.unwrap()
-        + w.corner_regularity * report.corner_regularity.unwrap()
         + w.non_degeneracy * report.non_degeneracy.unwrap()
         + w.correspondence * report.correspondence.unwrap()
         + w.complexity * solution.loops.len() as f64;
@@ -267,9 +264,6 @@ fn quality_report_is_sane() {
     assert!(report.fidelity.unwrap() >= 0.);
     assert!((0. ..=1.).contains(&report.path_backtrack.unwrap()));
     assert!(report.path_stretch.unwrap() >= 0.);
-    assert!((0. ..=1.).contains(&report.coherence.unwrap()));
-    assert!(report.rectangularity.unwrap() >= 0.);
-    assert!(report.corner_regularity.unwrap() >= 0.);
     assert!(report.non_degeneracy.unwrap() >= 0.);
     assert!(report.correspondence.unwrap() >= 0.);
     // A cube: 8 corners of degree 3.
@@ -297,19 +291,52 @@ fn initialization_gives_a_cube() {
 }
 
 #[test]
-fn evolution_produces_a_valid_solution() {
+fn annealing_produces_a_valid_solution() {
     let solution = initialized();
     let initial = solution.get_quality().unwrap();
-    let params = EvolutionParams {
-        population: 4,
+    let params = AnnealParams {
         offspring: 6,
-        max_generations: 3,
-        patience: 2,
-        ..EvolutionParams::default()
+        steps: 4,
+        ..AnnealParams::default()
     };
-    let evolved = solution.evolve(&params).unwrap();
-    assert!(evolved.dual_is_ok());
-    let quality = evolved.get_quality().unwrap();
-    // Scored with a fast layout during the search; allow for the difference of the final (full) layout.
-    assert!(quality > initial - 0.05, "{initial} -> {quality}");
+    let annealed = solution.anneal(&params, &OptimizationMonitor::default()).unwrap();
+    assert!(annealed.dual_is_ok());
+    // Never worse than the input.
+    assert!(annealed.get_quality().unwrap() >= initial);
+}
+
+#[test]
+fn coupled_optimization_produces_a_valid_solution() {
+    let solution = initialized();
+    let initial = solution.get_quality().unwrap();
+    let params = CoupledParams {
+        loops: AnnealParams {
+            offspring: 4,
+            steps: 3,
+            ..AnnealParams::default()
+        },
+        layout_generations: 2,
+        max_cycles: 2,
+        ..CoupledParams::default()
+    };
+    let optimized = solution.optimize(&params, &OptimizationMonitor::default()).unwrap();
+    assert!(optimized.dual_is_ok());
+    assert!(optimized.get_quality().unwrap() >= initial);
+}
+
+#[test]
+fn smoothing_the_loops_keeps_their_structure() {
+    let solution = initialized();
+    let mut smoothed = solution.clone();
+    smoothed.smooth_loops();
+    let (before, after) = (
+        Dual::from(solution.mesh_ref.clone(), &solution.loops).unwrap(),
+        Dual::from(smoothed.mesh_ref.clone(), &smoothed.loops).unwrap(),
+    );
+    assert_eq!(before.loop_structure.vert_ids().len(), after.loop_structure.vert_ids().len());
+    assert_eq!(before.loop_structure.face_ids().len(), after.loop_structure.face_ids().len());
+    for (id, lewp) in &smoothed.loops {
+        assert_eq!(lewp.edges, solution.loops[id].edges);
+        assert!(lewp.offsets.iter().all(|t| (0. ..=1.).contains(t)));
+    }
 }

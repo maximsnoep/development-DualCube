@@ -180,8 +180,8 @@ impl<T: Eq + Hash + Clone + Copy + Default, E: Copy> Grapff<T, E> for FixedGraph
     }
 
     // The nodes reachable from `v` along the edges (breadth-first).
-    fn connected_component(&self, v: T) -> std::collections::HashSet<T> {
-        let mut seen = std::collections::HashSet::from([v]);
+    fn connected_component(&self, v: T) -> rustc_hash::FxHashSet<T> {
+        let mut seen = rustc_hash::FxHashSet::from_iter([v]);
         let mut queue = std::collections::VecDeque::from([v]);
         while let Some(node) = queue.pop_front() {
             for next in self.neighbors(node) {
@@ -193,7 +193,7 @@ impl<T: Eq + Hash + Clone + Copy + Default, E: Copy> Grapff<T, E> for FixedGraph
         seen
     }
 
-    fn connected_components(&self, _: &[T]) -> Vec<std::collections::HashSet<T>> {
+    fn connected_components(&self, _: &[T]) -> Vec<rustc_hash::FxHashSet<T>> {
         tarjan_scc(&self.petgraph)
             .into_iter()
             .map(|cc| {

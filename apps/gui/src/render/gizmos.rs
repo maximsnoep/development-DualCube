@@ -2,7 +2,7 @@ use crate::colors;
 use crate::colors::Kolor;
 use bevy::prelude::*;
 use dualcube::prelude::*;
-use std::collections::HashMap;
+use rustc_hash::FxHashMap as HashMap;
 
 #[derive(Default, Reflect, GizmoConfigGroup)]
 pub struct PerpetualGizmos {}
@@ -81,7 +81,7 @@ pub fn lambert_color_map<M: Tag>(mesh: &mehsh::prelude::Mesh<M>) -> HashMap<Face
 
 #[must_use]
 pub fn segmentation_color_map(layout: &Layout, polycube: &Polycube) -> HashMap<FaceID, Kolor> {
-    let mut color_map = HashMap::new();
+    let mut color_map = HashMap::default();
     for &patch_id in &polycube.structure.face_ids() {
         let normal = (polycube.structure.normal(patch_id) as Vector3D).normalize();
         let (dir, side) = to_principal_direction(normal);
@@ -175,9 +175,9 @@ pub const fn axis_index(direction: Direction) -> usize {
     }
 }
 
-/// Adds a loop's band (see `Solution::loop_frames`) along the given segments: a strip of `half` wide on either side,
-/// its positive side in `positive` and its negative side in `negative`, lifted by `lift` along the normals (so that the
-/// surface does not cover it). The segments share their frames, so the strips connect without gaps.
+/// Adds a band (e.g., of a path, see `Solution::path_bands`) along the given segments: a strip of `half` wide on either
+/// side, its positive side in `positive` and its negative side in `negative`, lifted by `lift` along the normals (so
+/// that the surface does not cover it). The segments share their frames, so the strips connect without gaps.
 pub fn add_band(
     builder: &mut mehsh_bevy::MeshBuilder,
     segments: impl IntoIterator<Item = (LoopFrame, LoopFrame)>,
@@ -202,11 +202,50 @@ pub fn add_band(
     }
 }
 
-/// The colors of a loop's band: its positive side, and its (lighter) negative side.
-#[must_use]
-pub fn band_colors(direction: Direction) -> [Kolor; 2] {
-    let positive = colors::from_direction(direction, Some(Perspective::Dual), None);
-    [positive, positive.map(|c| c + (1. - c) * super::LIGHT_MIX)]
+/// Adds a loop (see `Solution::loop_frames`) along the given segments, as in Polycuber: a line in its color (`LINE` of
+/// `half` wide on either side), and on its negative side a glow that fades from the line to transparent (`GLOW` of
+/// `half` wide), lifted by `lift` along the normals. Needs a material that blends (see `render::store`).
+pub fn add_loop_band(
+    builder: &mut mehsh_bevy::MeshBuilder,
+    segments: impl IntoIterator<Item = (LoopFrame, LoopFrame)>,
+    half: f64,
+    lift: f64,
+    direction: Direction,
+) {
+    const LINE: f64 = 0.3;
+    const GLOW: f64 = 1.7;
+    const GLOW_OPACITY: f32 = 0.7;
+    let [r, g, b] = colors::from_direction(direction, Some(Perspective::Dual), None);
+    let opaque = [r, g, b, 1.];
+    // Strips across the band (from, to, their opacities): the line, and the glow on the negative side.
+    let strips = [
+        (-LINE, LINE, 1., 1.),
+        (LINE, LINE + GLOW, GLOW_OPACITY, 0.),
+    ];
+    for (a, b) in segments {
+        let (pa, pb) = (a.position + a.normal * lift, b.position + b.normal * lift);
+        for (from, to, opacity_from, opacity_to) in strips {
+            let at = |p: Vector3D, frame: &LoopFrame, offset: f64| p + frame.negative * (offset * half);
+            let corners = [at(pa, &a, from), at(pb, &b, from), at(pb, &b, to), at(pa, &a, to)];
+            let colors = [opacity_from, opacity_from, opacity_to, opacity_to]
+                .map(|opacity| [opaque[0], opaque[1], opaque[2], opacity * opaque[3]]);
+            // Two triangles, facing outward.
+            for [i, j, k] in [[0, 1, 2], [0, 2, 3]] {
+                let (x, y, z) = (corners[i], corners[j], corners[k]);
+                let outward = (y - x).cross(&(z - x)).dot(&(a.normal + b.normal)) >= 0.;
+                let (order, normals) = if outward {
+                    ([i, j, k], [a.normal, b.normal, b.normal])
+                } else {
+                    ([i, k, j], [a.normal, b.normal, b.normal])
+                };
+                builder.add_triangle_rgba(
+                    order.map(|n| corners[n]),
+                    normals,
+                    order.map(|n| colors[n]),
+                );
+            }
+        }
+    }
 }
 
 /// Adds a round cap (a disk of radius `half`) at a point of the surface, lifted by `lift` along its normal: at the ends

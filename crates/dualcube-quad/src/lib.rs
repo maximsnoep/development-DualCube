@@ -47,7 +47,7 @@ impl Default for QuadDensity {
     }
 }
 
-// The target edge length of the quads (`Auto`), or the number of quads per unit edge of the polycube (`Fixed`).
+// The target edge length of the quads (`Auto`), or the number of quads per polycube edge of mean length (`Fixed`).
 #[derive(Clone, Copy)]
 enum Resolution {
     Length(f64),
@@ -68,22 +68,32 @@ impl Resolution {
     }
 }
 
-// The number of quads along every polycube edge, in proportion to the geometric lengths of the edges (from the layout):
-// either a number per unit edge of the polycube (with unit edge lengths), so the density does not depend on the scale of
-// the mesh, or a target length of the quad edges. Twin edges and opposite edges of a face (a rectangle) get the same
-// count, so the grids of neighboring faces match.
+// The number of quads along every edge of the polycube, in proportion to the length of its path on the surface: either
+// a number per edge of mean length, so the density does not depend on the scale of the mesh, or a target length of the
+// quad edges. Twin edges and opposite edges of a face (a rectangle) get the same count, so the grids of neighboring
+// faces match.
 fn edge_resolutions(
     polycube: &Mesh<POLYCUBE>,
-    geometric: &Mesh<POLYCUBE>,
+    layout: &Layout,
     resolution: Resolution,
 ) -> Option<HashMap<EdgeKey<POLYCUBE>, usize>> {
     let edges = polycube.edge_ids();
-    let unit_total: f64 = edges.iter().map(|&e| polycube.size(e)).sum();
-    let geometric_total: f64 = edges.iter().map(|&e| geometric.size(e)).sum();
-    if !(unit_total > 0. && geometric_total > 0.) {
+    let length = |edge: &EdgeKey<POLYCUBE>| {
+        let path = layout.edge_to_path.get(edge)?;
+        Some(
+            path.windows(2)
+                .map(|w| {
+                    (layout.granulated_mesh.position(w[1]) - layout.granulated_mesh.position(w[0]))
+                        .norm()
+                })
+                .sum::<f64>(),
+        )
+    };
+    let total = edges.iter().map(length).sum::<Option<f64>>()?;
+    if !(total > 0.) {
         return None;
     }
-    let scale = unit_total / geometric_total;
+    let mean = total / edges.len() as f64;
 
     // Classes of edges that need the same count: twins, and opposite edges of a face.
     let index: HashMap<EdgeKey<POLYCUBE>, usize> =
@@ -108,11 +118,11 @@ fn edge_resolutions(
         union(e1, e3);
         union(e2, e4);
     }
-    let mut lengths: HashMap<usize, (f64, usize)> = HashMap::new();
+    let mut lengths: HashMap<usize, (f64, usize)> = HashMap::default();
     for &edge in &edges {
         let class = find(&mut parent, index[&edge]);
         let entry = lengths.entry(class).or_default();
-        entry.0 += geometric.size(edge) * scale;
+        entry.0 += length(&edge)?;
         entry.1 += 1;
     }
     Some(
@@ -122,9 +132,8 @@ fn edge_resolutions(
                 let (sum, count) = lengths[&find(&mut parent, index[&edge])];
                 let length = sum / count as f64;
                 let cells = match resolution {
-                    Resolution::PerUnit(omega) => length * omega,
-                    // The lengths are scaled to the unit polycube.
-                    Resolution::Length(target) => length / scale / target,
+                    Resolution::PerUnit(omega) => length / mean * omega,
+                    Resolution::Length(target) => length / target,
                 };
                 let cells = cells.round().max(1.) as usize;
                 (edge, cells)
@@ -137,26 +146,26 @@ fn edge_resolutions(
 pub fn build_quad_from_layout(layout: &Layout, density: QuadDensity) -> Option<Quad> {
     let mut triangle_mesh_polycube = layout.granulated_mesh.clone();
 
-    let mut edges_done: HashMap<EdgeKey<POLYCUBE>, Vec<usize>> = HashMap::new();
-    let mut corners_done: HashMap<VertKey<POLYCUBE>, usize> = HashMap::new();
+    let mut edges_done: HashMap<EdgeKey<POLYCUBE>, Vec<usize>> = HashMap::default();
+    let mut corners_done: HashMap<VertKey<POLYCUBE>, usize> = HashMap::default();
 
     let mut faces = vec![];
     let mut vertex_positions = vec![];
 
     // set of frozen vertices. Should be vertices that lie on important boundaries or features.
-    let mut frozen = HashSet::new();
+    let mut frozen = HashSet::default();
 
-    // For every patch in the layout (corresponding to a face in the polycube), we map this patch to a unit square
-    // 1. Map the boundary of the patch to the boundary of a unit square via arc-length parameterization
-    // 2. Map the interior of the patch to the interior of the unit square via mean-value coordinates (MVC)
-    // FOR SOME REASON IMPORTANT TO HAVE THE POLYCUBE WITH EDGELENGTHS = 1 FOR THE MAPPING, AND USE A SEPERATE SCALED ONE TO COMPUTE THE PROPER QUAD DISTRIBUTIONS
-    let polycube = Polycube::from_dual(&layout.dual_ref);
-    let mut polycube_resized = polycube.clone();
-    polycube_resized.resize(&layout.dual_ref, Some(layout));
+    // Every patch of the layout (a face of the polycube) is mapped onto its face of the polycube (a rectangle, with
+    // the lengths of the layout):
+    // 1. its boundary onto the boundary of the rectangle, by arc length;
+    // 2. its interior onto the interior of the rectangle, with mean value coordinates.
+    // (The polycube of the layout: one built again from its loop structure may number its faces differently, e.g.,
+    // after the loops were moved, see `Solution::medial_loops`.)
+    let mut polycube = layout.polycube_ref.clone();
+    polycube.resize(&layout.dual_ref, Some(layout));
     let polycube = polycube.structure;
     let resolution = Resolution::of(density, &layout.dual_ref.mesh_ref);
-    let Some(resolution) = edge_resolutions(&polycube, &polycube_resized.structure, resolution)
-    else {
+    let Some(resolution) = edge_resolutions(&polycube, layout, resolution) else {
         warn!("Cannot construct quad mesh: the polycube is not made of quadrilaterals");
         return None;
     };
@@ -164,13 +173,13 @@ pub fn build_quad_from_layout(layout: &Layout, density: QuadDensity) -> Option<Q
     let mut queue = vec![];
     queue.push(polycube.face_ids()[0]);
 
-    let mut patches_done = HashSet::new();
+    let mut patches_done = HashSet::default();
 
-    let mut face_to_verts_usize: HashMap<FaceKey<POLYCUBE>, Vec<Vec<usize>>> = HashMap::new();
-    let mut face_to_verts: HashMap<FaceKey<POLYCUBE>, Vec<Vec<VertKey<QUAD>>>> = HashMap::new();
+    let mut face_to_verts_usize: HashMap<FaceKey<POLYCUBE>, Vec<Vec<usize>>> = HashMap::default();
+    let mut face_to_verts: HashMap<FaceKey<POLYCUBE>, Vec<Vec<VertKey<QUAD>>>> = HashMap::default();
 
-    let mut edge_to_verts_usize: HashMap<EdgeKey<POLYCUBE>, Vec<usize>> = HashMap::new();
-    let mut edge_to_verts: HashMap<EdgeKey<POLYCUBE>, Vec<VertKey<QUAD>>> = HashMap::new();
+    let mut edge_to_verts_usize: HashMap<EdgeKey<POLYCUBE>, Vec<usize>> = HashMap::default();
+    let mut edge_to_verts: HashMap<EdgeKey<POLYCUBE>, Vec<VertKey<QUAD>>> = HashMap::default();
 
     while let Some(patch_id) = queue.pop() {
         if patches_done.contains(&patch_id) {
@@ -183,8 +192,8 @@ pub fn build_quad_from_layout(layout: &Layout, density: QuadDensity) -> Option<Q
             }
         }
 
-        // A map for each vertex in the patch to its corresponding 2D coordinate in the unit square
-        let mut map_to_2d = HashMap::new();
+        // A map for each vertex in the patch to its 2D coordinate in its rectangle
+        let mut map_to_2d = HashMap::default();
 
         let Some([edge1, edge2, edge3, edge4]) = polycube.edges(patch_id).collect_array::<4>()
         else {
@@ -201,7 +210,7 @@ pub fn build_quad_from_layout(layout: &Layout, density: QuadDensity) -> Option<Q
             return None;
         };
 
-        // Edge1 is mapped to unit edge (0,1) -> (1,1), edge2 to (1,1) -> (1,0), edge3 to (1,0) -> (0,0), and edge4 to
+        // Edge1 is mapped to (e.g., on a unit square) (0,1) -> (1,1), edge2 to (1,1) -> (1,0), edge3 to (1,0) -> (0,0), and edge4 to
         // (0,0) -> (0,1).
         let corner1 = polycube.vertices(edge1).next()?;
         let corner2 = polycube.vertices(edge2).next()?;
@@ -297,8 +306,8 @@ pub fn build_quad_from_layout(layout: &Layout, density: QuadDensity) -> Option<Q
             map_to_2d.insert(v, mapped_pos);
         }
 
-        // Now we have the boundary of the patch mapped to the unit square
-        // We need to map the interior of the patch to the interior of the unit square
+        // Now we have the boundary of the patch mapped to the rectangle
+        // We need to map the interior of the patch to the interior of the rectangle
         // We can use mean-value coordinates (MVC) to do this
 
         let all_verts = layout
@@ -674,6 +683,7 @@ pub fn build_quad_from_layout(layout: &Layout, density: QuadDensity) -> Option<Q
         let mapped = quad_mesh
             .vert_ids()
             .into_par()
+            .with_pool(pool())
             .map(|vert_id| {
                 let point = quad_mesh_polycube.position(vert_id);
                 let triangle = triangle_lookup.nearest(&[point.x, point.y, point.z]);

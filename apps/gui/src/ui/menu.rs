@@ -4,7 +4,7 @@ use super::theme::*;
 use super::widgets::{label, log_slider, menu_button, radio, sep, sleek_button, slider, space};
 use crate::colors;
 use crate::controls::InteractiveMode;
-use crate::jobs::{EvolutionLive, Job, JobState};
+use crate::jobs::{OptimizationLive, Job, JobState};
 use crate::render::Objects;
 use crate::render::store::{RenderObjectSetting, RenderObjectSettingStore};
 use crate::resources::{Configuration, FigureFormat, InputResource, SolutionResource};
@@ -55,7 +55,7 @@ const MODEL_VIEWS: [(&str, &[&str]); 4] = [
 /// takes too long to do every frame).
 #[derive(Default)]
 pub(crate) struct ScoreCache {
-    key: Option<(usize, usize, u64, [u64; 8])>,
+    key: Option<(usize, usize, u64, [u64; 5])>,
     score: Option<f64>,
 }
 
@@ -70,9 +70,6 @@ impl ScoreCache {
             [
                 w.fidelity,
                 w.path_regularity,
-                w.coherence,
-                w.rectangularity,
-                w.corner_regularity,
                 w.non_degeneracy,
                 w.correspondence,
                 w.complexity,
@@ -102,7 +99,8 @@ pub fn show(
     solution: Res<'_, SolutionResource>,
     mut render_setting_store: ResMut<'_, RenderObjectSettingStore>,
     mut automatic_rotation: ResMut<'_, AutomaticRotation>,
-    mut evolution_live: ResMut<'_, EvolutionLive>,
+    mut optimization_live: ResMut<'_, OptimizationLive>,
+    mut benchmark: ResMut<'_, super::benchmark::BenchmarkUi>,
     mut view_preview: ResMut<'_, ModelView>,
     input: Res<'_, InputResource>,
     main_camera: Query<'_, '_, &Transform, With<bevy_orbit_camera::Controller>>,
@@ -139,16 +137,20 @@ pub fn show(
                     &mut jobs,
                     &conf,
                     &solution,
-                    &mut evolution_live,
+                    &mut optimization_live,
                     &mut view_preview,
                     &mut render_setting_store,
                 );
+                // Benchmarks of the optimization on many models (opens the benchmark window).
+                if sleek_button(ui, "Benchmark") {
+                    benchmark.open = true;
+                }
                 ui.separator();
                 // The view that the running optimization works on (see `ModelView`).
-                let followed = evolution_live
+                let followed = optimization_live
                     .monitor
                     .as_ref()
-                    .filter(|_| evolution_live.running())
+                    .filter(|_| optimization_live.running())
                     .map(|monitor| {
                         if monitor.layout_active() {
                             "Primal"
@@ -159,10 +161,10 @@ pub fn show(
                 // The views of what has been computed (or is being computed).
                 let current = &solution.current_solution;
                 let initializing = job_state.request == Some("initializing loops");
-                let evolving = evolution_live.running();
+                let optimizing = optimization_live.running();
                 let available = |name: &str| match name {
-                    "Dual" => !current.loops.is_empty() || initializing || evolving,
-                    "Primal" => current.layout.is_some() || evolving,
+                    "Dual" => !current.loops.is_empty() || initializing || optimizing,
+                    "Primal" => current.layout.is_some() || optimizing,
                     "Quad" => current.quad.is_some(),
                     _ => true,
                 };
@@ -417,8 +419,8 @@ fn menu_bar(
 }
 
 /// The view of the model chosen in the top bar (see `view_bar`): hovering a view shows it, clicking keeps it. While an
-/// optimization runs, the view follows what it works on (the dual while it evolves the loops, the primal while it
-/// evolves the layout); a view chosen meanwhile is kept until it switches between the two.
+/// optimization runs, the view follows what it works on (the dual while it anneals the loops, the primal while it
+/// optimizes the layout); a view chosen meanwhile is kept until it switches between the two.
 #[derive(Default, Resource)]
 pub struct ModelView {
     // The layers of the model before the hovered view was shown (restored when the mouse leaves it).
@@ -513,13 +515,13 @@ fn view_bar(
     }
 }
 
-/// The bar: initialize (new loops), evolve (opens the optimization window), and postprocess (smooth the paths).
+/// The bar: initialization (new loops), optimization (opens the optimization window), and postprocess (smooth the paths).
 fn pipeline_bar(
     ui: &mut Ui,
     jobs: &mut MessageWriter<'_, Job>,
     conf: &Configuration,
     solution: &SolutionResource,
-    evolution_live: &mut EvolutionLive,
+    optimization_live: &mut OptimizationLive,
     view: &mut ModelView,
     render_setting_store: &mut RenderObjectSettingStore,
 ) {
@@ -534,14 +536,14 @@ fn pipeline_bar(
     };
 
     // A new solution from scratch (and new histories of the optimizations), shown in the dual view.
-    if button(ui, "Initialize", current.mesh_ref.nr_verts() > 0) {
-        evolution_live.reset();
+    if button(ui, "Initialization", current.mesh_ref.nr_verts() > 0) {
+        optimization_live.reset();
         view.show("Dual", render_setting_store);
         jobs.write(Job::initialize_loops(current.clone(), conf.clone()));
     }
     // The optimization (its settings, start, and progress) is in its window.
-    if button(ui, "Evolve", current.mesh_ref.nr_verts() > 0) {
-        evolution_live.open = true;
+    if button(ui, "Optimization", current.mesh_ref.nr_verts() > 0) {
+        optimization_live.open = true;
     }
     // Visual post-processing (smoothing the paths), only on request.
     if button(ui, "Postprocess", current.layout.is_some()) {

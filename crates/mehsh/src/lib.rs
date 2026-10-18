@@ -32,6 +32,7 @@ pub mod utils {
     pub mod geom;
     pub mod ids;
     pub mod math;
+    pub mod parallel;
     pub mod primitives;
 }
 
@@ -46,9 +47,10 @@ pub mod prelude {
     pub use crate::utils::geom;
     pub use crate::utils::ids;
     pub use crate::utils::math;
+    pub use crate::utils::parallel::{drop_later, pool};
     pub use crate::utils::primitives::*;
     pub use itertools::Itertools;
-    pub use std::collections::{HashMap, HashSet};
+    pub use rustc_hash::{FxHashMap as HashMap, FxHashSet as HashSet};
     pub use tracing::{info, warn};
 }
 

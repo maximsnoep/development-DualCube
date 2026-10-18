@@ -113,7 +113,7 @@ fn sampled_loops_are_never_blocked() {
 fn same_direction_crossings(solution: &Solution) -> usize {
     let mut count = 0;
     for face in solution.mesh_ref.face_ids() {
-        let mut ends: HashMap<LoopID, Vec<(usize, usize)>> = HashMap::new();
+        let mut ends: HashMap<LoopID, Vec<(usize, usize)>> = HashMap::default();
         for (side, edge) in solution.mesh_ref.edges(face).enumerate() {
             for (rank, loop_id) in solution.loops_on_edge(edge).into_iter().enumerate() {
                 ends.entry(loop_id).or_default().push((side, rank));

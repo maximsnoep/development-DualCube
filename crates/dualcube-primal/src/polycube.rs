@@ -1,9 +1,12 @@
 use crate::layout::Layout;
-use bimap::BiHashMap;
 use dualcube_dual::prelude::*;
 use dualcube_types::prelude::*;
+use rustc_hash::FxHashMap as HashMap;
 use serde::{Deserialize, Serialize};
-use std::collections::HashMap;
+
+/// A bidirectional hash map with the fast (Fx) hasher.
+pub type BiHashMap<L, R> =
+    bimap::BiHashMap<L, R, rustc_hash::FxBuildHasher, rustc_hash::FxBuildHasher>;
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct Polycube {
@@ -18,7 +21,7 @@ impl Polycube {
         let primal_vertices = dual.loop_structure.face_ids();
         let primal_faces = dual.loop_structure.vert_ids();
 
-        let mut region_to_vertex = BiHashMap::new();
+        let mut region_to_vertex = BiHashMap::default();
 
         // Each face to an int
         let vert_to_int: HashMap<LoopRegionID, usize> = primal_vertices
@@ -68,7 +71,7 @@ impl Polycube {
     }
 
     pub fn resize(&mut self, dual: &Dual, layout: Option<&Layout>) {
-        let mut vert_to_coord = HashMap::new();
+        let mut vert_to_coord = HashMap::default();
         for vert_id in self.structure.vert_ids() {
             vert_to_coord.insert(vert_id, [0., 0., 0.]);
         }

@@ -4,3 +4,6 @@
 .target/
 .profiles/
 .diskscissors_jobs/
+
+# Benchmark sessions (results, solutions, figures; see `io::benchmark`).
+benchmarks/

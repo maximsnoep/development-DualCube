@@ -3,8 +3,8 @@
 //! A [`QualityReport`] collects the quality terms of a solution; they are combined into a single score (to be
 //! maximized) with the weights in [`QualityParams`]:
 //!
-//! penalty P = w_F * fidelity + w_P * path regularity + w_C * coherence + w_R * rectangularity
-//!     + w_K * corner regularity + w_N * non-degeneracy + w_S * correspondence + complexity * #loops,
+//! penalty P = w_F * fidelity + w_P * path regularity + w_N * non-degeneracy + w_S * correspondence
+//!     + complexity * #loops,
 //! score = 1 / (1 + P),
 //!
 //! such that the score lies in (0, 1] (1: perfect), and a higher score is better.
@@ -27,23 +27,14 @@
 //! - *path regularity*: length-weighted mean over all patch boundaries (paths) of (a) the fraction of the path length
 //!   that runs backwards along the axis of its polycube edge (non-monotone boundaries / turning points [LVS13]), and
 //!   (b) log^2 of the ratio between the path length and the distance between its corners along its axis (straightness).
-//! - *coherence*: how much the normals within every patch differ, whatever their direction (unlike fidelity,
-//!   which compares them with the label): 1 - |area-weighted mean normal| of a patch (0 for a flat patch), the
-//!   area-weighted mean over the patches.
-//! - *rectangularity*: how far every patch is from a rectangle: log^2 of the ratios of the lengths of its opposite
-//!   sides (paths), averaged over both pairs, plus ((theta - pi/2) / (pi/2))^2 averaged over its corners, with theta the
-//!   angle (in the tangent plane of the patch) between the two paths at the corner; the area-weighted mean over the
-//!   patches.
-//! - *corner regularity*: whether the rows of corners are locally straight. For every three corners a, b, c on a straight
-//!   line of the polycube (the edges a-b and b-c in the same direction, so all three on the same levels of the two other
-//!   axes), the deviation of b from the line between a and c in the directions of those levels, relative to the length
-//!   of the triple, squared; the mean over all such triples. Rows of corners may bend globally (a linear change between
-//!   a and c costs nothing), but not kink locally.
 //! - *non-degeneracy*: penalizes small patches that are not nice rectangles (they easily degenerate in the map and the
 //!   quad mesh), counted per patch (not by area, unlike the other terms, so a small bad patch is not cheap): the mean
 //!   over all patches of smallness * badness, with smallness ln(0.25 / s) for an area s relative to the mean patch area
-//!   below 0.25 (0 otherwise), and badness the rectangularity of the patch, plus the wiggle of its sides (log^2 of
-//!   their length over the distance between their corners), plus 5 * (1 - |area-weighted mean normal|) (its curving).
+//!   below 0.25 (0 otherwise), and badness how far the patch is from a rectangle (log^2 of the ratios of the lengths
+//!   of its opposite sides, averaged over both pairs, plus ((theta - pi/2) / (pi/2))^2 averaged over its corners, with
+//!   theta the angle in the tangent plane of the patch between the two paths at the corner), plus the wiggle of its
+//!   sides (log^2 of their length over the distance between their corners), plus 5 * (1 - |area-weighted mean
+//!   normal|) (its curving).
 //!   Small patches that are nice rectangles, and large curved patches, cost nothing here.
 //! - *correspondence*: how well the lengths of the polycube edges match the lengths of their paths. All corners of a level of
 //!   the polycube (e.g., those of parallel loops, whose edge lengths the polycube couples) get the same coordinate: the
@@ -70,26 +61,32 @@ const MIN_STRETCH_RATIO: f64 = 1. / 20.;
 pub struct QualityWeights {
     pub fidelity: f64,
     pub path_regularity: f64,
-    pub coherence: f64,
-    pub rectangularity: f64,
-    pub corner_regularity: f64,
     pub non_degeneracy: f64,
     pub correspondence: f64,
     /// The penalty per loop (beta).
     pub complexity: f64,
 }
 
+// From two studies (Oct 2026). On 494 solutions of 26 models, the quality of the quad mesh (scaled Jacobian, size
+// and aspect of the quads, warp) follows the regularity of the paths and the shape of the patches (non-degeneracy,
+// correspondence), not fidelity; fidelity (given the number of loops) gives the alignment of the paper. Coherence
+// (nearly the same as fidelity), rectangularity and corner regularity added nothing: they were removed. The balance was
+// then chosen with evolutions on 8 models: against the weights before (fidelity 1, paths 0.1, coherence 2,
+// rectangularity 0.2, corners 1, non-degeneracy 1, correspondence 0.5, 0.005 per loop) the same alignment (0.86)
+// with fewer loops (11 against 13.5) and better quads (5% of them with a scaled Jacobian above 0.60, against 0.50).
+// Heavier weights on the paths and the patches (10, 3, 3, 0.02 per loop) gave still better quads, but too few loops
+// (alignment 0.81).
 impl Default for QualityWeights {
     fn default() -> Self {
         Self {
             fidelity: 1.,
-            path_regularity: 0.1,
-            coherence: 2.,
-            rectangularity: 0.2,
-            corner_regularity: 1.,
+            path_regularity: 3.,
             non_degeneracy: 1.,
-            correspondence: 0.5,
-            complexity: 0.005,
+            correspondence: 1.,
+            // (From scratch, 20 minutes, airplane: 0.05 ended with 16 loops and quality 0.658 measured with 0.01, against
+            // 28 loops and 0.570 with 0.01 itself, and 12 loops and 0.589 with 0.1. With 0.01, redundant parallel loops
+            // stay: removing one gains less than the noise of the quick layouts of the annealing.)
+            complexity: 0.05,
         }
     }
 }
@@ -113,9 +110,6 @@ impl Default for QualityParams {
 pub struct QualityTerms {
     pub fidelity: bool,
     pub path_regularity: bool,
-    pub coherence: bool,
-    pub rectangularity: bool,
-    pub corner_regularity: bool,
     pub non_degeneracy: bool,
     pub correspondence: bool,
     pub corners: bool,
@@ -127,9 +121,6 @@ impl QualityTerms {
         Self {
             fidelity: true,
             path_regularity: true,
-            coherence: true,
-            rectangularity: true,
-            corner_regularity: true,
             non_degeneracy: true,
             correspondence: true,
             corners: true,
@@ -142,9 +133,6 @@ impl QualityTerms {
         Self {
             fidelity: weights.fidelity != 0.,
             path_regularity: weights.path_regularity != 0.,
-            coherence: weights.coherence != 0.,
-            rectangularity: weights.rectangularity != 0.,
-            corner_regularity: weights.corner_regularity != 0.,
             non_degeneracy: weights.non_degeneracy != 0.,
             correspondence: weights.correspondence != 0.,
             corners: false,
@@ -162,9 +150,6 @@ pub struct QualityReport {
     pub path_backtrack: Option<f64>,
     /// Mean log^2 of the path length over the distance between its corners along its axis.
     pub path_stretch: Option<f64>,
-    pub coherence: Option<f64>,
-    pub rectangularity: Option<f64>,
-    pub corner_regularity: Option<f64>,
     pub non_degeneracy: Option<f64>,
     pub correspondence: Option<f64>,
     pub loops: usize,
@@ -199,9 +184,6 @@ impl QualityReport {
         Some(
             term(w.fidelity, self.fidelity)?
                 + term(w.path_regularity, self.path_regularity())?
-                + term(w.coherence, self.coherence)?
-                + term(w.rectangularity, self.rectangularity)?
-                + term(w.corner_regularity, self.corner_regularity)?
                 + term(w.non_degeneracy, self.non_degeneracy)?
                 + term(w.correspondence, self.correspondence)?
                 + w.complexity * self.loops as f64,
@@ -215,9 +197,6 @@ impl QualityReport {
         normalized(
             term(w.fidelity, self.fidelity)
                 + term(w.path_regularity, self.path_regularity())
-                + term(w.coherence, self.coherence)
-                + term(w.rectangularity, self.rectangularity)
-                + term(w.corner_regularity, self.corner_regularity)
                 + term(w.non_degeneracy, self.non_degeneracy)
                 + term(w.correspondence, self.correspondence)
                 + w.complexity * self.loops as f64,
@@ -248,20 +227,8 @@ impl QualityReport {
             report.path_backtrack = Some(backtrack);
             report.path_stretch = Some(stretch);
         }
-        if terms.coherence {
-            report.coherence = patch_coherence(layout);
-        }
-        let shapes = (terms.rectangularity || terms.non_degeneracy)
-            .then(|| patch_shapes(layout))
-            .flatten();
-        if terms.rectangularity {
-            report.rectangularity = shapes.as_deref().and_then(patch_rectangularity);
-        }
-        if terms.corner_regularity {
-            report.corner_regularity = corner_flatness(layout);
-        }
         if terms.non_degeneracy {
-            report.non_degeneracy = shapes.as_deref().and_then(small_bad_patches);
+            report.non_degeneracy = patch_shapes(layout).as_deref().and_then(small_bad_patches);
         }
         if terms.correspondence {
             report.correspondence = size_mismatch(layout);
@@ -286,7 +253,7 @@ impl QualityReport {
         terms: QualityTerms,
     ) -> Self {
         let mesh = &dual.mesh_ref;
-        let mut vert_labels: HashMap<VertID, Vec<Vector3D>> = HashMap::new();
+        let mut vert_labels: HashMap<VertID, Vec<Vector3D>> = HashMap::default();
         for region in dual.loop_structure.face_ids() {
             let Some(&corner) = polycube.region_to_vertex.get_by_left(&region) else {
                 continue;
@@ -355,7 +322,7 @@ fn correspondence_per_edge(layout: &Layout) -> Option<(Vec<(EdgeKey<POLYCUBE>, f
         )
     };
     // Per axis: the level of every polycube vertex, and the coordinate of every level (the mean of its corners).
-    let mut level_of: HashMap<VertKey<POLYCUBE>, [usize; 3]> = HashMap::new();
+    let mut level_of: HashMap<VertKey<POLYCUBE>, [usize; 3]> = HashMap::default();
     let mut coordinates: [Vec<f64>; 3] = Default::default();
     for direction in DIRECTIONS {
         let axis = direction as usize;
@@ -411,71 +378,6 @@ fn correspondence_per_edge(layout: &Layout) -> Option<(Vec<(EdgeKey<POLYCUBE>, f
             .collect(),
         total_path,
     ))
-}
-
-// The coherence term E_C (see the module documentation), from the normals per patch (see `Layout::patch_normals`).
-fn patch_coherence(layout: &Layout) -> Option<f64> {
-    let (mut incoherent, mut total) = (0., 0.);
-    for &(normal_sum, area) in layout.patch_normals.values() {
-        incoherent += area - normal_sum.norm();
-        total += area;
-    }
-    (total > 0.).then(|| incoherent / total)
-}
-
-// The corner-regularity term (see the module documentation).
-fn corner_flatness(layout: &Layout) -> Option<f64> {
-    let (per_corner, count) = corner_regularity_per_corner(layout)?;
-    Some(if count > 0 {
-        per_corner.values().sum::<f64>() / count as f64
-    } else {
-        0.
-    })
-}
-
-// Per middle corner of straight triples: the sum of their squared relative deviations (see the corner-regularity
-// term), and the number of triples.
-fn corner_regularity_per_corner(
-    layout: &Layout,
-) -> Option<(HashMap<VertKey<POLYCUBE>, f64>, usize)> {
-    let polycube = &layout.polycube_ref.structure;
-    let position = |corner: VertKey<POLYCUBE>| -> Option<Vector3D> {
-        Some(
-            layout
-                .granulated_mesh
-                .position(*layout.vert_to_corner.get_by_left(&corner)?),
-        )
-    };
-    let mut per_corner: HashMap<VertKey<POLYCUBE>, f64> = HashMap::new();
-    let mut count = 0;
-    for b in polycube.vert_ids() {
-        let neighbors = polycube.neighbors(b).collect_vec();
-        for (i, &a) in neighbors.iter().enumerate() {
-            for &c in &neighbors[i + 1..] {
-                // A straight triple a - b - c of the polycube, along one axis.
-                let incoming = (polycube.position(b) - polycube.position(a)).normalize();
-                let outgoing = (polycube.position(c) - polycube.position(b)).normalize();
-                // (a and c on opposite sides of b: the edges are in the same direction, whatever the order of the pair)
-                if incoming.dot(&outgoing) < 0.999 {
-                    continue;
-                }
-                let axis = (0..3)
-                    .max_by(|&x, &y| incoming[x].abs().total_cmp(&incoming[y].abs()))
-                    .unwrap_or(0);
-                let (pa, pb, pc) = (position(a)?, position(b)?, position(c)?);
-                let (l1, l2) = ((pb - pa).norm(), (pc - pb).norm());
-                if l1 + l2 <= 0. {
-                    continue;
-                }
-                // The deviation of b from the line between a and c, in the directions of the two levels.
-                let mut deviation = pb - (pa + (pc - pa) * (l1 / (l1 + l2)));
-                deviation[axis] = 0.;
-                *per_corner.entry(b).or_default() += (deviation.norm() / (0.5 * (l1 + l2))).powi(2);
-                count += 1;
-            }
-        }
-    }
-    Some((per_corner, count))
 }
 
 // The shape of a patch (see `patch_shapes`).
@@ -598,7 +500,7 @@ fn small_bad_patches(shapes: &[PatchShape]) -> Option<f64> {
 
 /// How much every element of a layout (patch, path, corner) contributes to its penalty, to target the mutations at the
 /// elements that need it: its share of every term (with the weights). A path also gets half of the penalties of its
-/// two patches, and a corner its own share plus half of its paths' own shares and a quarter of its patches'.
+/// two patches, and a corner half of its paths' own shares and a quarter of its patches'.
 #[derive(Clone, Debug, Default)]
 pub struct ElementPenalties {
     pub patches: HashMap<FaceKey<POLYCUBE>, f64>,
@@ -617,10 +519,10 @@ pub fn element_penalties(layout: &Layout, weights: &QualityWeights) -> ElementPe
         .map(|(_, a)| a)
         .sum::<f64>()
         .max(1e-300);
-    // Patches: fidelity, coherence, rectangularity, and non-degeneracy.
+    // Patches: fidelity and non-degeneracy.
     let shapes = patch_shapes(layout).unwrap_or_default();
     let small = small_bad_per_patch(&shapes);
-    let mut patches: HashMap<FaceKey<POLYCUBE>, f64> = HashMap::new();
+    let mut patches: HashMap<FaceKey<POLYCUBE>, f64> = HashMap::default();
     for (patch, triangles) in &layout.patch_triangles {
         let fidelity: f64 = triangles
             .iter()
@@ -628,17 +530,12 @@ pub fn element_penalties(layout: &Layout, weights: &QualityWeights) -> ElementPe
             .sum();
         *patches.entry(*patch).or_default() += weights.fidelity * fidelity / total_area;
     }
-    for (patch, &(normal_sum, area)) in &layout.patch_normals {
-        *patches.entry(*patch).or_default() +=
-            weights.coherence * (area - normal_sum.norm()) / total_area;
-    }
     for (shape, small) in shapes.iter().zip(&small) {
         *patches.entry(shape.patch).or_default() +=
-            weights.rectangularity * shape.area * (shape.sides + shape.corners) / total_area
-                + weights.non_degeneracy * small / shapes.len().max(1) as f64;
+            weights.non_degeneracy * small / shapes.len().max(1) as f64;
     }
     // Paths: path regularity and correspondence (their own shares), plus half of their patches.
-    let mut own_paths: HashMap<EdgeKey<POLYCUBE>, f64> = HashMap::new();
+    let mut own_paths: HashMap<EdgeKey<POLYCUBE>, f64> = HashMap::default();
     let (regularity, total_length) = path_regularity_per_edge(layout);
     for (edge, backwards, stretch) in regularity {
         *own_paths.entry(edge).or_default() +=
@@ -656,7 +553,7 @@ pub fn element_penalties(layout: &Layout, weights: &QualityWeights) -> ElementPe
             .copied()
             .unwrap_or(0.)
     };
-    let mut paths = HashMap::new();
+    let mut paths = HashMap::default();
     for edge in structure.edge_ids() {
         let adjacent = [structure.face(edge), structure.face(structure.twin(edge))]
             .iter()
@@ -664,13 +561,10 @@ pub fn element_penalties(layout: &Layout, weights: &QualityWeights) -> ElementPe
             .sum::<f64>();
         paths.insert(edge, own(edge) + 0.5 * adjacent);
     }
-    // Corners: corner regularity (their own share), plus half of their paths' own shares and a quarter of their patches.
-    let (regularity, triples) = corner_regularity_per_corner(layout).unwrap_or_default();
-    let mut corners = HashMap::new();
+    // Corners: half of their paths' own shares and a quarter of their patches.
+    let mut corners = HashMap::default();
     for corner in structure.vert_ids() {
-        let mut penalty = weights.corner_regularity
-            * regularity.get(&corner).copied().unwrap_or(0.)
-            / triples.max(1) as f64;
+        let mut penalty = 0.;
         for edge in structure.edges(corner) {
             penalty += 0.5 * own(edge);
         }
@@ -691,7 +585,7 @@ pub fn element_penalties(layout: &Layout, weights: &QualityWeights) -> ElementPe
 #[must_use]
 pub fn penalty_per_input_face(layout: &Layout, weights: &QualityWeights) -> Vec<(FaceID, f64)> {
     let input = &layout.dual_ref.mesh_ref;
-    let mut sums: HashMap<FaceID, f64> = HashMap::new();
+    let mut sums: HashMap<FaceID, f64> = HashMap::default();
     for (face, penalty) in penalty_per_triangle(layout, weights) {
         let original = match &layout.regions {
             Some(tracking) => tracking.face_input.get(&face).copied(),
@@ -705,8 +599,8 @@ pub fn penalty_per_input_face(layout: &Layout, weights: &QualityWeights) -> Vec<
 }
 
 /// The penalty of every triangle of the layout (of its refined mesh), for showing where the quality is lost: the
-/// weighted fidelity penalty of the triangle, plus the weighted coherence, rectangularity, and non-degeneracy penalties
-/// of its patch. The terms of paths and corners (path regularity, corner regularity, correspondence) are not included.
+/// weighted fidelity penalty of the triangle, plus the weighted non-degeneracy penalty of its patch. The terms of the
+/// paths (path regularity, correspondence) are not included.
 #[must_use]
 pub fn penalty_per_triangle(layout: &Layout, weights: &QualityWeights) -> HashMap<FaceID, f64> {
     let shapes = patch_shapes(layout).unwrap_or_default();
@@ -715,15 +609,10 @@ pub fn penalty_per_triangle(layout: &Layout, weights: &QualityWeights) -> HashMa
         .iter()
         .zip(&small)
         .map(|(shape, &small)| {
-            (
-                shape.patch,
-                weights.coherence * shape.incoherence
-                    + weights.rectangularity * (shape.sides + shape.corners)
-                    + weights.non_degeneracy * small,
-            )
+            (shape.patch, weights.non_degeneracy * small)
         })
         .collect();
-    let mut penalties = HashMap::new();
+    let mut penalties = HashMap::default();
     for (patch, Patch { faces }) in &layout.face_to_patch {
         let patch_penalty = per_patch.get(patch).copied().unwrap_or(0.);
         for &face in faces {
@@ -735,16 +624,6 @@ pub fn penalty_per_triangle(layout: &Layout, weights: &QualityWeights) -> HashMa
         }
     }
     penalties
-}
-
-// The rectangularity term E_R (see the module documentation).
-fn patch_rectangularity(shapes: &[PatchShape]) -> Option<f64> {
-    let (mut sum, mut total) = (0., 0.);
-    for shape in shapes {
-        sum += shape.area * (shape.sides + shape.corners);
-        total += shape.area;
-    }
-    (total > 0.).then(|| sum / total)
 }
 
 // The score of a penalty: in (0, 1], decreasing.

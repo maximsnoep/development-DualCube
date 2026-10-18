@@ -3,7 +3,7 @@
 
 use crate::prelude::*;
 use crate::utils::ids::IdMap;
-use std::collections::{HashMap, HashSet};
+use rustc_hash::{FxHashMap as HashMap, FxHashSet as HashSet};
 
 // At most this many problems are listed in an error.
 const LISTED: usize = 3;
@@ -48,7 +48,7 @@ where
         }
 
         // Every directed edge once, and every edge in both directions.
-        let mut directed: HashMap<(usize, usize), usize> = HashMap::new();
+        let mut directed: HashMap<(usize, usize), usize> = HashMap::default();
         for face in faces {
             for i in 0..face.len() {
                 let (a, b) = (face[i], face[(i + 1) % face.len()]);
@@ -115,7 +115,7 @@ where
 
     // The number of connected components (by faces sharing an edge).
     fn count_parts(&self) -> usize {
-        let mut seen = HashSet::new();
+        let mut seen = HashSet::default();
         let mut parts = 0;
         for start in self.face_ids() {
             if !seen.insert(start) {
