@@ -31,7 +31,7 @@ pub struct CoupledParams {
 }
 
 const fn default_patience() -> usize {
-    5
+    1
 }
 
 impl Default for CoupledParams {
