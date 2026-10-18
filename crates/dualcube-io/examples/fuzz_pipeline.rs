@@ -1,7 +1,7 @@
 //! Temporary fuzzing harness: the whole pipeline on one model, every step guarded, with invariant checks.
 //! `fuzz_pipeline <mesh> <tmpdir>`; prints one line per step: `STEP <name> OK|FAIL|PANIC <ms> <detail>`.
 use dualcube::prelude::*;
-use std::collections::{HashMap, HashSet};
+use rustc_hash::{FxHashMap as HashMap, FxHashSet as HashSet};
 use std::panic::{AssertUnwindSafe, catch_unwind};
 use std::path::Path;
 use std::sync::{Arc, Mutex};
@@ -42,7 +42,7 @@ fn check(solution: &Solution, what: &str) -> Result<f64, String> {
         return Err(format!("{what}: quality {quality}"));
     }
     let report = solution.quality_report().ok_or(format!("{what}: no report"))?;
-    let terms = [report.fidelity, report.path_backtrack, report.path_stretch, report.coherence, report.rectangularity, report.corner_regularity, report.non_degeneracy, report.correspondence];
+    let terms = [report.fidelity, report.path_backtrack, report.path_stretch, report.non_degeneracy, report.correspondence];
     if terms.iter().flatten().any(|t| !t.is_finite() || *t < 0.) {
         return Err(format!("{what}: bad term in {report:?}"));
     }
@@ -70,18 +70,15 @@ fn main() {
         check(&s, "initialize").map(|q| { println!("INFO initial quality {q:.4} loops {}", s.loops.len()); s })
     }) else { return };
 
-    for (phase, generations) in [(LoopPhase::Initialization, 2), (LoopPhase::Growth, 3), (LoopPhase::Optimization, 2), (LoopPhase::Pruning, 2)] {
-        let name = format!("evolve-{}", phase.name());
-        if let Some(next) = step(&name, || {
-            let params = EvolutionParams { population: 6, offspring: 12, max_generations: generations, phase, ..EvolutionParams::default() };
-            let evolved = solution.evolve(&params).map_err(|e| format!("{e}"))?;
-            check(&evolved, &name).map(|q| { println!("INFO {name} quality {q:.4} loops {}", evolved.loops.len()); evolved })
-        }) { solution = next; }
-    }
+    if let Some(next) = step("anneal", || {
+        let params = AnnealParams { offspring: 12, steps: 8, ..AnnealParams::default() };
+        let annealed = solution.anneal(&params, &OptimizationMonitor::default()).map_err(|e| format!("{e}"))?;
+        check(&annealed, "anneal").map(|q| { println!("INFO anneal quality {q:.4} loops {}", annealed.loops.len()); annealed })
+    }) { solution = next; }
 
     if let Some(next) = step("optimize_layout", || {
-        let params = LayoutEvolutionParams { max_generations: 4, population: 4, offspring: 8, ..LayoutEvolutionParams::default() };
-        let optimized = solution.optimize_layout(&params, &EvolutionMonitor::default()).map_err(|e| format!("{e}"))?;
+        let params = LayoutEvolutionParams { max_generations: 4, offspring: 8, ..LayoutEvolutionParams::default() };
+        let optimized = solution.optimize_layout(&params, &OptimizationMonitor::default()).map_err(|e| format!("{e}"))?;
         check(&optimized, "optimize_layout").map(|_| optimized)
     }) { solution = next; }
 
@@ -97,15 +94,15 @@ fn main() {
             }
         }
         // Patches: every face of the refined mesh in exactly one patch.
-        let mut count = HashMap::new();
+        let mut count = HashMap::default();
         for patch in layout.face_to_patch.values() { for f in &patch.faces { *count.entry(*f).or_insert(0) += 1; } }
         let multi = count.values().filter(|&&c| c > 1).count();
         let missing = layout.granulated_mesh.face_ids().into_iter().filter(|f| !count.contains_key(f)).count();
         // Patch boundaries: every edge between two patches lies on a path.
-        let mut path_edges = HashSet::new();
+        let mut path_edges = HashSet::default();
         for path in layout.edge_to_path.values() { for w in path.windows(2) { path_edges.insert((w[0], w[1])); path_edges.insert((w[1], w[0])); } }
         let mesh = &layout.granulated_mesh;
-        let mut patch_of = HashMap::new();
+        let mut patch_of = HashMap::default();
         for (p, patch) in &layout.face_to_patch { for f in &patch.faces { patch_of.insert(*f, *p); } }
         let stray = mesh.edge_ids().into_iter().filter(|&e| patch_of.get(&mesh.face(e)) != patch_of.get(&mesh.face(mesh.twin(e))) && !path_edges.contains(&(mesh.root(e), mesh.toor(e)))).count() / 2;
         if stray > 0 { return Err(format!("{stray} edges between patches that are not on a path")); }

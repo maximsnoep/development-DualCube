@@ -1,12 +1,14 @@
+pub mod annealing;
 pub mod coupled;
-pub mod evolution;
 pub mod initialize;
 pub mod layout_evolution;
 pub mod loop_adapters;
 pub mod loop_band;
 pub mod medial;
+pub mod monitor;
 pub mod phases;
 pub mod quality;
+pub mod selection;
 pub mod solution;
 
 pub mod prelude {
@@ -16,12 +18,14 @@ pub mod prelude {
     pub use dualcube_quad::{QuadDensity, DEFAULT_QUAD_FACTOR, build_quad_from_layout};
     pub use dualcube_types::prelude::*;
 
+    pub use crate::annealing::*;
     pub use crate::coupled::*;
-    pub use crate::evolution::*;
     pub use crate::layout_evolution::*;
     pub use crate::loop_band::*;
+    pub use crate::monitor::*;
     pub use crate::phases::*;
     pub use crate::quality::*;
+    pub use crate::selection::*;
     pub use crate::solution::*;
 
     pub use orx_parallel::*;

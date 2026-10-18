@@ -28,7 +28,7 @@ pub(crate) fn read_node_file(path: &Path) -> io::Result<(Vec<TetNode>, HashMap<u
     }
 
     let mut nodes = Vec::with_capacity(npoint);
-    let mut raw_to_local = HashMap::new();
+    let mut raw_to_local = HashMap::default();
 
     for local in 0..npoint {
         let tokens = lines[1 + local].split_whitespace().collect::<Vec<_>>();

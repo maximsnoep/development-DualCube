@@ -1,7 +1,7 @@
 use crate::prelude::*;
 use core::panic;
 use itertools::Itertools;
-use std::collections::HashSet;
+use rustc_hash::FxHashSet as HashSet;
 
 impl<M: Tag> Mesh<M> {
     #[must_use]
@@ -217,7 +217,7 @@ impl<M: Tag> HasNeighbors<VERT, M> for Mesh<M> {
     ) -> impl Iterator<Item = ids::Key<VERT, M>> {
         // BFS up to depth k. Only the newly-discovered frontier is expanded each
         // step, so vertices at distance 1 are never dropped when computing k=2+.
-        let mut visited: HashSet<ids::Key<VERT, M>> = HashSet::new();
+        let mut visited: HashSet<ids::Key<VERT, M>> = HashSet::default();
         visited.insert(id);
         let mut frontier = vec![id];
         for _ in 0..k {

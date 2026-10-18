@@ -1,46 +1,62 @@
+//! The icon of the window (title bar and taskbar), from PNG images that are built into the program (so it does not
+//! depend on the working directory). It is set as soon as the window exists: the window is created by winit after
+//! the startup systems may have run, so the plugin tries every frame until it succeeds.
+
 use bevy::ecs::system::NonSendMarker;
 use bevy::prelude::*;
 
-#[derive(Debug, Default, Clone)]
+#[derive(Debug, Clone)]
 pub struct WindowIconPlugin {
-    path: String,
+    // PNG images: the small icon (title bar), and the big one (taskbar, Alt+Tab).
+    small: &'static [u8],
+    big: &'static [u8],
+}
+
+impl WindowIconPlugin {
+    /// The icon from PNG images (e.g., `include_bytes!`): a small one (e.g., 32 x 32) and a big one.
+    #[must_use]
+    pub const fn new(small: &'static [u8], big: &'static [u8]) -> Self {
+        Self { small, big }
+    }
 }
 
 #[derive(Resource)]
-struct WindowIconResource {
-    path: String,
+struct WindowIcon {
+    small: &'static [u8],
+    big: &'static [u8],
+    done: bool,
 }
 
 impl Plugin for WindowIconPlugin {
     fn build(&self, app: &mut App) {
-        app.insert_resource(WindowIconResource {
-            path: self.path.clone(),
+        app.insert_resource(WindowIcon {
+            small: self.small,
+            big: self.big,
+            done: false,
         });
-        app.add_systems(Startup, set);
+        app.add_systems(Update, set.run_if(|icon: Res<WindowIcon>| !icon.done));
     }
 }
 
-impl WindowIconPlugin {
-    pub fn with_path(path: &str) -> Self {
-        Self {
-            path: path.to_string(),
-        }
-    }
+fn icon(png: &[u8]) -> Result<winit::window::Icon> {
+    let image = image::load_from_memory_with_format(png, image::ImageFormat::Png)?.into_rgba8();
+    let (width, height) = image.dimensions();
+    Ok(winit::window::Icon::from_rgba(image.into_raw(), width, height)?)
 }
 
-fn set(window_icon_resource: Res<WindowIconResource>, _: NonSendMarker) -> Result {
-    let icon = image::open(window_icon_resource.path.as_str())?.into_rgba8();
-    bevy::winit::WINIT_WINDOWS.with_borrow_mut(|winit_windows| -> Result {
-        if winit_windows.windows.is_empty() {
-            return Ok(());
-        }
+fn set(mut window_icon: ResMut<WindowIcon>, _: NonSendMarker) -> Result {
+    let (small, big) = (icon(window_icon.small)?, icon(window_icon.big)?);
+    let set = bevy::winit::WINIT_WINDOWS.with_borrow(|winit_windows| {
         for window in winit_windows.windows.values() {
-            window.set_window_icon(Some(winit::window::Icon::from_rgba(
-                icon.clone().into_raw(),
-                icon.width(),
-                icon.height(),
-            )?));
+            window.set_window_icon(Some(small.clone()));
+            #[cfg(target_os = "windows")]
+            winit::platform::windows::WindowExtWindows::set_taskbar_icon(&**window, Some(big.clone()));
+            #[cfg(not(target_os = "windows"))]
+            let _ = &big;
         }
-        Ok(())
-    })
+        !winit_windows.windows.is_empty()
+    });
+    // (Not yet if there is no window yet.)
+    window_icon.done = set;
+    Ok(())
 }

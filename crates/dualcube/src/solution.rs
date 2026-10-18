@@ -77,17 +77,17 @@ pub struct Solution {
     #[serde(skip)]
     pub quality: QualityParams,
 
-    /// Evolution: the misalignment per input face of this solution's layout (kept when the layout itself is dropped
+    /// Annealing: the misalignment per input face of this solution's layout (kept when the layout itself is dropped
     /// to save memory), used to target badly aligned regions.
     #[serde(skip)]
     pub(crate) targets: Option<Arc<Vec<(FaceID, f64)>>>,
 
-    /// Evolution: the corners of this solution's layout (or of its parent's), kept when the layout itself is dropped;
+    /// Annealing: the corners of this solution's layout (or of its parent's), kept when the layout itself is dropped;
     /// a solution with similar loops starts its layout from them (see `CornerHint`).
     #[serde(skip)]
     pub(crate) corner_hint: Option<Arc<CornerHint>>,
 
-    /// Evolution: the penalty of every loop of this solution's layout (see `Solution::loop_penalties`), kept when the
+    /// Annealing: the penalty of every loop of this solution's layout (see `Solution::loop_penalties`), kept when the
     /// layout is dropped, so that the mutations target the loops that need it.
     #[serde(skip)]
     pub(crate) loop_penalties: Option<Arc<HashMap<LoopID, f64>>>,
@@ -121,11 +121,11 @@ impl CornerHint {
         let dual = solution.dual.as_ref().ok()?;
         let layout = solution.layout.as_ref()?;
         let mut hint = Self {
-            region_of: HashMap::new(),
+            region_of: HashMap::default(),
             sizes: vec![],
             positions: vec![],
         };
-        let mut index_of = HashMap::new();
+        let mut index_of = HashMap::default();
         for region in dual.loop_structure.face_ids() {
             let Some(corner) = layout.polycube_ref.region_to_vertex.get_by_left(&region) else {
                 continue;
@@ -157,7 +157,7 @@ impl CornerHint {
                 continue;
             }
             let verts = dual.region_to_verts(region);
-            let mut counts: HashMap<usize, usize> = HashMap::new();
+            let mut counts: HashMap<usize, usize> = HashMap::default();
             for v in &verts {
                 if let Some(&index) = self.region_of.get(v) {
                     *counts.entry(index).or_default() += 1;
@@ -394,7 +394,7 @@ impl Solution {
         hint: Option<&CornerHint>,
     ) -> Result<(), SolutionError> {
         let started_at = Instant::now();
-        // Reuse the dual structure if it is up to date (e.g., built when the loops were added during the evolution).
+        // Reuse the dual structure if it is up to date (e.g., built when the loops were added during the annealing).
         let current = self
             .dual_is_current()
             .then(|| std::mem::replace(&mut self.dual, Err(PropertyViolationError::default())));

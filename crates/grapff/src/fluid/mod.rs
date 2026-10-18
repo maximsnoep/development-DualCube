@@ -1,6 +1,6 @@
 use crate::{Float, Grapff, ZERO};
 use itertools::Itertools;
-use std::collections::HashSet;
+use rustc_hash::FxHashSet as HashSet;
 use std::hash::Hash;
 
 pub struct FluidGraph<'a, T: Eq + Hash + Clone + Copy> {
@@ -61,7 +61,7 @@ impl<T: Eq + Hash + Clone + Copy> Grapff<T, (T, T)> for FluidGraph<'_, T> {
     }
 
     fn connected_components(&self, vs: &[T]) -> Vec<HashSet<T>> {
-        let mut visited = HashSet::new();
+        let mut visited = HashSet::default();
         let mut ccs = vec![];
         for &node in vs {
             if visited.contains(&node) {

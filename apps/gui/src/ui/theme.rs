@@ -161,7 +161,7 @@ pub fn text(string: &str) -> text::LayoutJob {
     colored_text(string, TEXT_COLOR)
 }
 
-/// The frame of the floating windows (evolution, polycube): like the panels, outlined, without rounding or shadow.
+/// The frame of the floating windows (optimization, polycube): like the panels, outlined, without rounding or shadow.
 pub fn window_frame() -> bevy_egui::egui::Frame {
     bevy_egui::egui::Frame {
         fill: BG_COLOR,

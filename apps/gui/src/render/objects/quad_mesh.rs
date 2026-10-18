@@ -6,7 +6,7 @@ use crate::{colors, resources::Configuration};
 use bevy::prelude::*;
 use dualcube::prelude::*;
 use mehsh_bevy;
-use std::collections::{HashMap, HashSet};
+use rustc_hash::{FxHashMap as HashMap, FxHashSet as HashSet};
 
 /// The QUAD MESH render object, it has:
 /// - mesh with gray faces
@@ -23,7 +23,7 @@ pub(in crate::render) fn build(
     let (scale, translation) = mesh.scale_translation();
 
     // Color each quad by the principal direction of its polycube normal.
-    let mut color_map = HashMap::new();
+    let mut color_map = HashMap::default();
     for face_id in mesh.face_ids() {
         let normal = quad.quad_mesh_polycube.normal(face_id);
         let color = colors::from_direction(
@@ -40,7 +40,7 @@ pub(in crate::render) fn build(
         let c = colors::to_bevy(colors::GRAY);
 
         // A vertex is irregular if the quads around it carry 3+ distinct labels.
-        let mut irregular_vertices = HashSet::new();
+        let mut irregular_vertices = HashSet::default();
         for vert_id in mesh.vert_ids() {
             let labels = mesh
                 .faces(vert_id)
@@ -52,7 +52,7 @@ pub(in crate::render) fn build(
         }
 
         // Trace the edge loops emanating from the irregular vertices.
-        let mut irregular_edges = HashSet::new();
+        let mut irregular_edges = HashSet::default();
         for &vert_id in &irregular_vertices {
             for edge_id in mesh.edges(vert_id) {
                 let mut walker = mesh.next(mesh.twin(mesh.next(edge_id)));

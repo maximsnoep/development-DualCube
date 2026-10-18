@@ -24,7 +24,8 @@ bimap = { version = "0.6.3", features = ["serde"] } # for face and vertex ID map
 kiddo = "6.3.0" # for vertex lookup
 robust = "1.2.0" # Shewchuk's adaptive precision geometry predicates
 bvh = "0.12.0" # for face lookup
-orx-parallel = "3.4.0"
+orx-parallel = { version = "3.4.0", features = ["rayon-core"] }
+rayon-core = "1.13.0"
 rustc-hash = "2.1.1"
 
 # Optional features

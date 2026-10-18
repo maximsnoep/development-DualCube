@@ -15,11 +15,10 @@ light_mode = []
 hex = ["dep:dualcube-hex"]
 nlr = []
 rgb = []
-# Link Bevy dynamically: faster (re)linking while iterating (`cargo rel`), slower at runtime. Does not link in debug
-# builds on Windows (too many exported symbols).
-dynamic = ["bevy/dynamic_linking"]
 
 [dependencies]
+mimalloc = { version = "0.1", default-features = false }
+rustc-hash = "2.1.1"
 dualcube = { path = "../../crates/dualcube" }
 dualcube-hex = { path = "../../crates/dualcube-hex", optional = true }
 io = { path = "../../crates/dualcube-io" }
@@ -64,6 +63,10 @@ bevy = { workspace = true, features = [
     # Diagnostics
     "sysinfo_plugin",
 
+    # Sound (a ding on a new best solution, generated as WAV)
+    "bevy_audio",
+    "wav",
+
     # Windows desktop backend
     "raw_vulkan_init",
 ] }
@@ -79,6 +82,18 @@ bevy-orbit-camera = { path = "../../crates/bevy-orbit-camera" }
 bevy-axes-gizmo = { path = "../../crates/bevy-axes-gizmo" }
 bevy-toon = { path = "../../crates/bevy-toon" }
 bevy-wicon = { path = "../../crates/bevy-wicon" }
+
+# The usage of the CPU and the memory (see `diagnostics.rs`).
+[target.'cfg(windows)'.dependencies]
+windows-sys = { version = "0.61.2", features = [
+    "Win32_Foundation",
+    "Win32_System_ProcessStatus",
+    "Win32_System_SystemInformation",
+    "Win32_System_Threading",
+] }
+
+[target.'cfg(not(windows))'.dependencies]
+sysinfo = "0.39.6"
 
 [lints]
 workspace = true

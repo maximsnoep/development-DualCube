@@ -60,6 +60,28 @@ impl Solution {
         band_frames(&points, true, spacing)
     }
 
+    /// This solution with smooth loops, as post-processing (for the solutions that are shown or returned; the layout, and
+    /// so the quality, stay the same): with a layout, the loops traced smoothly through its patches (see
+    /// `Solution::smooth_loops_in_patches`), and then (with or without) smoothed within their triangles (see
+    /// `smooth_loops`).
+    #[must_use]
+    pub fn with_smooth_loops(&self) -> Self {
+        let mut smooth = self.smooth_loops_in_patches().unwrap_or_else(|| self.clone());
+        smooth.smooth_loops();
+        smooth
+    }
+
+    /// Smooth the loops slightly within their triangles (see [`smoothed_offsets`]): only where they cross the mesh
+    /// edges changes, so the loop structure, the dual structure and the layout stay the same.
+    pub fn smooth_loops(&mut self) {
+        let offsets = smoothed_offsets(&self.mesh_ref, &self.loops);
+        for (loop_id, lewp) in &mut self.loops {
+            if let Some(smoothed) = offsets.get(&loop_id) {
+                lewp.offsets.clone_from(smoothed);
+            }
+        }
+    }
+
     /// The paths of the layout (each once) as bands (see [`band_frames`]), on its refined mesh.
     #[must_use]
     pub fn path_bands(&self, spacing: f64) -> Vec<PathBand> {
@@ -94,6 +116,94 @@ impl Solution {
             })
             .collect()
     }
+}
+
+// The smoothing of the loops (see `smoothed_offsets`): its maximum number of rounds (it stops earlier when no crossing
+// moves more than `SMOOTHING_CONVERGED` of its edge in a round), how far a crossing moves to its target per round, and
+// the least distance (relative to the edge) to the ends of the edge and to the other loops on it.
+const SMOOTHING_ROUNDS: usize = 500;
+const SMOOTHING_CONVERGED: f64 = 1e-4;
+const SMOOTHING_STEP: f64 = 0.5;
+const SMOOTHING_GAP: f64 = 0.02;
+
+/// The positions where the loops cross the mesh edges (as `Loop::offsets`), slightly smoothed: only along those edges
+/// (so every loop stays in its triangles), every round towards the point of the edge closest to the middle of the
+/// neighboring crossings (Laplacian smoothing, constrained to the edges). The loops that cross the same edge keep their
+/// order on it, so the loop structure stays the same.
+#[must_use]
+pub fn smoothed_offsets(
+    mesh: &Mesh<INPUT>,
+    loops: &slotmap::SlotMap<LoopID, Loop>,
+) -> HashMap<LoopID, Vec<f64>> {
+    let mut offsets: HashMap<LoopID, Vec<f64>> =
+        loops.iter().map(|(id, l)| (id, l.offsets.clone())).collect();
+    // (Only loops with an offset for every edge, crossing every edge as a pair of half-edges.)
+    let usable = |l: &Loop| l.offsets.len() == l.edges.len() && l.edges.len() % 2 == 0;
+    if !loops.values().all(usable) {
+        return offsets;
+    }
+    // Every crossing (`edges[2k]` and its twin `edges[2k + 1]`), by the canonical half-edge of its edge, in order
+    // along that half-edge.
+    let canonical = |edge: EdgeID| {
+        let twin = mesh.twin(edge);
+        if edge.raw() < twin.raw() { edge } else { twin }
+    };
+    let along = |offsets: &HashMap<LoopID, Vec<f64>>, (id, k): (LoopID, usize)| {
+        let (edge, t) = (loops[id].edges[2 * k], offsets[&id][2 * k]);
+        if canonical(edge) == edge { t } else { 1. - t }
+    };
+    let mut on_edge: HashMap<EdgeID, Vec<(LoopID, usize)>> = HashMap::default();
+    for (id, l) in loops {
+        for k in 0..l.edges.len() / 2 {
+            on_edge.entry(canonical(l.edges[2 * k])).or_default().push((id, k));
+        }
+    }
+    let mut neighbors: HashMap<(LoopID, usize), [Option<(LoopID, usize)>; 2]> = HashMap::default();
+    for crossings in on_edge.values_mut() {
+        crossings.sort_by(|&a, &b| along(&offsets, a).total_cmp(&along(&offsets, b)));
+        for (i, &crossing) in crossings.iter().enumerate() {
+            let below = i.checked_sub(1).map(|j| crossings[j]);
+            neighbors.insert(crossing, [below, crossings.get(i + 1).copied()]);
+        }
+    }
+    for _ in 0..SMOOTHING_ROUNDS {
+        let mut moved: f64 = 0.;
+        for (id, l) in loops {
+            let n = l.edges.len() / 2;
+            if n < 3 {
+                continue;
+            }
+            for k in 0..n {
+                let point = |k: usize, offsets: &HashMap<LoopID, Vec<f64>>| {
+                    mesh.midpoint_offset(l.edges[2 * k], offsets[&id][2 * k])
+                };
+                let target = (point((k + n - 1) % n, &offsets) + point((k + 1) % n, &offsets)) / 2.;
+                let edge = l.edges[2 * k];
+                let (a, b) = (mesh.position(mesh.root(edge)), mesh.position(mesh.toor(edge)));
+                let closest =
+                    ((target - a).dot(&(b - a)) / (b - a).norm_squared().max(1e-300)).clamp(0., 1.);
+                let t = offsets[&id][2 * k];
+                let t = t + SMOOTHING_STEP * (closest - t);
+                // Between the ends of the edge and the loops below and above on it (along the canonical half-edge).
+                let [below, above] = neighbors[&(id, k)];
+                let low = below.map_or(0., |c| along(&offsets, c)) + SMOOTHING_GAP;
+                let high = above.map_or(1., |c| along(&offsets, c)) - SMOOTHING_GAP;
+                if low >= high {
+                    continue;
+                }
+                let flip = |t: f64| if canonical(edge) == edge { t } else { 1. - t };
+                let t = flip(flip(t).clamp(low, high));
+                let loop_offsets = offsets.get_mut(&id).expect("every loop");
+                moved = moved.max((loop_offsets[2 * k] - t).abs());
+                loop_offsets[2 * k] = t;
+                loop_offsets[2 * k + 1] = 1. - t;
+            }
+        }
+        if moved < SMOOTHING_CONVERGED {
+            break;
+        }
+    }
+    offsets
 }
 
 /// The frames of a polyline on a surface (its points with their normals; `closed` if it is a loop) for drawing it as

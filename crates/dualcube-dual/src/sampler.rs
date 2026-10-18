@@ -22,7 +22,8 @@ use rustc_hash::FxHashMap;
 use slotmap::SlotMap;
 use std::cell::RefCell;
 use std::cmp::Ordering;
-use std::collections::{BinaryHeap, HashMap, HashSet};
+use rustc_hash::{FxHashMap as HashMap, FxHashSet as HashSet};
+use std::collections::BinaryHeap;
 use std::rc::Rc;
 use std::time::Instant;
 
@@ -423,7 +424,7 @@ impl<'a> LoopSampler<'a> {
 
     // All existing loops passing through the face.
     fn face_chords(&self, face: FaceID) -> Vec<FaceChord> {
-        let mut ends: HashMap<LoopID, Vec<u64>> = HashMap::new();
+        let mut ends: HashMap<LoopID, Vec<u64>> = HashMap::default();
         for (side, edge) in self.mesh_ref.edges(face).enumerate() {
             for (rank, &loop_id) in self.loops_on_edge_ref(edge).iter().enumerate() {
                 ends.entry(loop_id)
@@ -778,7 +779,7 @@ impl<'a> LoopSampler<'a> {
         // ordered along the edges they share.
 
         // Check if the loop contains any duplicates
-        let mut seen = HashSet::new();
+        let mut seen = HashSet::default();
         for (edge_index, &edge) in edges.iter().enumerate() {
             if !seen.insert(edge) {
                 debug!(
@@ -906,7 +907,7 @@ impl<'a> LoopSampler<'a> {
     ) -> Option<(Vec<EdgeID>, f64, Vec<(usize, usize)>)> {
         let proximity = self.proximity.get_or_init(|| self.loop_proximity());
         // A loop cannot cross the same mesh edge twice. If the cheapest path does, block those edges and search again.
-        let mut blocked = HashSet::new();
+        let mut blocked = HashSet::default();
         for _ in 0..3 {
             match self.construct_crossing_loop_avoiding(
                 axis, start, crossings, regions, measure, proximity, &blocked,
@@ -1205,7 +1206,7 @@ impl<'a> LoopSampler<'a> {
             edges.iter().duplicates().next().is_some()
         };
         if invalid {
-            let mut seen = HashSet::new();
+            let mut seen = HashSet::default();
             let revisited = edges
                 .iter()
                 .filter(|&&e| !seen.insert(e))
@@ -1267,7 +1268,7 @@ impl<'a> LoopSampler<'a> {
         let mut best: Option<(Vec<EdgeID>, f64, Vec<(usize, usize)>)> = None;
         for entry in entries.into_iter().take(tries.max(1)) {
             // A loop cannot cross the same mesh edge twice: if the cheapest one does, block those edges and retry.
-            let mut blocked = HashSet::new();
+            let mut blocked = HashSet::default();
             for _ in 0..3 {
                 match self.construct_free_loop_avoiding(
                     dual,
@@ -1681,7 +1682,7 @@ impl<'a> LoopSampler<'a> {
             return Some((edges.clone(), cost, vec![(edges, cost)]));
         }
 
-        let mut path_cache = HashMap::new();
+        let mut path_cache = HashMap::default();
         let heuristic_scale = self.flow_graph_heuristic_scale(graph, measure);
         let mut segments = Vec::with_capacity(anchor_nodes.len());
         let mut total_cost = 0.0;
@@ -1819,7 +1820,7 @@ impl<'a> LoopSampler<'a> {
         };
         // In every band: the best aligned anchor, and a random anchor among the better aligned half (for variety:
         // the best aligned anchor may lie on a feature that only permits a local loop).
-        let mut per_band: HashMap<usize, Vec<([EdgeID; 2], f64)>> = HashMap::new();
+        let mut per_band: HashMap<usize, Vec<([EdgeID; 2], f64)>> = HashMap::default();
         for &(anchor, rank) in &ranked {
             per_band
                 .entry(band(anchor[0]))
@@ -1855,6 +1856,7 @@ impl<'a> LoopSampler<'a> {
         let constructed = selected
             .into_iter()
             .iter_into_par()
+            .with_pool(pool())
             .filter_map(|es| {
                 self.construct_unbounded_loop_scaled(
                     es,
@@ -1868,7 +1870,7 @@ impl<'a> LoopSampler<'a> {
         let constructed_count = constructed.len();
 
         // Different anchors can lead to the same loop.
-        let mut seen = HashSet::new();
+        let mut seen = HashSet::default();
         let constructed = constructed
             .into_iter()
             .filter(|(path, _)| {
@@ -1889,6 +1891,7 @@ impl<'a> LoopSampler<'a> {
         let constructed = constructed
             .into_iter()
             .iter_into_par()
+            .with_pool(pool())
             .filter(|(path, _)| !self.cuts_off_small_part(path, MIN_SEPARATED_AREA * total_area))
             .collect::<Vec<_>>();
 

@@ -1,5 +1,5 @@
 use crate::polycube::*;
-use bimap::BiHashMap;
+use crate::polycube::BiHashMap;
 use dualcube_dual::prelude::*;
 use dualcube_types::prelude::*;
 use grapff::Grapff;
@@ -165,14 +165,14 @@ impl Layout {
             polycube_ref: polycube_ref.clone(),
             dual_ref: dual_ref.clone(),
             granulated_mesh: (*dual_ref.mesh_ref).clone(),
-            vert_to_corner: BiHashMap::new(),
-            face_to_patch: HashMap::new(),
-            edge_to_path: HashMap::new(),
+            vert_to_corner: BiHashMap::default(),
+            face_to_patch: HashMap::default(),
+            edge_to_path: HashMap::default(),
             alignment_per_triangle: ids::SecMap::new(),
             alignment: None,
             regions: None,
-            patch_triangles: HashMap::new(),
-            patch_normals: HashMap::new(),
+            patch_triangles: HashMap::default(),
+            patch_normals: HashMap::default(),
             patch_bounds: None,
         }
     }
@@ -184,14 +184,14 @@ impl Layout {
             polycube_ref: polycube_ref.clone(),
             dual_ref: dual_ref.clone(),
             granulated_mesh: (*dual_ref.mesh_ref).clone(),
-            vert_to_corner: BiHashMap::new(),
-            face_to_patch: HashMap::new(),
-            edge_to_path: HashMap::new(),
+            vert_to_corner: BiHashMap::default(),
+            face_to_patch: HashMap::default(),
+            edge_to_path: HashMap::default(),
             alignment_per_triangle: ids::SecMap::new(),
             alignment: None,
             regions: None,
-            patch_triangles: HashMap::new(),
-            patch_normals: HashMap::new(),
+            patch_triangles: HashMap::default(),
+            patch_normals: HashMap::default(),
             patch_bounds: None,
         };
         let corners_timer = Instant::now();
@@ -292,6 +292,7 @@ impl Layout {
         let results = (0..candidates.max(1))
             .collect_vec()
             .into_par()
+            .with_pool(pool())
             .map(|candidate_index| {
                 let mut candidate = layout.clone();
                 let order = if attempt == 0 && candidate_index == 0 {
@@ -457,7 +458,7 @@ impl Layout {
                     vertex_map: refined.vertex_map,
                     face_pieces: refined.face_pieces,
                     face_input,
-                    face_patch: HashMap::new(),
+                    face_patch: HashMap::default(),
                 });
             }
             None => {
@@ -483,8 +484,8 @@ impl Layout {
             CornerCandidate::Point(_, p) => p,
         };
 
-        let mut region_to_labels = HashMap::new();
-        let mut region_to_candidates = HashMap::new();
+        let mut region_to_labels = HashMap::default();
+        let mut region_to_candidates = HashMap::default();
         for region_id in self.dual_ref.loop_structure.face_ids() {
             // Get the relevant directions for this region
             let polycube_vert = self
@@ -572,7 +573,7 @@ impl Layout {
 
         // For each zone, find a candidate slice (value), that minimizes the Hausdorf distance to the candidate locations of the regions in the zone
         // We simply take the coordinate that minimizes the Hausdorf distance to the candidate locations of the regions in the zone
-        let mut zone_to_candidate = HashMap::new();
+        let mut zone_to_candidate = HashMap::default();
         for (zone_id, zone_obj) in &self.dual_ref.level_graphs.zones {
             let zone_type = zone_obj.direction;
 
@@ -725,7 +726,7 @@ impl Layout {
     pub fn fit_zone_levels(&self) -> HashMap<ZoneID, f64> {
         let polycube = &self.polycube_ref;
         let mesh = &self.granulated_mesh;
-        let mut sums: HashMap<ZoneID, (f64, f64)> = HashMap::new();
+        let mut sums: HashMap<ZoneID, (f64, f64)> = HashMap::default();
         for (&face, patch) in &self.face_to_patch {
             let (direction, _) = to_principal_direction(polycube.structure.normal(face));
             let Some(corner) = polycube.structure.vertices(face).next() else {
@@ -1067,9 +1068,9 @@ impl Layout {
         let path = self.compute_path(
             edge_id,
             &occupied_vertices,
-            &HashSet::new(),
+            &HashSet::default(),
             &occupied_edges,
-            &HashSet::new(),
+            &HashSet::default(),
         )?;
         let path_reversed = path.iter().cloned().rev().collect_vec();
         // Insert the calculated path
@@ -1090,8 +1091,8 @@ impl Layout {
 
         let primal = self.polycube_ref.structure.clone();
 
-        let mut occupied_vertices = HashSet::new();
-        let mut occupied_edges: HashSet<(VertID, VertID)> = HashSet::new();
+        let mut occupied_vertices = HashSet::default();
+        let mut occupied_edges: HashSet<(VertID, VertID)> = HashSet::default();
 
         let mut edge_queue = VecDeque::from(order.to_vec());
 
@@ -1160,7 +1161,7 @@ impl Layout {
                 .filter(|&e| self.edge_to_path.contains_key(&e) || e == edge_id)
                 .collect_vec();
 
-            let mut occupied_faces = HashSet::new();
+            let mut occupied_faces = HashSet::default();
             // If this is 3 or larger, this means we must make sure the new edge is placed inbetween existing edges, in the correct order
             if edges_done_in_u_new.len() >= 3 {
                 // Find the edge that is "above" the new edge
@@ -1316,7 +1317,7 @@ impl Layout {
             }
 
             let step_timer = Instant::now();
-            let mut extra_occupied = HashSet::new();
+            let mut extra_occupied = HashSet::default();
             for &occupied_face in &occupied_faces {
                 extra_occupied.extend(self.granulated_mesh.vertices(occupied_face));
             }
@@ -1379,7 +1380,7 @@ impl Layout {
         // The half-edges on the paths (both orientations): the patches are separated there.
         let blocked_timer = Instant::now();
         let mesh = &self.granulated_mesh;
-        let mut blocked: HashSet<EdgeID> = HashSet::new();
+        let mut blocked: HashSet<EdgeID> = HashSet::default();
         for path in self.edge_to_path.values() {
             for verts in path.windows(2) {
                 let (a, b) = mesh.edge_between_verts(verts[0], verts[1]).unwrap();
@@ -1399,7 +1400,7 @@ impl Layout {
                 continue;
             }
             let id = patches.len();
-            let mut faces = HashSet::from([start]);
+            let mut faces = HashSet::from_iter([start]);
             component.insert(&start, id);
             let mut stack = vec![start];
             while let Some(face) = stack.pop() {
@@ -1425,7 +1426,7 @@ impl Layout {
 
         let assign_timer = Instant::now();
         // Every path should be part of exactly TWO patches (on both sides)
-        let mut path_to_ccs: HashMap<EdgeKey<POLYCUBE>, [usize; 2]> = HashMap::new();
+        let mut path_to_ccs: HashMap<EdgeKey<POLYCUBE>, [usize; 2]> = HashMap::default();
         for (path_id, path) in &self.edge_to_path {
             // Loop segment should simply have only two connected components (one for each side)
             // We do not check all its edges, but only the first one (since they should all be the same)
@@ -1519,7 +1520,7 @@ impl Layout {
 
     // The vertices and edges (both orientations) of all paths. Sequential: it runs inside the parallel mutations.
     fn compute_occupied(&self) -> (HashSet<VertID>, HashSet<(VertID, VertID)>) {
-        let (mut vertices, mut edges) = (HashSet::new(), HashSet::new());
+        let (mut vertices, mut edges) = (HashSet::default(), HashSet::default());
         for path in self.edge_to_path.values() {
             vertices.extend(path.iter().copied());
             for pair in path.windows(2) {
@@ -1646,7 +1647,7 @@ impl Layout {
                 .into_iter()
                 .collect_vec()
         };
-        let mut candidates = HashSet::new();
+        let mut candidates = HashSet::default();
         let mut radius: f64 = 0.;
         for target in targets {
             let nearest = free
@@ -1717,7 +1718,7 @@ impl Layout {
         if !self.is_complete() || self.regions.is_none() {
             return false;
         }
-        self.patch_bounds = Some(HashMap::new());
+        self.patch_bounds = Some(HashMap::default());
         let all = self.polycube_ref.structure.face_ids();
         self.relabel_patches(&all);
         true
@@ -1789,7 +1790,7 @@ impl Layout {
             .collect_vec();
         let mesh = &self.granulated_mesh;
         // The area of the affected patches: their faces, and the faces in no patch (created since).
-        let mut area: HashSet<FaceID> = HashSet::new();
+        let mut area: HashSet<FaceID> = HashSet::default();
         for patch in &affected {
             area.extend(self.face_to_patch.get(patch)?.faces.iter().copied());
         }
@@ -1799,7 +1800,7 @@ impl Layout {
             }
         }
         // The path edges (both orientations) separate the patches.
-        let mut blocked: HashSet<EdgeID> = HashSet::new();
+        let mut blocked: HashSet<EdgeID> = HashSet::default();
         for path in self.edge_to_path.values() {
             for pair in path.windows(2) {
                 let (a, b) = mesh.edge_between_verts(pair[0], pair[1])?;
@@ -1811,14 +1812,14 @@ impl Layout {
             }
         }
         // The components of the area (flood fill without crossing paths).
-        let mut component: HashMap<FaceID, usize> = HashMap::new();
+        let mut component: HashMap<FaceID, usize> = HashMap::default();
         let mut components: Vec<HashSet<FaceID>> = vec![];
         for &start in &area {
             if component.contains_key(&start) {
                 continue;
             }
             let id = components.len();
-            let mut faces = HashSet::from([start]);
+            let mut faces = HashSet::from_iter([start]);
             component.insert(start, id);
             let mut stack = vec![start];
             while let Some(face) = stack.pop() {
@@ -1840,7 +1841,7 @@ impl Layout {
             return None;
         }
         // Every affected patch is the component on its side of all its paths.
-        let mut assigned = HashSet::new();
+        let mut assigned = HashSet::default();
         let mut patches = vec![];
         for &patch in &affected {
             let mut candidates: Option<HashSet<usize>> = None;

@@ -23,7 +23,7 @@ pub struct CameraFor(pub Objects);
 
 #[derive(Resource, Default)]
 pub struct CameraHandles {
-    pub map: std::collections::HashMap<CameraFor, Handle<Image>>,
+    pub map: rustc_hash::FxHashMap<CameraFor, Handle<Image>>,
 }
 
 pub fn setup(

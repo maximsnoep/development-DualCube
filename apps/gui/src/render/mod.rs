@@ -82,8 +82,8 @@ impl From<Objects> for Vec3 {
 }
 
 /// Builds the complete [`RenderObjectStore`] for the given solution. With `smooth_paths`, the paths of the layout are
-/// shown smoothed (see `Solution::smooth_layout`): only in the renders, as the optimizations need the paths of the
-/// solution as they are.
+/// shown smoothed (see `Solution::smooth_layout`): only in the renders (so only the solutions that are shown are
+/// smoothed), as the optimizations need the paths of the solution as they are.
 #[must_use]
 pub fn refresh(solution: &Solution, configuration: &Configuration) -> RenderObjectStore {
     let smoothed = if configuration.smooth_paths {
@@ -114,12 +114,25 @@ pub fn refresh(solution: &Solution, configuration: &Configuration) -> RenderObje
     store
 }
 
+// The time of the last smoothing (in nanoseconds; 0: none yet, see `smoothing_time`).
+static SMOOTHING: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
 // The solution with smoothed paths (without a quad mesh), or `None` if it has no layout or the smoothing fails.
 pub(crate) fn smoothed(solution: &Solution) -> Option<Solution> {
+    use std::sync::atomic::Ordering;
     solution.layout.as_ref()?;
+    let timer = std::time::Instant::now();
     let mut smoothed = solution.clone();
-    smoothed.smooth_layout().ok()?;
+    let result = smoothed.smooth_layout();
+    SMOOTHING.store((timer.elapsed().as_nanos() as u64).max(1), Ordering::Relaxed);
+    result.ok()?;
     Some(smoothed)
+}
+
+/// The time of the last smoothing of the paths of a solution for showing it (see `refresh`), in seconds.
+pub(crate) fn smoothing_time() -> Option<f64> {
+    let nanos = SMOOTHING.load(std::sync::atomic::Ordering::Relaxed);
+    (nanos > 0).then(|| nanos as f64 * 1e-9)
 }
 
 /// How far the negative side of a loop is lightened toward white (as in Polycuber).

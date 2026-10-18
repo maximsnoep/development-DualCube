@@ -1,3 +1,4 @@
+pub mod benchmark;
 pub mod figure;
 pub mod formats {
     pub mod apg;

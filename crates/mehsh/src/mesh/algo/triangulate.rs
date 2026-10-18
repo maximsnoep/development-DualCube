@@ -1,5 +1,5 @@
 use crate::prelude::*;
-use std::collections::HashMap;
+use rustc_hash::FxHashMap as HashMap;
 
 const TRIANGULATION_EPS: f64 = 1.0e-10;
 

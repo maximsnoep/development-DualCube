@@ -128,7 +128,7 @@ impl Default for LayoutParams {
 }
 
 impl LayoutParams {
-    /// Cheap parameters, e.g., for scoring many candidate solutions during evolution.
+    /// Cheap parameters, e.g., for scoring many candidate solutions during the annealing.
     #[must_use]
     pub fn fast() -> Self {
         Self {

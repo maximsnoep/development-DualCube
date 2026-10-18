@@ -1,11 +1,11 @@
 //! Render object for the polycube.
 
-use super::super::gizmos::{add_band, add_quad, axis_index, band_colors, uniform_color_map};
+use super::super::gizmos::{add_loop_band, add_quad, axis_index, uniform_color_map};
 use super::super::store::{RenderAsset, RenderObject};
 use crate::{colors, resources::Configuration};
 use bevy::prelude::*;
 use dualcube::prelude::*;
-use std::collections::HashMap;
+use rustc_hash::FxHashMap as HashMap;
 
 /// The POLYCUBE render object, it has:
 /// - meshes with black / gray / colored faces
@@ -20,7 +20,7 @@ pub(in crate::render) fn build(
     let structure = &polycube.structure;
     let (scale, translation) = structure.scale_translation();
 
-    let mut colored_color_map = HashMap::new();
+    let mut colored_color_map = HashMap::default();
     // The loops as bands (as on the model): their width relative to the diagonal of the polycube, lifted slightly off
     // its faces.
     let corners = structure
@@ -72,12 +72,12 @@ pub(in crate::render) fn build(
                 negative,
             };
             let lift = (0.3 + 0.03 * axis as f64) * half;
-            add_band(
+            add_loop_band(
                 &mut loops[axis],
                 [(frame(positions[from]), frame(positions[to]))],
                 half,
                 lift,
-                band_colors(dir),
+                dir,
             );
         }
     }
@@ -105,25 +105,39 @@ pub(in crate::render) fn build(
             continue;
         };
         let faces = [structure.face(pedge_id), structure.face(twin)];
-        let flat = structure.normal(faces[0]) == structure.normal(faces[1]);
+        let normals = faces.map(|face| structure.normal(face).normalize());
+        let flat = normals[0] == normals[1];
+        // Into each face from the edge.
+        let inwards = [0, 1].map(|i| {
+            let corners = structure
+                .vertices(faces[i])
+                .map(|w| structure.position(w))
+                .collect::<Vec<_>>();
+            let centroid = corners.iter().sum::<Vector3D>() / corners.len().max(1) as f64;
+            let inward = normals[i].cross(&along);
+            if inward.dot(&(centroid - a)) < 0. {
+                -inward
+            } else {
+                inward
+            }
+        });
+        // At a convex edge, both strips start where the two lifted faces meet (so they connect around the edge);
+        // at a concave edge, each starts on the other face. Both run on past the corners (by the lift), so the strips
+        // of the edges at a corner connect too.
+        let convex = !flat && inwards[0].dot(&normals[1]) < 0.;
         for (builder, factor, shown) in [(0, 0.6, !flat), (1, 0.35, true)] {
             if !shown {
                 continue;
             }
             let width = factor * half;
-            for face in faces {
-                let normal = structure.normal(face).normalize();
-                let corners = structure
-                    .vertices(face)
-                    .map(|w| structure.position(w))
-                    .collect::<Vec<_>>();
-                let centroid = corners.iter().sum::<Vector3D>() / corners.len().max(1) as f64;
-                // Into the face.
-                let mut inward = normal.cross(&along);
-                if inward.dot(&(centroid - a)) < 0. {
-                    inward = -inward;
-                }
-                let (p, q) = (a + normal * lift, b + normal * lift);
+            for i in 0..2 {
+                let (normal, inward) = (normals[i], inwards[i]);
+                let offset = if convex {
+                    (normals[0] + normals[1]) * lift
+                } else {
+                    normal * lift
+                };
+                let (p, q) = (a + offset - along * lift, b + offset + along * lift);
                 add_quad(
                     &mut edges[builder],
                     [p, q, q + inward * width, p + inward * width],

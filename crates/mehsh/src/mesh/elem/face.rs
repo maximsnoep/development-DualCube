@@ -1,6 +1,6 @@
 use crate::prelude::*;
 use core::panic;
-use std::collections::HashSet;
+use rustc_hash::FxHashSet as HashSet;
 
 impl<M: Tag> Mesh<M> {
     #[must_use]
@@ -133,7 +133,7 @@ impl<M: Tag> HasNeighbors<FACE, M> for Mesh<M> {
         k: usize,
     ) -> impl Iterator<Item = ids::Key<FACE, M>> {
         // BFS: track visited across all depths so k-1 ring nodes are never dropped
-        let mut visited: HashSet<ids::Key<FACE, M>> = HashSet::new();
+        let mut visited: HashSet<ids::Key<FACE, M>> = HashSet::default();
         visited.insert(id);
         let mut frontier = vec![id];
         for _ in 0..k {
@@ -160,7 +160,7 @@ impl<M: Tag> HasRing<FACE, M> for Mesh<M> {
         let mut rings = vec![vec![id]];
         // Track ALL previously seen faces — not just last ring — so faces can't
         // bleed into later rings. Also gives O(1) membership checks.
-        let mut visited: HashSet<ids::Key<FACE, M>> = HashSet::new();
+        let mut visited: HashSet<ids::Key<FACE, M>> = HashSet::default();
         visited.insert(id);
 
         for _ in 0..k {

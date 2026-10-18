@@ -84,7 +84,7 @@ fn reconnect<V: Copy + Eq + std::hash::Hash>(
             .map(|&(a, b, _)| (index[&a], index[&b]))
             .collect::<Vec<_>>();
         let component = strongly_connected_components(nodes.len(), &edges);
-        let mut sizes = HashMap::<usize, usize>::new();
+        let mut sizes = HashMap::<usize, usize>::default();
         for &c in &component {
             *sizes.entry(c).or_default() += 1;
         }

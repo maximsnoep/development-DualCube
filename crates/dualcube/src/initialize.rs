@@ -49,19 +49,6 @@ impl Solution {
             warn!("initialize: no candidate with the unpruned flow graphs either");
         }
     }
-    /// Several new initial loop structures (see `initialize`; random, so every call gives others): the best `count` of
-    /// the candidates by their quality with a fast layout, best first. The loops of this solution are not used.
-    #[must_use]
-    pub fn initial_candidates(&self, count: usize) -> Vec<Self> {
-        let mut base = self.clone();
-        base.loops.clear();
-        base.occupied.clear();
-        base.clear();
-        base.prepare_flow();
-        let candidates = base.crossing_candidates(SAMPLES);
-        Self::ranked(candidates).into_iter().take(count).collect()
-    }
-
     fn try_initialize_crossing(&mut self, samples: usize) -> bool {
         let candidates = self.crossing_candidates(samples);
         self.keep_best_candidate(candidates)
@@ -86,6 +73,7 @@ impl Solution {
             .collect_vec();
         let candidates = firsts
             .into_par()
+            .with_pool(pool())
             .flat_map(|(order, first)| {
                 (0..2)
                     .filter_map(|rotation| self.complete_crossing(&first, order, rotation))
@@ -132,6 +120,7 @@ impl Solution {
     fn ranked(candidates: Vec<Self>) -> Vec<Self> {
         let mut embedded = candidates
             .into_par()
+            .with_pool(pool())
             .filter_map(|mut solution| {
                 (solution
                     .reconstruct_solution_with(false, LayoutParams::fast())

@@ -1,7 +1,7 @@
 use crate::prelude::*;
 use crate::utils::ids::IdMap;
 use itertools::Itertools;
-use std::collections::HashMap;
+use rustc_hash::FxHashMap as HashMap;
 use std::io::Write;
 use std::{
     fs::OpenOptions,
@@ -110,7 +110,7 @@ where
         let mut verts: Vec<Vector3D> = vec![];
         let mut faces: Vec<Vec<usize>> = vec![];
         // Per position: the first vertex there, and its model.
-        let mut first: HashMap<[u64; 3], (usize, usize)> = HashMap::new();
+        let mut first: HashMap<[u64; 3], (usize, usize)> = HashMap::default();
         for (m, model) in models.iter().enumerate() {
             let mesh = &model.mesh;
             let index = mesh

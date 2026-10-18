@@ -72,7 +72,7 @@ impl LoopStateMut<'_> {
                 self.loops[loop_id].offsets.len() == self.loops[loop_id].edges.len()
             });
 
-        let mut entries: HashMap<EdgeID, Vec<(OrderedFloat<f64>, LoopID)>> = HashMap::new();
+        let mut entries: HashMap<EdgeID, Vec<(OrderedFloat<f64>, LoopID)>> = HashMap::default();
         for &loop_id in &ordered {
             let loop_ = &self.loops[loop_id];
             edge_refs += loop_.edges.len();
@@ -215,6 +215,25 @@ impl LoopStateMut<'_> {
         // Find the gaps (between the loops already crossing the edges) to insert the loop into, and its
         // positions inside these gaps.
         // A loop that already has offsets (e.g., placed earlier) and does not share any edge with other loops keeps them.
+        // A copy of a loop (the same half-edges, and direction) runs right beside it: it crosses the same loops, in the
+        // same order. (Placed by itself, as few crossings as possible, a copy may avoid loops its original crosses, and
+        // cross others twice in a row, which is not a valid loop structure.)
+        let gaps = gaps.or_else(|| {
+            let l = &self.loops[loop_id];
+            let (original, _) = self
+                .loops
+                .iter()
+                .find(|&(id, o)| id != loop_id && o.direction == l.direction && o.edges == l.edges)?;
+            let len = l.edges.len();
+            (0..len)
+                .filter(|&i| self.mesh.twin(l.edges[i]) == l.edges[(i + 1) % len])
+                .map(|i| {
+                    let on_edge = self.occupied.get(&l.edges[i])?;
+                    let position = on_edge.iter().position(|&id| id == original)?;
+                    Some((i, position + 1))
+                })
+                .collect::<Option<Vec<_>>>()
+        });
         let (gaps, offsets) = {
             let l = &self.loops[loop_id];
             let sampler = LoopSampler::new(self.mesh, self.loops, self.occupied, None);
@@ -237,7 +256,7 @@ impl LoopStateMut<'_> {
         let len = self.loops[loop_id].edges.len();
         self.loops[loop_id].offsets = offsets;
 
-        let mut inserted = HashSet::new();
+        let mut inserted = HashSet::default();
         for (exit, gap) in gaps {
             let edge = self.loops[loop_id].edges[exit];
             let twin = self.loops[loop_id].edges[(exit + 1) % len];

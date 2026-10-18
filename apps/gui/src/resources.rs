@@ -13,7 +13,6 @@ use std::sync::Arc;
 pub struct Configuration {
     pub direction: Direction,
 
-    pub unit: bool,
     pub omega: usize,
     /// Show the paths of the layout smoothed (see `render::refresh`).
     pub smooth_paths: bool,
@@ -24,24 +23,18 @@ pub struct Configuration {
     pub figure_format: FigureFormat,
     pub figure_label: bool,
 
-    /// The criterion used to compare solutions (initialization, evolution, corner optimization).
+    /// The criterion used to compare solutions (initialization, optimization).
     pub quality: QualityParams,
-    /// The parameters of the evolutions: of the loops with the mutations switched on per phase (see
-    /// `EvolutionParams::enabled`); of the layout with all mutations on, and the switched-off ones listed separately (by
-    /// name, see `LiveSettings`). Both can be changed while an evolution runs.
-    pub evolution: EvolutionParams,
-    pub layout_evolution: LayoutEvolutionParams,
-    pub layout_disabled: BTreeSet<String>,
-    /// The optimization (see `Solution::optimize`): generations per cycle of the loops and of the layout, and after how
-    /// many generations without improvement it moves on to the next phase (see `LiveSettings::advance_after`).
-    pub loop_generations: usize,
-    pub layout_generations: usize,
-    pub advance_after: usize,
-    /// How the loops are optimized, and the parameters of the simulated annealing (see `CoupledParams::anneal`; its
-    /// mutations that are switched off are listed separately, by name).
-    pub method: LoopMethod,
+    /// The optimization (see `Solution::optimize`): the annealing of the loops (its steps per cycle), and the
+    /// optimization of the layout and its generations per cycle; the mutations of both that are switched off, by name
+    /// (see `LiveSettings`). They can be changed while it runs.
     pub anneal: AnnealParams,
     pub anneal_disabled: BTreeSet<String>,
+    pub layout_evolution: LayoutEvolutionParams,
+    pub layout_generations: usize,
+    pub layout_disabled: BTreeSet<String>,
+    /// Cycles without a new best solution after which the optimization stops (0: never).
+    pub patience: usize,
 
     pub loop_anchors: Vec<[EdgeID; 2]>,
 
@@ -58,54 +51,26 @@ pub struct Configuration {
     pub clear_color: [u8; 3],
 }
 
-/// How the loops are optimized: simulated annealing (see `Solution::anneal`) or the evolution (see `Solution::evolve`).
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum LoopMethod {
-    Annealing,
-    Evolution,
-}
-
-impl Configuration {
-    /// The parameters of the annealing, with the mutations that are switched off (in all its mixes).
-    pub fn anneal_params(&self) -> AnnealParams {
-        let mut anneal = self.anneal;
-        for phase in LoopPhase::ALL {
-            for name in &self.anneal_disabled {
-                anneal.mutations.set_enabled(phase, name, false);
-            }
-        }
-        anneal
-    }
-}
-
 impl Default for Configuration {
     fn default() -> Self {
         Self {
             direction: Direction::X,
 
-            unit: false,
             omega: 5,
-            smooth_paths: false,
+            smooth_paths: true,
             loop_width: 0.006,
 
             figure_format: FigureFormat::Pdf,
             figure_label: false,
 
             quality: QualityParams::default(),
-            // Starts with initialization (see `LoopPhase`).
-            evolution: EvolutionParams {
-                phase: LoopPhase::Initialization,
-                ..EvolutionParams::default()
-            },
-            // All mutations of the layout on (the adaptive selection chooses among them).
-            layout_evolution: LayoutEvolutionParams::default(),
-            layout_disabled: BTreeSet::new(),
-            loop_generations: CoupledParams::default().loop_generations,
-            layout_generations: CoupledParams::default().layout_generations,
-            advance_after: 20,
-            method: LoopMethod::Annealing,
+            // All mutations on (the adaptive selection chooses among them).
             anneal: AnnealParams::default(),
             anneal_disabled: BTreeSet::new(),
+            layout_evolution: LayoutEvolutionParams::default(),
+            layout_generations: CoupledParams::default().layout_generations,
+            layout_disabled: BTreeSet::new(),
+            patience: CoupledParams::default().patience,
 
             loop_anchors: vec![],
 

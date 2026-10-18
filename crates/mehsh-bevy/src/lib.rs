@@ -31,6 +31,22 @@ impl MeshBuilder {
         }
     }
 
+    /// Adds a triangle with a color (sRGB) and an opacity per corner (for a material that blends).
+    pub fn add_triangle_rgba(
+        &mut self,
+        corners: [Vector3D; 3],
+        normals: [Vector3D; 3],
+        colors: [[f32; 4]; 3],
+    ) {
+        for ((corner, normal), [r, g, b, a]) in corners.into_iter().zip(normals).zip(colors) {
+            let [r, g, b, _] = srgb_to_linear([r, g, b]);
+            self.positions.push(v3d_to_slice(corner));
+            self.normals.push(v3d_to_slice(normal));
+            self.colors.push([r, g, b, a]);
+            self.uvs.push([0., 0.]);
+        }
+    }
+
     #[allow(clippy::cast_possible_truncation)]
     pub fn normalize(&mut self, scale: f64, translation: Vector3D) {
         for position in &mut self.positions {
@@ -81,6 +97,7 @@ fn bevy_builder<M: Tag>(mesh: &Mesh<M>, color_map: &HashMap<FaceKey<M>, [f32; 3]
     let vert_normals: HashMap<VertKey<M>, [f32; 3]> = mesh
         .vert_ids()
         .par()
+        .with_pool(pool())
         .map(|&v| (v, v3d_to_slice(mesh.normal(v))))
         .collect::<Vec<_>>()
         .into_iter()
@@ -89,6 +106,7 @@ fn bevy_builder<M: Tag>(mesh: &Mesh<M>, color_map: &HashMap<FaceKey<M>, [f32; 3]
     let triangulated_faces = mesh
         .face_ids()
         .par()
+        .with_pool(pool())
         .map(|&id| {
             let verts = mesh.vertices(id).collect_vec();
             let c = srgb_to_linear(color_map.get(&id).copied().unwrap_or([0., 0., 0.]));

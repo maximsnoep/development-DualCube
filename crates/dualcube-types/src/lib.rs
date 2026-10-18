@@ -1,6 +1,6 @@
 use mehsh::prelude::*;
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
-use std::collections::{HashMap, HashSet};
+use rustc_hash::{FxHashMap as HashMap, FxHashSet as HashSet};
 use std::fmt::Display;
 
 #[derive(Default, Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
@@ -138,6 +138,7 @@ pub mod prelude {
     pub use itertools::Itertools;
     pub use mehsh::prelude::*;
     pub use ordered_float::OrderedFloat;
-    pub use std::collections::{HashMap, HashSet, VecDeque};
+    pub use rustc_hash::{FxHashMap as HashMap, FxHashSet as HashSet};
+    pub use std::collections::VecDeque;
     pub use tracing::{debug, info, warn};
 }

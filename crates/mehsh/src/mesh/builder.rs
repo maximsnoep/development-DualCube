@@ -1,6 +1,7 @@
 use crate::prelude::*;
 use itertools::Itertools;
-use std::collections::{HashMap, HashSet, VecDeque};
+use rustc_hash::{FxHashMap as HashMap, FxHashSet as HashSet};
+use std::collections::VecDeque;
 
 const CAP_POSITION_STITCH_EPS: f64 = 1.0e-8;
 
@@ -333,7 +334,7 @@ impl<M: Tag> Mesh<M> {
         &self,
         cut_loop: &[VertKey<M>],
     ) -> Result<HashSet<(VertKey<M>, VertKey<M>)>, MeshError<M>> {
-        let mut cut_halfedges = HashSet::new();
+        let mut cut_halfedges = HashSet::default();
 
         for i in 0..cut_loop.len() {
             let a = cut_loop[i];
@@ -397,8 +398,8 @@ impl<M: Tag> Mesh<M> {
             ));
         }
 
-        let mut vertices = HashMap::<usize, ResolvedCapVertex<M>>::new();
-        let mut stitched_cut_vertices = HashMap::<VertKey<M>, usize>::new();
+        let mut vertices = HashMap::<usize, ResolvedCapVertex<M>>::default();
+        let mut stitched_cut_vertices = HashMap::<VertKey<M>, usize>::default();
 
         for cap_index in cap_triangles.iter().flatten().copied().unique() {
             let position = cap_positions.get(cap_index).copied().ok_or_else(|| {
@@ -466,7 +467,7 @@ impl<M: Tag> Mesh<M> {
     fn cap_boundary_edges(
         cap_triangles: &[[VertKey<M>; 3]],
     ) -> Result<HashSet<(VertKey<M>, VertKey<M>)>, MeshError<M>> {
-        let mut directed_counts = HashMap::<(VertKey<M>, VertKey<M>), usize>::new();
+        let mut directed_counts = HashMap::<(VertKey<M>, VertKey<M>), usize>::default();
 
         for &[a, b, c] in cap_triangles {
             for edge in [(a, b), (b, c), (c, a)] {
@@ -491,7 +492,7 @@ impl<M: Tag> Mesh<M> {
         cap_triangles: &[[ResolvedCapVertex<M>; 3]],
     ) -> Result<HashSet<(VertKey<M>, VertKey<M>)>, MeshError<M>> {
         let mut directed_counts =
-            HashMap::<(ResolvedCapVertex<M>, ResolvedCapVertex<M>), usize>::new();
+            HashMap::<(ResolvedCapVertex<M>, ResolvedCapVertex<M>), usize>::default();
 
         for &[a, b, c] in cap_triangles {
             for edge in [(a, b), (b, c), (c, a)] {
@@ -512,7 +513,7 @@ impl<M: Tag> Mesh<M> {
             }
         }
 
-        let mut boundary = HashSet::new();
+        let mut boundary = HashSet::default();
         for &(a, b) in directed_counts.keys() {
             if directed_counts.contains_key(&(b, a)) {
                 continue;
@@ -574,7 +575,7 @@ impl<M: Tag> Mesh<M> {
         &self,
         blocked_halfedges: &HashSet<(VertKey<M>, VertKey<M>)>,
     ) -> Vec<Vec<FaceKey<M>>> {
-        let mut visited = HashSet::<FaceKey<M>>::new();
+        let mut visited = HashSet::<FaceKey<M>>::default();
         let mut components = vec![];
 
         for start in self.face_ids() {
@@ -674,7 +675,7 @@ impl<M: Tag> Mesh<M> {
         cut_halfedges: &HashSet<(VertKey<M>, VertKey<M>)>,
         cut_edge_count: usize,
     ) -> Result<HashSet<(VertKey<M>, VertKey<M>)>, MeshError<M>> {
-        let mut boundary = HashSet::new();
+        let mut boundary = HashSet::default();
 
         for &face in component {
             for edge in self.edges(face) {
@@ -818,7 +819,7 @@ impl<M: Tag> Mesh<M> {
         mut mesh: Self,
         faces: &[Vec<VertKey<M>>],
     ) -> Result<Self, MeshError<M>> {
-        let mut endpoints_to_edges = HashMap::<(VertKey<M>, VertKey<M>), EdgeKey<M>>::new();
+        let mut endpoints_to_edges = HashMap::<(VertKey<M>, VertKey<M>), EdgeKey<M>>::default();
         for face_verts in faces {
             let face_id = mesh.add_face();
             if face_verts.len() < 3 {

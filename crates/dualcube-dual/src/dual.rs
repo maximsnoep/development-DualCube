@@ -5,10 +5,8 @@ use grapff::Grapff;
 use rand::seq::SliceRandom;
 use serde::{Deserialize, Serialize};
 use slotmap::SlotMap;
-use std::{
-    collections::{HashMap, HashSet, VecDeque},
-    sync::Arc,
-};
+use rustc_hash::{FxHashMap as HashMap, FxHashSet as HashSet};
+use std::{collections::VecDeque, sync::Arc};
 use thiserror::Error;
 
 // A collection of loops forms a loop structure; a graph, where
@@ -116,6 +114,9 @@ pub enum PropertyViolationError {
     LoopHasTooFewIntersections,
     #[error("Loop region is not a disk")]
     RegionNotDisk,
+    // (Last, so the serialized indices of the others stay.)
+    #[error("Two loops cross twice in a row (a loop region with two sides)")]
+    LoopsCrossTwiceInARow,
 }
 
 /// Euler characteristic (V - E + F) of a closed mesh in half-edge representation.
@@ -157,10 +158,10 @@ impl Dual {
             loops_ref: loops_ref.clone(),
             loop_structure: Mesh::default(),
             level_graphs: LevelGraphs::default(),
-            intersections: HashMap::new(),
+            intersections: HashMap::default(),
             locator: None,
-            loop_segments: HashMap::new(),
-            loop_regions: HashMap::new(),
+            loop_segments: HashMap::default(),
+            loop_regions: HashMap::default(),
         };
 
         // Compute the arrangement of the loops on the mesh (multiple loops may pass through the same faces)
@@ -301,7 +302,7 @@ impl Dual {
                     "Invalid intersection: adjacent intersections are not unique. {:?}",
                     ordered_adjacent_intersections
                 );
-                return Err(PropertyViolationError::UnknownError);
+                return Err(PropertyViolationError::LoopsCrossTwiceInARow);
             }
 
             intersections.push(ordered_adjacent_intersections);
@@ -416,7 +417,7 @@ impl Dual {
             .collect();
 
         // Every loop segment should be part of exactly TWO connected components (on both sides)
-        let mut segment_to_components: HashMap<LoopSegmentID, [usize; 2]> = HashMap::new();
+        let mut segment_to_components: HashMap<LoopSegmentID, [usize; 2]> = HashMap::default();
         for &segment_id in &self.loop_structure.edge_ids() {
             // Loop segment should simply have only two connected components (one for each side)
             // We do not check all its parts, but only the first one (since they should all be the same)
@@ -435,14 +436,14 @@ impl Dual {
                 .insert(segment_id, [cell_components[cell1], cell_components[cell2]]);
         }
 
-        let mut component_to_verts: HashMap<usize, HashSet<VertID>> = HashMap::new();
+        let mut component_to_verts: HashMap<usize, HashSet<VertID>> = HashMap::default();
         for (vert, component) in vert_components {
             component_to_verts
                 .entry(component)
                 .or_default()
                 .insert(vert);
         }
-        let mut component_to_points: HashMap<usize, Vec<(FaceID, Vector3D)>> = HashMap::new();
+        let mut component_to_points: HashMap<usize, Vec<(FaceID, Vector3D)>> = HashMap::default();
         for (cell, face, point) in arrangement.cell_centroids(&self.mesh_ref) {
             component_to_points
                 .entry(cell_components[cell])
@@ -451,7 +452,7 @@ impl Dual {
         }
 
         // For every loop region, get the connected component that is shared among its loop segments
-        let mut component_to_region = HashMap::new();
+        let mut component_to_region = HashMap::default();
         for &face_id in &self.loop_structure.face_ids() {
             let mut loop_segments = self.loop_structure.edges(face_id);
             // Select an arbitrary loop segment
@@ -591,7 +592,7 @@ impl Dual {
                 "assign_levels: {direction} topological order over {} zones: {topo_sort:?}",
                 topo_sort.len()
             );
-            let mut levels = HashMap::new();
+            let mut levels = HashMap::default();
             levels.insert(topo_sort.first().unwrap().to_owned(), 100_000usize);
 
             for node in topo_sort.clone() {
@@ -660,13 +661,13 @@ impl Dual {
                 }
             }
 
-            let mut level_to_zone = HashMap::new();
+            let mut level_to_zone = HashMap::default();
             let minimum = *levels.values().min().unwrap();
             for (zone_id, level) in levels {
                 level_to_zone.insert(zone_id, level - minimum);
             }
             self.level_graphs.levels[direction as usize] =
-                vec![HashSet::new(); *level_to_zone.values().max().unwrap() + 1];
+                vec![HashSet::default(); *level_to_zone.values().max().unwrap() + 1];
             for (zone_id, level) in level_to_zone {
                 self.level_graphs.levels[direction as usize][level].insert(zone_id);
             }
@@ -690,8 +691,8 @@ impl Dual {
         }
 
         // Every other loop must keep enough intersections (as required when constructing the dual structure).
-        let mut intersection_count: HashMap<LoopID, usize> = HashMap::new();
-        let mut lost_count: HashMap<LoopID, usize> = HashMap::new();
+        let mut intersection_count: HashMap<LoopID, usize> = HashMap::default();
+        let mut lost_count: HashMap<LoopID, usize> = HashMap::default();
         for intersection in self.intersections.values() {
             for other in intersection.loops {
                 *intersection_count.entry(other).or_default() += 1;
@@ -740,7 +741,7 @@ impl Dual {
 
         // Conditions 2 and 3, for every merged region: walk along its boundary, skipping the segments of the loop
         // (continuing in the region on the other side), and fuse consecutive segments of the same loop.
-        let mut visited = HashSet::new();
+        let mut visited = HashSet::default();
         for &segment in &segments {
             let face = structure.face(segment);
             let Some(start) = structure.edges(face).find(|&s| !on_loop(s)) else {
@@ -785,7 +786,7 @@ impl Dual {
             if labels.len() < 3 {
                 return Err(PropertyViolationError::FaceWithDegreeLessThanThree);
             }
-            let mut seen = HashSet::new();
+            let mut seen = HashSet::default();
             if labels
                 .iter()
                 .any(|&(_, direction, orientation)| !seen.insert((direction, orientation)))
@@ -803,7 +804,7 @@ impl Dual {
             return Err(PropertyViolationError::UnknownError);
         };
         let mut stack = vec![from];
-        let mut reached = HashSet::from([from]);
+        let mut reached = HashSet::from_iter([from]);
         while let Some(zone) = stack.pop() {
             for (next, l) in graph.outgoing(zone) {
                 if l == loop_id {
@@ -866,8 +867,8 @@ impl Dual {
             .inspect_err(|e| warn!("refined_mesh: the refined mesh is invalid: {e:?}"))
             .ok()?;
         let vertex = |i: usize| vmap.key(i).copied();
-        let mut face_regions = HashMap::new();
-        let mut face_pieces: HashMap<FaceID, Vec<FaceID>> = HashMap::new();
+        let mut face_regions = HashMap::default();
+        let mut face_pieces: HashMap<FaceID, Vec<FaceID>> = HashMap::default();
         for (i, (&cell, &input)) in refinement
             .face_cells
             .iter()
@@ -967,9 +968,9 @@ impl Dual {
         cache: &mut HashMap<LoopSegmentID, Vec<LoopSegmentID>>,
     ) -> (HashMap<LoopSegmentID, LoopSegmentID>, Option<LoopSegmentID>) {
         let structure = &self.loop_structure;
-        let mut previous = HashMap::new();
+        let mut previous = HashMap::default();
         let mut queue = VecDeque::from([start]);
-        let mut seen = HashSet::from([start]);
+        let mut seen = HashSet::from_iter([start]);
         while let Some(node) = queue.pop_front() {
             let successors = cache
                 .entry(node)
@@ -1007,7 +1008,7 @@ impl Dual {
     ) -> Vec<Vec<LoopSegmentID>> {
         let structure = &self.loop_structure;
         let mut cycles: Vec<Vec<LoopSegmentID>> = vec![];
-        let mut seen = HashSet::new();
+        let mut seen = HashSet::default();
         let path_to = |previous: &HashMap<LoopSegmentID, LoopSegmentID>,
                        from: LoopSegmentID,
                        to: LoopSegmentID| {
@@ -1021,7 +1022,7 @@ impl Dual {
             path
         };
         // Shortest paths from (having entered the start region through) every entry to all regions.
-        let mut cache = HashMap::new();
+        let mut cache = HashMap::default();
         let mut candidates = vec![];
         let mut searches = vec![];
         for entry in structure.edges(start).collect_vec() {
@@ -1029,10 +1030,10 @@ impl Dual {
                 continue;
             }
             let (previous, _) =
-                self.valid_bfs(entry, axis, &HashSet::from([start]), |_| false, &mut cache);
-            let mut targets: HashMap<LoopRegionID, LoopSegmentID> = HashMap::new();
+                self.valid_bfs(entry, axis, &HashSet::from_iter([start]), |_| false, &mut cache);
+            let mut targets: HashMap<LoopRegionID, LoopSegmentID> = HashMap::default();
             // BFS order is not kept by the map; pick the node with the shortest path for every region.
-            let mut lengths: HashMap<LoopSegmentID, usize> = HashMap::from([(entry, 0)]);
+            let mut lengths: HashMap<LoopSegmentID, usize> = HashMap::from_iter([(entry, 0)]);
             fn depth(
                 node: LoopSegmentID,
                 previous: &HashMap<LoopSegmentID, LoopSegmentID>,

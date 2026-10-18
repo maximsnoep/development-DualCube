@@ -5,13 +5,12 @@
 //! is shown in a floating window, styled like the other windows: its dual view (the loops on the polycube), its
 //! primal view (the labelled polycube), or the map (the mesh mapped onto the polycube).
 
-use super::theme::{text, window_frame};
+use super::theme::window_frame;
 use super::widgets::{collapsed, sep, sleek_button, sleek_button_unfocused, window_title};
-use crate::jobs::Job;
 use crate::render::Objects;
 use crate::render::camera::{CameraFor, CameraHandles};
 use crate::render::store::RenderObjectSettingStore;
-use crate::resources::{Configuration, SolutionResource};
+use crate::resources::SolutionResource;
 use bevy::prelude::*;
 use bevy_egui::egui::{self, Color32, LayerId, Pos2, Rect, Vec2};
 
@@ -89,9 +88,7 @@ pub fn show(
     mut view: ResMut<'_, ViewResource>,
     mut render_settings: ResMut<'_, RenderObjectSettingStore>,
     axes_texture: Res<'_, bevy_axes_gizmo::AxesGizmoTexture>,
-    mut conf: ResMut<'_, Configuration>,
     solution: Res<'_, SolutionResource>,
-    mut jobs: MessageWriter<'_, Job>,
 ) -> Result<(), BevyError> {
     let axes = egui_ctx.add_image(bevy_egui::EguiTextureHandle::Strong(axes_texture.0.clone()));
     let object = if view.polycube_mode == PolycubeMode::Map {
@@ -130,7 +127,6 @@ pub fn show(
         return Ok(());
     }
     let mut chosen = None;
-    let mut unit = conf.unit;
     let is_collapsed = collapsed(ctx, "Polycube");
     egui::Window::new("polycube")
         .title_bar(false)
@@ -160,8 +156,6 @@ pub fn show(
                         chosen = Some(option);
                     }
                 }
-                // The edge lengths of the polycube: unit lengths, or the lengths of the layout (geometric).
-                ui.checkbox(&mut unit, text("unit"));
             });
             if is_collapsed {
                 return;
@@ -184,15 +178,6 @@ pub fn show(
                     .uv(Rect::from_min_max(min, max)),
             );
         });
-    if unit != conf.unit {
-        conf.unit = unit;
-        if solution.current_solution.polycube.is_some() {
-            jobs.write(Job::compute_polycube(
-                solution.current_solution.clone(),
-                conf.clone(),
-            ));
-        }
-    }
     if let Some(mode) = chosen {
         view.polycube_mode = mode;
         if mode != PolycubeMode::Map

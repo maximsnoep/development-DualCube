@@ -10,6 +10,54 @@ pub fn run(args: anyhow::Result<Args>) -> anyhow::Result<()> {
         Command::Help => {
             print_help();
         }
+        Command::Benchmark {
+            inputs,
+            output,
+            name,
+            runs,
+            seconds,
+            quality,
+            resume,
+        } => {
+            if let Some(dir) = resume {
+                let progress = io::benchmark::BenchmarkProgress::default();
+                io::benchmark::resume_benchmark(&dir, &io::figure::FigureStyle::default(), &progress)?;
+                println!("Results in `{}`", dir.display());
+                return Ok(());
+            }
+            // Folders stand for the models in them (see `models_in`).
+            let models = inputs
+                .iter()
+                .flat_map(|input| {
+                    if input.is_dir() {
+                        io::benchmark::models_in(input)
+                    } else {
+                        vec![input.clone()]
+                    }
+                })
+                .collect::<Vec<_>>();
+            anyhow::ensure!(!models.is_empty(), "no models found");
+            println!(
+                "Benchmark `{name}`: {} models, {runs} runs each, {seconds} s per run",
+                models.len()
+            );
+            let config = io::benchmark::BenchmarkConfig {
+                name,
+                models,
+                runs,
+                seconds,
+                params: CoupledParams::default(),
+                quality,
+            };
+            let progress = io::benchmark::BenchmarkProgress::default();
+            let dir = io::benchmark::run_benchmark(
+                config,
+                &output,
+                &io::figure::FigureStyle::default(),
+                &progress,
+            )?;
+            println!("Results in `{}`", dir.display());
+        }
         Command::Import { input } => {
             let solution = io::import_solution(&input)?;
             println!(
@@ -40,13 +88,11 @@ pub fn run(args: anyhow::Result<Args>) -> anyhow::Result<()> {
             println!("Wrote `{}`", output.display());
             print_solution_summary("initialize", &input, &output, &solution);
         }
-        Command::Evolve {
+        Command::Anneal {
             input,
             output,
-            iterations,
-            pool1,
-            pool2,
-            patience,
+            steps,
+            offspring,
             quality,
             reconstruct,
             unit,
@@ -55,27 +101,25 @@ pub fn run(args: anyhow::Result<Args>) -> anyhow::Result<()> {
             solution.quality = quality;
             ensure_layout(&mut solution)?;
 
-            let defaults = EvolutionParams::default();
-            let params = EvolutionParams {
-                max_generations: iterations.unwrap_or(defaults.max_generations),
-                population: pool1.unwrap_or(defaults.population),
-                offspring: pool2.unwrap_or(defaults.offspring),
-                patience: patience.unwrap_or(defaults.patience),
+            let defaults = AnnealParams::default();
+            let params = AnnealParams {
+                steps: steps.unwrap_or(defaults.steps),
+                offspring: offspring.unwrap_or(defaults.offspring),
                 ..defaults
             };
 
-            let Ok(mut evolved) = solution.evolve(&params) else {
-                anyhow::bail!("evolution produced no valid solution");
+            let Ok(mut annealed) = solution.anneal(&params, &OptimizationMonitor::default()) else {
+                anyhow::bail!("annealing produced no valid solution");
             };
 
             if reconstruct {
-                evolved.reconstruct_solution(unit)?;
+                annealed.reconstruct_solution(unit)?;
             }
 
             let output = output.unwrap_or_else(|| default_output(&input, "dc"));
-            export_solution(&evolved, &output)?;
+            export_solution(&annealed, &output)?;
             println!("Wrote `{}`", output.display());
-            print_solution_summary("evolve", &input, &output, &evolved);
+            print_solution_summary("anneal", &input, &output, &annealed);
         }
         Command::Reconstruct {
             input,
@@ -147,9 +191,6 @@ fn report_terms(report: &QualityReport) -> Vec<(&'static str, String)> {
         ("fidelity", format_option(report.fidelity)),
         ("path_backtrack", format_option(report.path_backtrack)),
         ("path_stretch", format_option(report.path_stretch)),
-        ("coherence", format_option(report.coherence)),
-        ("rectangularity", format_option(report.rectangularity)),
-        ("corner_regularity", format_option(report.corner_regularity)),
         ("non_degeneracy", format_option(report.non_degeneracy)),
         ("correspondence", format_option(report.correspondence)),
         ("loops", report.loops.to_string()),
@@ -264,10 +305,14 @@ Commands:
       Initialize the loop structure of an input mesh or solution: three loops that cross pairwise twice (a cube).
       Writes the result to --output, or defaults to changing the extension to .dc.
 
-  evolve --input <path> [--output <path>] [--iterations <n>] [--pool1 <n>] [--pool2 <n>] [--patience <n>]
-         [QUALITY] [--reconstruct] [--unit|--no-unit]
-      Evolve an existing solution. --iterations: (maximum) number of generations, --pool1: population size,
-      --pool2: offspring per generation, --patience: stop after this many generations without improvement.
+  anneal --input <path> [--output <path>] [--steps <n>] [--offspring <n>] [QUALITY] [--reconstruct] [--unit|--no-unit]
+      Optimize the loops of an existing solution with simulated annealing. --steps: number of steps,
+      --offspring: children per step.
+
+  benchmark --input <model or folder> [--input ...] [--output <dir>] [--name <name>] [--runs <n>] [--seconds <s>] [QUALITY]
+      Initialize and optimize every model (a folder: all obj/stl in it) for --seconds (default 60), --runs times
+      (default 1). The results (tables, solutions, figures) go to a new folder in --output (default benchmarks);
+      open it in the GUI's benchmark window. --resume <session folder> continues a stopped session (its own options).
 
   score --input <path> [QUALITY] [--csv <path>]
       Print all quality terms of a solution and its score.
@@ -281,15 +326,16 @@ Commands:
       Export a solution in the requested format.
 
 QUALITY (the criterion used to compare solutions):
-  score = -(distortion + 0.1 boundary + 0.05 curvature + 0.5 features) - beta * loops
-  --beta <f>        penalty per loop (default 0.005)
+  score = 1 / (1 + fidelity + 3 path regularity + non-degeneracy + correspondence + beta * loops)
+  --beta <f>        penalty per loop (default 0.05)
 
 Examples:
   cli import bunny.obj
   cli initialize --input bunny.obj --output bunny.dc --reconstruct
-  cli evolve --input bunny.dc --iterations 10 --pool1 10 --pool2 30 --output evolved.dc
-  cli evolve --input bunny.dc --beta 0.001 --output evolved.dc
-  cli score --input evolved.dc --csv scores.csv
+  cli anneal --input bunny.dc --steps 60 --output annealed.dc
+  cli anneal --input bunny.dc --beta 0.001 --output annealed.dc
+  cli benchmark --input meshes/a.bouba_zero --seconds 1200 --name bouba
+  cli score --input annealed.dc --csv scores.csv
   cli reconstruct --input loops.loops --output result.dc --unit
   cli export --input result.dc --format obj --output result.obj
 "
