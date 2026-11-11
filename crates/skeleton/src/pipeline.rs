@@ -79,18 +79,9 @@ impl Progress {
             .skeleton
             .as_ref()
             .ok_or_else(|| fail("Missing extracted skeleton".into()))?;
-        self.labeling = Some(label::attempt(mesh, skeleton).map_err(fail)?);
-        let attempt = self.labeling.as_ref().unwrap();
-        self.labeled = attempt.completed();
-        if self.labeled.is_none() {
-            return Err(fail(
-                attempt
-                    .failure
-                    .clone()
-                    .unwrap_or(label::Failure::IncompleteLabels)
-                    .into(),
-            ));
-        }
+        let attempt = label::attempt(mesh, skeleton).map_err(fail)?;
+        self.labeled = Some(attempt.labeled());
+        self.labeling = Some(attempt);
         Ok(())
     }
 

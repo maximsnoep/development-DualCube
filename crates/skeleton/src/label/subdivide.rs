@@ -8,7 +8,7 @@ pub(super) fn collar(
     skeleton: &Skeleton,
     edge: SkeletonEdgeID,
     side: usize,
-) -> SkeletonResult<Option<(Skeleton, SkeletonEdgeID)>> {
+) -> SkeletonResult<(Skeleton, SkeletonEdgeID)> {
     if side > 1 {
         return Err("Invalid collar side".into());
     }
@@ -32,5 +32,5 @@ pub(super) fn collar(
     });
     // TODO: Compare alternative surface routes jointly with path labeling costs.
     split.validate(mesh)?;
-    Ok(Some((split, added)))
+    Ok((split, added))
 }

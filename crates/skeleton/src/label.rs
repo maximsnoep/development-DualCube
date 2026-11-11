@@ -85,43 +85,7 @@ pub struct Repair {
     pub path: Vec<SkeletonEdgeID>,
 }
 
-/// Expected labeling failures, with IDs referring to the retained partial skeleton.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub enum Failure {
-    JunctionSplitUnavailable {
-        node: SkeletonNodeID,
-        degree: usize,
-    },
-    CycleRepairUnavailable {
-        edge: SkeletonEdgeID,
-        max_subdivisions: usize,
-    },
-    IncompleteLabels,
-}
-
-impl std::fmt::Display for Failure {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            Self::JunctionSplitUnavailable { node, degree } => write!(
-                f,
-                "Cannot split degree-{degree} patch {node:?}: no valid surface cut with at least two existing boundaries on each side"
-            ),
-            Self::CycleRepairUnavailable {
-                edge,
-                max_subdivisions,
-            } => write!(
-                f,
-                "Cannot repair cycle edge {edge:?} with 0–{max_subdivisions} subdivisions: no coordinate-feasible path on the available boundary-loop collars"
-            ),
-            Self::IncompleteLabels => write!(f, "Incomplete labeling"),
-        }
-    }
-}
-
-impl std::error::Error for Failure {}
-
-/// Retained junction splits, tree solution, and cycle repairs, including failure reasons.
-/// Partial labels intentionally do not use the complete LabeledSkeleton contract.
+/// Retained junction splits, tree solution, and cycle repairs.
 #[derive(Clone, Debug)]
 pub struct Attempt {
     pub skeleton: Skeleton,
@@ -130,27 +94,20 @@ pub struct Attempt {
     pub tree_labels: SecondaryMap<SkeletonEdgeID, EdgeLabel>,
     pub repairs: Vec<Repair>,
     pub junction_splits: Vec<JunctionSplit>,
-    pub failure: Option<Failure>,
 }
 
 impl Attempt {
-    pub fn completed(&self) -> Option<LabeledSkeleton> {
-        if self.failure.is_some() || self.labels.len() != self.skeleton.edges.len() {
-            return None;
-        }
-        Some(LabeledSkeleton {
+    pub fn labeled(&self) -> LabeledSkeleton {
+        LabeledSkeleton {
             skeleton: self.skeleton.clone(),
             labels: self.labels.clone(),
-        })
+        }
     }
 }
 
-/// Label without placing cubes. Inspect `attempt` to retain intermediate results on failure.
+/// Label without placing cubes. Use `attempt` to retain the intermediate results.
 pub fn run(mesh: &Mesh<INPUT>, skeleton: &Skeleton) -> SkeletonResult<LabeledSkeleton> {
-    let result = attempt(mesh, skeleton)?;
-    result
-        .completed()
-        .ok_or_else(|| result.failure.unwrap_or(Failure::IncompleteLabels).into())
+    Ok(attempt(mesh, skeleton)?.labeled())
 }
 
 pub fn attempt(mesh: &Mesh<INPUT>, skeleton: &Skeleton) -> SkeletonResult<Attempt> {
@@ -163,12 +120,8 @@ pub fn attempt(mesh: &Mesh<INPUT>, skeleton: &Skeleton) -> SkeletonResult<Attemp
         tree_labels: SecondaryMap::new(),
         repairs: Vec::new(),
         junction_splits: Vec::new(),
-        failure: None,
     };
     junction::reduce(mesh, &mut result)?;
-    if result.failure.is_some() {
-        return Ok(result);
-    }
     let mut cost_cache = HashMap::new();
     let table = result
         .skeleton
@@ -187,36 +140,24 @@ pub fn attempt(mesh: &Mesh<INPUT>, skeleton: &Skeleton) -> SkeletonResult<Attemp
     result.tree_labels = labels.clone();
     result.labels = labels;
     for edge in remaining {
-        match repair(
+        let (skeleton, path, solution) = repair(
             mesh,
             &result.skeleton,
             &result.labels,
             edge,
             &mut cost_cache,
-        )? {
-            Some((skeleton, path, solution)) => {
-                result.skeleton = skeleton;
-                for (&e, p) in path.iter().zip(solution.ports) {
-                    result.labels.insert(e, p.label());
-                }
-                result.repairs.push(Repair {
-                    original_edge: edge,
-                    path,
-                });
-            }
-            None => {
-                result.failure = Some(Failure::CycleRepairUnavailable {
-                    edge,
-                    max_subdivisions: 4,
-                });
-                break;
-            }
+        )?;
+        result.skeleton = skeleton;
+        for (&e, p) in path.iter().zip(solution.ports) {
+            result.labels.insert(e, p.label());
         }
+        result.repairs.push(Repair {
+            original_edge: edge,
+            path,
+        });
     }
     // TODO: Refine this initial solution with joint path/junction optimization and simplification.
-    if let Some(labeled) = result.completed() {
-        labeled.validate(mesh)?;
-    }
+    result.labeled().validate(mesh)?;
     tracing::info!(
         "Labeling: {} edges labeled, {} junction splits, {} cycle repairs, {:.2}s",
         result.labels.len(),
@@ -245,7 +186,7 @@ fn repair(
     labels: &SecondaryMap<SkeletonEdgeID, EdgeLabel>,
     edge: SkeletonEdgeID,
     cache: &mut HashMap<[u64; 3], [f64; 6]>,
-) -> SkeletonResult<Option<(Skeleton, Vec<SkeletonEdgeID>, path::Solution)>> {
+) -> SkeletonResult<(Skeleton, Vec<SkeletonEdgeID>, path::Solution)> {
     let endpoints = skeleton.edges[edge].nodes;
     let used = constraints::used_ports(skeleton, labels)?;
     let mut limits = path::Constraints {
@@ -275,7 +216,7 @@ fn repair(
                 best = Some((candidate.clone(), edges.clone(), solution));
             }
         }
-        if best.is_some() {
+        if let Some(best) = best {
             return Ok(best);
         }
         if subdivisions == 4 {
@@ -286,21 +227,16 @@ fn repair(
         for (candidate, edges) in candidates {
             for side in 0..2 {
                 let index = if side == 0 { 0 } else { edges.len() - 1 };
-                if let Some((split, added)) =
-                    subdivide::collar(mesh, &candidate, edges[index], side)?
-                {
-                    let mut path = edges.clone();
-                    path.insert(index + 1, added);
-                    next.push((split, path));
-                }
+                let (split, added) = subdivide::collar(mesh, &candidate, edges[index], side)?;
+                let mut path = edges.clone();
+                path.insert(index + 1, added);
+                next.push((split, path));
             }
         }
         candidates = next;
-        if candidates.is_empty() {
-            break;
-        }
     }
-    Ok(None)
+    // Any unlabeled edge closes with at most four subdivisions (theory: labeling cycle closing).
+    panic!("Impossible: cycle edge {edge:?} has no valid labeling with 0–4 subdivisions")
 }
 
 #[cfg(test)]

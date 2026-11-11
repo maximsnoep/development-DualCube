@@ -68,12 +68,9 @@ pub(super) fn reduce(mesh: &Mesh<INPUT>, result: &mut Attempt) -> SkeletonResult
                 }
             }
         }
+        // A genus-zero patch can always be cut around two of its boundaries.
         let Some((_, _, skeleton, added_node, boundary)) = best else {
-            result.failure = Some(Failure::JunctionSplitUnavailable {
-                node,
-                degree: count,
-            });
-            return Ok(());
+            panic!("Impossible: degree-{count} patch {node:?} has no valid junction split");
         };
         result.skeleton = skeleton;
         result.junction_splits.push(JunctionSplit {
