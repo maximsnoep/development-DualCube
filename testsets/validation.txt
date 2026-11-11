@@ -1,48 +1,48 @@
 # Validation meshes for skeleton extraction, disjoint from representative.txt.
-# Paths are relative to this file. Includes the four meshes where contraction extraction fails.
+# Paths are relative to this file. Includes the meshes where contraction extraction fails. Paths follow meshes v3.0.0 (name_source.obj).
 
 # Smooth, genus 0
-../../meshes/dataset/a.bouba_zero/armadillo.obj
-../../meshes/dataset/a.bouba_zero/bunny.obj
-../../meshes/dataset/a.bouba_zero/cat.obj
-../../meshes/dataset/a.bouba_zero/hand.obj
-../../meshes/dataset/a.bouba_zero/horse.obj
-../../meshes/dataset/a.bouba_zero/human1.obj
-../../meshes/dataset/a.bouba_zero/pig.obj
-../../meshes/dataset/a.bouba_zero/chineselion.obj
+../../meshes/dataset/a.smooth_zero/armadillo_stein.obj
+../../meshes/dataset/a.smooth_zero/bunny_snoep.obj
+../../meshes/dataset/a.smooth_zero/cat_stein.obj
+../../meshes/dataset/a.smooth_zero/hand_gao.obj
+../../meshes/dataset/a.smooth_zero/horse_gao.obj
+../../meshes/dataset/a.smooth_zero/human1_gao.obj
+../../meshes/dataset/a.smooth_zero/pig_gao.obj
+../../meshes/dataset/a.smooth_zero/chineselion_snoep.obj
 
 # Smooth, positive genus
-../../meshes/dataset/b.bouba_plus/botijo.obj
-../../meshes/dataset/b.bouba_plus/chair1.obj
-../../meshes/dataset/b.bouba_plus/cup.obj
-../../meshes/dataset/b.bouba_plus/dtorus.obj
-../../meshes/dataset/b.bouba_plus/holes3.obj
-../../meshes/dataset/b.bouba_plus/kitten.obj
-../../meshes/dataset/b.bouba_plus/wrench.obj
-../../meshes/dataset/b.bouba_plus/threecees.obj
-../../meshes/dataset/b.bouba_plus/kiss.obj
+../../meshes/dataset/b.smooth_plus/botijo_gao.obj
+../../meshes/dataset/b.smooth_plus/chair1_gao.obj
+../../meshes/dataset/b.smooth_plus/cup_gao.obj
+../../meshes/dataset/b.smooth_plus/dtorus_gao.obj
+../../meshes/dataset/b.smooth_plus/holes3_gao.obj
+../../meshes/dataset/b.smooth_plus/kitten_gao.obj
+../../meshes/dataset/b.smooth_plus/wrench_gao.obj
+../../meshes/dataset/d.sharp_plus/threecees_paardekooper.obj
+../../meshes/dataset/b.smooth_plus/kiss_gao.obj
 
 # Hard edges, genus 0
-../../meshes/dataset/c.kiki_zero/B15.obj
-../../meshes/dataset/c.kiki_zero/B36.obj
-../../meshes/dataset/c.kiki_zero/B39.obj
-../../meshes/dataset/c.kiki_zero/B41.obj
-../../meshes/dataset/c.kiki_zero/B57.obj
-../../meshes/dataset/c.kiki_zero/B8.obj
-../../meshes/dataset/c.kiki_zero/S37.obj
+../../meshes/dataset/c.sharp_zero/b15_mambo.obj
+../../meshes/dataset/c.sharp_zero/b36_mambo.obj
+../../meshes/dataset/c.sharp_zero/b39_mambo.obj
+../../meshes/dataset/c.sharp_zero/b41_mambo.obj
+../../meshes/dataset/c.sharp_zero/b57_mambo.obj
+../../meshes/dataset/c.sharp_zero/b8_mambo.obj
+../../meshes/dataset/c.sharp_zero/s37_mambo.obj
 
 # Hard edges, positive genus
-../../meshes/dataset/d.kiki_plus/B1.obj
-../../meshes/dataset/d.kiki_plus/B13.obj
-../../meshes/dataset/d.kiki_plus/B44.obj
-../../meshes/dataset/d.kiki_plus/S3.obj
-../../meshes/dataset/d.kiki_plus/S33.obj
-../../meshes/dataset/d.kiki_plus/rocker.obj
-../../meshes/dataset/d.kiki_plus/B3.obj
-../../meshes/dataset/d.kiki_plus/S31.obj
-../../meshes/dataset/d.kiki_plus/S20.obj
+../../meshes/dataset/d.sharp_plus/b1_mambo.obj
+../../meshes/dataset/d.sharp_plus/b13_mambo.obj
+../../meshes/dataset/d.sharp_plus/b44_mambo.obj
+../../meshes/dataset/d.sharp_plus/s3_mambo.obj
+../../meshes/dataset/d.sharp_plus/s33_mambo.obj
+../../meshes/dataset/d.sharp_plus/rocker_gao.obj
+../../meshes/dataset/d.sharp_plus/b3_mambo.obj
+../../meshes/dataset/d.sharp_plus/s31_mambo.obj
+../../meshes/dataset/d.sharp_plus/s20_mambo.obj
 
 # Nightmares
-../../meshes/dataset/e.nightmares/7connected.obj
-../../meshes/dataset/e.nightmares/torusstep.obj
-../../meshes/dataset/e.nightmares/traystep.obj
+../../meshes/dataset/e.nightmares/7connected_snoep.obj
+../../meshes/dataset/e.nightmares/torusstep_snoep.obj
+../../meshes/dataset/e.nightmares/traystep_snoep.obj
