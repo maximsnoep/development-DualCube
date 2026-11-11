@@ -239,6 +239,37 @@ fn coincident_endpoints_do_not_close_a_template_handle() {
 }
 
 #[test]
+fn plans_every_loop_when_solids_coincide() {
+    use crate::label::Port::*;
+    // A cycle doubling back on itself: node 4 coincides with node 0 and node 7 with node 1.
+    // The X-section through 0–4 and the Z-section through 0, 5, 6, 7, 4 each pass both cubes
+    // of the pair, so the same two loops cross twice at one position.
+    let realized = graph_realized(
+        8,
+        &[
+            (0, 1, PositiveY),
+            (1, 2, PositiveZ),
+            (2, 3, NegativeY),
+            (3, 4, NegativeZ),
+            (0, 5, PositiveX),
+            (5, 6, PositiveY),
+            (6, 7, NegativeX),
+            (7, 4, NegativeY),
+        ],
+    );
+    let nodes: Vec<_> = realized.labeled.skeleton.nodes.keys().collect();
+    let at = |i: usize| realized.node_positions[nodes[i]];
+    assert_eq!((at(0), at(1)), (at(4), at(7)));
+    let template = template::Template::build(&realized).unwrap();
+    for id in template.loops.keys() {
+        let drawn: HashSet<_> = template.loops.keys().filter(|&other| other != id).collect();
+        let before = subset(&template.loops, &drawn);
+        let plan = Plan::new(&template.mesh, &before, &template.loops, id);
+        assert!(plan.is_ok(), "{id:?}: {:?}", plan.err());
+    }
+}
+
+#[test]
 fn draws_a_junction_preserving_boundary_topology() {
     let mut realized = star_realized(&[
         crate::label::Port::NegativeX,

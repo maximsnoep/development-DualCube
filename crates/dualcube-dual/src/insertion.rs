@@ -257,21 +257,35 @@ impl Plan {
         let old_map = LoopMap::from_loops(mesh, before)?;
         let topology = PartialTopology::from_map(&old_map);
         let template = LoopMap::from_loops(mesh, after)?;
-        // Old crossings keep their loops and position in both maps.
+        // Old crossings keep their loops and triangles in both maps. Positions cannot identify
+        // them: overlapping solids put distinct crossings at one point.
+        let triangles = |map: &LoopMap, v: usize| -> HashSet<FaceID> {
+            map.outgoing(v)
+                .iter()
+                .map(|&h| map.faces[map.halves[h].face].triangle)
+                .collect()
+        };
+        let candidates: Vec<_> = (0..template.points.len())
+            .filter(|&w| template.points[w] == Point::Crossing)
+            .map(|w| (w, triangles(&template, w)))
+            .collect();
         let mut old = HashMap::new();
         for (c, &v) in topology.vertices.iter().enumerate() {
             let pair = topology.crossings[c];
-            let found = (0..template.points.len()).find(|&w| {
-                template.points[w] == Point::Crossing
-                    && (template.positions[w] - old_map.positions[v]).norm() < 1e-9
+            let here = triangles(&old_map, v);
+            let mut found = candidates.iter().filter(|(w, t)| {
+                *t == here
                     && pair.iter().all(|&l| {
                         template
-                            .outgoing(w)
+                            .outgoing(*w)
                             .iter()
                             .any(|&h| template.halves[h].piece.wall() == Some(l))
                     })
             });
-            old.insert(found.ok_or(PropertyViolationError::UnknownError)?, c);
+            let (Some(&(w, _)), None) = (found.next(), found.next()) else {
+                return Err(PropertyViolationError::UnknownError);
+            };
+            old.insert(w, c);
         }
         let chain = template
             .chains()
