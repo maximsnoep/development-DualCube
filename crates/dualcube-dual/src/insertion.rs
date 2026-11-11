@@ -23,6 +23,9 @@ pub struct Step {
     pub segment: Option<usize>,
     /// Region entered by crossing.
     pub region: usize,
+    /// Whether it is entered on the partner's left; the region alone does not fix the side
+    /// when the partner segment has it on both sides.
+    pub left: bool,
 }
 
 /// Why drawing a loop arc by arc stopped, with the arc's itinerary index.
@@ -384,10 +387,19 @@ impl Plan {
                 }
                 let region = template_regions[template.halves[h].face]
                     .ok_or(PropertyViolationError::UnknownError)?;
+                // The loop leaves `v` along `h`; it lies on the partner's left when it is the
+                // next outgoing half-edge counterclockwise after the partner's forward one.
+                let forward = template
+                    .outgoing(v)
+                    .into_iter()
+                    .find(|&o| template.halves[o].piece == Piece::Loop(partner, true))
+                    .ok_or(PropertyViolationError::UnknownError)?;
+                let left = template.halves[template.halves[forward].prev].twin == h;
                 Ok(Insertion {
                     partner,
                     after,
                     region,
+                    left,
                 })
             })
             .collect::<Result<Vec<_>, _>>()?;
@@ -411,6 +423,7 @@ impl Plan {
                     .after
                     .map(|k| correspondence.crossings[self.before.along[&i.partner][k]]),
                 region: correspondence.regions[i.region],
+                left: i.left,
             })
             .collect()
     }
@@ -469,7 +482,8 @@ impl Plan {
         (0..map.halves.len())
             .filter(|&h| {
                 let half = &map.halves[h];
-                half.piece.wall() == Some(step.partner)
+                // Crossing `h` enters its twin's side: the partner's left when `h` runs backwards.
+                half.piece == Piece::Loop(step.partner, !step.left)
                     && step.segment.is_none_or(|s| segments[h] == Some(s))
                     && region[half.face] == steps[(j + k - 1) % k].region
                     && region[map.halves[half.twin].face] == step.region
@@ -872,11 +886,12 @@ impl Drawing {
                 }
                 let mut next_bits = bits;
                 match half.piece {
-                    Piece::Loop(wall, _) => {
+                    Piece::Loop(wall, forward) => {
                         let Goal::Cross(step) = goal else {
                             continue;
                         };
                         if wall != step.partner
+                            || forward == step.left
                             || sides.is_some_and(|s| s.forbidden.contains(&h))
                             || step.segment.is_some_and(|s| self.segment[h] != Some(s))
                             || self.region[next] != step.region

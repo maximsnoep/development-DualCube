@@ -19,6 +19,9 @@ pub struct Insertion {
     pub after: Option<usize>,
     /// Previous region entered by this crossing.
     pub region: usize,
+    /// Whether the loop enters that region on the partner's left. Needed where the partner
+    /// segment has the region on both sides.
+    pub left: bool,
 }
 
 #[derive(Clone, Debug)]
