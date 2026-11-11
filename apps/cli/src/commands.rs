@@ -119,6 +119,11 @@ pub fn run(args: anyhow::Result<Args>) -> anyhow::Result<()> {
             println!("Wrote `{}`", output.display());
             print_solution_summary("export", &input, &output, &solution);
         }
+        Command::Stages {
+            inputs,
+            last,
+            report,
+        } => crate::stages::run(&inputs, last, report.as_deref())?,
     }
 
     Ok(())
@@ -280,6 +285,15 @@ Commands:
   export --input <path> --format <dc|obj|flag|apg|loops|nlr|hex> [--output <path>]
       Export a solution in the requested format.
 
+  stages --input <path> [--input <path> ...] [--stop-after <stage>] [--report <csv>]
+      Run the skeleton pipeline on every mesh up to a stage and report one row per mesh: status,
+      typed error (or panic), seconds per stage, and stage statistics.
+      --input: a mesh, a folder of meshes (.obj/.stl), or a .txt set of mesh paths relative to it
+      (e.g. testsets/validation.txt). Repeatable.
+      --stop-after: extraction, labeling, placement, optimization, drawing, or reconstruction (default).
+      --report: CSV file, rewritten after every mesh.
+      Positive genus needs TETGEN_EXECUTABLE.
+
 QUALITY (the criterion used to compare solutions):
   score = -(distortion + 0.1 boundary + 0.05 curvature + 0.5 features) - beta * loops
   --beta <f>        penalty per loop (default 0.005)
@@ -292,6 +306,7 @@ Examples:
   cli score --input evolved.dc --csv scores.csv
   cli reconstruct --input loops.loops --output result.dc --unit
   cli export --input result.dc --format obj --output result.obj
+  cli stages --input testsets/validation.txt --stop-after drawing --report target/stages.csv
 "
     );
 }

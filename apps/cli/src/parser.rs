@@ -45,6 +45,11 @@ pub enum Command {
         output: Option<PathBuf>,
         format: String,
     },
+    Stages {
+        inputs: Vec<PathBuf>,
+        last: crate::stages::Stage,
+        report: Option<PathBuf>,
+    },
 }
 
 impl Args {
@@ -237,6 +242,34 @@ impl Args {
                     format,
                 }
             }
+            "stages" => {
+                let mut inputs = Vec::new();
+                let mut last = crate::stages::Stage::Reconstruction;
+                let mut report = None;
+
+                parse_kv_flags(it.collect(), |flag, value| {
+                    match flag {
+                        "--input" | "-i" => {
+                            inputs.push(PathBuf::from(require_value(flag, value)?));
+                        }
+                        "--stop-after" => {
+                            last = crate::stages::Stage::parse(require_value(flag, value)?)?;
+                        }
+                        "--report" => report = Some(PathBuf::from(require_value(flag, value)?)),
+                        other => anyhow::bail!("unknown flag for stages: {other}"),
+                    }
+                    Ok(())
+                })?;
+
+                if inputs.is_empty() {
+                    anyhow::bail!("missing required --input");
+                }
+                Command::Stages {
+                    inputs,
+                    last,
+                    report,
+                }
+            }
             other => anyhow::bail!("unknown command: {other}"),
         };
 
@@ -300,6 +333,8 @@ where
                 | "-f"
                 | "--beta"
                 | "--csv"
+                | "--stop-after"
+                | "--report"
         );
 
         let value = if takes_value {

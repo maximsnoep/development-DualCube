@@ -44,7 +44,7 @@ impl std::error::Error for Failure {
     }
 }
 
-/// Successful stages and any partial labeling. Updated only after each stage returns.
+/// Successful stages and any partial drawing. Updated only after each stage returns.
 #[derive(Clone, Debug, Default)]
 pub struct Progress {
     pub skeleton: Option<Skeleton>,

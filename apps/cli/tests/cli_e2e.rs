@@ -150,3 +150,27 @@ fn initialize_smoke_runs_across_available_models() {
         );
     }
 }
+
+#[test]
+fn stages_reports_a_full_run_of_the_test_model() {
+    let input = example_model(TEST_MODEL);
+    let dir = test_output_dir("stages");
+    let report = dir.join("stages.csv");
+    run_cli(&[
+        "stages",
+        "--input",
+        &input.display().to_string(),
+        "--report",
+        &report.display().to_string(),
+    ]);
+    let text = fs::read_to_string(&report).unwrap();
+    let lines: Vec<_> = text.lines().collect();
+    assert_eq!(lines.len(), 2, "{text}");
+    let header: Vec<_> = lines[0].split(',').collect();
+    let row: Vec<_> = lines[1].split(',').collect();
+    let column = |name: &str| row[header.iter().position(|&h| h == name).unwrap()];
+    assert_eq!(column("status"), "ok", "{text}");
+    assert_eq!(column("genus"), "0");
+    assert_eq!(column("loops_drawn"), column("loops_planned"));
+    assert!(!column("s_reconstruction").is_empty());
+}

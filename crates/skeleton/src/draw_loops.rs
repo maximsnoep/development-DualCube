@@ -65,6 +65,8 @@ pub struct Attempt {
     pub dual: Option<dualcube_dual::Dual>,
     pub planned: usize,
     pub searches: usize,
+    /// Earlier loops redrawn after a later one failed.
+    pub backtracks: usize,
     pub failure: Option<Failure>,
 }
 
@@ -86,6 +88,7 @@ pub fn attempt(mesh: &Mesh<INPUT>, realized: &RealizedSkeleton) -> SkeletonResul
         dual: None,
         planned: template.loops.len(),
         searches: 0,
+        backtracks: 0,
         failure: None,
     };
     // Topology lives in the loop map; curves are drawn from it only for output.
@@ -107,7 +110,6 @@ pub fn attempt(mesh: &Mesh<INPUT>, realized: &RealizedSkeleton) -> SkeletonResul
     let full = PartialTopology::new(&template.mesh, &template.loops)?;
     let mut history = Vec::<(LoopID, LoopMap)>::new();
     let mut alternatives = HashMap::<LoopID, Vec<HashSet<FaceID>>>::new();
-    let mut backtracks = 0;
     let mut failures = HashMap::<LoopID, usize>::new();
     while drawn.len() < template.loops.len() {
         let id = template
@@ -202,7 +204,7 @@ pub fn attempt(mesh: &Mesh<INPUT>, realized: &RealizedSkeleton) -> SkeletonResul
                     Some(neighbors[(*failed / 2) % neighbors.len()])
                 };
                 *failed += 1;
-                if backtracks < 24
+                if result.backtracks < 24
                     && let Some(index) = index
                 {
                     let previous = history[index].0;
@@ -217,9 +219,10 @@ pub fn attempt(mesh: &Mesh<INPUT>, realized: &RealizedSkeleton) -> SkeletonResul
                         }
                         map = before;
                     }
-                    backtracks += 1;
+                    result.backtracks += 1;
                     tracing::info!(
-                        "Loop drawing: reconsidering {previous:?} after {id:?} failed ({backtracks}/24 retries)"
+                        "Loop drawing: reconsidering {previous:?} after {id:?} failed ({}/24 retries)",
+                        result.backtracks
                     );
                     continue;
                 }
@@ -245,9 +248,10 @@ pub fn attempt(mesh: &Mesh<INPUT>, realized: &RealizedSkeleton) -> SkeletonResul
         tracing::warn!("Drawn curves do not reproduce the loop map's topology geometrically");
     }
     tracing::info!(
-        "Loop drawing complete: {} loops, {} searches, {backtracks} backtracks (elapsed {:.2}s)",
+        "Loop drawing complete: {} loops, {} searches, {} backtracks (elapsed {:.2}s)",
         result.loops.len(),
         result.searches,
+        result.backtracks,
         timer.elapsed().as_secs_f64()
     );
     Ok(result)

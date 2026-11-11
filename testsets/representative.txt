@@ -1,0 +1,21 @@
+# Representative meshes for comparing skeleton optimization variants quickly.
+# Paths are relative to this file (the dataset is the sibling `meshes` checkout).
+# Columns in comments: genus, character (bouba: smooth, kiki: hard edges), triangles.
+# All reach cube placement; positive genus needs TETGEN_EXECUTABLE.
+# Not included because extraction fails: kiss, B3, S31 (triple junction), S20 (surgery).
+
+# Genus 0
+../../meshes/dataset/a.bouba_zero/amogus.obj           # g0 bouba    1.9k, tiny smoke test
+../../meshes/dataset/c.kiki_zero/fandisk.obj           # g0 kiki    14k, classic CAD part
+
+# Smooth, positive genus
+../../meshes/dataset/b.bouba_plus/bob.obj              # g1 bouba   11k
+../../meshes/dataset/b.bouba_plus/eight.obj            # g2 bouba   11k
+../../meshes/dataset/b.bouba_plus/fertility.obj        # g4 bouba   52k, slowest extraction
+../../meshes/dataset/b.bouba_plus/dancingchildren.obj  # g8 bouba   24k, overlapping cuboids
+
+# Hard edges, positive genus
+../../meshes/dataset/d.kiki_plus/B66.obj               # g2 kiki     2.3k
+../../meshes/dataset/d.kiki_plus/rod.obj               # g2 kiki    18k
+../../meshes/dataset/d.kiki_plus/M2.obj                # g3 kiki     8.5k
+../../meshes/dataset/d.kiki_plus/block.obj             # g3 kiki    16k

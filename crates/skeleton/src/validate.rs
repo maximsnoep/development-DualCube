@@ -11,7 +11,7 @@ impl Skeleton {
 }
 
 /// Check the input before algorithms assume a closed triangular surface.
-pub(crate) fn input_genus<M: Tag>(mesh: &Mesh<M>) -> SkeletonResult<usize> {
+pub fn input_genus<M: Tag>(mesh: &Mesh<M>) -> SkeletonResult<usize> {
     let vertices = mesh.vert_ids();
     if vertices.is_empty() || mesh.nr_faces() == 0 {
         return Err("Skeleton extraction requires a nonempty mesh".into());

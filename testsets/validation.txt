@@ -1,0 +1,48 @@
+# Validation meshes for skeleton extraction, disjoint from representative.txt.
+# Paths are relative to this file. Includes the four meshes where contraction extraction fails.
+
+# Smooth, genus 0
+../../meshes/dataset/a.bouba_zero/armadillo.obj
+../../meshes/dataset/a.bouba_zero/bunny.obj
+../../meshes/dataset/a.bouba_zero/cat.obj
+../../meshes/dataset/a.bouba_zero/hand.obj
+../../meshes/dataset/a.bouba_zero/horse.obj
+../../meshes/dataset/a.bouba_zero/human1.obj
+../../meshes/dataset/a.bouba_zero/pig.obj
+../../meshes/dataset/a.bouba_zero/chineselion.obj
+
+# Smooth, positive genus
+../../meshes/dataset/b.bouba_plus/botijo.obj
+../../meshes/dataset/b.bouba_plus/chair1.obj
+../../meshes/dataset/b.bouba_plus/cup.obj
+../../meshes/dataset/b.bouba_plus/dtorus.obj
+../../meshes/dataset/b.bouba_plus/holes3.obj
+../../meshes/dataset/b.bouba_plus/kitten.obj
+../../meshes/dataset/b.bouba_plus/wrench.obj
+../../meshes/dataset/b.bouba_plus/threecees.obj
+../../meshes/dataset/b.bouba_plus/kiss.obj
+
+# Hard edges, genus 0
+../../meshes/dataset/c.kiki_zero/B15.obj
+../../meshes/dataset/c.kiki_zero/B36.obj
+../../meshes/dataset/c.kiki_zero/B39.obj
+../../meshes/dataset/c.kiki_zero/B41.obj
+../../meshes/dataset/c.kiki_zero/B57.obj
+../../meshes/dataset/c.kiki_zero/B8.obj
+../../meshes/dataset/c.kiki_zero/S37.obj
+
+# Hard edges, positive genus
+../../meshes/dataset/d.kiki_plus/B1.obj
+../../meshes/dataset/d.kiki_plus/B13.obj
+../../meshes/dataset/d.kiki_plus/B44.obj
+../../meshes/dataset/d.kiki_plus/S3.obj
+../../meshes/dataset/d.kiki_plus/S33.obj
+../../meshes/dataset/d.kiki_plus/rocker.obj
+../../meshes/dataset/d.kiki_plus/B3.obj
+../../meshes/dataset/d.kiki_plus/S31.obj
+../../meshes/dataset/d.kiki_plus/S20.obj
+
+# Nightmares
+../../meshes/dataset/e.nightmares/7connected.obj
+../../meshes/dataset/e.nightmares/torusstep.obj
+../../meshes/dataset/e.nightmares/traystep.obj
