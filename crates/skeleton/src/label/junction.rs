@@ -4,6 +4,7 @@ use super::*;
 use crate::surface::{Regions, edit};
 
 /// Compare every pair and a small set of connector alternatives using local port costs.
+/// Every candidate is a valid split; only the chosen one is validated.
 pub(super) fn reduce(mesh: &Mesh<INPUT>, result: &mut Attempt) -> SkeletonResult<()> {
     // TODO: Search alternative split sequences instead of committing greedily.
     loop {
@@ -62,16 +63,20 @@ pub(super) fn reduce(mesh: &Mesh<INPUT>, result: &mut Attempt) -> SkeletonResult
                     }) {
                         continue;
                     }
-                    if candidate.validate(mesh).is_ok() {
-                        best = Some((cost, route.steps.len(), candidate, added, boundary));
-                    }
+                    best = Some((cost, route.steps.len(), candidate, added, boundary));
                 }
             }
         }
-        // A genus-zero patch can always be cut around two of its boundaries.
+        // A genus-zero patch is connected, so two of its boundaries always have a connector, and
+        // the band around them and the connector always splits it validly. Cost alone decides.
         let Some((_, _, skeleton, added_node, boundary)) = best else {
-            panic!("Impossible: degree-{count} patch {node:?} has no valid junction split");
+            panic!("Impossible: degree-{count} patch {node:?} has no connector between boundaries");
         };
+        if let Err(error) = skeleton.validate(mesh) {
+            panic!(
+                "Impossible: junction split of degree-{count} patch {node:?} is invalid: {error}"
+            );
+        }
         result.skeleton = skeleton;
         result.junction_splits.push(JunctionSplit {
             original_node: node,
