@@ -121,3 +121,17 @@ fn diskscissors_finds_no_disk_for_a_longitude() {
     let meridian = &walks(&mesh, &skeleton, edge)[0];
     assert_eq!(volume.disk(&options, meridian).unwrap(), Ok(()));
 }
+
+#[test]
+fn reduction_removes_repeats_and_backtracks_across_the_seam() {
+    let mesh = crate::surface::tests::tetrahedron();
+    let v = mesh.vert_ids();
+    let (a, b, c, d) = (v[0], v[1], v[2], v[3]);
+    assert_eq!(reduce(vec![a, b, b, c]), [a, b, c]);
+    assert_eq!(reduce(vec![a, b, d, b, c]), [a, b, c]);
+    // Spur at the last vertex: ..., a, d | a, b, c.
+    assert_eq!(reduce(vec![a, b, c, a, d]), [a, b, c]);
+    // Spur at the first vertex: d | a, d, b, c.
+    assert_eq!(reduce(vec![a, d, b, c, d]), [d, b, c]);
+    assert_eq!(reduce(vec![a, b, a]), [a]);
+}

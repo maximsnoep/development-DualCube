@@ -213,18 +213,44 @@ pub fn walks(mesh: &Mesh<INPUT>, skeleton: &Skeleton, edge: SkeletonEdgeID) -> V
         exits.iter().map(|&e| mesh.toor(e)).collect::<Vec<_>>(),
         exits.iter().map(|&e| mesh.root(e)).collect(),
     ] {
-        let mut walk: Vec<VertID> = Vec::new();
-        for v in side {
-            if walk.last() != Some(&v) {
-                walk.push(v);
-            }
-        }
-        while walk.len() > 1 && walk.first() == walk.last() {
-            walk.pop();
-        }
+        let walk = reduce(side);
         let distinct: HashSet<_> = walk.iter().collect();
         if walk.len() >= 3 && distinct.len() == walk.len() {
             result.push(walk);
+        }
+    }
+    result
+}
+
+/// The closed walk without repeated vertices in a row and without backtracks (`a, b, a`),
+/// which leaves its homotopy class unchanged.
+fn reduce(walk: Vec<VertID>) -> Vec<VertID> {
+    let mut result: Vec<VertID> = Vec::new();
+    for v in walk {
+        result.push(v);
+        loop {
+            let n = result.len();
+            if n >= 2 && result[n - 1] == result[n - 2] {
+                result.pop();
+            } else if n >= 3 && result[n - 1] == result[n - 3] {
+                result.truncate(n - 2);
+            } else {
+                break;
+            }
+        }
+    }
+    // Close the cycle: the same reductions across the seam.
+    loop {
+        let n = result.len();
+        if n >= 2 && result[0] == result[n - 1] {
+            result.pop();
+        } else if n >= 3 && result[1] == result[n - 1] {
+            result.pop();
+            result.remove(0);
+        } else if n >= 3 && result[0] == result[n - 2] {
+            result.truncate(n - 2);
+        } else {
+            break;
         }
     }
     result
