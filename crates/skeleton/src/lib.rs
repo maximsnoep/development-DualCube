@@ -1,5 +1,6 @@
 //! Skeleton-based initialization of a dual loop structure.
 
+pub mod certify;
 pub mod draw_loops;
 pub mod geometry;
 pub mod label;

@@ -290,9 +290,10 @@ Commands:
       typed error (or panic), seconds per stage, and stage statistics.
       --input: a mesh, a folder of meshes (.obj/.stl), or a .txt set of mesh paths relative to it
       (e.g. testsets/validation.txt). Repeatable.
-      --stop-after: extraction, labeling, placement, optimization, drawing, or reconstruction (default).
+      --stop-after: extraction, certification, labeling, placement, optimization, drawing, or
+      reconstruction (default).
       --report: CSV file, rewritten after every mesh.
-      Positive genus needs TETGEN_EXECUTABLE.
+      Positive genus needs TETGEN_EXECUTABLE and DiskScissors (DISKSCISSORS_EXECUTABLE).
 
 QUALITY (the criterion used to compare solutions):
   score = -(distortion + 0.1 boundary + 0.05 curvature + 0.5 features) - beta * loops

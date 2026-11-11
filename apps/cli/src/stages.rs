@@ -11,6 +11,7 @@ use std::time::Instant;
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
 pub enum Stage {
     Extraction,
+    Certification,
     Labeling,
     Placement,
     Optimization,
@@ -19,8 +20,9 @@ pub enum Stage {
 }
 
 impl Stage {
-    pub const ALL: [Self; 6] = [
+    pub const ALL: [Self; 7] = [
         Self::Extraction,
+        Self::Certification,
         Self::Labeling,
         Self::Placement,
         Self::Optimization,
@@ -31,6 +33,7 @@ impl Stage {
     pub fn name(self) -> &'static str {
         match self {
             Self::Extraction => "extraction",
+            Self::Certification => "certification",
             Self::Labeling => "labeling",
             Self::Placement => "placement",
             Self::Optimization => "optimization",
@@ -86,10 +89,12 @@ pub struct Row {
     pub faces: usize,
     /// The failing stage and its error or panic message.
     pub failure: Option<(Stage, String)>,
-    pub seconds: [Option<f64>; 6],
+    pub seconds: [Option<f64>; 7],
     pub patches: Option<usize>,
     pub boundaries: Option<usize>,
     pub max_degree: Option<usize>,
+    pub disks: Option<usize>,
+    pub disk_misses: Option<usize>,
     pub junction_splits: Option<usize>,
     pub cycle_repairs: Option<usize>,
     pub optimized_patches: Option<usize>,
@@ -125,8 +130,9 @@ impl Row {
                     .unwrap_or_default(),
             ),
         ];
-        const SECONDS: [&str; 6] = [
+        const SECONDS: [&str; 7] = [
             "s_extraction",
+            "s_certification",
             "s_labeling",
             "s_placement",
             "s_optimization",
@@ -140,6 +146,8 @@ impl Row {
             ("patches", count(self.patches)),
             ("boundaries", count(self.boundaries)),
             ("max_degree", count(self.max_degree)),
+            ("disks", count(self.disks)),
+            ("disk_misses", count(self.disk_misses)),
             ("junction_splits", count(self.junction_splits)),
             ("cycle_repairs", count(self.cycle_repairs)),
             ("optimized_patches", count(self.optimized_patches)),
@@ -169,6 +177,12 @@ impl Row {
                     self.patches = Some(skeleton.nodes.len());
                     self.boundaries = Some(skeleton.edges.len());
                     self.max_degree = Some(degree.values().copied().max().unwrap_or(0));
+                }
+            }
+            Stage::Certification => {
+                if let Some(certificate) = &progress.certificate {
+                    self.disks = Some(certificate.disks.len());
+                    self.disk_misses = Some(certificate.misses.len());
                 }
             }
             Stage::Labeling => {
@@ -243,6 +257,7 @@ fn step(
             let skeleton = skeletonize::run(mesh).map_err(|e| anyhow::anyhow!("{e}"))?;
             *progress = Progress::from_skeleton(skeleton);
         }
+        Stage::Certification => progress.certify(mesh)?,
         Stage::Labeling => progress.label(mesh)?,
         Stage::Placement => progress.place(mesh)?,
         Stage::Optimization => progress.optimize(mesh)?,

@@ -1,7 +1,7 @@
 //! Sequential initialization, retaining completed stages when a later one fails.
 
 use crate::{
-    DualLoops, LabeledSkeleton, RealizedSkeleton, Skeleton, draw_loops, label, optimize,
+    DualLoops, LabeledSkeleton, RealizedSkeleton, Skeleton, certify, draw_loops, label, optimize,
     place_cubes, skeletonize,
 };
 use dualcube_types::prelude::{INPUT, Mesh};
@@ -9,6 +9,7 @@ use dualcube_types::prelude::{INPUT, Mesh};
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Stage {
     Extraction,
+    Certification,
     Labeling,
     CubePlacement,
     Optimization,
@@ -19,6 +20,7 @@ impl std::fmt::Display for Stage {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.write_str(match self {
             Self::Extraction => "skeleton extraction",
+            Self::Certification => "certification",
             Self::Labeling => "labeling",
             Self::CubePlacement => "cube placement",
             Self::Optimization => "optimization",
@@ -48,6 +50,7 @@ impl std::error::Error for Failure {
 #[derive(Clone, Debug, Default)]
 pub struct Progress {
     pub skeleton: Option<Skeleton>,
+    pub certificate: Option<certify::Certificate>,
     pub labeling: Option<label::Attempt>,
     pub labeled: Option<LabeledSkeleton>,
     pub realized: Option<RealizedSkeleton>,
@@ -64,7 +67,25 @@ impl Progress {
         }
     }
 
+    /// Certify that every patch of the extracted skeleton is contractible in the volume.
+    pub fn certify(&mut self, mesh: &Mesh<INPUT>) -> Result<(), Failure> {
+        let fail = |error| Failure {
+            stage: Stage::Certification,
+            error,
+        };
+        let skeleton = self
+            .skeleton
+            .as_ref()
+            .ok_or_else(|| fail("Missing extracted skeleton".into()))?;
+        self.certificate = Some(certify::run(mesh, skeleton).map_err(|e| fail(e.into()))?);
+        Ok(())
+    }
+
+    /// Label a certified skeleton, certifying it first if needed.
     pub fn label(&mut self, mesh: &Mesh<INPUT>) -> Result<(), Failure> {
+        if self.certificate.is_none() {
+            self.certify(mesh)?;
+        }
         self.labeling = None;
         self.labeled = None;
         self.realized = None;
