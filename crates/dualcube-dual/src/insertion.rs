@@ -466,6 +466,45 @@ impl Plan {
             .position(|p| p.contains(&beside) && sides.iter().any(|m| p.contains(m)))
     }
 
+    /// Partner half-edges of `map` in the template's interval for crossing `j`: after the same
+    /// counted crossing, old or new. Old crossings alone cannot order several crossings of one
+    /// partner segment.
+    fn crossable(
+        &self,
+        map: &LoopMap,
+        labels: &Labels,
+        partner: LoopID,
+        j: usize,
+        window: &Window,
+    ) -> Option<HashSet<usize>> {
+        let v = self
+            .labels
+            .new
+            .iter()
+            .find_map(|(&v, &i)| (i == j).then_some(v))?;
+        let template = &self.template;
+        let into = template
+            .outgoing(v)
+            .into_iter()
+            .find(|&o| template.halves[o].piece == Piece::Loop(partner, false))
+            .map(|o| template.halves[o].twin)?;
+        let want = self
+            .labels
+            .marks_of(template, [into], window)
+            .get(&into)?
+            .after;
+        let walls: Vec<_> = (0..map.halves.len())
+            .filter(|&h| map.halves[h].piece.wall() == Some(partner))
+            .collect();
+        let marks = labels.marks_of(map, walls.iter().copied(), window);
+        Some(
+            walls
+                .into_iter()
+                .filter(|h| marks.get(h).is_some_and(|m| m.after == want))
+                .collect(),
+        )
+    }
+
     /// Where `steps[j]` may cross in a drawing: wall half-edges of its partner and segment,
     /// leaving the region of the previous step.
     pub fn anchors(
@@ -578,7 +617,21 @@ impl Plan {
                 self.arriving(&expected, &next, arc),
                 &next,
             );
-            let path = drawing.route(tip.1, &goal, sides.as_ref(), arc, &cost)?;
+            let crossable = match &goal {
+                Goal::Cross(next) => Some(
+                    self.crossable(
+                        &drawing.map,
+                        &labels,
+                        next.partner,
+                        (arc + 1) % k,
+                        &Window::after(start, step, k),
+                    )
+                    .ok_or(DrawError::Revisit(arc))?,
+                ),
+                Goal::Close(_) => None,
+            };
+            let path =
+                drawing.route(tip.1, &goal, sides.as_ref(), crossable.as_ref(), arc, &cost)?;
             let piece;
             (tip, piece) = drawing.insert(self.id, tip, &path, &goal, arc)?;
             last = Some(piece);
@@ -840,6 +893,7 @@ impl Drawing {
         start: usize,
         goal: &Goal,
         sides: Option<&Sides>,
+        crossable: Option<&HashSet<usize>>,
         arc: usize,
         cost: &impl Fn(FaceID, Vector3D, usize) -> f64,
     ) -> Result<Vec<usize>, DrawError> {
@@ -892,6 +946,7 @@ impl Drawing {
                         };
                         if wall != step.partner
                             || forward == step.left
+                            || crossable.is_some_and(|c| !c.contains(&h))
                             || sides.is_some_and(|s| s.forbidden.contains(&h))
                             || step.segment.is_some_and(|s| self.segment[h] != Some(s))
                             || self.region[next] != step.region
