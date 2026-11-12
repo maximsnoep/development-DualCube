@@ -6,7 +6,8 @@ fn torus() -> (Mesh<INPUT>, Skeleton) {
 
 /// A stand-in DiskScissors that always or never reports a disk.
 fn fake(disk: bool) -> Options {
-    let directory = scratch_directory().unwrap();
+    let directory = std::env::temp_dir().join(format!("dualcube-fake-diskscissors-{disk}"));
+    std::fs::create_dir_all(&directory).unwrap();
     let path = directory.join("diskscissors");
     let output = if disk { "Snip" } else { "No disk" };
     std::fs::write(&path, format!("#!/bin/sh\necho {output}\n")).unwrap();
@@ -33,24 +34,146 @@ fn trees_span_the_graph_and_contain_forced_edges() {
     assert!(spanning_tree(&mesh, &skeleton, &edges).is_none());
 }
 
-#[test]
-fn walks_are_simple_closed_vertex_paths() {
-    let (mesh, skeleton) = torus();
-    for edge in skeleton.edges.keys() {
-        let walks = walks(&mesh, &skeleton, edge);
-        assert_eq!(walks.len(), 2);
-        for mut pieces in walks {
-            assert_eq!(pieces.len(), 1, "both sides of a band boundary are simple");
-            let walk = pieces.pop().unwrap();
-            for i in 0..walk.len() {
-                let (a, b) = (walk[i], walk[(i + 1) % walk.len()]);
-                assert!(
-                    mesh.neighbors(a).any(|v| v == b),
-                    "{a:?} and {b:?} not adjacent"
-                );
-            }
+/// The torus with a parallel copy beside each band boundary, so mesh edges are crossed twice.
+fn doubled() -> (Mesh<INPUT>, Skeleton) {
+    let (mesh, mut skeleton) = torus();
+    let edges: Vec<_> = skeleton.edges.keys().collect();
+    for edge in edges {
+        let boundary = skeleton.edges[edge].boundary.clone();
+        let copy = crate::surface::edit::parallel(&mesh, &mut skeleton, &boundary, 0);
+        let nodes = skeleton.edges[edge].nodes;
+        skeleton.edges.insert(crate::SkeletonEdge {
+            nodes,
+            boundary: copy,
+        });
+    }
+    (mesh, skeleton)
+}
+
+/// Refine and check: same volume, consistently oriented tets, conforming faces, the same
+/// surface area, and every boundary a simple cycle of edges of surface faces.
+fn check_refinement(
+    mesh: &Mesh<INPUT>,
+    skeleton: &Skeleton,
+    vertices: &[Vector3D],
+    tets: &[[usize; 4]],
+) {
+    let index: HashMap<_, _> = mesh
+        .vert_ids()
+        .into_iter()
+        .enumerate()
+        .map(|(i, v)| (v, i))
+        .collect();
+    let loops: Vec<_> = skeleton.edges.values().map(|e| &e.boundary).collect();
+    let refined = refine::refine(mesh, &skeleton.surface, &loops, &index, vertices, tets);
+    let volume = |v: &[Vector3D], [a, b, c, d]: [usize; 4]| {
+        (v[b] - v[a]).cross(&(v[c] - v[a])).dot(&(v[d] - v[a]))
+    };
+    let total = |v: &[Vector3D], t: &[[usize; 4]]| t.iter().map(|&t| volume(v, t)).sum::<f64>();
+    let before = total(vertices, tets);
+    assert!((total(&refined.vertices, &refined.tets) - before).abs() < 1e-9 * before.abs());
+    let sign = before.signum();
+    assert!(
+        refined
+            .tets
+            .iter()
+            .all(|&t| volume(&refined.vertices, t) * sign > 0.)
+    );
+    let mut faces: HashMap<[usize; 3], usize> = HashMap::new();
+    for t in &refined.tets {
+        for skip in 0..4 {
+            let mut f: Vec<_> = (0..4).filter(|&k| k != skip).map(|k| t[k]).collect();
+            f.sort_unstable();
+            *faces.entry([f[0], f[1], f[2]]).or_default() += 1;
         }
     }
+    assert!(faces.values().all(|&n| n <= 2));
+    let area =
+        |v: &[Vector3D], [a, b, c]: [usize; 3]| (v[b] - v[a]).cross(&(v[c] - v[a])).norm() / 2.;
+    let surface: Vec<_> = faces.iter().filter(|f| *f.1 == 1).map(|f| *f.0).collect();
+    let refined_area: f64 = surface.iter().map(|&f| area(&refined.vertices, f)).sum();
+    let mesh_area: f64 = mesh
+        .face_ids()
+        .into_iter()
+        .map(|f| {
+            let c: Vec<_> = mesh.edges(f).map(|e| index[&mesh.root(e)]).collect();
+            area(vertices, [c[0], c[1], c[2]])
+        })
+        .sum();
+    assert!((refined_area - mesh_area).abs() < 1e-9 * mesh_area);
+    let surface_edges: HashSet<[usize; 2]> = surface
+        .iter()
+        .flat_map(|&[a, b, c]| [[a, b], [b, c], [a, c]])
+        .collect();
+    for edge in skeleton.edges.values() {
+        let cycle: Vec<_> = edge
+            .boundary
+            .crossings
+            .iter()
+            .map(|c| refined.crossings[c])
+            .collect();
+        assert_eq!(cycle.iter().collect::<HashSet<_>>().len(), cycle.len());
+        for i in 0..cycle.len() {
+            let (a, b) = (cycle[i], cycle[(i + 1) % cycle.len()]);
+            assert!(surface_edges.contains(&[a.min(b), a.max(b)]));
+        }
+    }
+}
+
+#[test]
+fn refining_a_single_tet_makes_boundaries_simple_cycles() {
+    let mesh = crate::surface::tests::tetrahedron();
+    let skeleton = crate::skeletonize::run(&mesh).unwrap();
+    assert!(!skeleton.surface.crossings.is_empty());
+    let vertices: Vec<_> = mesh
+        .vert_ids()
+        .into_iter()
+        .map(|v| mesh.position(v))
+        .collect();
+    check_refinement(&mesh, &skeleton, &vertices, &[[0, 1, 2, 3]]);
+}
+
+#[test]
+#[ignore = "requires TetGen"]
+fn refining_a_torus_volume_makes_boundaries_simple_cycles() {
+    for (mesh, skeleton) in [torus(), doubled()] {
+        let tets = mehsh_tetgen::tetrahedralize(&mesh).unwrap();
+        assert_eq!(tets.input_vertices, mesh.vert_ids());
+        check_refinement(&mesh, &skeleton, &tets.vertices, &tets.tets);
+    }
+}
+
+#[test]
+fn convex_regions_are_triangulated_without_flat_triangles() {
+    // Sides 0, 1, 2 as bits; a corner lies on two.
+    let flat =
+        |t: &[usize], masks: &HashMap<usize, u8>| t.iter().fold(0b111, |m, v| m & masks[v]) != 0;
+    for polygon in [
+        // Three points on side 0 and the opposite corner.
+        vec![(0, 0b001), (1, 0b001), (2, 0b001), (3, 0b110)],
+        // A corner with points on both its sides.
+        vec![(0, 0b101), (1, 0b001), (2, 0b001), (3, 0b100), (4, 0b100)],
+    ] {
+        let masks: HashMap<_, _> = polygon.iter().copied().collect();
+        let mut faces = Vec::new();
+        refine::triangulate(polygon.clone(), &mut faces);
+        let faces: Vec<Vec<usize>> = faces.into_iter().map(Vec::from).collect();
+        assert_eq!(faces.len(), polygon.len() - 2);
+        assert!(faces.iter().all(|t| !flat(t, &masks)));
+    }
+}
+
+#[test]
+fn chords_cut_a_polygon_into_regions() {
+    // Hexagon with chords 1-4 and 2-3.
+    let mut partner = vec![None; 6];
+    for (a, b) in [(1, 4), (2, 3)] {
+        partner[a] = Some(b);
+        partner[b] = Some(a);
+    }
+    let mut regions = refine::regions(&partner);
+    regions.sort();
+    assert_eq!(regions, [vec![0, 1, 4, 5], vec![1, 2, 3, 4], vec![2, 3]]);
 }
 
 #[test]
@@ -118,10 +241,33 @@ fn diskscissors_finds_no_disk_for_a_longitude() {
     assert!(ring.len() >= 6);
     let volume = Volume::new(&mesh).unwrap();
     let options = Options::default();
-    assert_eq!(volume.disk(&options, &ring).unwrap(), Err(Miss::NoDisk));
+    let timeout = std::time::Duration::from_secs(60);
+    let ring: Vec<_> = ring.iter().map(|v| volume.index[v]).collect();
+    assert_eq!(
+        volume
+            .disk(&volume.mesh, &options.executable, timeout, &ring)
+            .unwrap(),
+        Err(Miss::NoDisk)
+    );
     let edge = skeleton.edges.keys().next().unwrap();
-    let meridian = &walks(&mesh, &skeleton, edge)[0][0];
-    assert_eq!(volume.disk(&options, meridian).unwrap(), Ok(()));
+    assert_eq!(
+        volume
+            .certify(&mesh, &skeleton, edge, &options.executable, timeout)
+            .unwrap(),
+        Ok(())
+    );
+}
+
+#[test]
+fn walks_beside_band_boundaries_are_simple_and_adjacent() {
+    let (mesh, skeleton) = torus();
+    for edge in skeleton.edges.keys() {
+        let walk = walk(&mesh, &skeleton, edge).expect("a band boundary has a simple side");
+        for i in 0..walk.len() {
+            let (a, b) = (walk[i], walk[(i + 1) % walk.len()]);
+            assert!(mesh.neighbors(a).any(|v| v == b));
+        }
+    }
 }
 
 #[test]
@@ -131,24 +277,7 @@ fn reduction_removes_repeats_and_backtracks_across_the_seam() {
     let (a, b, c, d) = (v[0], v[1], v[2], v[3]);
     assert_eq!(reduce(vec![a, b, b, c]), [a, b, c]);
     assert_eq!(reduce(vec![a, b, d, b, c]), [a, b, c]);
-    // Spur at the last vertex: ..., a, d | a, b, c.
     assert_eq!(reduce(vec![a, b, c, a, d]), [a, b, c]);
-    // Spur at the first vertex: d | a, d, b, c.
     assert_eq!(reduce(vec![a, d, b, c, d]), [d, b, c]);
     assert_eq!(reduce(vec![a, b, a]), [a]);
-}
-
-#[test]
-fn walks_split_into_simple_pieces_at_repeated_vertices() {
-    let mesh = crate::surface::tests::tetrahedron();
-    let v = mesh.vert_ids();
-    let (a, b, c, d) = (v[0], v[1], v[2], v[3]);
-    // Two triangles through a: a b c a d b ... closes back to a.
-    assert_eq!(
-        pieces(vec![a, b, c, a, c, d]),
-        [vec![a, b, c], vec![a, c, d]]
-    );
-    assert_eq!(pieces(vec![a, b, c]), [vec![a, b, c]]);
-    // A spur splits off as a trivial piece.
-    assert_eq!(pieces(vec![a, b, c, d, c]), [vec![a, b, c]]);
 }

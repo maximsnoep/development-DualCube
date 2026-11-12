@@ -7,7 +7,13 @@
 //! loops without disks close a cycle, no tree avoids them and certification fails.
 //!
 //! Disks are found by DiskScissors (`diskscissors` on PATH, or `DISKSCISSORS_EXECUTABLE`) in a
-//! TetGen tetrahedralization that keeps the input surface.
+//! TetGen tetrahedralization of the volume. A loop is given by the vertex walk beside it when
+//! that walk is simple; otherwise the volume is refined along the loop ([`refine`]), where it is
+//! itself a simple vertex cycle. Most disks are found within seconds, so loops are
+//! first given a short time; loops that ran out of time are retried with longer ones only when
+//! no spanning tree avoids them.
+
+mod refine;
 
 use crate::{Skeleton, SkeletonEdgeID, SkeletonResult};
 use dualcube_types::prelude::*;
@@ -17,8 +23,8 @@ use std::process::Command;
 #[derive(Clone, Debug)]
 pub struct Options {
     pub executable: PathBuf,
-    /// Per loop; a loop without a disk may keep DiskScissors searching.
-    pub timeout: std::time::Duration,
+    /// Time per loop for each round; a loop without a disk may keep DiskScissors searching.
+    pub timeouts: Vec<std::time::Duration>,
 }
 
 impl Default for Options {
@@ -26,7 +32,7 @@ impl Default for Options {
         Self {
             executable: std::env::var_os("DISKSCISSORS_EXECUTABLE")
                 .map_or_else(|| "diskscissors".into(), PathBuf::from),
-            timeout: std::time::Duration::from_secs(300),
+            timeouts: [10, 60, 300].map(std::time::Duration::from_secs).to_vec(),
         }
     }
 }
@@ -83,9 +89,21 @@ pub fn run_with(
 ) -> Result<Certificate, Failure> {
     let mut certificate = Certificate::default();
     let mut volume = None;
+    let mut round = 0;
     loop {
         let forced: Vec<_> = certificate.misses.iter().map(|m| m.0).collect();
         let Some(tree) = spanning_tree(mesh, skeleton, &forced) else {
+            if round + 1 < options.timeouts.len()
+                && certificate.misses.iter().any(|m| m.1 == Miss::Timeout)
+            {
+                round += 1;
+                certificate.misses.retain(|m| m.1 == Miss::NoDisk);
+                tracing::info!(
+                    "Certification: retrying loops that ran out of time with {:?}",
+                    options.timeouts[round]
+                );
+                continue;
+            }
             return Err(Failure::NoTree {
                 misses: certificate.misses,
             });
@@ -98,25 +116,22 @@ pub fn run_with(
         let mut missed = false;
         for edge in pending {
             if volume.is_none() {
+                tracing::info!(
+                    "Certification: {} loops beside a spanning tree",
+                    skeleton.edges.len() + 1 - skeleton.nodes.len()
+                );
                 volume = Some(Volume::new(mesh).map_err(|e| Failure::Unavailable(e.to_string()))?);
             }
-            let mut found = Err(Miss::NoDisk);
-            for pieces in walks(mesh, skeleton, edge) {
-                found = Ok(());
-                for piece in &pieces {
-                    found = volume
-                        .as_ref()
-                        .unwrap()
-                        .disk(options, piece)
-                        .map_err(|e| Failure::Unavailable(e.to_string()))?;
-                    if found.is_err() {
-                        break;
-                    }
-                }
-                if found.is_ok() {
-                    break;
-                }
-            }
+            let volume = volume.as_ref().unwrap();
+            let found = volume
+                .certify(
+                    mesh,
+                    skeleton,
+                    edge,
+                    &options.executable,
+                    options.timeouts[round],
+                )
+                .map_err(|e| Failure::Unavailable(e.to_string()))?;
             match found {
                 Ok(()) => certificate.disks.push(edge),
                 Err(miss) => {
@@ -199,19 +214,12 @@ fn loop_length(mesh: &Mesh<INPUT>, skeleton: &Skeleton, edge: SkeletonEdgeID) ->
         .sum()
 }
 
-/// Vertex walks beside a boundary loop, left side first, each split into simple closed
-/// pieces.
+/// A simple vertex walk beside a boundary loop, if either side has one.
 ///
 /// Consecutive crossings share a triangle, and the uncrossed vertices of that triangle on one
 /// side are equal or joined by an uncrossed edge. So each side's walk stays in a strip beside
-/// the loop and is homotopic to it. A walk is the product of its pieces, so the loop bounds
-/// when every piece does: it is then null-homotopic, and a simple curve on the boundary that
-/// is null-homotopic in the volume bounds a disk (Dehn's lemma).
-pub fn walks(
-    mesh: &Mesh<INPUT>,
-    skeleton: &Skeleton,
-    edge: SkeletonEdgeID,
-) -> Vec<Vec<Vec<VertID>>> {
+/// the loop and is homotopic to it; a simple one is then isotopic to it on the surface.
+pub fn walk(mesh: &Mesh<INPUT>, skeleton: &Skeleton, edge: SkeletonEdgeID) -> Option<Vec<VertID>> {
     let exits: Vec<_> = skeleton.edges[edge]
         .boundary
         .crossings
@@ -223,29 +231,8 @@ pub fn walks(
         exits.iter().map(|&e| mesh.root(e)).collect(),
     ]
     .into_iter()
-    .map(|side| pieces(reduce(side)))
-    .collect()
-}
-
-/// Simple closed walks whose product is the closed walk, split at repeated vertices; pieces
-/// shorter than a triangle are trivial and left out.
-fn pieces(walk: Vec<VertID>) -> Vec<Vec<VertID>> {
-    let mut stack: Vec<VertID> = Vec::new();
-    let mut pieces = Vec::new();
-    for v in walk {
-        if let Some(i) = stack.iter().position(|&w| w == v) {
-            pieces.push(stack.split_off(i));
-            stack.push(v);
-        } else {
-            stack.push(v);
-        }
-    }
-    pieces.push(stack);
-    pieces
-        .into_iter()
-        .map(reduce)
-        .filter(|piece| piece.len() >= 3)
-        .collect()
+    .map(reduce)
+    .find(|walk| walk.len() >= 3 && walk.iter().collect::<HashSet<_>>().len() == walk.len())
 }
 
 /// The closed walk without repeated vertices in a row and without backtracks (`a, b, a`),
@@ -286,45 +273,89 @@ fn reduce(walk: Vec<VertID>) -> Vec<VertID> {
 struct Volume {
     directory: PathBuf,
     mesh: PathBuf,
+    /// Volume vertex of each surface vertex.
     index: HashMap<VertID, usize>,
+    vertices: Vec<Vector3D>,
+    tets: Vec<[usize; 4]>,
 }
 
 impl Volume {
     fn new(mesh: &Mesh<INPUT>) -> SkeletonResult<Self> {
         let tets = mehsh_tetgen::tetrahedralize(mesh)?;
-        let directory = scratch_directory()?;
-        let path = directory.join("volume.vtk");
-        write_vtk(&path, &tets.vertices, &tets.tets)?;
         let index = tets
             .input_vertices
             .iter()
             .enumerate()
             .map(|(i, &v)| (v, i))
             .collect();
+        let directory = scratch_directory()?;
+        let path = directory.join("volume.vtk");
+        write_vtk(&path, &tets.vertices, &tets.tets)?;
         Ok(Self {
             directory,
             mesh: path,
             index,
+            vertices: tets.vertices,
+            tets: tets.tets,
         })
+    }
+
+    /// Whether a boundary loop bounds a disk: through the walk beside it when simple, else in
+    /// the volume refined along it.
+    fn certify(
+        &self,
+        mesh: &Mesh<INPUT>,
+        skeleton: &Skeleton,
+        edge: SkeletonEdgeID,
+        executable: &Path,
+        timeout: std::time::Duration,
+    ) -> SkeletonResult<Result<(), Miss>> {
+        if let Some(walk) = walk(mesh, skeleton, edge) {
+            let walk: Vec<_> = walk.iter().map(|v| self.index[v]).collect();
+            return self.disk(&self.mesh, executable, timeout, &walk);
+        }
+        let boundary = &skeleton.edges[edge].boundary;
+        let refined = refine::refine(
+            mesh,
+            &skeleton.surface,
+            &[boundary],
+            &self.index,
+            &self.vertices,
+            &self.tets,
+        );
+        let path = self.directory.join("refined.vtk");
+        write_vtk(&path, &refined.vertices, &refined.tets)?;
+        let walk: Vec<_> = boundary
+            .crossings
+            .iter()
+            .map(|c| refined.crossings[c])
+            .collect();
+        self.disk(&path, executable, timeout, &walk)
     }
 
     /// Whether DiskScissors finds a disk bounded by the walk. It reports success only by
     /// printing `Snip`; its exit status is zero either way.
-    fn disk(&self, options: &Options, walk: &[VertID]) -> SkeletonResult<Result<(), Miss>> {
+    fn disk(
+        &self,
+        volume: &Path,
+        executable: &Path,
+        timeout: std::time::Duration,
+        walk: &[usize],
+    ) -> SkeletonResult<Result<(), Miss>> {
         let path = self.directory.join("loop.txt");
         let log = self.directory.join("output.txt");
-        let text: Vec<_> = walk.iter().map(|v| self.index[v].to_string()).collect();
+        let text: Vec<_> = walk.iter().map(usize::to_string).collect();
         std::fs::write(&path, text.join("\n") + "\n")?;
-        let mut child = Command::new(&options.executable)
-            .arg(&self.mesh)
+        let mut child = Command::new(executable)
+            .arg(volume)
             .arg(&path)
             .stdout(std::fs::File::create(&log)?)
             .stderr(std::process::Stdio::null())
             .spawn()
-            .map_err(|e| format!("running {}: {e}", options.executable.display()))?;
+            .map_err(|e| format!("running {}: {e}", executable.display()))?;
         let start = std::time::Instant::now();
         while child.try_wait()?.is_none() {
-            if start.elapsed() > options.timeout {
+            if start.elapsed() > timeout {
                 child.kill()?;
                 child.wait()?;
                 return Ok(Err(Miss::Timeout));
