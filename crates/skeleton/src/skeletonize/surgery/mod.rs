@@ -6,7 +6,7 @@
 //! - An arc between distinct patches merges them. Two patches glued along an arc are
 //!   contractible in the volume when both are, so this needs no check.
 //! - An arc with one patch on both sides adds a loop crossing it once. It is dissolved only
-//!   when that loop bounds in the volume (Z/2 homology modulo the handle subspace K).
+//!   when that loop bounds in the volume (integer homology, see [`homology`]).
 //!
 //! A junction of degree two joins its two arcs. Surgery ends when no junctions remain; the
 //! closed arcs then become the skeleton edges.
@@ -31,7 +31,7 @@ use super::deflate::CONTRACTION;
 use crate::surface::canonical;
 use crate::{BoundaryCrossing, BoundaryCrossingID, BoundarySurface, Skeleton, SkeletonNodeID};
 use dualcube_types::prelude::*;
-use homology::{Class, Homology};
+use homology::{Bits, Class, Homology};
 
 /// Weights of collapse costs; topology checks are unchanged.
 #[derive(Clone, Copy, Debug)]
@@ -163,10 +163,11 @@ struct Arc {
     ends: Option<[JunctionID; 2]>,
     /// Left and right patch.
     sides: [usize; 2],
-    /// Class of a loop crossing it once, modulo K; set once one patch is on both sides.
+    /// Class of a loop crossing it once from left to right; set once one patch is on both
+    /// sides. Reversing the arc negates it.
     class: Option<Class>,
     /// Handle cycles it crosses.
-    handles: Class,
+    handles: Bits,
 }
 
 /// A point inside a triangle where three arc ends meet.
@@ -227,8 +228,8 @@ struct Surgery<'a> {
     scale: f64,
     index: HashMap<VertID, usize>,
     owner: Vec<usize>,
-    /// Class of a path from a fixed vertex of the owner patch, modulo K. Paths within a
-    /// patch differ by loops of that patch, which lie in K.
+    /// Class of a path from a fixed vertex of the owner patch. Paths within a patch differ
+    /// by loops of that patch, which bound.
     potential: Vec<Class>,
     patches: Vec<Option<Patch>>,
     /// Crossings of all arcs. Until the first flip each mesh edge has at most one.
@@ -444,10 +445,15 @@ impl<'a> Surgery<'a> {
         }
         if self.arcs[arc].class.is_none() {
             let [x, y] = self.ends(self.exit(self.arcs[arc].crossings[0]));
-            let class = &(&self.potential[x] ^ &self.potential[y]) ^ self.homology.edge([x, y]);
+            let class = self.crossing_class(x, y);
             self.arcs[arc].class = Some(class);
         }
-        self.homology.bounds(self.arcs[arc].class.clone().unwrap())
+        self.arcs[arc].class.as_ref().unwrap().is_zero()
+    }
+
+    /// Class of a loop through the mesh edge from x to y, closed inside one patch.
+    fn crossing_class(&self, x: usize, y: usize) -> Class {
+        &(&self.potential[x] - &self.potential[y]) + &self.homology.edge(x, y)
     }
 
     /// Collapse cost of Au et al. (shape and sampling) with the handle bias.
@@ -499,10 +505,14 @@ impl<'a> Surgery<'a> {
         } else {
             (v.clone(), u.clone(), kept, removed)
         };
-        let shift = &(&self.potential[x] ^ &self.potential[y]) ^ self.homology.edge([x, y]);
+        // Afterwards the potential steps by the edge's value from x to y.
+        let mut shift = self.crossing_class(x, y);
+        if self.owner[x] == gone {
+            shift = -&shift;
+        }
         for &w in &small.vertices {
             self.owner[w] = id;
-            self.potential[w] ^= &shift;
+            self.potential[w] = &self.potential[w] + &shift;
         }
         large.vertices.extend(&small.vertices);
         for &a in &small.arcs {
@@ -626,6 +636,7 @@ impl<'a> Surgery<'a> {
             crossing.exit = mesh.twin(crossing.exit);
         }
         a.sides.swap(0, 1);
+        a.class = a.class.as_ref().map(|c| -c);
         if let Some(ends) = &mut a.ends {
             ends.swap(0, 1);
             // The junction being joined at is already gone.

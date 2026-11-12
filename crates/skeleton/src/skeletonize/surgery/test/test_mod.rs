@@ -31,59 +31,52 @@ fn torus() -> Mesh<INPUT> {
     Mesh::from(&faces, &positions).unwrap().0
 }
 
-fn index(mesh: &Mesh<INPUT>) -> HashMap<VertID, usize> {
-    mesh.vert_ids()
-        .into_iter()
-        .enumerate()
-        .map(|(i, v)| (v, i))
-        .collect()
+/// A solid torus: a ring of n triangular prisms, each cut into three tets.
+fn solid_torus(n: u32) -> Vec<[u32; 4]> {
+    let mut tets = Vec::new();
+    for i in 0..n {
+        let j = (i + 1) % n;
+        let [a, b, c] = [0, 1, 2].map(|k| 3 * i + k);
+        let [d, e, f] = [0, 1, 2].map(|k| 3 * j + k);
+        tets.extend([[a, b, c, d], [b, c, d, e], [c, d, e, f]]);
+    }
+    tets
 }
 
-fn class(mesh: &Mesh<INPUT>, cocycles: &HashMap<[usize; 2], Class>, walk: &[VertID]) -> Class {
-    let index = index(mesh);
-    (0..walk.len())
-        .map(|i| {
-            let [a, b] = [index[&walk[i]], index[&walk[(i + 1) % walk.len()]]];
-            cocycles
-                .get(&[a.min(b), a.max(b)])
-                .cloned()
-                .unwrap_or_default()
-        })
-        .fold(Class::default(), |sum, c| &sum ^ &c)
+/// Sum of cocycle values along a closed vertex walk.
+fn integral(values: &HashMap<[u32; 2], Class>, walk: &[u32]) -> Class {
+    (0..walk.len()).fold(Class::default(), |sum, i| {
+        let (a, b) = (walk[i], walk[(i + 1) % walk.len()]);
+        let value = &values[&[a.min(b), a.max(b)]];
+        if a < b { &sum + value } else { &sum - value }
+    })
 }
 
 #[test]
-fn torus_cocycles_are_closed_and_detect_both_generators() {
-    let mesh = torus();
-    let index = index(&mesh);
-    let cocycles = homology::cocycles(&mesh, &index);
-    let used = cocycles.values().fold(Class::default(), |mut all, c| {
-        all |= c;
-        all
-    });
-    assert_eq!(used.count_ones(), 2);
-    assert_eq!(used, &Class::bit(0) ^ &Class::bit(1));
-    for f in mesh.face_ids() {
-        let corners: Vec<_> = mesh.edges(f).map(|e| mesh.root(e)).collect();
-        assert!(class(&mesh, &cocycles, &corners).is_zero());
+fn a_solid_torus_has_one_volume_cocycle_closed_on_every_triangle() {
+    let tets = solid_torus(5);
+    let (rank, values) = homology::volume_cocycles(15, &tets).unwrap();
+    assert_eq!(rank, 1);
+    for t in &tets {
+        for skip in 0..4 {
+            let triangle: Vec<_> = (0..4).filter(|&k| k != skip).map(|k| t[k]).collect();
+            assert!(integral(&values, &triangle).is_zero());
+        }
     }
-    // Grid vertex (i, j) by position, as `Mesh::from` may reorder vertices.
-    let grid = |i: usize, j: usize| {
-        let u = std::f64::consts::TAU * i as f64 / 12.;
-        let v = std::f64::consts::TAU * j as f64 / 6.;
-        let p = Vector3D::new((3. + v.cos()) * u.cos(), (3. + v.cos()) * u.sin(), v.sin());
-        mesh.vert_ids()
-            .into_iter()
-            .find(|&w| (mesh.position(w) - p).norm() < 1e-9)
-            .unwrap()
-    };
-    let meridian: Vec<_> = (0..6).map(|j| grid(0, j)).collect();
-    let longitude: Vec<_> = (0..12).map(|i| grid(i, 0)).collect();
-    let (a, b) = (
-        class(&mesh, &cocycles, &meridian),
-        class(&mesh, &cocycles, &longitude),
-    );
-    assert!(!a.is_zero() && !b.is_zero() && a != b);
+    // Once around the ring: a generator, either way round.
+    let around: Vec<_> = (0..5).map(|i| 3 * i).collect();
+    let class = integral(&values, &around);
+    assert!(class == Class::unit(0) || class == -&Class::unit(0));
+    // Twice around is nonzero, though zero mod 2.
+    let twice = [0, 3, 6, 9, 12, 13, 1, 4, 7, 10, 13];
+    assert_eq!(integral(&values, &twice), &class + &class);
+}
+
+#[test]
+fn a_ball_has_no_volume_cocycles() {
+    let (rank, values) = homology::volume_cocycles(5, &[[0, 1, 2, 3], [1, 2, 3, 4]]).unwrap();
+    assert_eq!(rank, 0);
+    assert!(values.values().all(Class::is_zero));
 }
 
 /// Arcs are chains of consecutive triangles that end where their junctions say, and the
@@ -158,8 +151,8 @@ fn surgery_ends_with_closed_loops_between_genus_zero_patches() {
     assert_eq!(skeleton.edges.len() + 1, skeleton.nodes.len());
 }
 
-/// The tetrahedron's dual graph inside one patch, as if stuck: opposite mesh edges share a
-/// nonzero class, so every junction sees all three and no arc bounds (K = 0 on a sphere).
+/// The tetrahedron's dual graph inside one patch, as if stuck: the arcs carry a nowhere-zero
+/// integer flow, so every junction's classes sum to zero while no arc bounds.
 fn stuck(mesh: &Mesh<INPUT>) -> Surgery<'_> {
     let contracted = Mesh::<CONTRACTION>::convert(mesh);
     let mut surgery = Surgery::new(&contracted, mesh, 0, Options::default()).unwrap();
@@ -172,18 +165,31 @@ fn stuck(mesh: &Mesh<INPUT>) -> Surgery<'_> {
     first.vertices = (0..4).collect();
     first.arcs = all.iter().copied().collect();
     surgery.owner = vec![0; 4];
-    for &arc in &all {
-        let [x, y] = surgery.ends(surgery.exit(surgery.arcs[arc].crossings[0]));
-        // The pair of opposite edges is named by the smaller of its edge's endpoints' sums.
-        let pair = (x + y).min(6 - x - y) - 1;
-        let class = if pair < 2 {
-            Class::bit(pair)
-        } else {
-            &Class::bit(0) ^ &Class::bit(1)
-        };
+    // Arc i ends at junctions; at each, starting arcs count negatively.
+    let flow = (0..6usize.pow(all.len() as u32))
+        .map(|code| {
+            (0..all.len())
+                .map(|i| [-3, -2, -1, 1, 2, 3][code / 6usize.pow(i as u32) % 6])
+                .collect::<Vec<i64>>()
+        })
+        .find(|values| {
+            surgery.junctions.values().all(|j| {
+                j.spokes
+                    .iter()
+                    .map(|&(arc, end)| {
+                        let v = values[all.iter().position(|&a| a == arc).unwrap()];
+                        if end == 0 { -v } else { v }
+                    })
+                    .sum::<i64>()
+                    == 0
+            })
+        })
+        .expect("K4 has a nowhere-zero flow");
+    for (i, &arc) in all.iter().enumerate() {
+        let class = (0..flow[i].unsigned_abs()).fold(Class::default(), |c, _| &c + &Class::unit(0));
         let arc = &mut surgery.arcs[arc];
         arc.sides = [0, 0];
-        arc.class = Some(class);
+        arc.class = Some(if flow[i] > 0 { class } else { -&class });
     }
     surgery
 }

@@ -4,7 +4,9 @@
 //! does not bound. Two junctions joined by an arc e can be pulled together into a four-way
 //! point and apart the other way. With spokes counterclockwise (e, a, b) at the start of e and
 //! (e, c, d) at its end, the new arc e' separates {b, c} from {d, a}. No patch changes, nor do
-//! the classes of a, b, c, d; e' gets κ(b) + κ(c), as a small loop around a junction bounds.
+//! the classes of a, b, c, d. A small loop around a junction bounds, so the classes of its
+//! arcs sum to zero, each signed by whether the arc starts or ends there ([`signed`]); this
+//! gives the class of e'.
 //!
 //! A breadth-first search over these combinatorial flips looks for an arc whose loop bounds.
 //! Only that sequence is applied to the surface.
@@ -38,9 +40,20 @@ impl Rotation {
         next.spokes[j2] = smallest_first([(e, 1), b, c]);
         next.ends[b.0][b.1] = j2;
         next.ends[d.0][d.1] = j1;
-        next.classes[e] = &self.classes[b.0] ^ &self.classes[c.0];
+        next.classes[e] = through(&self.classes, b, c);
         Some(next)
     }
+}
+
+/// Sign of an arc's class in the relation around a junction: a small loop around it crosses
+/// arcs that start there the other way from arcs that end there.
+fn signed(class: &Class, end: usize) -> Class {
+    if end == 0 { -class } else { class.clone() }
+}
+
+/// Class of the arc that ends at the junction with spokes b and c.
+fn through(classes: &[Class], b: Spoke, c: Spoke) -> Class {
+    -&(&signed(&classes[b.0], b.1) + &signed(&classes[c.0], c.1))
 }
 
 fn rotate<T: Copy + PartialEq>(spokes: [T; 3], first: T) -> [T; 3] {
@@ -91,6 +104,14 @@ impl Surgery<'_> {
                 .map(|&a| self.arcs[a].class.clone().unwrap())
                 .collect(),
         };
+        debug_assert!(start.spokes.iter().all(|spokes| {
+            spokes
+                .iter()
+                .fold(Class::default(), |sum, &(arc, end)| {
+                    &sum + &signed(&start.classes[arc], end)
+                })
+                .is_zero()
+        }));
         let fingerprint = |r: &Rotation| {
             let mut hasher = std::collections::hash_map::DefaultHasher::new();
             r.hash(&mut hasher);
@@ -105,7 +126,7 @@ impl Surgery<'_> {
                 };
                 let mut sequence = path.clone();
                 sequence.push(e);
-                if self.homology.bounds(next.classes[e].clone()) {
+                if next.classes[e].is_zero() {
                     info!(
                         "Connectivity surgery: {} flips free a junction",
                         sequence.len()
@@ -127,7 +148,8 @@ impl Surgery<'_> {
         assert_ne!(j1, j2, "flips need two junctions");
         let [_, a, b] = rotate(self.ccw_array(j1), (e, 0));
         let [_, c, d] = rotate(self.ccw_array(j2), (e, 1));
-        let class = &self.arcs[b.0].class.clone().unwrap() ^ self.arcs[c.0].class.as_ref().unwrap();
+        let classes = [b.0, c.0].map(|arc| self.arcs[arc].class.clone().unwrap());
+        let class = through(&classes, (0, b.1), (1, c.1));
         let original: Vec<_> = self.arcs[e].crossings.iter().copied().collect();
         // Spokes counterclockwise from e lie on its left.
         let outer = parallel_crossings(self.mesh, &mut self.surface, &original, 0);
