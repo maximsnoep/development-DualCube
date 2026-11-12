@@ -20,6 +20,7 @@ use slotmap::SlotMap;
 use tracing::{info, warn};
 
 mod f2_rref;
+mod flip;
 mod handle_subspace;
 mod homology;
 mod output;
@@ -27,7 +28,8 @@ mod tet_boundary;
 mod tetrahedralize;
 
 use super::deflate::CONTRACTION;
-use crate::{Skeleton, SkeletonNodeID};
+use crate::surface::canonical;
+use crate::{BoundaryCrossing, BoundaryCrossingID, BoundarySurface, Skeleton, SkeletonNodeID};
 use dualcube_types::prelude::*;
 use homology::{Class, Homology};
 
@@ -38,6 +40,8 @@ pub struct Options {
     pub sampling_weight: f64,
     /// Subtracted once per handle cycle crossed by the dissolved arc. Not from Au et al.
     pub handle_bonus: f64,
+    /// Flip sequences tried when surgery is stuck, before it fails.
+    pub flip_budget: usize,
 }
 
 impl Default for Options {
@@ -46,6 +50,7 @@ impl Default for Options {
             shape_weight: 1.0,
             sampling_weight: 0.1,
             handle_bonus: 1.0e6,
+            flip_budget: 100_000,
         }
     }
 }
@@ -145,17 +150,30 @@ pub fn run_with_options(
 
 slotmap::new_key_type! {
     struct ArcID;
+    struct JunctionID;
 }
 
 /// A boundary curve between junctions, or a closed one.
 #[derive(Clone, Debug)]
 struct Arc {
-    /// Exits as in [`crate::BoundaryCrossing`]: the arc starts in the triangle of the first
-    /// and ends in the triangle of the last one's twin.
-    exits: VecDeque<EdgeID>,
-    closed: bool,
+    /// In traversal order; see [`crate::BoundaryCrossing`].
+    crossings: VecDeque<BoundaryCrossingID>,
+    /// Start and end junction; none when closed.
+    ends: Option<[JunctionID; 2]>,
+    /// Left and right patch.
+    sides: [usize; 2],
+    /// Class of a loop crossing it once, modulo K; set once one patch is on both sides.
+    class: Option<Class>,
     /// Handle cycles it crosses.
     handles: Class,
+}
+
+/// A point inside a triangle where three arc ends meet.
+#[derive(Clone, Debug)]
+struct Junction {
+    face: FaceID,
+    /// Arc ends (0 = start, 1 = end); an arc ending here twice appears twice.
+    spokes: Vec<(ArcID, usize)>,
 }
 
 #[derive(Clone, Debug)]
@@ -212,9 +230,10 @@ struct Surgery<'a> {
     /// patch differ by loops of that patch, which lie in K.
     potential: Vec<Class>,
     patches: Vec<Option<Patch>>,
+    /// Crossings of all arcs. Until the first flip each mesh edge has at most one.
+    surface: BoundarySurface,
     arcs: SlotMap<ArcID, Arc>,
-    /// Arcs ending in each junction triangle; an arc ending twice appears twice.
-    junctions: HashMap<FaceID, Vec<ArcID>>,
+    junctions: SlotMap<JunctionID, Junction>,
     homology: Homology,
     heap: BinaryHeap<Candidate>,
     /// Arcs with one patch on both sides, to dissolve if their loop bounds.
@@ -278,26 +297,48 @@ impl<'a> Surgery<'a> {
             potential: vec![Class::default(); vertices.len()],
             index,
             patches,
+            surface: BoundarySurface::default(),
             arcs: SlotMap::with_key(),
-            junctions: HashMap::new(),
+            junctions: SlotMap::with_key(),
             homology,
             heap: BinaryHeap::new(),
             pending: Vec::new(),
         };
+        let junctions: HashMap<_, _> = mesh
+            .face_ids()
+            .into_iter()
+            .map(|face| {
+                let id = surgery.junctions.insert(Junction {
+                    face,
+                    spokes: Vec::new(),
+                });
+                (face, id)
+            })
+            .collect();
         for e in mesh.edge_ids() {
             if e > mesh.twin(e) {
                 continue;
             }
-            let handles = surgery.homology.handles(surgery.ends(e));
+            let crossing = surgery
+                .surface
+                .crossings
+                .insert(BoundaryCrossing { exit: e });
+            surgery.surface.edge_order.insert(e, vec![crossing]);
+            let ends = [
+                junctions[&mesh.face(e)],
+                junctions[&mesh.face(mesh.twin(e))],
+            ];
             let arc = surgery.arcs.insert(Arc {
-                exits: VecDeque::from([e]),
-                closed: false,
-                handles,
+                crossings: VecDeque::from([crossing]),
+                ends: Some(ends),
+                sides: surgery.ends(e),
+                class: None,
+                handles: surgery.homology.handles(surgery.ends(e)),
             });
-            for face in [mesh.face(e), mesh.face(mesh.twin(e))] {
-                surgery.junctions.entry(face).or_default().push(arc);
+            for (end, j) in ends.into_iter().enumerate() {
+                surgery.junctions[j].spokes.push((arc, end));
             }
-            for patch in surgery.sides(arc) {
+            for patch in surgery.arcs[arc].sides {
                 surgery.patch_mut(patch).arcs.insert(arc);
             }
         }
@@ -310,8 +351,7 @@ impl<'a> Surgery<'a> {
 
     fn run(&mut self) -> Result<(), SurgeryFailure> {
         let start = std::time::Instant::now();
-        let mut merges = 0;
-        let mut dissolved = 0;
+        let (mut merges, mut dissolved, mut flips) = (0, 0, 0);
         loop {
             while let Some(arc) = self.pending.pop() {
                 if self.arcs.contains_key(arc) && self.bounds(arc) {
@@ -323,11 +363,19 @@ impl<'a> Surgery<'a> {
                 break;
             }
             let Some(candidate) = self.heap.pop() else {
+                // Every arc at a junction has one patch on both sides and a loop that does
+                // not bound. Flip arcs until one bounds.
+                if let Some(sequence) = self.search() {
+                    flips += sequence.len();
+                    for &arc in &sequence {
+                        self.flip(arc);
+                    }
+                    self.pending.push(*sequence.last().unwrap());
+                    continue;
+                }
                 let (graph, remaining) = self.diagnostic();
-                // Every arc at a junction now has one patch on both sides and a loop that
-                // does not bound.
                 warn!(
-                    "Connectivity surgery stuck: {} junctions, {} arcs and {} patches remain after {merges} merges",
+                    "Connectivity surgery stuck: no flip sequence within the budget frees one of {} junctions ({} arcs, {} patches, after {merges} merges)",
                     self.junctions.len(),
                     self.arcs.len(),
                     self.patches.iter().flatten().count()
@@ -341,11 +389,11 @@ impl<'a> Surgery<'a> {
             let Some(arc) = self.arcs.get(candidate.arc) else {
                 continue;
             };
-            let mut sides = self.sides(candidate.arc);
+            let mut sides = arc.sides;
             sides.sort();
             let mut expected = [candidate.removed, candidate.kept];
             expected.sort();
-            if arc.closed || sides != expected || sides[0] == sides[1] {
+            if arc.ends.is_none() || sides != expected || sides[0] == sides[1] {
                 continue;
             }
             // Refresh stale entries instead of dropping them.
@@ -358,7 +406,7 @@ impl<'a> Surgery<'a> {
             merges += 1;
         }
         info!(
-            "Connectivity surgery complete in {:.2}s: {merges} merges, {dissolved} self-arcs dissolved, {} loops",
+            "Connectivity surgery complete in {:.2}s: {merges} merges, {dissolved} self-arcs dissolved, {flips} flips, {} loops",
             start.elapsed().as_secs_f64(),
             self.arcs.len()
         );
@@ -373,6 +421,10 @@ impl<'a> Surgery<'a> {
         self.patches[patch].as_mut().unwrap()
     }
 
+    fn exit(&self, crossing: BoundaryCrossingID) -> EdgeID {
+        self.surface.crossings[crossing].exit
+    }
+
     /// Vertex indices of the mesh edge crossed by an exit, left first.
     fn ends(&self, exit: EdgeID) -> [usize; 2] {
         [
@@ -381,29 +433,20 @@ impl<'a> Surgery<'a> {
         ]
     }
 
-    /// Left and right patch.
-    fn sides(&self, arc: ArcID) -> [usize; 2] {
-        self.ends(self.arcs[arc].exits[0]).map(|v| self.owner[v])
-    }
-
-    /// Junction triangles at the start and end, unless closed.
-    fn junction_ends(&self, arc: ArcID) -> Option<[FaceID; 2]> {
-        let arc = &self.arcs[arc];
-        (!arc.closed).then(|| {
-            [
-                self.mesh.face(arc.exits[0]),
-                self.mesh.face(self.mesh.twin(*arc.exits.back().unwrap())),
-            ]
-        })
-    }
-
-    /// Whether the loop crossing a self-arc once bounds in the volume.
-    fn bounds(&self, arc: ArcID) -> bool {
-        let [x, y] = self.ends(self.arcs[arc].exits[0]);
-        self.owner[x] == self.owner[y]
-            && self
-                .homology
-                .bounds(&(&self.potential[x] ^ &self.potential[y]) ^ self.homology.edge([x, y]))
+    /// Whether the loop crossing a self-arc once bounds in the volume. The class is taken
+    /// from the potentials when the arc first has one patch on both sides; mesh edges are
+    /// then crossed at most once.
+    fn bounds(&mut self, arc: ArcID) -> bool {
+        let [left, right] = self.arcs[arc].sides;
+        if left != right {
+            return false;
+        }
+        if self.arcs[arc].class.is_none() {
+            let [x, y] = self.ends(self.exit(self.arcs[arc].crossings[0]));
+            let class = &(&self.potential[x] ^ &self.potential[y]) ^ self.homology.edge([x, y]);
+            self.arcs[arc].class = Some(class);
+        }
+        self.homology.bounds(self.arcs[arc].class.clone().unwrap())
     }
 
     /// Collapse cost of Au et al. (shape and sampling) with the handle bias.
@@ -414,7 +457,7 @@ impl<'a> Surgery<'a> {
         let neighbors: BTreeSet<_> = u
             .arcs
             .iter()
-            .flat_map(|&a| self.sides(a))
+            .flat_map(|&a| self.arcs[a].sides)
             .filter(|&n| n != removed && n != kept)
             .collect();
         let sampling: f64 = neighbors
@@ -427,10 +470,10 @@ impl<'a> Surgery<'a> {
 
     /// Queue an arc: a merge in both directions, or a self-arc test.
     fn push(&mut self, arc: ArcID) {
-        let [a, b] = self.sides(arc);
+        let [a, b] = self.arcs[arc].sides;
         if a == b {
             self.pending.push(arc);
-        } else if !self.arcs[arc].closed {
+        } else if self.arcs[arc].ends.is_some() {
             for (removed, kept) in [(a, b), (b, a)] {
                 let cost = self.cost(arc, removed, kept);
                 self.heap.push(Candidate {
@@ -444,16 +487,16 @@ impl<'a> Surgery<'a> {
     }
 
     fn merge(&mut self, arc: ArcID, removed: usize, kept: usize) {
-        let [x, y] = self.ends(self.arcs[arc].exits[0]);
+        let [x, y] = self.ends(self.exit(self.arcs[arc].crossings[0]));
         let (u, v) = (
             self.patches[removed].take().unwrap(),
             self.patches[kept].take().unwrap(),
         );
         // Relabel the smaller patch, keeping potentials consistent across the arc.
-        let (mut large, small, id) = if u.vertices.len() > v.vertices.len() {
-            (u.clone(), v.clone(), removed)
+        let (mut large, small, id, gone) = if u.vertices.len() > v.vertices.len() {
+            (u.clone(), v.clone(), removed, kept)
         } else {
-            (v.clone(), u.clone(), kept)
+            (v.clone(), u.clone(), kept, removed)
         };
         let shift = &(&self.potential[x] ^ &self.potential[y]) ^ self.homology.edge([x, y]);
         for &w in &small.vertices {
@@ -461,6 +504,13 @@ impl<'a> Surgery<'a> {
             self.potential[w] ^= &shift;
         }
         large.vertices.extend(&small.vertices);
+        for &a in &small.arcs {
+            for side in &mut self.arcs[a].sides {
+                if *side == gone {
+                    *side = id;
+                }
+            }
+        }
         // Arcs the two shared besides this one now have the merged patch on both sides.
         let shared: Vec<_> = small
             .arcs
@@ -476,7 +526,8 @@ impl<'a> Surgery<'a> {
         self.pending.extend(shared);
         let arcs: Vec<_> = self.patch(id).arcs.iter().copied().collect();
         for a in arcs {
-            if self.sides(a)[0] != self.sides(a)[1] {
+            let [left, right] = self.arcs[a].sides;
+            if left != right {
                 self.push(a);
             }
         }
@@ -484,16 +535,22 @@ impl<'a> Surgery<'a> {
 
     /// Delete an arc and settle its junctions.
     fn remove(&mut self, arc: ArcID) {
-        let ends = self.junction_ends(arc);
-        for patch in self.sides(arc) {
+        let removed = self.arcs.remove(arc).unwrap();
+        for patch in removed.sides {
             self.patch_mut(patch).arcs.remove(&arc);
         }
-        self.arcs.remove(arc);
-        if let Some([f, g]) = ends {
-            for face in [f, g] {
-                if let Some(list) = self.junctions.get_mut(&face) {
-                    list.retain(|&a| a != arc);
-                }
+        for c in removed.crossings {
+            let exit = self.surface.crossings.remove(c).unwrap().exit;
+            let key = canonical(self.mesh, exit);
+            let order = self.surface.edge_order.get_mut(&key).unwrap();
+            order.retain(|&o| o != c);
+            if order.is_empty() {
+                self.surface.edge_order.remove(&key);
+            }
+        }
+        if let Some([f, g]) = removed.ends {
+            for j in [f, g] {
+                self.junctions[j].spokes.retain(|s| s.0 != arc);
             }
             self.settle(f);
             if g != f {
@@ -502,76 +559,86 @@ impl<'a> Surgery<'a> {
         }
     }
 
-    fn settle(&mut self, face: FaceID) {
-        let Some(list) = self.junctions.get(&face) else {
-            return;
-        };
-        match list[..] {
+    fn settle(&mut self, junction: JunctionID) {
+        match self.junctions[junction].spokes[..] {
             [] => {
-                self.junctions.remove(&face);
+                self.junctions.remove(junction);
             }
             // A spur lies inside one patch; its loop always bounds.
-            [spur] => self.pending.push(spur),
+            [(spur, _)] => self.pending.push(spur),
             [a, b] => {
-                self.junctions.remove(&face);
-                if a == b {
-                    self.arcs[a].closed = true;
-                    self.push(a);
+                self.junctions.remove(junction);
+                if a.0 == b.0 {
+                    self.arcs[a.0].ends = None;
+                    self.push(a.0);
                 } else {
-                    self.join(a, b, face);
+                    self.join(a, b);
                 }
             }
             _ => {}
         }
     }
 
-    /// Join two arcs meeting at a degree-two junction.
-    fn join(&mut self, a: ArcID, b: ArcID, face: FaceID) {
-        if self
-            .mesh
-            .face(self.mesh.twin(*self.arcs[a].exits.back().unwrap()))
-            != face
-        {
+    /// Join two arcs meeting at a removed degree-two junction.
+    fn join(&mut self, (a, end_a): (ArcID, usize), (b, end_b): (ArcID, usize)) {
+        if end_a != 1 {
             self.reverse(a);
         }
-        if self.mesh.face(self.arcs[b].exits[0]) != face {
+        if end_b != 0 {
             self.reverse(b);
         }
-        let (kept, killed) = if self.arcs[a].exits.len() >= self.arcs[b].exits.len() {
-            let exits = std::mem::take(&mut self.arcs[b].exits);
-            self.arcs[a].exits.extend(exits);
-            (a, b)
+        let (kept, killed, end) = if self.arcs[a].crossings.len() >= self.arcs[b].crossings.len() {
+            let crossings = std::mem::take(&mut self.arcs[b].crossings);
+            self.arcs[a].crossings.extend(crossings);
+            (a, b, 1)
         } else {
-            let exits = std::mem::take(&mut self.arcs[a].exits);
-            for e in exits.into_iter().rev() {
-                self.arcs[b].exits.push_front(e);
+            let crossings = std::mem::take(&mut self.arcs[a].crossings);
+            for c in crossings.into_iter().rev() {
+                self.arcs[b].crossings.push_front(c);
             }
-            (b, a)
+            (b, a, 0)
         };
-        let handles = std::mem::take(&mut self.arcs[killed].handles);
-        self.arcs[kept].handles |= &handles;
-        let other = if killed == b {
-            self.mesh
-                .face(self.mesh.twin(*self.arcs[kept].exits.back().unwrap()))
-        } else {
-            self.mesh.face(self.arcs[kept].exits[0])
-        };
-        for entry in self.junctions.get_mut(&other).unwrap() {
-            if *entry == killed {
-                *entry = kept;
+        let gone = self.arcs.remove(killed).unwrap();
+        let other = gone.ends.unwrap()[end];
+        self.arcs[kept].ends.as_mut().unwrap()[end] = other;
+        for spoke in &mut self.junctions[other].spokes {
+            if *spoke == (killed, end) {
+                *spoke = (kept, end);
             }
         }
-        for patch in self.sides(kept) {
+        self.arcs[kept].handles |= &gone.handles;
+        if self.arcs[kept].class.is_none() {
+            self.arcs[kept].class = gone.class;
+        }
+        for patch in gone.sides {
             self.patch_mut(patch).arcs.remove(&killed);
         }
-        self.arcs.remove(killed);
         self.push(kept);
     }
 
     fn reverse(&mut self, arc: ArcID) {
-        let exits = &mut self.arcs[arc].exits;
-        let reversed: VecDeque<_> = exits.iter().rev().map(|&e| self.mesh.twin(e)).collect();
-        *exits = reversed;
+        let mesh = self.mesh;
+        let a = &mut self.arcs[arc];
+        a.crossings.make_contiguous().reverse();
+        for &c in &a.crossings {
+            let crossing = &mut self.surface.crossings[c];
+            crossing.exit = mesh.twin(crossing.exit);
+        }
+        a.sides.swap(0, 1);
+        if let Some(ends) = &mut a.ends {
+            ends.swap(0, 1);
+            // The junction being joined at is already gone.
+            for j in ends.iter().copied().collect::<BTreeSet<_>>() {
+                let Some(junction) = self.junctions.get_mut(j) else {
+                    continue;
+                };
+                for spoke in &mut junction.spokes {
+                    if spoke.0 == arc {
+                        spoke.1 = 1 - spoke.1;
+                    }
+                }
+            }
+        }
     }
 
     fn input_position(&self, patch: usize) -> Vector3D {
@@ -592,16 +659,16 @@ impl<'a> Surgery<'a> {
         }
         let edges = self
             .arcs
-            .keys()
-            .map(|a| self.sides(a).map(|p| nodes[&p]))
+            .values()
+            .map(|a| a.sides.map(|p| nodes[&p]))
             .collect();
         let triangles = self
             .junctions
-            .keys()
-            .map(|&f| {
+            .values()
+            .map(|j| {
                 let mut corners = self
                     .mesh
-                    .edges(f)
+                    .edges(j.face)
                     .map(|e| self.mesh.position(self.mesh.root(e)));
                 [(); 3].map(|()| corners.next().unwrap())
             })

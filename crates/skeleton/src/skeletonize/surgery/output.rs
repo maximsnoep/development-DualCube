@@ -2,14 +2,17 @@
 //! graph is simple.
 
 use super::Surgery;
-use crate::surface::{canonical, edit::parallel};
-use crate::{BoundaryCrossing, PatchBoundary, Skeleton, SkeletonEdge, SkeletonNode};
+use crate::surface::edit::parallel;
+use crate::{PatchBoundary, Skeleton, SkeletonEdge, SkeletonNode};
 use dualcube_types::prelude::*;
 
 impl Surgery<'_> {
     /// The patches and closed boundaries; may contain self-loops and parallel edges.
     pub(super) fn skeleton(&self) -> Skeleton {
-        let mut skeleton = Skeleton::default();
+        let mut skeleton = Skeleton {
+            surface: self.surface.clone(),
+            ..Skeleton::default()
+        };
         let mut nodes = HashMap::new();
         for (patch, p) in self.patches.iter().enumerate() {
             if p.is_some() {
@@ -17,20 +20,12 @@ impl Surgery<'_> {
                 nodes.insert(patch, skeleton.nodes.insert(SkeletonNode { position }));
             }
         }
-        for (id, arc) in &self.arcs {
-            let mut crossings = Vec::with_capacity(arc.exits.len());
-            for &exit in &arc.exits {
-                let crossing = skeleton.surface.crossings.insert(BoundaryCrossing { exit });
-                // Surgery crosses each mesh edge at most once.
-                skeleton
-                    .surface
-                    .edge_order
-                    .insert(canonical(self.mesh, exit), vec![crossing]);
-                crossings.push(crossing);
-            }
+        for arc in self.arcs.values() {
             skeleton.edges.insert(SkeletonEdge {
-                nodes: self.sides(id).map(|p| nodes[&p]),
-                boundary: PatchBoundary { crossings },
+                nodes: arc.sides.map(|p| nodes[&p]),
+                boundary: PatchBoundary {
+                    crossings: arc.crossings.iter().copied().collect(),
+                },
             });
         }
         skeleton

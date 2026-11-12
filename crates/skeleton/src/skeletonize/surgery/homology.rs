@@ -13,7 +13,7 @@ use std::collections::VecDeque;
 
 /// Bit set over cocycles or handle cycles, without trailing zero words; ordered by its
 /// highest bit.
-#[derive(Clone, Debug, Default, PartialEq, Eq)]
+#[derive(Clone, Debug, Default, PartialEq, Eq, Hash)]
 pub(super) struct Class(Vec<u64>);
 
 impl Class {

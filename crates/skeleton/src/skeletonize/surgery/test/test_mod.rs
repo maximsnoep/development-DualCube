@@ -86,33 +86,51 @@ fn torus_cocycles_are_closed_and_detect_both_generators() {
     assert!(!a.is_zero() && !b.is_zero() && a != b);
 }
 
-/// Every arc is a chain of consecutive triangles and ends where its junctions say.
+/// Arcs are chains of consecutive triangles that end where their junctions say, and the
+/// surface holds exactly their crossings.
 fn assert_consistent(surgery: &Surgery<'_>) {
     let mesh = surgery.mesh;
-    let mut ends = HashMap::<FaceID, Vec<ArcID>>::new();
+    let mut count = 0;
     for (id, arc) in &surgery.arcs {
-        for w in arc.exits.iter().collect::<Vec<_>>().windows(2) {
-            assert_eq!(mesh.face(mesh.twin(*w[0])), mesh.face(*w[1]));
+        let exits: Vec<_> = arc.crossings.iter().map(|&c| surgery.exit(c)).collect();
+        for w in exits.windows(2) {
+            assert_eq!(mesh.face(mesh.twin(w[0])), mesh.face(w[1]));
         }
-        match surgery.junction_ends(id) {
-            Some(faces) => faces.map(|f| ends.entry(f).or_default().push(id)),
-            None => {
-                let (first, last) = (arc.exits[0], *arc.exits.back().unwrap());
-                assert_eq!(mesh.face(mesh.twin(last)), mesh.face(first));
-                [(); 2]
+        let (first, last) = (exits[0], *exits.last().unwrap());
+        match arc.ends {
+            Some([j1, j2]) => {
+                assert_eq!(surgery.junctions[j1].face, mesh.face(first));
+                assert_eq!(surgery.junctions[j2].face, mesh.face(mesh.twin(last)));
+                assert!(surgery.junctions[j1].spokes.contains(&(id, 0)));
+                assert!(surgery.junctions[j2].spokes.contains(&(id, 1)));
             }
-        };
-        for patch in surgery.sides(id) {
+            None => assert_eq!(mesh.face(mesh.twin(last)), mesh.face(first)),
+        }
+        for &c in &arc.crossings {
+            let order = &surgery.surface.edge_order[&canonical(mesh, surgery.exit(c))];
+            assert_eq!(order.iter().filter(|&&o| o == c).count(), 1);
+        }
+        count += arc.crossings.len();
+        for patch in arc.sides {
             assert!(surgery.patch(patch).arcs.contains(&id));
         }
     }
-    assert_eq!(ends.len(), surgery.junctions.len());
-    for (face, mut arcs) in ends {
-        let mut listed = surgery.junctions[&face].clone();
-        arcs.sort();
-        listed.sort();
-        assert_eq!(arcs, listed);
-        assert!(listed.len() >= 3);
+    assert_eq!(count, surgery.surface.crossings.len());
+    assert_eq!(
+        count,
+        surgery
+            .surface
+            .edge_order
+            .values()
+            .map(Vec::len)
+            .sum::<usize>()
+    );
+    for junction in surgery.junctions.values() {
+        assert_eq!(junction.spokes.len(), 3);
+        for &(arc, end) in &junction.spokes {
+            let ends = surgery.arcs[arc].ends.unwrap();
+            assert_eq!(surgery.junctions[ends[end]].face, junction.face);
+        }
     }
 }
 
@@ -134,10 +152,91 @@ fn surgery_ends_with_closed_loops_between_genus_zero_patches() {
     let mut surgery = Surgery::new(&contracted, &mesh, 0, Options::default()).unwrap();
     surgery.run().unwrap();
     assert!(surgery.junctions.is_empty());
-    assert!(surgery.arcs.values().all(|a| a.closed));
+    assert!(surgery.arcs.values().all(|a| a.ends.is_none()));
     assert_consistent(&surgery);
     let skeleton = run(&contracted, &mesh).unwrap();
     assert_eq!(skeleton.edges.len() + 1, skeleton.nodes.len());
+}
+
+/// The tetrahedron's dual graph inside one patch, as if stuck: opposite mesh edges share a
+/// nonzero class, so every junction sees all three and no arc bounds (K = 0 on a sphere).
+fn stuck(mesh: &Mesh<INPUT>) -> Surgery<'_> {
+    let contracted = Mesh::<CONTRACTION>::convert(mesh);
+    let mut surgery = Surgery::new(&contracted, mesh, 0, Options::default()).unwrap();
+    surgery.heap.clear();
+    let all: Vec<_> = surgery.arcs.keys().collect();
+    for patch in 1..surgery.patches.len() {
+        surgery.patches[patch] = None;
+    }
+    let first = surgery.patch_mut(0);
+    first.vertices = (0..4).collect();
+    first.arcs = all.iter().copied().collect();
+    surgery.owner = vec![0; 4];
+    for &arc in &all {
+        let [x, y] = surgery.ends(surgery.exit(surgery.arcs[arc].crossings[0]));
+        // The pair of opposite edges is named by the smaller of its edge's endpoints' sums.
+        let pair = (x + y).min(6 - x - y) - 1;
+        let class = if pair < 2 {
+            Class::bit(pair)
+        } else {
+            &Class::bit(0) ^ &Class::bit(1)
+        };
+        let arc = &mut surgery.arcs[arc];
+        arc.sides = [0, 0];
+        arc.class = Some(class);
+    }
+    surgery
+}
+
+#[test]
+fn flips_keep_the_arcs_consistent() {
+    let mesh = tetrahedron();
+    let mut surgery = stuck(&mesh);
+    let arcs: Vec<_> = surgery.arcs.keys().collect();
+    let mut flipped = 0;
+    for &arc in arcs.iter().chain(&arcs).chain(&arcs) {
+        let [j1, j2] = surgery.arcs[arc].ends.unwrap();
+        if j1 == j2 {
+            continue;
+        }
+        // The flip checks the new rotation against the combinatorial one.
+        surgery.flip(arc);
+        flipped += 1;
+        assert_consistent(&surgery);
+    }
+    assert!(flipped >= 6);
+    assert!(surgery.surface.crossings.len() > 6);
+}
+
+#[test]
+fn flips_free_a_stuck_surgery() {
+    let mesh = tetrahedron();
+    let mut surgery = stuck(&mesh);
+    assert!(
+        surgery
+            .arcs
+            .keys()
+            .collect::<Vec<_>>()
+            .into_iter()
+            .all(|a| !surgery.bounds(a))
+    );
+    let sequence = surgery.search().unwrap();
+    assert!(!sequence.is_empty());
+    // Not a real stuck state (a sphere has no arc with one face on both sides), so only the
+    // bookkeeping is checked, not the resulting regions.
+    surgery.run().unwrap();
+    assert!(surgery.junctions.is_empty());
+    assert_consistent(&surgery);
+}
+
+#[test]
+fn search_fails_within_an_exhausted_budget() {
+    let mesh = tetrahedron();
+    let mut surgery = stuck(&mesh);
+    surgery.options.flip_budget = 0;
+    // Depth one is always tried; on the tetrahedron one flip may already succeed.
+    let depth_one = surgery.search();
+    assert!(depth_one.is_none_or(|s| s.len() == 1));
 }
 
 /// Merge an edge's endpoints and drop its boundary.
@@ -150,10 +249,7 @@ fn contract(mesh: &Mesh<INPUT>, skeleton: &mut Skeleton, edge: crate::SkeletonEd
     skeleton.nodes.remove(y);
     for &id in &removed.boundary.crossings {
         let exit = skeleton.surface.crossings.remove(id).unwrap().exit;
-        skeleton
-            .surface
-            .edge_order
-            .remove(&crate::surface::canonical(mesh, exit));
+        skeleton.surface.edge_order.remove(&canonical(mesh, exit));
     }
 }
 

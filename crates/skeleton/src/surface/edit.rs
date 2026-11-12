@@ -1,7 +1,7 @@
 //! Boundary edits in crossing order, independent of mesh resolution.
 
 use super::*;
-use crate::{BoundaryCrossing, SkeletonEdge, SkeletonNode};
+use crate::{BoundaryCrossing, BoundarySurface, SkeletonEdge, SkeletonNode};
 use std::collections::VecDeque;
 
 /// Copy a loop immediately to its left (side 0) or right (side 1).
@@ -12,18 +12,30 @@ pub(crate) fn parallel(
     original: &PatchBoundary,
     side: usize,
 ) -> PatchBoundary {
+    PatchBoundary {
+        crossings: parallel_crossings(mesh, &mut skeleton.surface, &original.crossings, side),
+    }
+}
+
+/// Copy crossings in order, each immediately to the left (side 0) or right (side 1).
+pub(crate) fn parallel_crossings(
+    mesh: &Mesh<INPUT>,
+    surface: &mut BoundarySurface,
+    original: &[BoundaryCrossingID],
+    side: usize,
+) -> Vec<BoundaryCrossingID> {
     let mut crossings = Vec::new();
-    for &old in &original.crossings {
-        let crossing = skeleton.surface.crossings[old];
-        let id = skeleton.surface.crossings.insert(crossing);
+    for &old in original {
+        let crossing = surface.crossings[old];
+        let id = surface.crossings.insert(crossing);
         let key = canonical(mesh, crossing.exit);
-        let order = skeleton.surface.edge_order.get_mut(&key).unwrap();
+        let order = surface.edge_order.get_mut(&key).unwrap();
         let rank = order.iter().position(|&c| c == old).unwrap();
         let after = (side == 0) == (key == crossing.exit);
         order.insert(rank + usize::from(after), id);
         crossings.push(id);
     }
-    PatchBoundary { crossings }
+    crossings
 }
 
 pub(crate) fn reverse(mesh: &Mesh<INPUT>, skeleton: &mut Skeleton, boundary: &mut PatchBoundary) {
