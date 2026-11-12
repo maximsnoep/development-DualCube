@@ -10,13 +10,14 @@ use faer::{
 };
 
 /// Reusable sparse QR storage for f64 systems with a fixed sparsity pattern.
+///
+/// Always sequential: faer's rayon-parallel sparse QR was 100× slower on contraction systems.
 pub struct QrWorkspace {
     pattern: SymbolicSparseColMat<usize>,
     symbolic: SymbolicQr<usize>,
     indices: Vec<usize>,
     numeric: Vec<f64>,
     scratch: MemBuffer,
-    parallelism: Par,
     rhs_columns: usize,
 }
 
@@ -26,11 +27,10 @@ impl QrWorkspace {
         rhs_columns: usize,
     ) -> Result<Self, FaerError> {
         let symbolic = qr::factorize_symbolic_qr(matrix.symbolic(), Default::default())?;
-        let parallelism = faer::get_global_parallelism();
         let scratch = MemBuffer::try_new(
             symbolic
-                .factorize_numeric_qr_scratch::<f64>(parallelism, Default::default())
-                .or(symbolic.solve_in_place_scratch::<f64>(rhs_columns, parallelism)),
+                .factorize_numeric_qr_scratch::<f64>(Par::Seq, Default::default())
+                .or(symbolic.solve_in_place_scratch::<f64>(rhs_columns, Par::Seq)),
         )?;
         let mut indices = Vec::new();
         let mut numeric = Vec::new();
@@ -48,7 +48,6 @@ impl QrWorkspace {
             indices,
             numeric,
             scratch,
-            parallelism,
             rhs_columns,
         })
     }
@@ -88,14 +87,14 @@ impl QrWorkspace {
             &mut self.indices,
             &mut self.numeric,
             matrix,
-            self.parallelism,
+            Par::Seq,
             MemStack::new(&mut self.scratch),
             Default::default(),
         );
         qr.solve_in_place_with_conj(
             Conj::No,
             rhs.as_mut(),
-            self.parallelism,
+            Par::Seq,
             MemStack::new(&mut self.scratch),
         );
     }
