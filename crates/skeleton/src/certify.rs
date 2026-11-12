@@ -22,17 +22,24 @@ use std::process::Command;
 
 #[derive(Clone, Debug)]
 pub struct Options {
+    /// DiskScissors executable, interpreted inside WSL when `use_wsl` is set.
     pub executable: PathBuf,
     /// Time per loop for each round; a loop without a disk may keep DiskScissors searching.
     pub timeouts: Vec<std::time::Duration>,
+    /// Run through WSL, with paths converted. As for TetGen: the default on Windows unless
+    /// the executable has an `.exe` extension.
+    pub use_wsl: bool,
 }
 
 impl Default for Options {
     fn default() -> Self {
+        let executable: PathBuf = std::env::var_os("DISKSCISSORS_EXECUTABLE")
+            .map_or_else(|| "diskscissors".into(), PathBuf::from);
+        let use_wsl = cfg!(windows) && executable.extension().is_none_or(|ext| ext != "exe");
         Self {
-            executable: std::env::var_os("DISKSCISSORS_EXECUTABLE")
-                .map_or_else(|| "diskscissors".into(), PathBuf::from),
+            executable,
             timeouts: [10, 60, 300].map(std::time::Duration::from_secs).to_vec(),
+            use_wsl,
         }
     }
 }
@@ -124,13 +131,7 @@ pub fn run_with(
             }
             let volume = volume.as_ref().unwrap();
             let found = volume
-                .certify(
-                    mesh,
-                    skeleton,
-                    edge,
-                    &options.executable,
-                    options.timeouts[round],
-                )
+                .certify(mesh, skeleton, edge, options, options.timeouts[round])
                 .map_err(|e| Failure::Unavailable(e.to_string()))?;
             match found {
                 Ok(()) => certificate.disks.push(edge),
@@ -277,6 +278,8 @@ struct Volume {
     index: HashMap<VertID, usize>,
     vertices: Vec<Vector3D>,
     tets: Vec<[usize; 4]>,
+    /// `directory` as seen from WSL, converted on first use.
+    wsl_directory: std::sync::OnceLock<String>,
 }
 
 impl Volume {
@@ -297,6 +300,7 @@ impl Volume {
             index,
             vertices: tets.vertices,
             tets: tets.tets,
+            wsl_directory: std::sync::OnceLock::new(),
         })
     }
 
@@ -307,12 +311,12 @@ impl Volume {
         mesh: &Mesh<INPUT>,
         skeleton: &Skeleton,
         edge: SkeletonEdgeID,
-        executable: &Path,
+        options: &Options,
         timeout: std::time::Duration,
     ) -> SkeletonResult<Result<(), Miss>> {
         if let Some(walk) = walk(mesh, skeleton, edge) {
             let walk: Vec<_> = walk.iter().map(|v| self.index[v]).collect();
-            return self.disk(&self.mesh, executable, timeout, &walk);
+            return self.disk(&self.mesh, options, timeout, &walk);
         }
         let boundary = &skeleton.edges[edge].boundary;
         let refined = refine::refine(
@@ -330,7 +334,7 @@ impl Volume {
             .iter()
             .map(|c| refined.crossings[c])
             .collect();
-        self.disk(&path, executable, timeout, &walk)
+        self.disk(&path, options, timeout, &walk)
     }
 
     /// Whether DiskScissors finds a disk bounded by the walk. It reports success only by
@@ -338,7 +342,7 @@ impl Volume {
     fn disk(
         &self,
         volume: &Path,
-        executable: &Path,
+        options: &Options,
         timeout: std::time::Duration,
         walk: &[usize],
     ) -> SkeletonResult<Result<(), Miss>> {
@@ -346,21 +350,46 @@ impl Volume {
         let log = self.directory.join("output.txt");
         let text: Vec<_> = walk.iter().map(usize::to_string).collect();
         std::fs::write(&path, text.join("\n") + "\n")?;
-        let mut child = Command::new(executable)
-            .arg(volume)
-            .arg(&path)
+        let mut command;
+        if options.use_wsl {
+            let directory = match self.wsl_directory.get() {
+                Some(directory) => directory,
+                None => {
+                    let converted = wsl_path(&self.directory)?;
+                    self.wsl_directory.get_or_init(|| converted)
+                }
+            };
+            // Joined by hand: `Path::join` would insert a Windows separator.
+            command = Command::new("wsl.exe");
+            command
+                .arg("--exec")
+                .arg(&options.executable)
+                .arg(format!("{directory}/{}", file_name(volume)?))
+                .arg(format!("{directory}/{}", file_name(&path)?));
+        } else {
+            command = Command::new(&options.executable);
+            command.arg(volume).arg(&path);
+        }
+        let mut child = command
             .stdout(std::fs::File::create(&log)?)
             .stderr(std::process::Stdio::null())
             .spawn()
-            .map_err(|e| format!("running {}: {e}", executable.display()))?;
+            .map_err(|e| format!("running {}: {e}", options.executable.display()))?;
         let start = std::time::Instant::now();
-        while child.try_wait()?.is_none() {
+        let status = loop {
+            if let Some(status) = child.try_wait()? {
+                break status;
+            }
             if start.elapsed() > timeout {
                 child.kill()?;
                 child.wait()?;
                 return Ok(Err(Miss::Timeout));
             }
             std::thread::sleep(std::time::Duration::from_millis(20));
+        };
+        // A nonzero status means it did not run (e.g. WSL could not find it), not "no disk".
+        if !status.success() {
+            return Err(format!("running {}: {status}", options.executable.display()).into());
         }
         let output = std::fs::read_to_string(&log)?;
         Ok(if output.lines().any(|l| l.trim() == "Snip") {
@@ -375,6 +404,30 @@ impl Drop for Volume {
     fn drop(&mut self) {
         let _ = std::fs::remove_dir_all(&self.directory);
     }
+}
+
+/// The final component of a path in the scratch directory, for joining onto its WSL form.
+fn file_name(path: &Path) -> SkeletonResult<&str> {
+    path.file_name()
+        .and_then(|name| name.to_str())
+        .ok_or_else(|| format!("no file name in {}", path.display()).into())
+}
+
+/// The path as seen from WSL.
+fn wsl_path(path: &Path) -> SkeletonResult<String> {
+    let converted = Command::new("wsl.exe")
+        .args(["--exec", "wslpath", "-u"])
+        .arg(path)
+        .output()
+        .map_err(|e| format!("running wslpath: {e}"))?;
+    if !converted.status.success() {
+        return Err(format!(
+            "WSL path conversion failed: {}",
+            String::from_utf8_lossy(&converted.stderr)
+        )
+        .into());
+    }
+    Ok(String::from_utf8_lossy(&converted.stdout).trim().to_owned())
 }
 
 fn scratch_directory() -> std::io::Result<PathBuf> {

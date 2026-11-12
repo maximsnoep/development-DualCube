@@ -5,6 +5,7 @@ fn torus() -> (Mesh<INPUT>, Skeleton) {
 }
 
 /// A stand-in DiskScissors that always or never reports a disk.
+#[cfg(unix)]
 fn fake(disk: bool) -> Options {
     let directory = std::env::temp_dir().join(format!("dualcube-fake-diskscissors-{disk}"));
     std::fs::create_dir_all(&directory).unwrap();
@@ -189,6 +190,7 @@ fn genus_zero_needs_no_disks() {
 }
 
 #[test]
+#[cfg(unix)]
 #[ignore = "requires TetGen"]
 fn a_disk_for_the_one_cotree_loop_certifies_a_torus() {
     let (mesh, skeleton) = torus();
@@ -200,6 +202,7 @@ fn a_disk_for_the_one_cotree_loop_certifies_a_torus() {
 }
 
 #[test]
+#[cfg(unix)]
 #[ignore = "requires TetGen"]
 fn misses_move_into_the_tree_until_they_close_a_cycle() {
     let (mesh, skeleton) = torus();
@@ -245,14 +248,14 @@ fn diskscissors_finds_no_disk_for_a_longitude() {
     let ring: Vec<_> = ring.iter().map(|v| volume.index[v]).collect();
     assert_eq!(
         volume
-            .disk(&volume.mesh, &options.executable, timeout, &ring)
+            .disk(&volume.mesh, &options, timeout, &ring)
             .unwrap(),
         Err(Miss::NoDisk)
     );
     let edge = skeleton.edges.keys().next().unwrap();
     assert_eq!(
         volume
-            .certify(&mesh, &skeleton, edge, &options.executable, timeout)
+            .certify(&mesh, &skeleton, edge, &options, timeout)
             .unwrap(),
         Ok(())
     );
