@@ -140,7 +140,10 @@ pub fn update_camera_settings(
     };
 
     // The camera does not react to the mouse while it is over the UI (menus, windows).
-    let active = if egui_input.wants_any_pointer_input() && !menus.viewport_press {
+    // A locked camera ignores the mouse entirely.
+    let active = if configuration.camera_locked
+        || (egui_input.wants_any_pointer_input() && !menus.viewport_press)
+    {
         0.
     } else {
         1.

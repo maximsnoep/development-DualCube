@@ -51,6 +51,8 @@ pub struct Configuration {
     pub camera_zoom_sensitivity: f32,
 
     pub camera_up: Vec3,
+    /// Freezes the camera (mouse, automatic rotation, up axis), e.g. between exported figures.
+    pub camera_locked: bool,
 
     pub clear_color: [u8; 3],
 }
@@ -86,6 +88,7 @@ impl Default for Configuration {
             loop_anchors: vec![],
 
             camera_up: Vec3::Y,
+            camera_locked: false,
 
             interactive_mode: InteractiveMode::None,
             window_shows_object: [Objects::Polycube, Objects::PolycubeMap],

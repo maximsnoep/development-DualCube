@@ -10,7 +10,9 @@ use crate::render::objects::skeleton::SkeletonLayer;
 use crate::render::store::{RenderObjectSetting, RenderObjectSettingStore};
 use crate::resources::{Configuration, FigureFormat, InputResource, SolutionResource};
 use bevy::prelude::*;
-use bevy_egui::egui::{CollapsingHeader, CursorIcon, MenuBar, Panel, RectAlign, RichText, Ui};
+use bevy_egui::egui::{
+    self, Checkbox, CollapsingHeader, CursorIcon, MenuBar, Panel, RectAlign, RichText, Ui,
+};
 use bevy_orbit_camera::automatic::AutomaticRotation;
 use dualcube::prelude::*;
 
@@ -224,7 +226,15 @@ pub fn show(
                 ui.spacing_mut().item_spacing.x += 6.;
                 ui.spacing_mut().button_padding.y += 2.;
                 ui.add_space(8.);
-                menu_bar(ui, &mut jobs, &mut conf, &solution, &input.name, camera);
+                menu_bar(
+                    ui,
+                    &mut jobs,
+                    &mut conf,
+                    &solution,
+                    &input.name,
+                    camera,
+                    &mut automatic_rotation,
+                );
                 ui.separator();
                 pipeline_bar(
                     ui,
@@ -310,10 +320,8 @@ fn view_menu(
                 ui.vertical(|ui| {
                     ui.set_width(200.);
                     // The density of the quad mesh (recomputed when changed).
-                    let response = ui.add(
-                        bevy_egui::egui::Slider::new(&mut conf.omega, 1..=20)
-                            .text(text("quad density")),
-                    );
+                    let response = ui
+                        .add(egui::Slider::new(&mut conf.omega, 1..=20).text(text("quad density")));
                     if (response.drag_stopped() || (response.changed() && !response.dragged()))
                         && solution.current_solution.polycube.is_some()
                     {
@@ -324,7 +332,7 @@ fn view_menu(
                     }
                     // The width of the loops on the model (redrawn when changed).
                     let response = ui.add(
-                        bevy_egui::egui::Slider::new(&mut conf.loop_width, 0.001..=0.03)
+                        egui::Slider::new(&mut conf.loop_width, 0.001..=0.03)
                             .logarithmic(true)
                             .text(text("loop width")),
                     );
@@ -355,7 +363,11 @@ fn view_menu(
                 ui.vertical(|ui| {
                     ui.set_width(220.);
                     label(ui, "Camera", TEXT_COLOR);
-                    ui.checkbox(&mut automatic_rotation.enabled, text("automatic rotation"));
+                    lock_checkbox(ui, conf, automatic_rotation);
+                    ui.add_enabled(
+                        !conf.camera_locked,
+                        Checkbox::new(&mut automatic_rotation.enabled, text("automatic rotation")),
+                    );
                     slider(
                         ui,
                         "speed",
@@ -397,7 +409,12 @@ fn view_menu(
                                 TEXT_COLOR2
                             };
                             if ui
-                                .button(RichText::new(name).color(color).size(TEXT_SIZE))
+                                .add_enabled(
+                                    !conf.camera_locked,
+                                    egui::Button::new(
+                                        RichText::new(name).color(color).size(TEXT_SIZE),
+                                    ),
+                                )
                                 .clicked()
                             {
                                 conf.camera_up = axis_vec;
@@ -417,6 +434,7 @@ fn menu_bar(
     solution: &SolutionResource,
     name: &str,
     camera: Option<(Vector3D, Vector3D)>,
+    automatic_rotation: &mut AutomaticRotation,
 ) {
     menu_button(ui, "File", |ui| {
         if sleek_button(ui, "Load") {
@@ -465,6 +483,7 @@ fn menu_bar(
             }
         });
         ui.checkbox(&mut conf.figure_label, text("label"));
+        lock_checkbox(ui, conf, automatic_rotation);
         if sleek_button(ui, "Export figures")
             && let Some((view, up)) = camera
             && let Some(dir) = rfd::FileDialog::new().pick_folder()
@@ -572,9 +591,7 @@ fn view_bar(
         if !available(name) {
             ui.add_enabled(
                 false,
-                bevy_egui::egui::Button::new(
-                    RichText::new(name.label()).color(DIM_COLOR).size(TEXT_SIZE),
-                ),
+                egui::Button::new(RichText::new(name.label()).color(DIM_COLOR).size(TEXT_SIZE)),
             );
             continue;
         }
@@ -635,7 +652,7 @@ fn pipeline_bar(
     };
 
     use crate::resources::{Initialization, genus};
-    let method = bevy_egui::egui::ComboBox::from_id_salt("initialization method")
+    let method = egui::ComboBox::from_id_salt("initialization method")
         .selected_text(match conf.initialization {
             Initialization::Minimal => "Minimal (genus 0)",
             Initialization::Skeleton => "Skeleton",
@@ -711,5 +728,20 @@ pub fn apply_pending_view(
 ) {
     if let Some(name) = view.pending.take() {
         view.show(name, &mut settings);
+    }
+}
+
+/// Locks the camera so it cannot move between stills; locking also stops automatic rotation.
+fn lock_checkbox(
+    ui: &mut Ui,
+    conf: &mut Configuration,
+    automatic_rotation: &mut AutomaticRotation,
+) {
+    if ui
+        .checkbox(&mut conf.camera_locked, text("lock camera"))
+        .changed()
+        && conf.camera_locked
+    {
+        automatic_rotation.enabled = false;
     }
 }
