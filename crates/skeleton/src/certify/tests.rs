@@ -38,8 +38,10 @@ fn walks_are_simple_closed_vertex_paths() {
     let (mesh, skeleton) = torus();
     for edge in skeleton.edges.keys() {
         let walks = walks(&mesh, &skeleton, edge);
-        assert_eq!(walks.len(), 2, "both sides of a band boundary are simple");
-        for walk in walks {
+        assert_eq!(walks.len(), 2);
+        for mut pieces in walks {
+            assert_eq!(pieces.len(), 1, "both sides of a band boundary are simple");
+            let walk = pieces.pop().unwrap();
             for i in 0..walk.len() {
                 let (a, b) = (walk[i], walk[(i + 1) % walk.len()]);
                 assert!(
@@ -118,7 +120,7 @@ fn diskscissors_finds_no_disk_for_a_longitude() {
     let options = Options::default();
     assert_eq!(volume.disk(&options, &ring).unwrap(), Err(Miss::NoDisk));
     let edge = skeleton.edges.keys().next().unwrap();
-    let meridian = &walks(&mesh, &skeleton, edge)[0];
+    let meridian = &walks(&mesh, &skeleton, edge)[0][0];
     assert_eq!(volume.disk(&options, meridian).unwrap(), Ok(()));
 }
 
@@ -134,4 +136,19 @@ fn reduction_removes_repeats_and_backtracks_across_the_seam() {
     // Spur at the first vertex: d | a, d, b, c.
     assert_eq!(reduce(vec![a, d, b, c, d]), [d, b, c]);
     assert_eq!(reduce(vec![a, b, a]), [a]);
+}
+
+#[test]
+fn walks_split_into_simple_pieces_at_repeated_vertices() {
+    let mesh = crate::surface::tests::tetrahedron();
+    let v = mesh.vert_ids();
+    let (a, b, c, d) = (v[0], v[1], v[2], v[3]);
+    // Two triangles through a: a b c a d b ... closes back to a.
+    assert_eq!(
+        pieces(vec![a, b, c, a, c, d]),
+        [vec![a, b, c], vec![a, c, d]]
+    );
+    assert_eq!(pieces(vec![a, b, c]), [vec![a, b, c]]);
+    // A spur splits off as a trivial piece.
+    assert_eq!(pieces(vec![a, b, c, d, c]), [vec![a, b, c]]);
 }

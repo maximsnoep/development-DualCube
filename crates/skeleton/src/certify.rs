@@ -38,8 +38,6 @@ pub enum Miss {
     NoDisk,
     /// DiskScissors did not finish within the timeout.
     Timeout,
-    /// Neither side's vertex walk along the loop is simple, so it cannot be passed as a loop.
-    NotSimple,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -102,14 +100,19 @@ pub fn run_with(
             if volume.is_none() {
                 volume = Some(Volume::new(mesh).map_err(|e| Failure::Unavailable(e.to_string()))?);
             }
-            let walks = walks(mesh, skeleton, edge);
-            let mut found = Err(Miss::NotSimple);
-            for walk in &walks {
-                found = volume
-                    .as_ref()
-                    .unwrap()
-                    .disk(options, walk)
-                    .map_err(|e| Failure::Unavailable(e.to_string()))?;
+            let mut found = Err(Miss::NoDisk);
+            for pieces in walks(mesh, skeleton, edge) {
+                found = Ok(());
+                for piece in &pieces {
+                    found = volume
+                        .as_ref()
+                        .unwrap()
+                        .disk(options, piece)
+                        .map_err(|e| Failure::Unavailable(e.to_string()))?;
+                    if found.is_err() {
+                        break;
+                    }
+                }
                 if found.is_ok() {
                     break;
                 }
@@ -196,30 +199,53 @@ fn loop_length(mesh: &Mesh<INPUT>, skeleton: &Skeleton, edge: SkeletonEdgeID) ->
         .sum()
 }
 
-/// Closed vertex walks beside a boundary loop, left side first; only simple ones.
+/// Vertex walks beside a boundary loop, left side first, each split into simple closed
+/// pieces.
 ///
 /// Consecutive crossings share a triangle, and the uncrossed vertices of that triangle on one
 /// side are equal or joined by an uncrossed edge. So each side's walk stays in a strip beside
-/// the loop and is homotopic to it.
-pub fn walks(mesh: &Mesh<INPUT>, skeleton: &Skeleton, edge: SkeletonEdgeID) -> Vec<Vec<VertID>> {
+/// the loop and is homotopic to it. A walk is the product of its pieces, so the loop bounds
+/// when every piece does: it is then null-homotopic, and a simple curve on the boundary that
+/// is null-homotopic in the volume bounds a disk (Dehn's lemma).
+pub fn walks(
+    mesh: &Mesh<INPUT>,
+    skeleton: &Skeleton,
+    edge: SkeletonEdgeID,
+) -> Vec<Vec<Vec<VertID>>> {
     let exits: Vec<_> = skeleton.edges[edge]
         .boundary
         .crossings
         .iter()
         .map(|&c| skeleton.surface.crossings[c].exit)
         .collect();
-    let mut result = Vec::new();
-    for side in [
+    [
         exits.iter().map(|&e| mesh.toor(e)).collect::<Vec<_>>(),
         exits.iter().map(|&e| mesh.root(e)).collect(),
-    ] {
-        let walk = reduce(side);
-        let distinct: HashSet<_> = walk.iter().collect();
-        if walk.len() >= 3 && distinct.len() == walk.len() {
-            result.push(walk);
+    ]
+    .into_iter()
+    .map(|side| pieces(reduce(side)))
+    .collect()
+}
+
+/// Simple closed walks whose product is the closed walk, split at repeated vertices; pieces
+/// shorter than a triangle are trivial and left out.
+fn pieces(walk: Vec<VertID>) -> Vec<Vec<VertID>> {
+    let mut stack: Vec<VertID> = Vec::new();
+    let mut pieces = Vec::new();
+    for v in walk {
+        if let Some(i) = stack.iter().position(|&w| w == v) {
+            pieces.push(stack.split_off(i));
+            stack.push(v);
+        } else {
+            stack.push(v);
         }
     }
-    result
+    pieces.push(stack);
+    pieces
+        .into_iter()
+        .map(reduce)
+        .filter(|piece| piece.len() >= 3)
+        .collect()
 }
 
 /// The closed walk without repeated vertices in a row and without backtracks (`a, b, a`),
