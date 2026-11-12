@@ -130,6 +130,7 @@ pub fn run_with_options(
     let mut surgery = Surgery::new(contracted, original, genus, options)?;
     surgery.run()?;
     let mut skeleton = surgery.skeleton();
+    output::untangle(original, &mut skeleton);
     output::simplify(original, &mut skeleton);
     let result = skeleton.validate(original).and_then(|()| {
         if skeleton.edges.len() + 1 == skeleton.nodes.len() + genus {

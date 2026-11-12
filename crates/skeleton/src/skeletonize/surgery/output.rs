@@ -2,6 +2,7 @@
 //! graph is simple.
 
 use super::Surgery;
+use crate::surface::canonical;
 use crate::surface::edit::parallel;
 use crate::{PatchBoundary, Skeleton, SkeletonEdge, SkeletonNode};
 use dualcube_types::prelude::*;
@@ -89,4 +90,71 @@ fn centroid(mesh: &Mesh<INPUT>, skeleton: &Skeleton, boundary: &PatchBoundary) -
         })
         .sum();
     sum / boundary.crossings.len() as f64
+}
+
+/// Remove turns back across one mesh edge (into a triangle and out through the same edge),
+/// which flips leave beside junctions. The innermost turn's two crossings are neighbors in
+/// edge order; removing it pushes the curve out of the triangle, an isotopy that keeps the
+/// boundaries disjoint, and may expose the next turn.
+pub(super) fn untangle(mesh: &Mesh<INPUT>, skeleton: &mut Skeleton) {
+    let edges: Vec<_> = skeleton.edges.keys().collect();
+    let mut removed = 0;
+    // A turn of one boundary may wait for a turn of another inside it.
+    let mut last = usize::MAX;
+    while removed != last {
+        last = removed;
+        for &edge in &edges {
+            removed += untangle_boundary(mesh, skeleton, edge);
+        }
+    }
+    if removed > 0 {
+        tracing::info!("Connectivity surgery: removed {removed} turns back across a mesh edge");
+    }
+}
+
+/// Remove the innermost turns of one boundary; the number removed.
+fn untangle_boundary(
+    mesh: &Mesh<INPUT>,
+    skeleton: &mut Skeleton,
+    edge: crate::SkeletonEdgeID,
+) -> usize {
+    let mut removed = 0;
+    let mut crossings = std::mem::take(&mut skeleton.edges[edge].boundary.crossings);
+    let mut i = 0;
+    while crossings.len() > 2 && i < crossings.len() {
+        let j = (i + 1) % crossings.len();
+        let (c, d) = (crossings[i], crossings[j]);
+        let (x, y) = (
+            skeleton.surface.crossings[c].exit,
+            skeleton.surface.crossings[d].exit,
+        );
+        let order = &skeleton.surface.edge_order[&canonical(mesh, x)];
+        let at = |id| order.iter().position(|&o| o == id).unwrap();
+        if y != mesh.twin(x) || at(c).abs_diff(at(d)) != 1 {
+            i += 1;
+            continue;
+        }
+        let order = skeleton
+            .surface
+            .edge_order
+            .get_mut(&canonical(mesh, x))
+            .unwrap();
+        order.retain(|&o| o != c && o != d);
+        if order.is_empty() {
+            skeleton.surface.edge_order.remove(&canonical(mesh, x));
+        }
+        skeleton.surface.crossings.remove(c);
+        skeleton.surface.crossings.remove(d);
+        if j == 0 {
+            crossings.remove(i);
+            crossings.remove(0);
+        } else {
+            crossings.drain(i..=j);
+        }
+        removed += 1;
+        // The neighbors now meet across the removed triangle and may turn back too.
+        i = i.saturating_sub(1).min(crossings.len().saturating_sub(1));
+    }
+    skeleton.edges[edge].boundary.crossings = crossings;
+    removed
 }

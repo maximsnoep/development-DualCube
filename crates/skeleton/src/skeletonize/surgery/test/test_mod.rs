@@ -284,3 +284,48 @@ fn torus_surgery_keeps_one_loop_beyond_a_tree() {
     let skeleton = run(&contracted, &mesh).unwrap();
     assert_eq!(skeleton.edges.len(), skeleton.nodes.len());
 }
+
+#[test]
+fn turns_back_across_a_mesh_edge_are_removed() {
+    let (mesh, mut skeleton) =
+        crate::surface::tests::bands(&[[0., 0., 0.], [1., 0., 0.], [0., 1., 0.]]);
+    let clean = skeleton.clone();
+    let edge = skeleton.edges.keys().next().unwrap();
+    // Before the second crossing c, which exits the face N through x: go out through x and
+    // straight back, twice, nested; the inner turn sits next to c on x.
+    let c = skeleton.edges[edge].boundary.crossings[1];
+    let x = skeleton.surface.crossings[c].exit;
+    let key = canonical(&mesh, x);
+    let mut turns = Vec::new();
+    for _ in 0..2 {
+        let pair = [x, mesh.twin(x)]
+            .map(|exit| skeleton.surface.crossings.insert(BoundaryCrossing { exit }));
+        turns.push(pair);
+    }
+    let order = skeleton.surface.edge_order.get_mut(&key).unwrap();
+    let at = order.iter().position(|&o| o == c).unwrap();
+    // Outer pair farther from c than the inner one.
+    let [[o1, o2], [i1, i2]] = [turns[0], turns[1]];
+    let nested = if key == x {
+        [o1, i1, i2, o2]
+    } else {
+        [o2, i2, i1, o1]
+    };
+    for (k, &id) in nested.iter().enumerate() {
+        order.insert(at + k, id);
+    }
+    let crossings = &mut skeleton.edges[edge].boundary.crossings;
+    for (k, id) in [o1, i1, i2, o2].into_iter().enumerate() {
+        crossings.insert(1 + k, id);
+    }
+    output::untangle(&mesh, &mut skeleton);
+    assert_eq!(
+        skeleton.surface.crossings.len(),
+        clean.surface.crossings.len()
+    );
+    assert_eq!(
+        skeleton.edges[edge].boundary.crossings,
+        clean.edges[edge].boundary.crossings
+    );
+    skeleton.validate(&mesh).unwrap();
+}
