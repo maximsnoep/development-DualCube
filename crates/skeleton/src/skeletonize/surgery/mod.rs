@@ -275,7 +275,7 @@ impl<'a> Surgery<'a> {
             center,
             scale,
             owner: (0..vertices.len()).collect(),
-            potential: vec![0; vertices.len()],
+            potential: vec![Class::default(); vertices.len()],
             index,
             patches,
             arcs: SlotMap::with_key(),
@@ -403,7 +403,7 @@ impl<'a> Surgery<'a> {
         self.owner[x] == self.owner[y]
             && self
                 .homology
-                .bounds(self.potential[x] ^ self.potential[y] ^ self.homology.edge([x, y]))
+                .bounds(&(&self.potential[x] ^ &self.potential[y]) ^ self.homology.edge([x, y]))
     }
 
     /// Collapse cost of Au et al. (shape and sampling) with the handle bias.
@@ -455,10 +455,10 @@ impl<'a> Surgery<'a> {
         } else {
             (v.clone(), u.clone(), kept)
         };
-        let shift = self.potential[x] ^ self.potential[y] ^ self.homology.edge([x, y]);
+        let shift = &(&self.potential[x] ^ &self.potential[y]) ^ self.homology.edge([x, y]);
         for &w in &small.vertices {
             self.owner[w] = id;
-            self.potential[w] ^= shift;
+            self.potential[w] ^= &shift;
         }
         large.vertices.extend(&small.vertices);
         // Arcs the two shared besides this one now have the merged patch on both sides.
@@ -548,7 +548,8 @@ impl<'a> Surgery<'a> {
             }
             (b, a)
         };
-        self.arcs[kept].handles |= self.arcs[killed].handles;
+        let handles = std::mem::take(&mut self.arcs[killed].handles);
+        self.arcs[kept].handles |= &handles;
         let other = if killed == b {
             self.mesh
                 .face(self.mesh.twin(*self.arcs[kept].exits.back().unwrap()))

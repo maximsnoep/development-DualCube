@@ -11,8 +11,75 @@ use crate::SkeletonResult;
 use dualcube_types::prelude::*;
 use std::collections::VecDeque;
 
-/// Bit set over at most 128 cocycles or handle cycles.
-pub(super) type Class = u128;
+/// Bit set over cocycles or handle cycles, without trailing zero words; ordered by its
+/// highest bit.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub(super) struct Class(Vec<u64>);
+
+impl Class {
+    pub fn bit(i: usize) -> Self {
+        let mut words = vec![0; i / 64 + 1];
+        words[i / 64] = 1 << (i % 64);
+        Self(words)
+    }
+
+    pub fn count_ones(&self) -> u32 {
+        self.0.iter().map(|w| w.count_ones()).sum()
+    }
+
+    pub fn is_zero(&self) -> bool {
+        self.0.is_empty()
+    }
+}
+
+impl std::ops::BitXorAssign<&Class> for Class {
+    fn bitxor_assign(&mut self, other: &Class) {
+        if self.0.len() < other.0.len() {
+            self.0.resize(other.0.len(), 0);
+        }
+        for (a, b) in self.0.iter_mut().zip(&other.0) {
+            *a ^= b;
+        }
+        while self.0.last() == Some(&0) {
+            self.0.pop();
+        }
+    }
+}
+
+impl std::ops::BitXor<&Class> for &Class {
+    type Output = Class;
+    fn bitxor(self, other: &Class) -> Class {
+        let mut result = self.clone();
+        result ^= other;
+        result
+    }
+}
+
+impl std::ops::BitOrAssign<&Class> for Class {
+    fn bitor_assign(&mut self, other: &Class) {
+        if self.0.len() < other.0.len() {
+            self.0.resize(other.0.len(), 0);
+        }
+        for (a, b) in self.0.iter_mut().zip(&other.0) {
+            *a |= b;
+        }
+    }
+}
+
+impl Ord for Class {
+    fn cmp(&self, other: &Self) -> std::cmp::Ordering {
+        self.0
+            .len()
+            .cmp(&other.0.len())
+            .then_with(|| self.0.iter().rev().cmp(other.0.iter().rev()))
+    }
+}
+
+impl PartialOrd for Class {
+    fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
+        Some(self.cmp(other))
+    }
+}
 
 pub(super) struct Homology {
     /// Cocycle values of each edge, keyed by its sorted vertex indices.
@@ -37,9 +104,6 @@ impl Homology {
         if genus == 0 {
             return Ok(homology);
         }
-        if 2 * genus > Class::BITS as usize {
-            return Err(format!("Genus {genus} exceeds the supported 64").into());
-        }
         homology.cocycles = cocycles(mesh, index);
         let tets = tetrahedralize(mesh)?;
         if tets.n_tets() == 0 || tets.n_vertices < mesh.nr_verts() {
@@ -50,15 +114,15 @@ impl Homology {
             return Err("TetGen volume does not match the input surface topology".into());
         }
         for (i, cycle) in subspace.cycles.iter().enumerate() {
-            let mut class = 0;
+            let mut class = Class::default();
             for &e in cycle {
                 let [a, b] = subspace.surface_edges[e as usize];
                 let key = [a as usize, b as usize];
                 class ^= homology.edge(key);
-                *homology.handles.entry(key).or_default() |= 1 << i;
+                *homology.handles.entry(key).or_default() |= &Class::bit(i);
             }
             let residue = homology.reduce(class);
-            if residue == 0 {
+            if residue.is_zero() {
                 return Err("Handle cycles are dependent in homology".into());
             }
             homology.kernel.push(residue);
@@ -68,23 +132,25 @@ impl Homology {
     }
 
     /// Cocycle values of the edge between two vertex indices.
-    pub fn edge(&self, [a, b]: [usize; 2]) -> Class {
-        self.cocycles.get(&key(a, b)).copied().unwrap_or(0)
+    pub fn edge(&self, [a, b]: [usize; 2]) -> &Class {
+        static ZERO: Class = Class(Vec::new());
+        self.cocycles.get(&key(a, b)).unwrap_or(&ZERO)
     }
 
     pub fn handles(&self, [a, b]: [usize; 2]) -> Class {
-        self.handles.get(&key(a, b)).copied().unwrap_or(0)
+        self.handles.get(&key(a, b)).cloned().unwrap_or_default()
     }
 
     /// Whether a cycle class lies in K, i.e. the cycle bounds in V.
     pub fn bounds(&self, class: Class) -> bool {
-        self.reduce(class) == 0
+        self.reduce(class).is_zero()
     }
 
     fn reduce(&self, mut class: Class) -> Class {
-        for &b in &self.kernel {
-            if class ^ b < class {
-                class ^= b;
+        for b in &self.kernel {
+            let reduced = &class ^ b;
+            if reduced < class {
+                class = reduced;
             }
         }
         class
@@ -137,17 +203,22 @@ pub(super) fn cocycles(
     for e in mesh.edge_ids() {
         let k = edge(e);
         if !tree.contains(&k) && !cotree.contains(&k) && !values.contains_key(&k) {
-            values.insert(k, 1 << bit);
+            values.insert(k, Class::bit(bit));
             bit += 1;
         }
     }
     for &f in order.iter().skip(1).rev() {
         let up = edge(parent[&f]);
-        let value = mesh
-            .edges(f)
-            .map(edge)
-            .filter(|&k| k != up)
-            .fold(0, |sum, k| sum ^ values.get(&k).copied().unwrap_or(0));
+        let value =
+            mesh.edges(f)
+                .map(edge)
+                .filter(|&k| k != up)
+                .fold(Class::default(), |mut sum, k| {
+                    if let Some(v) = values.get(&k) {
+                        sum ^= v;
+                    }
+                    sum
+                });
         values.insert(up, value);
     }
     values

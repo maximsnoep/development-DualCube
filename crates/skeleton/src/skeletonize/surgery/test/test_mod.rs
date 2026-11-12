@@ -44,9 +44,12 @@ fn class(mesh: &Mesh<INPUT>, cocycles: &HashMap<[usize; 2], Class>, walk: &[Vert
     (0..walk.len())
         .map(|i| {
             let [a, b] = [index[&walk[i]], index[&walk[(i + 1) % walk.len()]]];
-            cocycles.get(&[a.min(b), a.max(b)]).copied().unwrap_or(0)
+            cocycles
+                .get(&[a.min(b), a.max(b)])
+                .cloned()
+                .unwrap_or_default()
         })
-        .fold(0, |sum, c| sum ^ c)
+        .fold(Class::default(), |sum, c| &sum ^ &c)
 }
 
 #[test]
@@ -54,11 +57,15 @@ fn torus_cocycles_are_closed_and_detect_both_generators() {
     let mesh = torus();
     let index = index(&mesh);
     let cocycles = homology::cocycles(&mesh, &index);
-    let used = cocycles.values().fold(0, |all, &c| all | c);
-    assert_eq!(used, 0b11);
+    let used = cocycles.values().fold(Class::default(), |mut all, c| {
+        all |= c;
+        all
+    });
+    assert_eq!(used.count_ones(), 2);
+    assert_eq!(used, &Class::bit(0) ^ &Class::bit(1));
     for f in mesh.face_ids() {
         let corners: Vec<_> = mesh.edges(f).map(|e| mesh.root(e)).collect();
-        assert_eq!(class(&mesh, &cocycles, &corners), 0);
+        assert!(class(&mesh, &cocycles, &corners).is_zero());
     }
     // Grid vertex (i, j) by position, as `Mesh::from` may reorder vertices.
     let grid = |i: usize, j: usize| {
@@ -76,7 +83,7 @@ fn torus_cocycles_are_closed_and_detect_both_generators() {
         class(&mesh, &cocycles, &meridian),
         class(&mesh, &cocycles, &longitude),
     );
-    assert!(a != 0 && b != 0 && a != b);
+    assert!(!a.is_zero() && !b.is_zero() && a != b);
 }
 
 /// Every arc is a chain of consecutive triangles and ends where its junctions say.
