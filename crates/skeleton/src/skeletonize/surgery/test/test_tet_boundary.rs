@@ -66,7 +66,7 @@ mod tests {
         let tm = tetrahedralize(&mesh).expect("tetgen failed");
         let mut tb = build_tet_boundary(&tm);
 
-        let v = tm.n_vertices();
+        let v = tm.n_vertices;
         let e = tb.n_edges();
         let _f = tb.n_triangles();
 
@@ -89,7 +89,7 @@ mod tests {
         let tm = tetrahedralize(&mesh).expect("tetgen failed");
         let mut tb = build_tet_boundary(&tm);
 
-        let v = tm.n_vertices();
+        let v = tm.n_vertices;
         let e = tb.n_edges();
         tb.boundary_2.reduce();
         let rank = tb.boundary_2.rank();

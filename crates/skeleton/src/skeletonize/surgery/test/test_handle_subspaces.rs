@@ -16,7 +16,7 @@ mod tests {
     #[test]
     fn excess_handle_generators_are_not_truncated_to_expected_genus() {
         use crate::skeletonize::surgery::tetrahedralize::TetMesh;
-        use mehsh::prelude::{HasPosition, HasVertices};
+        use mehsh::prelude::HasVertices;
         use std::collections::HashMap;
 
         let mesh = build_torus_surface(6, 4);
@@ -27,8 +27,6 @@ mod tests {
             .map(|(i, &v)| (v, i as u32))
             .collect();
         let apex = ids.len() as u32;
-        let mut vertices: Vec<_> = ids.iter().map(|&v| mesh.position(v)).collect();
-        vertices.push(Vector3D::zeros());
         // The cone on a torus kills both cycles, unlike a valid solid torus.
         let tets = mesh
             .face_ids()
@@ -39,9 +37,8 @@ mod tests {
             })
             .collect();
         let boundary = build_tet_boundary(&TetMesh {
-            vertices,
+            n_vertices: ids.len() + 1,
             tets,
-            n_input_vertices: ids.len(),
         });
 
         let handles = compute_handle_subspace(&mesh, &boundary, 1);

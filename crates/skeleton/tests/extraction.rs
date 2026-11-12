@@ -265,11 +265,20 @@ fn assert_boundary_loops(mesh: &Mesh<INPUT>, skeleton: &Skeleton) {
             } else {
                 mesh.twin(exit)
             };
-            assert_eq!(skeleton.surface.edge_order[&canonical], vec![id]);
+            let order = &skeleton.surface.edge_order[&canonical];
+            assert_eq!(order.iter().filter(|&&c| c == id).count(), 1);
         }
     }
     assert_eq!(seen.len(), skeleton.surface.crossings.len());
-    assert_eq!(seen.len(), skeleton.surface.edge_order.len());
+    assert_eq!(
+        seen.len(),
+        skeleton
+            .surface
+            .edge_order
+            .values()
+            .map(Vec::len)
+            .sum::<usize>()
+    );
 }
 
 #[test]

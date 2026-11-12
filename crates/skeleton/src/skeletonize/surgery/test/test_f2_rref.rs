@@ -27,34 +27,6 @@ mod tests {
         assert_eq!(m.rank(), 3);
     }
 
-    /// `merge_columns` on disjoint rows: bit moves from the dropped col to the kept col.
-    #[test]
-    fn merge_columns_disjoint() {
-        // row A has only col 5; row B has only col 2.
-        // Drop col 5 into col 2 → both rows end up with col 2.
-        let mut m = F2Matrix::from_rows(vec![vec![5], vec![2]]);
-        m.merge_columns(2, 5);
-        assert_eq!(m.rows[0], vec![2]);
-        assert_eq!(m.rows[1], vec![2]);
-    }
-
-    /// `merge_columns` when a row has both: bits cancel out.
-    #[test]
-    fn merge_columns_both_set_cancels() {
-        let mut m = F2Matrix::from_rows(vec![vec![1, 4]]);
-        m.merge_columns(1, 4);
-        assert_eq!(m.rows[0], Vec::<u32>::new());
-    }
-
-    /// `clear_row` + reduce: cleared rows don't count toward rank.
-    #[test]
-    fn clear_row_drops_from_rank() {
-        let mut m = F2Matrix::from_rows(vec![vec![0], vec![1], vec![2]]);
-        m.clear_row(1);
-        m.reduce();
-        assert_eq!(m.rank(), 2);
-    }
-
     /// Symmetric difference correctness check.
     #[test]
     fn xor_into_basic() {
@@ -128,97 +100,6 @@ mod tests {
         m.reduce();
         let r2 = m.rank();
         assert_eq!(r1, r2);
-    }
-
-    /// Cloning a matrix and mutating the clone must not affect the original.
-    /// This is the invariant the snapshot-based legality check relies on.
-    #[test]
-    fn clone_is_independent_from_original() {
-        let m = F2Matrix::from_rows(vec![vec![0, 1], vec![2, 3]]);
-        let mut snap = m.clone();
-        snap.clear_row(0);
-        snap.merge_columns(2, 3);
-        snap.reduce();
-
-        // Original is untouched.
-        assert_eq!(m.rank(), 2);
-        let mut m_check = m.clone();
-        m_check.reduce();
-        assert_eq!(m_check.rank(), 2);
-    }
-
-    /// Chain of column merges: merging (0, 1) then (0, 2) collapses three
-    /// disjoint single-column rows into a single column 0.
-    #[test]
-    fn chained_merge_columns() {
-        let mut m = F2Matrix::from_rows(vec![vec![0], vec![1], vec![2]]);
-        m.merge_columns(0, 1);
-        m.merge_columns(0, 2);
-        // Every row should now have exactly column 0.
-        for i in 0..3 {
-            assert_eq!(m.rows[i], vec![0], "row {i} after chained merges");
-        }
-        m.reduce();
-        // All three rows are equal → rank 1.
-        assert_eq!(m.rank(), 1);
-    }
-
-    /// Column merges preserve the caller's chosen column, regardless of index order.
-    #[test]
-    fn merge_columns_honours_caller_keep_drop() {
-        // Drop column 5 into column 1: data shifts to column 1.
-        let mut a = F2Matrix::from_rows(vec![vec![5], vec![1, 5]]);
-        a.merge_columns(1, 5);
-        assert_eq!(a.rows[0], vec![1], "drop column moves into keep column");
-        assert_eq!(
-            a.rows[1],
-            Vec::<u32>::new(),
-            "row with both columns cancels under XOR"
-        );
-
-        // Drop column 1 into column 5: data shifts to column 5 (opposite).
-        let mut b = F2Matrix::from_rows(vec![vec![1], vec![1, 5]]);
-        b.merge_columns(5, 1);
-        assert_eq!(b.rows[0], vec![5], "with reversed args the kept col is 5");
-        assert_eq!(b.rows[1], Vec::<u32>::new());
-    }
-
-    /// `merge_columns` where the dropped column is empty in every row is a no-op.
-    #[test]
-    fn merge_columns_dropped_column_unused() {
-        let original = vec![vec![0, 2], vec![1]];
-        let mut m = F2Matrix::from_rows(original.clone());
-        // Column 4 is not present in any row; merging it into column 0 should
-        // leave the matrix unchanged.
-        m.merge_columns(0, 4);
-        assert_eq!(m.rows, original);
-    }
-
-    /// `merge_columns` followed by reduce: column merges can create new
-    /// dependencies; rank should reflect that.
-    #[test]
-    fn merge_columns_then_reduce_creates_dependency() {
-        // Two rows: {0, 1} and {0, 2}. They are independent → rank 2.
-        let mut m = F2Matrix::from_rows(vec![vec![0, 1], vec![0, 2]]);
-        let mut baseline = m.clone();
-        baseline.reduce();
-        assert_eq!(baseline.rank(), 2);
-
-        // Merge columns 1 and 2: rows become {0, 1} and {0, 1} → rank 1.
-        m.merge_columns(1, 2);
-        m.reduce();
-        assert_eq!(m.rank(), 1);
-    }
-
-    /// Clearing all rows leaves rank 0.
-    #[test]
-    fn clear_all_rows_zeros_rank() {
-        let mut m = F2Matrix::from_rows(vec![vec![0], vec![1], vec![2]]);
-        for i in 0..3 {
-            m.clear_row(i);
-        }
-        m.reduce();
-        assert_eq!(m.rank(), 0);
     }
 
     /// Tetrahedron ∂₂ over GF(2): 4 triangular faces, 6 edges.

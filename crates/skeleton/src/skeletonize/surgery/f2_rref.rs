@@ -28,11 +28,6 @@ impl F2Matrix {
         Self { rows }
     }
 
-    /// Replaces row `i` with the zero row. Indices of other rows do not shift.
-    pub fn clear_row(&mut self, i: usize) {
-        self.rows[i].clear();
-    }
-
     /// Number of nonzero rows. Only meaningful after `reduce()` — counts the
     /// rank of the matrix.
     pub fn rank(&self) -> usize {
@@ -76,85 +71,10 @@ impl F2Matrix {
         self.rows[source] = src;
     }
 
-    /// Merge `drop` into `keep` (which must differ): XOR the two bits into
-    /// `keep` and clear `drop`, preserving the caller's column mapping.
-    ///
-    /// This is the column-side analogue of `XORing` two rows together. It's
-    /// exactly the right operation when two edges merge during an edge
-    /// collapse: a face that was incident to either edge is now incident to
-    /// the merged edge, while a (hypothetical) face incident to both becomes
-    /// incident to the merged edge zero times.
-    pub fn merge_columns(&mut self, keep: u32, drop: u32) {
-        debug_assert!(keep != drop);
-        // The caller picks which column survives — we don't reinterpret.
-        // This matters when external bookkeeping (like edge_to_col in the
-        // surgery's BoundaryMatrix) is keyed by which column is "kept";
-        // reinterpreting via min/max would silently swap which side of
-        // the merge ends up holding data, leaving external maps pointing
-        // at the wrong column.
-        for row in &mut self.rows {
-            let drop_pos = row.binary_search(&drop);
-            if let Ok(dp) = drop_pos {
-                row.remove(dp);
-                // After removing `drop`, decide what to do about `keep`.
-                match row.binary_search(&keep) {
-                    Ok(kp) => {
-                        // Both bits were set → XOR is 0; drop `keep` too.
-                        row.remove(kp);
-                    }
-                    Err(ip) => {
-                        // Only `drop` was set → bit becomes `keep`.
-                        row.insert(ip, keep);
-                    }
-                }
-            }
-            // else: `drop` not set; nothing to do (bit at keep stays as-is).
-        }
-    }
-
     /// Read-only access to the matrix rows. Useful when you want to do
     /// custom GF(2) arithmetic without going through the matrix's own ops.
     pub fn rows(&self) -> &[Vec<u32>] {
         &self.rows
-    }
-
-    /// After [`Self::reduce`] has been called, builds the map from each
-    /// pivot column → the row index that pivots it. Useful for repeatedly
-    /// reducing external 1-chains against this matrix's row span.
-    pub fn pivot_map(&self) -> std::collections::HashMap<u32, usize> {
-        let mut m = std::collections::HashMap::with_capacity(self.rows.len());
-        for (i, row) in self.rows.iter().enumerate() {
-            if let Some(&col) = row.first() {
-                m.insert(col, i);
-            }
-        }
-        m
-    }
-
-    /// Reduces `candidate` (a sorted GF(2) 1-chain) in place against this
-    /// matrix's row span, using a precomputed pivot map from
-    /// [`Self::pivot_map`]. Returns `true` iff the candidate reduces to the
-    /// zero chain, i.e. lies in the row span of `self`.
-    ///
-    /// Caller must have already called [`Self::reduce`] (or otherwise put
-    /// the matrix into a state where each non-empty row has a unique
-    /// leading column) before calling [`Self::pivot_map`].
-    pub fn reduce_against(
-        &self,
-        pivot_map: &std::collections::HashMap<u32, usize>,
-        candidate: &mut Vec<u32>,
-    ) -> bool {
-        while let Some(&leading) = candidate.first() {
-            match pivot_map.get(&leading) {
-                Some(&piv) => {
-                    let mut next = Vec::with_capacity(candidate.len() + self.rows[piv].len());
-                    Self::xor_into(candidate, &self.rows[piv], &mut next);
-                    *candidate = next;
-                }
-                None => return false,
-            }
-        }
-        true
     }
 
     /// Eliminate rows until each nonzero row has a distinct leading column.

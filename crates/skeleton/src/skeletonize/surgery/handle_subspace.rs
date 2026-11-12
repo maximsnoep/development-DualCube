@@ -43,7 +43,7 @@ pub struct HandleSubspace {
     /// Surface edges, each as a sorted pair of vertex indices. The vertex
     /// index is the position of the vertex in `mesh.vert_ids()` — i.e. the
     /// same indexing the [`super::tetrahedralize::TetMesh`] uses for the
-    /// first `n_input_vertices` of its vertex list.
+    /// first indices of its vertex list.
     pub surface_edges: Vec<[u32; 2]>,
 }
 

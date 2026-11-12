@@ -17,7 +17,7 @@
 //! - Triangles and edges are interned by their sorted vertex tuples.
 //!   Vertex indices are the same `u32`s that index into
 //!   [`TetMesh::vertices`], so input-surface vertices keep their indices
-//!   `0..n_input_vertices` here too.
+//!   the first indices here too.
 //! - The matrix's rows are indexed by `triangles`, columns by `edges`.
 //!   Surface-side code can look up the column for a surface edge via
 //!   [`TetBoundaryComplex::edge_col`].

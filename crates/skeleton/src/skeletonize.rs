@@ -4,7 +4,6 @@
 //! and the skeleton before refinement. Each submodule can be called separately.
 
 pub mod deflate;
-mod partition;
 pub mod refinement;
 pub mod surgery;
 
