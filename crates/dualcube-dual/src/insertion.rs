@@ -716,13 +716,23 @@ struct Sides {
     cycle: HashMap<usize, usize>,
     own: usize,
     required: u32,
-    // Partner intervals between the cuts' ends and the start, where the arc may not end.
-    forbidden: HashSet<usize>,
+    // The partner piece arriving at the start, between the cuts' end and the start.
+    arriving: HashSet<usize>,
 }
 
 impl Sides {
     fn accepts(&self, vertex: usize, bits: u32) -> bool {
         self.cycle.get(&vertex) != Some(&self.own) || bits == self.required
+    }
+
+    // Crossing `h` from `vertex` ends the arc. On the arriving piece the closing interval runs
+    // from that crossing to the start and misses the cuts' end, so every parity flips.
+    fn accepts_crossing(&self, h: usize, vertex: usize, bits: u32) -> bool {
+        if self.arriving.contains(&h) {
+            bits == self.required ^ ((1 << self.cuts.len()) - 1)
+        } else {
+            self.accepts(vertex, bits)
+        }
     }
 }
 
@@ -947,10 +957,9 @@ impl Drawing {
                         if wall != step.partner
                             || forward == step.left
                             || crossable.is_some_and(|c| !c.contains(&h))
-                            || sides.is_some_and(|s| s.forbidden.contains(&h))
                             || step.segment.is_some_and(|s| self.segment[h] != Some(s))
                             || self.region[next] != step.region
-                            || !accepts(half.origin, bits)
+                            || sides.is_some_and(|s| !s.accepts_crossing(h, half.origin, bits))
                         {
                             continue;
                         }
@@ -1208,13 +1217,13 @@ impl Drawing {
             cuts.push(edges);
         }
         tip.1 = self.map.halves[out].face;
-        let forbidden = HashSet::from([arriving, self.map.halves[arriving].twin]);
+        let arriving = HashSet::from([arriving, self.map.halves[arriving].twin]);
         Some(Sides {
             cuts,
             cycle,
             own,
             required,
-            forbidden,
+            arriving,
         })
     }
 }

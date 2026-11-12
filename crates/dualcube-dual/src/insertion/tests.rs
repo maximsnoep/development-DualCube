@@ -1,5 +1,5 @@
-use super::uncross;
-use std::collections::HashMap;
+use super::{Sides, uncross};
+use std::collections::{HashMap, HashSet};
 
 fn interleave(a: usize, b: usize, c: usize, d: usize) -> bool {
     let inside = |x| (a < x && x < b) || (b < a && (x > a || x < b));
@@ -91,4 +91,31 @@ fn random_curves_become_simple() {
         before_sorted.sort();
         assert_eq!(faces_sorted, before_sorted);
     }
+}
+
+#[test]
+fn ending_on_the_arriving_piece_flips_every_parity() {
+    // Two cuts; boundary vertex 7 is on the arc's own cycle 0, vertex 8 on another cycle.
+    let sides = Sides {
+        cuts: vec![HashSet::new(), HashSet::new()],
+        cycle: HashMap::from([(7, 0), (8, 1)]),
+        own: 0,
+        required: 0b01,
+        arriving: HashSet::from([3, 4]),
+    };
+    // Elsewhere on the own cycle: the required parities.
+    assert!(sides.accepts_crossing(5, 7, 0b01));
+    assert!(!sides.accepts_crossing(5, 7, 0b10));
+    // On the arriving piece the cuts' end lies on the other interval.
+    assert!(sides.accepts_crossing(3, 7, 0b10));
+    assert!(!sides.accepts_crossing(4, 7, 0b01));
+    // Another cycle: the arc does not return, so any parity.
+    assert!(sides.accepts_crossing(5, 8, 0b11));
+    // Without cuts the arriving piece is crossable like any other.
+    let free = Sides {
+        cuts: vec![],
+        required: 0,
+        ..sides
+    };
+    assert!(free.accepts_crossing(3, 7, 0));
 }
