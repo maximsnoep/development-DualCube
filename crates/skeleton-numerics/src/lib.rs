@@ -1,5 +1,7 @@
 //! Concrete numerical kernels, optimized independently of the calling crates.
 
+pub mod contraction;
+
 use faer::{
     Conj, Mat, Par,
     dyn_stack::{MemBuffer, MemStack},

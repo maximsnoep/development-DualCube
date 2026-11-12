@@ -4,31 +4,32 @@ use super::*;
 fn nonfinite_system_retains_previous_iterate() {
     let path =
         std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../mehsh/assets/tetrahedron.obj");
-    let mut mesh = Mesh::<CONTRACTION>::from_obj(&path).unwrap().0;
+    let mesh = Mesh::<CONTRACTION>::from_obj(&path).unwrap().0;
     let mut state = ContractionState::new(&mesh);
-    contract_once(&mut mesh, &mut state).unwrap();
-    assert!(state.qr.is_some());
-    let previous: Vec<_> = state.vert_ids.iter().map(|&v| mesh.position(v)).collect();
+    contract_once(&mut state).unwrap();
+    assert!(state.solver.is_factorized());
+    let previous = state.positions.clone();
 
     state.wl = f64::INFINITY;
-    contract_once(&mut mesh, &mut state).unwrap();
+    contract_once(&mut state).unwrap();
 
     assert!(state.unstable);
-    for (&v, position) in state.vert_ids.iter().zip(previous) {
-        assert_eq!(mesh.position(v), position);
-    }
+    assert_eq!(state.positions, previous);
 }
 
 #[test]
-fn nonfinite_laplacian_stops_instead_of_changing_sparsity() {
+fn run_writes_contracted_positions_to_mesh() {
     let path =
-        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../mehsh/assets/tetrahedron.obj");
-    let mut mesh = Mesh::<CONTRACTION>::from_obj(&path).unwrap().0;
-    let state = ContractionState::new(&mesh);
-    for &v in &state.vert_ids {
-        mesh.set_position(v, mesh.position(v) * 1e200);
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../mehsh/assets/blub001k.obj");
+    let mesh = Mesh::<CONTRACTION>::from_obj(&path).unwrap().0;
+    let contracted = run(&mesh, 3).unwrap();
+    let mut state = ContractionState::new(&mesh);
+    for _ in 0..3 {
+        contract_once(&mut state).unwrap();
     }
-    assert!(get_laplacian_triplets(&mesh, &state).is_none());
+    for (&v, &position) in state.vert_ids.iter().zip(&state.positions) {
+        assert_eq!(contracted.position(v), position);
+    }
 }
 
 #[test]

@@ -1,16 +1,10 @@
-use crate::validate::volume;
 use std::collections::HashMap;
 
-use faer::{
-    Mat,
-    sparse::{SparseColMat, Triplet},
-};
 use mehsh::prelude::{
-    FaceKey, HasFaces, HasNeighbors, HasPosition, HasSize, HasVertices, Mesh, SetPosition, Tag,
-    VertKey,
+    HasFaces, HasNeighbors, HasPosition, HasVertices, Mesh, SetPosition, Tag, Vector3D, VertKey,
 };
 use serde::{Deserialize, Serialize};
-use skeleton_numerics::QrWorkspace;
+use skeleton_numerics::contraction::{ContractionSolver, Step, Triangles};
 use tracing::{info, warn};
 
 /// Tag type for contraction-view of skeleton.
@@ -21,15 +15,16 @@ pub struct CONTRACTION;
 pub const VOLUME_EPSILON: f64 = 1e-6;
 
 /// Holds the persistent state required across contraction iterations.
+/// Positions live in a flat array during contraction; the mesh is written once at the end.
 struct ContractionState {
-    /// We need integer indices for sparse matrix assembly (row/column indices),
-    /// so we maintain a stable vertex ordering throughout contraction.
+    /// Stable vertex ordering; indexes `positions` and the topology.
     pub vert_ids: Vec<VertKey<CONTRACTION>>,
 
-    // Static topology, in the same order as the mesh iterators.
-    neighbors: Vec<Vec<(usize, [VertKey<CONTRACTION>; 2])>>,
-    faces: Vec<FaceKey<CONTRACTION>>,
-    vertex_faces: Vec<Vec<usize>>,
+    /// Static topology, in the same order as the mesh iterators.
+    triangles: Triangles,
+
+    /// Current vertex positions.
+    positions: Vec<Vector3D>,
 
     /// Global contraction weight scalar (`s_L` * `W_L`).
     /// Starts as 10^-3 * sqrt(AvgArea). Increases by `s_L` each step.
@@ -49,19 +44,11 @@ struct ContractionState {
     /// Whether the mesh cannot be optimized further due to instability.
     pub unstable: bool,
 
-    /// Cache symbolic factorization since topology is static in this step.
-    qr: Option<QrWorkspace>,
+    /// Caches the symbolic factorization since topology is static in this step.
+    solver: ContractionSolver,
 }
 
 impl ContractionState {
-    fn one_ring_areas(&self, mesh: &Mesh<CONTRACTION>) -> Vec<f64> {
-        let areas: Vec<_> = self.faces.iter().map(|&f| mesh.size(f)).collect();
-        self.vertex_faces
-            .iter()
-            .map(|faces| faces.iter().map(|&f| areas[f]).sum())
-            .collect()
-    }
-
     // Cache topology once; contraction only changes positions.
     pub fn new(mesh: &Mesh<CONTRACTION>) -> Self {
         let vert_ids = mesh.vert_ids();
@@ -74,16 +61,19 @@ impl ContractionState {
             .map(|(idx, &v)| (v, idx))
             .collect();
 
-        let faces = mesh.face_ids();
-        let face_indices: HashMap<_, _> = faces.iter().enumerate().map(|(i, &f)| (f, i)).collect();
-        let vertex_faces: Vec<Vec<_>> = vert_ids
+        let face_ids = mesh.face_ids();
+        let face_indices: HashMap<_, _> =
+            face_ids.iter().enumerate().map(|(i, &f)| (f, i)).collect();
+        let faces = face_ids
+            .iter()
+            .map(|&f| {
+                let corners: Vec<_> = mesh.vertices(f).map(|v| vert_to_idx[&v]).collect();
+                [corners[0], corners[1], corners[2]]
+            })
+            .collect();
+        let vertex_faces = vert_ids
             .iter()
             .map(|&v| mesh.faces(v).map(|f| face_indices[&f]).collect())
-            .collect();
-        let areas: Vec<_> = faces.iter().map(|&f| mesh.size(f)).collect();
-        let original_areas = vertex_faces
-            .iter()
-            .map(|faces| faces.iter().map(|&f| areas[f]).sum())
             .collect();
         let neighbors = vert_ids
             .iter()
@@ -94,35 +84,36 @@ impl ContractionState {
                         let opposite: Vec<_> = mesh
                             .faces(edge)
                             .map(|face| mesh.vertices(face).find(|&v| v != a && v != b).unwrap())
+                            .map(|v| vert_to_idx[&v])
                             .collect();
                         (vert_to_idx[&b], [opposite[0], opposite[1]])
                     })
                     .collect()
             })
             .collect();
-        let wh = vec![1.; n];
+        let triangles = Triangles {
+            faces,
+            vertex_faces,
+            neighbors,
+        };
+        let positions: Vec<_> = vert_ids.iter().map(|&v| mesh.position(v)).collect();
 
         // Initial wl = 10^-3 * sqrt(avg_area)
-        let mut total_area = 0.0;
-        let face_ids = mesh.face_ids();
-        let num_faces = face_ids.len();
-        for f in face_ids {
-            total_area += mesh.size(f);
-        }
-        let avg_area = total_area / num_faces as f64;
+        let face_areas = triangles.face_areas(&positions);
+        let total_area = face_areas.iter().fold(0.0, |total, area| total + area);
+        let avg_area = total_area / face_areas.len() as f64;
         let wl = 1e-3 * avg_area.sqrt();
 
         Self {
+            original_areas: triangles.one_ring_areas(&positions),
+            original_volume: triangles.volume(&positions),
             vert_ids,
-            neighbors,
-            faces,
-            vertex_faces,
+            triangles,
+            positions,
             wl,
-            wh,
-            original_areas,
-            original_volume: volume(mesh),
+            wh: vec![1.; n],
             unstable: false,
-            qr: None,
+            solver: ContractionSolver::default(),
         }
     }
 }
@@ -161,7 +152,7 @@ pub fn run<M: Tag>(
             break;
         }
 
-        let current_volume = volume(&contraction_mesh);
+        let current_volume = state.triangles.volume(&state.positions);
         let vol_ratio = current_volume / state.original_volume;
 
         info!(
@@ -178,90 +169,31 @@ pub fn run<M: Tag>(
             break;
         }
 
-        contract_once(&mut contraction_mesh, &mut state)?;
+        contract_once(&mut state)?;
     }
 
+    for (&v, &position) in state.vert_ids.iter().zip(&state.positions) {
+        contraction_mesh.set_position(v, position);
+    }
     Ok(contraction_mesh)
 }
 
 /// Solve the stacked least-squares system, then update positions and weights.
-fn contract_once(
-    mesh: &mut Mesh<CONTRACTION>,
-    state: &mut ContractionState,
-) -> crate::SkeletonResult<()> {
-    let num_verts = state.vert_ids.len();
-
-    // Setup Laplacian L triplets for sparse matrix assembly
-    let Some(l_triplets) = get_laplacian_triplets(mesh, state) else {
-        warn!("Non-finite Laplacian; keeping the previous iterate");
-        state.unstable = true;
-        return Ok(());
+fn contract_once(state: &mut ContractionState) -> crate::SkeletonResult<()> {
+    let step = state
+        .solver
+        .step(&state.triangles, state.wl, &state.wh, &mut state.positions)?;
+    let problem = match step {
+        Step::Solved => None,
+        Step::NonFiniteLaplacian => Some("Non-finite Laplacian"),
+        Step::NonFiniteWeights => Some("Non-finite contraction weights"),
+        Step::NonFiniteRightHandSide => Some("Non-finite contraction right-hand side"),
+        Step::NonFiniteSolution => Some("Contraction produced non-finite positions"),
     };
-
-    // Assemble System Matrix M (2N x N)
-    let mut triplets_m = Vec::with_capacity(l_triplets.len() + num_verts);
-
-    // Top block: W_L * L
-    for (r, c, val) in l_triplets {
-        triplets_m.push(Triplet::new(r, c, state.wl * val));
-    }
-
-    // Bottom block: W_H (Diagonal)
-    for i in 0..num_verts {
-        let wh = state.wh[i];
-        triplets_m.push(Triplet::new(num_verts + i, i, wh));
-    }
-
-    // Create Sparse Matrix M
-    if triplets_m.iter().any(|entry| !entry.val.is_finite()) {
-        warn!("Non-finite contraction weights; keeping the previous iterate");
+    if let Some(problem) = problem {
+        warn!("{problem}; keeping the previous iterate");
         state.unstable = true;
         return Ok(());
-    }
-    let mat_m = SparseColMat::try_new_from_triplets(2 * num_verts, num_verts, &triplets_m)?;
-
-    // Assemble RHS Matrix B (2N x 3)
-    let mut mat_b = Mat::from_fn(2 * num_verts, 3, |r, c| {
-        if r < num_verts {
-            0.0
-        } else {
-            let i = r - num_verts;
-            let v = state.vert_ids[i];
-            let wh = state.wh[i];
-            let pos = mesh.position(v);
-            match c {
-                0 => wh * pos.x,
-                1 => wh * pos.y,
-                2 => wh * pos.z,
-                _ => unreachable!(),
-            }
-        }
-    });
-
-    if (0..mat_b.nrows()).any(|i| (0..mat_b.ncols()).any(|j| !mat_b[(i, j)].is_finite())) {
-        warn!("Non-finite contraction right-hand side; keeping the previous iterate");
-        state.unstable = true;
-        return Ok(());
-    }
-
-    // Reuse factorization storage with the same sparsity pattern and parallelism.
-    if state.qr.is_none() {
-        state.qr = Some(QrWorkspace::new(mat_m.as_ref(), 3)?);
-    }
-    state.qr.as_mut().unwrap().solve(mat_m.as_ref(), &mut mat_b);
-    let solution = mat_b;
-
-    if (0..num_verts).any(|i| (0..3).any(|j| !solution[(i, j)].is_finite())) {
-        warn!("Contraction produced non-finite positions; keeping the previous iterate");
-        state.unstable = true;
-        return Ok(());
-    }
-
-    // Update vertex positions from solution
-    for (i, &v) in state.vert_ids.iter().enumerate() {
-        let new_pos =
-            mehsh::prelude::Vector3D::new(solution[(i, 0)], solution[(i, 1)], solution[(i, 2)]);
-        mesh.set_position(v, new_pos);
     }
 
     // Update Weights for next iteration
@@ -269,73 +201,18 @@ fn contract_once(
     state.wl *= SL;
     const MIN_VERTEX_AREA: f64 = 1e-16;
 
-    for (i, current_area) in state.one_ring_areas(mesh).into_iter().enumerate() {
+    for (i, current_area) in state
+        .triangles
+        .one_ring_areas(&state.positions)
+        .into_iter()
+        .enumerate()
+    {
         let safe_area = current_area.max(MIN_VERTEX_AREA);
         // Attraction weight relative to the original area, with initial weight 1.
         let original_area = state.original_areas[i];
         state.wh[i] = (original_area / safe_area).sqrt();
     }
     Ok(())
-}
-
-fn cotangent_weight(
-    mesh: &Mesh<CONTRACTION>,
-    v_i: VertKey<CONTRACTION>,
-    v_j: VertKey<CONTRACTION>,
-    opposite: [VertKey<CONTRACTION>; 2],
-) -> f64 {
-    let p_i = mesh.position(v_i);
-    let p_j = mesh.position(v_j);
-    const MIN_CROSSPROD_LEN: f64 = 1e-8;
-    let mut sum_cot = 0.0;
-    for v_k in opposite {
-        let p_k = mesh.position(v_k);
-        let u = p_i - p_k;
-        let v = p_j - p_k;
-        let cross_len = u.cross(&v).magnitude();
-        if cross_len > MIN_CROSSPROD_LEN {
-            sum_cot += u.dot(&v) / cross_len;
-        }
-    }
-    sum_cot
-}
-
-/// Generates the triplet form (row, col, value) of the Laplacian Matrix L.
-/// `L_ij` = `cot_weight` (if adjacent)
-/// `L_ii` = -`sum(cot_weights)`
-/// See Eq (1).
-fn get_laplacian_triplets(
-    mesh: &Mesh<CONTRACTION>,
-    state: &ContractionState,
-) -> Option<Vec<(usize, usize, f64)>> {
-    let num_verts = state.vert_ids.len();
-    // Estimate capacity: ~6 neighbors per vertex + diagonal = 7 * N
-    let mut triplets = Vec::with_capacity(num_verts * 7);
-
-    for (i, &v_i) in state.vert_ids.iter().enumerate() {
-        let mut sum_weights = 0.0;
-
-        // Iterate over 1-ring neighbors
-        for &(j, opposite) in &state.neighbors[i] {
-            let v_j = state.vert_ids[j];
-
-            // Compute cotangent weight for edge (i, j)
-            let weight = cotangent_weight(mesh, v_i, v_j, opposite);
-            if !weight.is_finite() {
-                return None;
-            }
-            triplets.push((i, j, weight));
-            sum_weights += weight;
-        }
-
-        if !sum_weights.is_finite() {
-            return None;
-        }
-        // Diagonal L_ii = -sum(weights)
-        triplets.push((i, i, -sum_weights));
-    }
-
-    Some(triplets)
 }
 
 #[cfg(test)]

@@ -6062,6 +6062,7 @@ name = "skeleton-numerics"
 version = "0.1.0"
 dependencies = [
  "faer",
+ "nalgebra",
 ]
 
 [[package]]
