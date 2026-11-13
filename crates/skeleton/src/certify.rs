@@ -12,6 +12,12 @@
 //! itself a simple vertex cycle. Most disks are found within seconds, so loops are
 //! first given a short time; loops that ran out of time are retried with longer ones only when
 //! no spanning tree avoids them.
+//!
+//! DiskScissors is single-threaded, and its time varies widely with the tet where its search
+//! starts (the same loop: 6 s from one, over 60 s from another). So the loops beside one tree
+//! run in parallel, spare jobs try the same loops from other seed tets, and the first disk of
+//! a loop stops its other attempts. Seeds are fixed per attempt, so results are reproducible.
+//! Every miss then joins the tree, which is sound because a miss at a given time stays one.
 
 mod refine;
 
@@ -29,6 +35,8 @@ pub struct Options {
     /// Run through WSL, with paths converted. As for TetGen: the default on Windows unless
     /// the executable has an `.exe` extension.
     pub use_wsl: bool,
+    /// DiskScissors runs at once: `DISKSCISSORS_JOBS`, else the available cores.
+    pub jobs: usize,
 }
 
 impl Default for Options {
@@ -40,6 +48,10 @@ impl Default for Options {
             executable,
             timeouts: [10, 60, 300].map(std::time::Duration::from_secs).to_vec(),
             use_wsl,
+            jobs: std::env::var("DISKSCISSORS_JOBS")
+                .ok()
+                .and_then(|jobs| jobs.parse().ok())
+                .unwrap_or_else(|| std::thread::available_parallelism().map_or(1, usize::from)),
         }
     }
 }
@@ -120,26 +132,28 @@ pub fn run_with(
             .keys()
             .filter(|e| !tree.contains(e) && !certificate.disks.contains(e))
             .collect();
+        if !pending.is_empty() && volume.is_none() {
+            tracing::info!(
+                "Certification: {} loops beside a spanning tree",
+                skeleton.edges.len() + 1 - skeleton.nodes.len()
+            );
+            volume = Some(Volume::new(mesh).map_err(|e| Failure::Unavailable(e.to_string()))?);
+        }
         let mut missed = false;
-        for edge in pending {
-            if volume.is_none() {
-                tracing::info!(
-                    "Certification: {} loops beside a spanning tree",
-                    skeleton.edges.len() + 1 - skeleton.nodes.len()
-                );
-                volume = Some(Volume::new(mesh).map_err(|e| Failure::Unavailable(e.to_string()))?);
-            }
-            let volume = volume.as_ref().unwrap();
-            let found = volume
-                .certify(mesh, skeleton, edge, options, options.timeouts[round])
-                .map_err(|e| Failure::Unavailable(e.to_string()))?;
-            match found {
-                Ok(()) => certificate.disks.push(edge),
+        for (edge, found) in pending.iter().zip(check(
+            volume.as_ref(),
+            mesh,
+            skeleton,
+            &pending,
+            options,
+            round,
+        )) {
+            match found.map_err(|e| Failure::Unavailable(e.to_string()))? {
+                Ok(()) => certificate.disks.push(*edge),
                 Err(miss) => {
                     tracing::info!("Certification: {edge:?} has no disk ({miss:?}); retrying");
-                    certificate.misses.push((edge, miss));
+                    certificate.misses.push((*edge, miss));
                     missed = true;
-                    break;
                 }
             }
         }
@@ -153,6 +167,91 @@ pub fn run_with(
             return Ok(certificate);
         }
     }
+}
+
+/// Check loops on `options.jobs` threads, with as many attempts per loop as fill them; results
+/// in the order of `edges`. A loop has a disk when any attempt finds one, otherwise it ran out
+/// of time when any attempt did.
+fn check(
+    volume: Option<&Volume>,
+    mesh: &Mesh<INPUT>,
+    skeleton: &Skeleton,
+    edges: &[SkeletonEdgeID],
+    options: &Options,
+    round: usize,
+) -> Vec<SkeletonResult<Result<(), Miss>>> {
+    use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+    let Some(volume) = volume else {
+        return Vec::new();
+    };
+    let n = edges.len();
+    let jobs = options.jobs.max(1);
+    let attempts = jobs.div_ceil(n.max(1));
+    let next = AtomicUsize::new(0);
+    let found: Vec<_> = edges.iter().map(|_| AtomicBool::new(false)).collect();
+    let outcomes: Vec<_> = edges
+        .iter()
+        .map(|_| std::sync::Mutex::new(Vec::new()))
+        .collect();
+    std::thread::scope(|scope| {
+        for _ in 0..jobs.min(n * attempts) {
+            scope.spawn(|| {
+                loop {
+                    let item = next.fetch_add(1, Ordering::Relaxed);
+                    if item >= n * attempts {
+                        break;
+                    }
+                    let (attempt, i) = (item / n, item % n);
+                    if found[i].load(Ordering::Relaxed) {
+                        continue;
+                    }
+                    let outcome = volume.certify(
+                        mesh,
+                        skeleton,
+                        edges[i],
+                        options,
+                        options.timeouts[round],
+                        Attempt {
+                            task: item,
+                            seed: round * attempts + attempt,
+                            cancel: &found[i],
+                        },
+                    );
+                    if matches!(outcome, Ok(Ok(()))) {
+                        found[i].store(true, Ordering::Relaxed);
+                    }
+                    outcomes[i].lock().unwrap().push(outcome);
+                }
+            });
+        }
+    });
+    outcomes
+        .into_iter()
+        .map(|o| {
+            let outcomes = o.into_inner().unwrap();
+            if outcomes.iter().any(|o| matches!(o, Ok(Ok(())))) {
+                return Ok(Ok(()));
+            }
+            let mut result = Ok(Err(Miss::NoDisk));
+            for outcome in outcomes {
+                match outcome {
+                    Err(error) => return Err(error),
+                    Ok(Err(Miss::Timeout)) => result = Ok(Err(Miss::Timeout)),
+                    _ => {}
+                }
+            }
+            result
+        })
+        .collect()
+}
+
+/// One DiskScissors run of a loop: its file names, its seed number, and whether another run
+/// already found a disk.
+#[derive(Clone, Copy)]
+struct Attempt<'a> {
+    task: usize,
+    seed: usize,
+    cancel: &'a std::sync::atomic::AtomicBool,
 }
 
 /// A spanning tree containing `forced`, otherwise preferring long loops, so the loops left to
@@ -313,10 +412,12 @@ impl Volume {
         edge: SkeletonEdgeID,
         options: &Options,
         timeout: std::time::Duration,
+        attempt: Attempt<'_>,
     ) -> SkeletonResult<Result<(), Miss>> {
         if let Some(walk) = walk(mesh, skeleton, edge) {
             let walk: Vec<_> = walk.iter().map(|v| self.index[v]).collect();
-            return self.disk(&self.mesh, options, timeout, &walk);
+            let cells = self.tets.len();
+            return self.disk(&self.mesh, cells, options, timeout, &walk, attempt);
         }
         let boundary = &skeleton.edges[edge].boundary;
         let refined = refine::refine(
@@ -327,27 +428,35 @@ impl Volume {
             &self.vertices,
             &self.tets,
         );
-        let path = self.directory.join("refined.vtk");
+        let path = self.directory.join(format!("refined-{}.vtk", attempt.task));
         write_vtk(&path, &refined.vertices, &refined.tets)?;
         let walk: Vec<_> = boundary
             .crossings
             .iter()
             .map(|c| refined.crossings[c])
             .collect();
-        self.disk(&path, options, timeout, &walk)
+        let found = self.disk(&path, refined.tets.len(), options, timeout, &walk, attempt);
+        let _ = std::fs::remove_file(&path);
+        found
     }
 
     /// Whether DiskScissors finds a disk bounded by the walk. It reports success only by
-    /// printing `Snip`; its exit status is zero either way.
+    /// printing `Snip`; its exit status is zero either way. Files are named by the attempt's
+    /// task, so attempts can run at once; its search starts in a tet (of `cells`) fixed by the
+    /// seed number and the loop. A cancelled attempt counts as out of time.
+    #[allow(clippy::too_many_arguments)]
     fn disk(
         &self,
         volume: &Path,
+        cells: usize,
         options: &Options,
         timeout: std::time::Duration,
         walk: &[usize],
+        attempt: Attempt<'_>,
     ) -> SkeletonResult<Result<(), Miss>> {
-        let path = self.directory.join("loop.txt");
-        let log = self.directory.join("output.txt");
+        let path = self.directory.join(format!("loop-{}.txt", attempt.task));
+        let log = self.directory.join(format!("output-{}.txt", attempt.task));
+        let seed = seed_cell(attempt.seed, walk, cells).to_string();
         let text: Vec<_> = walk.iter().map(usize::to_string).collect();
         std::fs::write(&path, text.join("\n") + "\n")?;
         let mut command;
@@ -365,10 +474,11 @@ impl Volume {
                 .arg("--exec")
                 .arg(&options.executable)
                 .arg(format!("{directory}/{}", file_name(volume)?))
-                .arg(format!("{directory}/{}", file_name(&path)?));
+                .arg(format!("{directory}/{}", file_name(&path)?))
+                .args(["-s", &seed]);
         } else {
             command = Command::new(&options.executable);
-            command.arg(volume).arg(&path);
+            command.arg(volume).arg(&path).args(["-s", &seed]);
         }
         let mut child = command
             .stdout(std::fs::File::create(&log)?)
@@ -380,7 +490,9 @@ impl Volume {
             if let Some(status) = child.try_wait()? {
                 break status;
             }
-            if start.elapsed() > timeout {
+            if start.elapsed() > timeout
+                || attempt.cancel.load(std::sync::atomic::Ordering::Relaxed)
+            {
                 child.kill()?;
                 child.wait()?;
                 return Ok(Err(Miss::Timeout));
@@ -404,6 +516,16 @@ impl Drop for Volume {
     fn drop(&mut self) {
         let _ = std::fs::remove_dir_all(&self.directory);
     }
+}
+
+/// A tet among `cells` for an attempt's seed number, spread by the loop's first vertices.
+fn seed_cell(seed: usize, walk: &[usize], cells: usize) -> usize {
+    let mut hash = 0x9e37_79b9_7f4a_7c15_u64 ^ seed as u64;
+    for &v in walk.iter().take(4) {
+        hash = (hash ^ v as u64).wrapping_mul(0x0100_0000_01b3);
+        hash ^= hash >> 29;
+    }
+    (hash % cells.max(1) as u64) as usize
 }
 
 /// The final component of a path in the scratch directory, for joining onto its WSL form.

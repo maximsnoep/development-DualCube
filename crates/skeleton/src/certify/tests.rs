@@ -243,19 +243,32 @@ fn diskscissors_finds_no_disk_for_a_longitude() {
     });
     assert!(ring.len() >= 6);
     let volume = Volume::new(&mesh).unwrap();
+    let cancel = std::sync::atomic::AtomicBool::new(false);
+    let attempt = Attempt {
+        task: 0,
+        seed: 0,
+        cancel: &cancel,
+    };
     let options = Options::default();
     let timeout = std::time::Duration::from_secs(60);
     let ring: Vec<_> = ring.iter().map(|v| volume.index[v]).collect();
     assert_eq!(
         volume
-            .disk(&volume.mesh, &options, timeout, &ring)
+            .disk(
+                &volume.mesh,
+                volume.tets.len(),
+                &options,
+                timeout,
+                &ring,
+                attempt
+            )
             .unwrap(),
         Err(Miss::NoDisk)
     );
     let edge = skeleton.edges.keys().next().unwrap();
     assert_eq!(
         volume
-            .certify(&mesh, &skeleton, edge, &options, timeout)
+            .certify(&mesh, &skeleton, edge, &options, timeout, attempt)
             .unwrap(),
         Ok(())
     );
@@ -283,4 +296,26 @@ fn reduction_removes_repeats_and_backtracks_across_the_seam() {
     assert_eq!(reduce(vec![a, b, c, a, d]), [a, b, c]);
     assert_eq!(reduce(vec![a, d, b, c, d]), [d, b, c]);
     assert_eq!(reduce(vec![a, b, a]), [a]);
+}
+
+#[test]
+#[ignore = "requires TetGen"]
+fn loops_beside_one_tree_are_checked_at_once() {
+    // Six edges on three nodes: four loops beside a spanning tree.
+    let (mesh, skeleton) = doubled();
+    for jobs in [1, 4] {
+        let options = Options { jobs, ..fake(true) };
+        let certificate = run_with(&mesh, &skeleton, &options).unwrap();
+        assert_eq!(certificate.disks.len(), 4);
+        assert!(certificate.misses.is_empty());
+        let options = Options {
+            jobs,
+            ..fake(false)
+        };
+        let Err(Failure::NoTree { misses }) = run_with(&mesh, &skeleton, &options) else {
+            panic!("expected NoTree");
+        };
+        // All four missed at once, closing cycles: no second tree was needed.
+        assert_eq!(misses.len(), 4);
+    }
 }
