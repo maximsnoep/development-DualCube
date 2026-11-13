@@ -1,4 +1,5 @@
 use super::*;
+use crate::surface::{Regions, Vertex};
 use crate::{LabeledSkeleton, label::Port};
 
 fn placed(ports: [Port; 2]) -> (Mesh<INPUT>, RealizedSkeleton) {
@@ -9,11 +10,28 @@ fn placed(ports: [Port; 2]) -> (Mesh<INPUT>, RealizedSkeleton) {
     (mesh, placed)
 }
 
+fn dissolved(mesh: &Mesh<INPUT>, source: &RealizedSkeleton) -> RealizedSkeleton {
+    place_cubes::run(mesh, &dissolve_straight(mesh, &source.labeled).unwrap()).unwrap()
+}
+
+/// Four annuli around a torus, labeled by the labeling stage.
+fn torus() -> (Mesh<INPUT>, LabeledSkeleton) {
+    let positions: Vec<_> = (0..4)
+        .map(|i| {
+            let angle = std::f64::consts::TAU * (2. * i as f64 + 0.5) / 8.;
+            [3. * angle.cos(), 3. * angle.sin(), 0.]
+        })
+        .collect();
+    let (mesh, skeleton) = crate::surface::tests::bands(&positions);
+    let labeled = crate::label::run(&mesh, &skeleton).unwrap();
+    (mesh, labeled)
+}
+
 #[test]
 fn dissolves_straight_patch_and_its_occurrences_without_mutating_source() {
     let (mesh, source) = placed([Port::PositiveX, Port::NegativeX]);
     let order = source.labeled.skeleton.surface.edge_order.clone();
-    let result = run(&mesh, &source).unwrap();
+    let result = dissolved(&mesh, &source);
     result.validate(&mesh).unwrap();
     assert_eq!(result.labeled.skeleton.nodes.len(), 2);
     assert_eq!(result.labeled.skeleton.edges.len(), 1);
@@ -21,7 +39,7 @@ fn dissolves_straight_patch_and_its_occurrences_without_mutating_source() {
     assert_eq!(result.cuboids.cuboids.len(), 3);
     assert_eq!(source.labeled.skeleton.surface.edge_order, order);
     assert_eq!(source.labeled.skeleton.nodes.len(), 3);
-    let again = run(&mesh, &result).unwrap();
+    let again = dissolved(&mesh, &result);
     assert_eq!(again.node_positions, result.node_positions);
 }
 
@@ -35,13 +53,13 @@ fn stored_orientation_does_not_change_simplification() {
     source.labeled.skeleton.edges[edge].nodes.reverse();
     source.labeled.labels[edge] = Port::NegativeX.label();
     source = place_cubes::run(&mesh, &source.labeled).unwrap();
-    assert_eq!(run(&mesh, &source).unwrap().labeled.skeleton.edges.len(), 1);
+    assert_eq!(dissolved(&mesh, &source).labeled.skeleton.edges.len(), 1);
 }
 
 #[test]
 fn preserves_bends() {
     let (mesh, source) = placed([Port::PositiveX, Port::PositiveY]);
-    let result = run(&mesh, &source).unwrap();
+    let result = dissolved(&mesh, &source);
     assert_eq!(result.node_positions, source.node_positions);
     assert_eq!(
         result.labeled.skeleton.surface.edge_order,
@@ -71,9 +89,142 @@ fn dissolves_an_entire_straight_chain() {
         .map(|e| (e, Port::PositiveX.label()))
         .collect();
     let source = place_cubes::run(&mesh, &LabeledSkeleton { skeleton, labels }).unwrap();
-    let result = run(&mesh, &source).unwrap();
+    let result = dissolved(&mesh, &source);
     result.validate(&mesh).unwrap();
     assert_eq!(result.labeled.skeleton.edges.len(), 1);
     assert_eq!(result.labeled.skeleton.nodes.len(), 2);
     assert_eq!(result.labeled.skeleton.surface.crossings.len(), 2);
+}
+
+#[test]
+fn minimum_cut_separates_at_the_cheapest_arc() {
+    let mut network = cut::Network::new(4);
+    network.add(0, 1, 5., 0.);
+    network.add(1, 2, 1., 1.);
+    network.add(2, 3, 5., 0.);
+    assert_eq!(network.source_side(0, 3), vec![true, true, false, false]);
+}
+
+#[test]
+fn restricted_fidelity_is_at_most_the_naive_one() {
+    let (mesh, labeled) = torus();
+    let tables = Tables::build(&mesh, &labeled.skeleton).unwrap();
+    let fidelity = tables.evaluate(&labeled.skeleton, &labeled.labels);
+    assert!(tables.area > 0.);
+    assert!(fidelity.alignment <= tables.naive.alignment + 1e-12);
+    assert!(fidelity.distortion >= tables.naive.distortion - 1e-12);
+    assert!((-1.0..=1.0).contains(&fidelity.alignment));
+}
+
+#[test]
+fn chain_relabeling_is_valid_and_never_worse() {
+    let (mesh, labeled) = torus();
+    let tables = Tables::build(&mesh, &labeled.skeleton).unwrap();
+    let before = tables.evaluate(&labeled.skeleton, &labeled.labels);
+    let chains = moves::chains(&labeled.skeleton);
+    assert!(!chains.is_empty());
+    for chain in chains {
+        for measure in [Measure::Alignment, Measure::Distortion] {
+            let (labels, _) = moves::relabel(&tables, &labeled, &chain, measure).unwrap();
+            let candidate = LabeledSkeleton {
+                skeleton: labeled.skeleton.clone(),
+                labels,
+            };
+            candidate.validate(&mesh).unwrap();
+            let after = tables.evaluate(&candidate.skeleton, &candidate.labels);
+            assert!(after.gain(measure) >= before.gain(measure) - 1e-12);
+        }
+    }
+}
+
+#[test]
+fn tracing_the_current_ownership_reproduces_a_valid_loop() {
+    let (mesh, labeled) = torus();
+    let skeleton = &labeled.skeleton;
+    let edge = skeleton.edges.keys().next().unwrap();
+    let [a, b] = skeleton.edges[edge].nodes;
+    let regions = Regions::build(&mesh, skeleton).unwrap();
+    let mut owner = HashMap::new();
+    for (cell, &node) in regions.cells.iter().zip(&regions.owners) {
+        for v in &cell.vertices {
+            if let Vertex::Input(v) = *v {
+                owner.insert(v, node == a);
+            }
+        }
+    }
+    let mut merged = skeleton.clone();
+    let old = merged.edges.remove(edge).unwrap();
+    redraw::erase(&mesh, &mut merged, &old.boundary.crossings);
+    let mut pinned = HashMap::new();
+    for data in merged.edges.values_mut() {
+        for &c in &data.boundary.crossings {
+            pinned.insert(c, data.nodes.contains(&a));
+        }
+        for n in &mut data.nodes {
+            if *n == b {
+                *n = a;
+            }
+        }
+    }
+    merged.nodes.remove(b);
+    let union = Regions::build(&mesh, &merged).unwrap();
+    let side = |v: Vertex| match v {
+        Vertex::Input(v) => owner[&v],
+        Vertex::Crossing(c) => pinned[&c],
+    };
+    let path = redraw::trace(&mesh, &union, a, &side).unwrap();
+    assert_eq!(path.len(), old.boundary.crossings.len());
+}
+
+#[test]
+fn redraw_keeps_a_valid_partition() {
+    let (mesh, labeled) = torus();
+    let params = RedrawParams {
+        smoothness: 0.,
+        measure: Measure::Alignment,
+        rounds: 2,
+    };
+    for edge in labeled.skeleton.edges.keys() {
+        if let Some(result) = redraw::redraw(&mesh, &labeled, edge, &params) {
+            result.validate(&mesh).unwrap();
+            assert_eq!(
+                result.skeleton.edges[edge].nodes,
+                labeled.skeleton.edges[edge].nodes
+            );
+        }
+    }
+}
+
+#[test]
+fn search_returns_a_valid_labeling_that_is_not_worse() {
+    let (mesh, labeled) = torus();
+    let params = Params {
+        iterations: 30,
+        ..Params::default()
+    };
+    let (result, stats) = search::search(&mesh, &labeled, &params, None).unwrap();
+    result.validate(&mesh).unwrap();
+    let score = |f: Fidelity, nodes: usize| f.alignment - params.node_cost * nodes as f64;
+    assert!(score(stats.result, stats.nodes[1]) >= score(stats.initial, stats.nodes[0]) - 1e-12);
+}
+
+#[test]
+fn added_leaves_are_valid_disks_at_a_free_port() {
+    let (mesh, labeled) = torus();
+    let params = RedrawParams {
+        smoothness: 0.,
+        measure: Measure::Alignment,
+        rounds: 1,
+    };
+    for node in labeled.skeleton.nodes.keys() {
+        for port in Port::ALL {
+            if let Some(result) = redraw::add_leaf(&mesh, &labeled, node, port, &params) {
+                result.validate(&mesh).unwrap();
+                assert_eq!(
+                    result.skeleton.nodes.len(),
+                    labeled.skeleton.nodes.len() + 1
+                );
+            }
+        }
+    }
 }

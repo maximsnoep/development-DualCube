@@ -31,7 +31,7 @@ impl Union {
 
 /// A path's internal degree-two nodes can be eliminated exactly using its mask.
 /// Neither sign means equality, one means strict order, both mean no constraint.
-pub(super) fn feasible(
+pub(crate) fn feasible(
     skeleton: &Skeleton,
     labels: &SecondaryMap<SkeletonEdgeID, EdgeLabel>,
     extra: Option<([SkeletonNodeID; 2], u8)>,
@@ -129,7 +129,7 @@ pub(crate) fn coordinate_levels(
     )
 }
 
-pub(super) fn used_ports(
+pub(crate) fn used_ports(
     skeleton: &Skeleton,
     labels: &SecondaryMap<SkeletonEdgeID, EdgeLabel>,
 ) -> SkeletonResult<SecondaryMap<SkeletonNodeID, u8>> {

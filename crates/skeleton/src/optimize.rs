@@ -1,68 +1,86 @@
-//! Simplify straight degree-two patches and recompute target placement.
+//! Improve a placed skeleton by valid moves against restricted-label fidelity, then recompute
+//! target placement.
 
-use crate::{RealizedSkeleton, SkeletonResult, place_cubes};
+mod cut;
+pub mod fidelity;
+pub(crate) mod moves;
+pub(crate) mod redraw;
+pub mod search;
+
+pub use fidelity::{Fidelity, Measure, Tables};
+pub use redraw::RedrawParams;
+pub use search::{Objective, Operator, Params, Stats};
+
+use crate::{LabeledSkeleton, RealizedSkeleton, SkeletonResult, place_cubes};
 use dualcube_types::prelude::*;
 
-/// Absorb a straight annular patch into one neighbor, deleting its shared boundary.
+/// Dissolve straight degree-two patches only. Searching on restricted-label fidelity alone
+/// lowers the reconstructed quality; the search needs an objective such as the primalized
+/// quality (`run_with`).
 pub fn run(mesh: &Mesh<INPUT>, placed: &RealizedSkeleton) -> SkeletonResult<RealizedSkeleton> {
     placed.validate(mesh)?;
-    let mut labeled = placed.labeled.clone();
-    let mut dissolved = 0;
+    place_cubes::run(mesh, &dissolve_straight(mesh, &placed.labeled)?)
+}
+
+/// Dissolve straight degree-two patches, then search; the result is placed again.
+pub fn run_with(
+    mesh: &Mesh<INPUT>,
+    placed: &RealizedSkeleton,
+    params: &Params,
+    objective: Option<Objective<'_>>,
+) -> SkeletonResult<(RealizedSkeleton, Stats)> {
+    placed.validate(mesh)?;
+    let start = dissolve_straight(mesh, &placed.labeled)?;
+    let (labeled, stats) = search::search(mesh, &start, params, objective)?;
+    labeled.validate(mesh)?;
+    let result = place_cubes::run(mesh, &labeled)?;
+    tracing::info!(
+        "Optimization: {} → {} patches, alignment {:.4} → {:.4} (naive {:.4}), {} steps, {:.1}s",
+        stats.nodes[0],
+        stats.nodes[1],
+        stats.initial.alignment,
+        stats.result.alignment,
+        stats.naive.alignment,
+        stats.steps,
+        stats.seconds
+    );
+    Ok((result, stats))
+}
+
+/// Absorb straight annular patches into a neighbour, deleting their shared boundary.
+pub fn dissolve_straight(
+    mesh: &Mesh<INPUT>,
+    labeled: &LabeledSkeleton,
+) -> SkeletonResult<LabeledSkeleton> {
+    let mut labeled = labeled.clone();
     loop {
-        let mut incident = HashMap::<_, Vec<_>>::new();
-        for (edge, data) in &labeled.skeleton.edges {
-            for node in data.nodes {
-                incident.entry(node).or_default().push(edge);
-            }
-        }
+        let degree = moves::degrees(&labeled.skeleton);
         let candidate = labeled.skeleton.nodes.keys().find_map(|node| {
-            let edges = incident.get(&node)?;
-            if edges.len() != 2
-                || labeled.labels[edges[0]].direction != labeled.labels[edges[1]].direction
-            {
+            if degree[node] != 2 {
                 return None;
             }
+            let edges: Vec<_> = labeled
+                .skeleton
+                .edges
+                .iter()
+                .filter(|(_, e)| e.nodes.contains(&node))
+                .map(|(id, _)| id)
+                .collect();
             // Valid local ports on one axis must be opposite, irrespective of stored edge orientation.
-            Some((node, edges[0], edges[1]))
+            (labeled.labels[edges[0]].direction == labeled.labels[edges[1]].direction).then(|| {
+                let removed = &labeled.skeleton.edges[edges[0]];
+                let neighbor = removed.nodes[usize::from(removed.nodes[0] == node)];
+                (edges[0], neighbor)
+            })
         });
-        let Some((node, remove, keep)) = candidate else {
+        let Some((edge, keep)) = candidate else {
             break;
         };
         // TODO: Choose which boundary to retain using surface/label costs.
-        let removed = labeled.skeleton.edges.remove(remove).unwrap();
-        let neighbor = removed.nodes.into_iter().find(|&n| n != node).unwrap();
-        for n in &mut labeled.skeleton.edges[keep].nodes {
-            if *n == node {
-                *n = neighbor;
-            }
-        }
-        for crossing in removed.boundary.crossings {
-            let data = labeled.skeleton.surface.crossings.remove(crossing).unwrap();
-            let edge = crate::surface::canonical(mesh, data.exit);
-            labeled
-                .skeleton
-                .surface
-                .edge_order
-                .get_mut(&edge)
-                .unwrap()
-                .retain(|&c| c != crossing);
-        }
-        labeled
-            .skeleton
-            .surface
-            .edge_order
-            .retain(|_, order| !order.is_empty());
-        labeled.skeleton.nodes.remove(node);
-        labeled.labels.remove(remove);
-        dissolved += 1;
+        moves::dissolve(mesh, &mut labeled, edge, keep)?;
     }
-    if dissolved == 0 {
-        return Ok(placed.clone());
-    }
-    let result = place_cubes::run(mesh, &labeled)?;
-    tracing::info!("Optimization: dissolved {dissolved} straight degree-two patches");
-    // TODO: Optimize remaining patches, labels, and geometry against the target cubes.
-    Ok(result)
+    labeled.validate_labels()?;
+    Ok(labeled)
 }
 
 #[cfg(test)]

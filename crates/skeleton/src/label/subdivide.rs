@@ -3,7 +3,7 @@
 use super::*;
 use crate::{SkeletonEdge, SkeletonNode};
 
-pub(super) fn collar(
+pub(crate) fn collar(
     mesh: &Mesh<INPUT>,
     skeleton: &Skeleton,
     edge: SkeletonEdgeID,

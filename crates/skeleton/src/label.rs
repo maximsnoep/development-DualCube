@@ -3,7 +3,7 @@
 pub(crate) mod constraints;
 mod junction;
 pub mod path;
-mod subdivide;
+pub(crate) mod subdivide;
 mod tree;
 
 use crate::{EdgeLabel, LabeledSkeleton, Skeleton, SkeletonEdgeID, SkeletonNodeID, SkeletonResult};
