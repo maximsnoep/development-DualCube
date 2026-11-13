@@ -37,7 +37,7 @@ fn stages_run_from_the_input_to_the_result() {
     let path =
         std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../mehsh/assets/blub001k.obj");
     let mesh = Mesh::<CONTRACTION>::from_obj(&path).unwrap().0;
-    let (contracted, stages) = run_with_stages(&mesh, 3).unwrap();
+    let (contracted, stages) = run_with_stages(&mesh, 3, DEFAULT_STEP).unwrap();
     assert_eq!(stages.len(), 4);
     let vertices = mesh.vert_ids();
     for (i, &v) in vertices.iter().enumerate() {

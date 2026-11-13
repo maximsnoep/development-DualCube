@@ -161,7 +161,11 @@ fn extract_until_with_updates(
     publish: &impl Fn(Update),
 ) -> dualcube::skeleton::SkeletonResult<SkeletonState> {
     options.surgery.validate()?;
-    let contracted = cache.get_or_compute(mesh.clone(), options.max_iterations)?;
+    let contracted = cache.get_or_compute(
+        mesh.clone(),
+        options.max_iterations,
+        options.contraction_step,
+    )?;
     publish(Update::State(SkeletonState::Deflated(
         (*contracted).clone(),
     )));

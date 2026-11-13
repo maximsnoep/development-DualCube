@@ -14,6 +14,11 @@ pub struct CONTRACTION;
 /// Epsilon value for volume-based stopping condition.
 pub const VOLUME_EPSILON: f64 = 1e-6;
 
+/// Factor by which the contraction weight `W_L` grows every iteration (`s_L`; 2 in the paper).
+/// Smaller steps follow the curvature flow more closely, so thin parts finish before thick
+/// ones, at the cost of more iterations.
+pub const DEFAULT_STEP: f64 = 4.0;
+
 /// Holds the persistent state required across contraction iterations.
 /// Positions live in a flat array during contraction; the mesh is written once at the end.
 struct ContractionState {
@@ -43,6 +48,9 @@ struct ContractionState {
 
     /// Whether the mesh cannot be optimized further due to instability.
     pub unstable: bool,
+
+    /// Growth factor of `wl` per iteration.
+    step: f64,
 
     /// Caches the symbolic factorization since topology is static in this step.
     solver: ContractionSolver,
@@ -113,6 +121,7 @@ impl ContractionState {
             wl,
             wh: vec![1.; n],
             unstable: false,
+            step: DEFAULT_STEP,
             solver: ContractionSolver::default(),
         }
     }
@@ -133,25 +142,40 @@ pub fn run<M: Tag>(
     mesh: &Mesh<M>,
     max_iterations: usize,
 ) -> crate::SkeletonResult<Mesh<CONTRACTION>> {
-    contract(mesh, max_iterations, None)
+    contract(mesh, max_iterations, DEFAULT_STEP, None)
 }
 
-/// [`run`], also returning the positions (in `vert_ids` order) before the first iteration and
-/// after every iteration, for inspecting how contraction proceeds.
+/// [`run`] with the growth factor of the contraction weight per iteration (see
+/// [`DEFAULT_STEP`]).
+pub fn run_with_step<M: Tag>(
+    mesh: &Mesh<M>,
+    max_iterations: usize,
+    step: f64,
+) -> crate::SkeletonResult<Mesh<CONTRACTION>> {
+    contract(mesh, max_iterations, step, None)
+}
+
+/// [`run_with_step`], also returning the positions (in `vert_ids` order) before the first
+/// iteration and after every iteration, for inspecting how contraction proceeds.
 pub fn run_with_stages<M: Tag>(
     mesh: &Mesh<M>,
     max_iterations: usize,
+    step: f64,
 ) -> crate::SkeletonResult<(Mesh<CONTRACTION>, Vec<Vec<Vector3D>>)> {
     let mut stages = Vec::new();
-    let contracted = contract(mesh, max_iterations, Some(&mut stages))?;
+    let contracted = contract(mesh, max_iterations, step, Some(&mut stages))?;
     Ok((contracted, stages))
 }
 
 fn contract<M: Tag>(
     mesh: &Mesh<M>,
     max_iterations: usize,
+    step: f64,
     mut stages: Option<&mut Vec<Vec<Vector3D>>>,
 ) -> crate::SkeletonResult<Mesh<CONTRACTION>> {
+    if !(step.is_finite() && step > 1.) {
+        return Err(format!("Contraction step must be above 1, got {step}").into());
+    }
     let start = std::time::Instant::now();
     crate::validate::input_genus(mesh)?;
 
@@ -160,6 +184,7 @@ fn contract<M: Tag>(
 
     // Setup bookkeeping for contraction
     let mut state = ContractionState::new(&contraction_mesh);
+    state.step = step;
     if let Some(stages) = stages.as_deref_mut() {
         stages.push(state.positions.clone());
     }
@@ -224,8 +249,7 @@ fn contract_once(state: &mut ContractionState) -> crate::SkeletonResult<()> {
     }
 
     // Update Weights for next iteration
-    const SL: f64 = 4.0; // 2.0 in the paper // TODO: find out why 10 iterations is enough in the paper but we need 30ish sometimes
-    state.wl *= SL;
+    state.wl *= state.step;
     const MIN_VERTEX_AREA: f64 = 1e-16;
 
     for (i, current_area) in state

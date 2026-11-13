@@ -683,6 +683,18 @@ fn pipeline_bar(
                 "embedding refinement",
             );
             sep(ui);
+            label(ui, "Contraction", TEXT_COLOR);
+            ui.add(
+                egui::Slider::new(&mut conf.skeleton_options.contraction_step, 1.1..=8.0)
+                    .logarithmic(true)
+                    .text(text("step")),
+            );
+            ui.add(
+                egui::Slider::new(&mut conf.skeleton_options.max_iterations, 1..=500)
+                    .logarithmic(true)
+                    .text(text("max iterations")),
+            );
+            sep(ui);
             label(ui, "Connectivity surgery", TEXT_COLOR);
             let options = &mut conf.skeleton_options.surgery;
             log_slider(ui, "shape weight", &mut options.shape_weight, 100.);

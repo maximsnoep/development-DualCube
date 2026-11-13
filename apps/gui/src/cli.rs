@@ -22,6 +22,7 @@ Run from the repository root:
   --refinement               Enable embedding refinement (default off)
   --no-refinement            Skip embedding refinement
   --iterations <count>      Deflation iteration limit (default 50)
+  --contraction-step <f>    Growth of the contraction weight per iteration (default 4)
   --shape-weight <number>   Surgery shape weight (default 1)
   --sampling-weight <n>     Surgery sampling weight (default 0.1)
   --handle-bonus <number>   Surgery handle-cycle bonus (default 1000000)
@@ -84,6 +85,7 @@ impl Launch {
                     | "--stop-after"
                     | "--view"
                     | "--iterations"
+                    | "--contraction-step"
                     | "--shape-weight"
                     | "--sampling-weight"
                     | "--handle-bonus"
@@ -136,6 +138,13 @@ impl Launch {
                     launch.options.max_iterations = value
                         .parse()
                         .map_err(|_| "--iterations requires a nonnegative integer")?
+                }
+                "--contraction-step" => {
+                    launch.options.contraction_step = value
+                        .parse()
+                        .ok()
+                        .filter(|step: &f64| step.is_finite() && *step > 1.)
+                        .ok_or("--contraction-step requires a number above 1")?
                 }
                 "--shape-weight" => launch.options.surgery.shape_weight = weight(flag, value)?,
                 "--sampling-weight" => {

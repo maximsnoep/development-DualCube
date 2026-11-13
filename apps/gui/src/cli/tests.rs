@@ -35,10 +35,12 @@ fn startup_defaults_and_options() {
         "--sampling-weight=0",
         "--handle-bonus=12",
         "--iterations=7",
+        "--contraction-step=2",
     ])
     .unwrap();
     assert_eq!(launch.stop, Some(SkeletonStage::Complete));
     assert_eq!(launch.options.max_iterations, 7);
+    assert_eq!(launch.options.contraction_step, 2.);
     assert_eq!(launch.options.surgery.shape_weight, 2.);
     assert_eq!(launch.options.surgery.sampling_weight, 0.);
     assert_eq!(launch.options.surgery.handle_bonus, 12.);

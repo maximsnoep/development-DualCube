@@ -14,6 +14,7 @@ pub struct ContractionCache(Arc<Mutex<Option<CachedContraction>>>);
 struct CachedContraction {
     input: Arc<Mesh<INPUT>>,
     max_iterations: usize,
+    step: f64,
     mesh: Arc<ContractedMesh>,
     stages: ContractionStages,
 }
@@ -23,6 +24,7 @@ impl ContractionCache {
         &self,
         input: Arc<Mesh<INPUT>>,
         max_iterations: usize,
+        step: f64,
     ) -> SkeletonResult<Arc<ContractedMesh>> {
         let mut cached = self
             .0
@@ -31,15 +33,17 @@ impl ContractionCache {
         if let Some(entry) = &*cached
             && Arc::ptr_eq(&entry.input, &input)
             && entry.max_iterations == max_iterations
+            && entry.step == step
         {
             info!("Reusing contracted mesh");
             return Ok(entry.mesh.clone());
         }
-        let (mesh, stages) = deflate::run_with_stages(&input, max_iterations)?;
+        let (mesh, stages) = deflate::run_with_stages(&input, max_iterations, step)?;
         let mesh = Arc::new(mesh);
         *cached = Some(CachedContraction {
             input,
             max_iterations,
+            step,
             mesh: mesh.clone(),
             stages: Arc::new(stages),
         });

@@ -13,6 +13,8 @@ use dualcube_types::prelude::*;
 #[derive(Clone, Copy, Debug)]
 pub struct Options {
     pub max_iterations: usize,
+    /// Growth factor of the contraction weight per iteration (see [`deflate::DEFAULT_STEP`]).
+    pub contraction_step: f64,
     pub refine_embedding: bool,
     pub surgery: surgery::Options,
 }
@@ -21,6 +23,7 @@ impl Default for Options {
     fn default() -> Self {
         Self {
             max_iterations: 50,
+            contraction_step: deflate::DEFAULT_STEP,
             refine_embedding: false,
             surgery: surgery::Options::default(),
         }
@@ -43,7 +46,8 @@ pub fn run(mesh: &Mesh<INPUT>) -> SkeletonResult<Skeleton> {
 
 pub fn extract(mesh: &Mesh<INPUT>, options: Options) -> SkeletonResult<Extraction> {
     options.surgery.validate()?;
-    let contracted_mesh = deflate::run(mesh, options.max_iterations)?;
+    let contracted_mesh =
+        deflate::run_with_step(mesh, options.max_iterations, options.contraction_step)?;
     extract_from_contracted(mesh, contracted_mesh, options)
 }
 
