@@ -195,6 +195,8 @@ pub fn genus(mesh: &mehsh::prelude::Mesh<INPUT>) -> Option<usize> {
 #[derive(Resource, Default)]
 pub struct SkeletonResource {
     pub contraction_cache: crate::jobs::ContractionCache,
+    /// Contraction stage shown in the deflated layer; `None` shows the result.
+    pub contraction_stage: Option<usize>,
     pub state: Option<SkeletonState>,
     pub labeled: Option<dualcube::skeleton::LabeledSkeleton>,
     pub labeling: Option<dualcube::skeleton::label::Attempt>,

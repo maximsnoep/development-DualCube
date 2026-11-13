@@ -33,6 +33,21 @@ fn run_writes_contracted_positions_to_mesh() {
 }
 
 #[test]
+fn stages_run_from_the_input_to_the_result() {
+    let path =
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../mehsh/assets/blub001k.obj");
+    let mesh = Mesh::<CONTRACTION>::from_obj(&path).unwrap().0;
+    let (contracted, stages) = run_with_stages(&mesh, 3).unwrap();
+    assert_eq!(stages.len(), 4);
+    let vertices = mesh.vert_ids();
+    for (i, &v) in vertices.iter().enumerate() {
+        assert_eq!(stages[0][i], mesh.position(v));
+        assert_eq!(stages[3][i], contracted.position(v));
+    }
+    assert_ne!(stages[1], stages[0]);
+}
+
+#[test]
 #[ignore = "manual timing; run with --release -- --ignored --nocapture"]
 fn contraction_benchmark() {
     let path =

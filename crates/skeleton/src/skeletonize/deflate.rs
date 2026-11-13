@@ -133,6 +133,25 @@ pub fn run<M: Tag>(
     mesh: &Mesh<M>,
     max_iterations: usize,
 ) -> crate::SkeletonResult<Mesh<CONTRACTION>> {
+    contract(mesh, max_iterations, None)
+}
+
+/// [`run`], also returning the positions (in `vert_ids` order) before the first iteration and
+/// after every iteration, for inspecting how contraction proceeds.
+pub fn run_with_stages<M: Tag>(
+    mesh: &Mesh<M>,
+    max_iterations: usize,
+) -> crate::SkeletonResult<(Mesh<CONTRACTION>, Vec<Vec<Vector3D>>)> {
+    let mut stages = Vec::new();
+    let contracted = contract(mesh, max_iterations, Some(&mut stages))?;
+    Ok((contracted, stages))
+}
+
+fn contract<M: Tag>(
+    mesh: &Mesh<M>,
+    max_iterations: usize,
+    mut stages: Option<&mut Vec<Vec<Vector3D>>>,
+) -> crate::SkeletonResult<Mesh<CONTRACTION>> {
     let start = std::time::Instant::now();
     crate::validate::input_genus(mesh)?;
 
@@ -141,6 +160,9 @@ pub fn run<M: Tag>(
 
     // Setup bookkeeping for contraction
     let mut state = ContractionState::new(&contraction_mesh);
+    if let Some(stages) = stages.as_deref_mut() {
+        stages.push(state.positions.clone());
+    }
 
     // Contract until convergence or max iterations reached
     for i in 0..max_iterations {
@@ -170,6 +192,11 @@ pub fn run<M: Tag>(
         }
 
         contract_once(&mut state)?;
+        if let Some(stages) = stages.as_deref_mut()
+            && !state.unstable
+        {
+            stages.push(state.positions.clone());
+        }
     }
 
     for (&v, &position) in state.vert_ids.iter().zip(&state.positions) {

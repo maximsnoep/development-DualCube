@@ -105,12 +105,24 @@ fn build(mesh: &mehsh::prelude::Mesh<INPUT>, state: &SkeletonResource) -> Render
         return object;
     };
     let (scale, translation) = mesh.scale_translation();
+    // A chosen contraction stage replaces the final positions.
+    let stages = state.contraction_cache.stages();
+    let stage = state.contraction_stage.and_then(|i| {
+        stages
+            .as_ref()
+            .and_then(|s| s.get(i))
+            .filter(|p| p.len() == contracted.nr_verts())
+    });
+    let index: HashMap<_, _> = contracted
+        .vert_ids()
+        .into_iter()
+        .enumerate()
+        .map(|(i, v)| (v, i))
+        .collect();
+    let position = |v| stage.map_or_else(|| contracted.position(v), |p| p[index[&v]]);
     let mut deflated = MeshBuilder::new();
     for f in contracted.face_ids() {
-        let points: Vec<_> = contracted
-            .vertices(f)
-            .map(|v| contracted.position(v))
-            .collect();
+        let points: Vec<_> = contracted.vertices(f).map(position).collect();
         let p = [points[0], points[1], points[2]];
         let normal = (p[1] - p[0])
             .cross(&(p[2] - p[0]))

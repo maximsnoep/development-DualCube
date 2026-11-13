@@ -1,10 +1,11 @@
 //! The egui user interface: the top menu bar, the footer, the main view, and the floating windows
-//! (polycube, evolution).
+//! (polycube, evolution, contraction).
 //!
 //! Each panel is its own system (in its own module), run in order via
 //! [`UiPlugin`]; `theme` and `widgets` hold the shared styling and widgets.
 
 pub mod console;
+mod contraction;
 mod evolution;
 mod footer;
 mod menu;
@@ -36,7 +37,14 @@ impl Plugin for UiPlugin {
             )
             .add_systems(
                 EguiPrimaryContextPass,
-                (menu::show, footer::show, viewport::show, evolution::show).chain(),
+                (
+                    menu::show,
+                    footer::show,
+                    viewport::show,
+                    evolution::show,
+                    contraction::show,
+                )
+                    .chain(),
             );
     }
 }

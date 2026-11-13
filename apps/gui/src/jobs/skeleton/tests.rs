@@ -72,8 +72,13 @@ fn cache_reuses_contraction_for_downstream_settings_and_invalidates_on_inputs() 
         &cache.get_or_compute(mesh.clone(), 50).unwrap()
     ));
 
+    let stages = cache.stages().unwrap();
+    assert!(stages.len() >= 2);
+    assert_eq!(stages[0].len(), mesh.nr_verts());
+
     let fewer = cache.get_or_compute(mesh.clone(), 1).unwrap();
     assert!(!Arc::ptr_eq(&first, &fewer));
+    assert!(cache.stages().unwrap().len() <= 2);
     let mut other_input = mesh.clone();
     let v = other_input.vert_ids()[0];
     let position = other_input.position(v) + Vector3D::new(0.01, 0., 0.);
