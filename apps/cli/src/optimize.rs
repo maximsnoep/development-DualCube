@@ -222,6 +222,10 @@ fn run_mesh(input: &Path, options: &Options) -> anyhow::Result<Vec<Row>> {
                 format!("{:.6}", stats.after_sweep.alignment),
             ));
             row.push(("score_start".into(), format!("{:.6}", stats.score[0])));
+            row.push((
+                "score_relaxed".into(),
+                stats.relaxed.map(|s| format!("{s:.6}")).unwrap_or_default(),
+            ));
             row.push(("score_opt".into(), format!("{:.6}", stats.score[1])));
             row.push(("steps".into(), stats.steps.to_string()));
             row.push(("seconds".into(), format!("{seconds:.2}")));

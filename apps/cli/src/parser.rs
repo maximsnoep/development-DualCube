@@ -273,7 +273,7 @@ impl Args {
             }
             "optimize" => {
                 use crate::optimize::{Mode, Options, parse_measure};
-                use dualcube::skeleton::optimize::Operator;
+                use dualcube::skeleton::optimize::{InitialPass, Operator};
                 let mut options = Options::default();
                 parse_kv_flags(it.collect(), |flag, value| {
                     let value = require_value(flag, value)?;
@@ -311,7 +311,19 @@ impl Args {
                         "--patience" => params.patience = value.parse()?,
                         "--seconds" => params.seconds = value.parse()?,
                         "--seed" => params.seed = value.parse()?,
-                        "--sweep" => params.initial_sweep = value.parse()?,
+                        "--initial" => {
+                            params.initial = match value {
+                                "none" => InitialPass::None,
+                                "redraw" => InitialPass::Redraw,
+                                "relax" => InitialPass::Relax,
+                                other => anyhow::bail!(
+                                    "unknown initial pass `{other}` (none, redraw or relax)"
+                                ),
+                            }
+                        }
+                        "--relax-smoothness" => params.relax.smoothness = value.parse()?,
+                        "--thinness" => params.relax.thinness = value.parse()?,
+                        "--relax-rounds" => params.relax.rounds = value.parse()?,
                         "--operators" => {
                             params.operators = value
                                 .split(',')
@@ -405,7 +417,10 @@ where
                 | "--smoothness"
                 | "--seconds"
                 | "--seed"
-                | "--sweep"
+                | "--initial"
+                | "--relax-smoothness"
+                | "--thinness"
+                | "--relax-rounds"
                 | "--operators"
                 | "--objective"
                 | "--parallel"

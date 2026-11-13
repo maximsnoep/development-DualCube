@@ -299,13 +299,15 @@ Commands:
   optimize --input <path> [--input <path> ...] [--mode run|sample] [--report <csv>] [--cache <dir>]
            [--samples <n>] [--steps <n>] [--node-cost <f>] [--measure alignment|distortion]
            [--smoothness <f>] [--iterations <n>] [--patience <n>] [--seconds <f>] [--seed <n>]
-           [--sweep true|false] [--operators redraw,relabel,shorten,lengthen,removeleaf,addleaf]
+           [--initial none|redraw|relax] [--relax-smoothness <f>] [--thinness <f>]
+           [--relax-rounds <n>] [--operators redraw,relabel,shorten,lengthen,removeleaf,addleaf]
            [--objective primal|restricted] [--parallel <n>]
       Skeleton optimization experiments on certified skeletons (cached in --cache, default
       target/optimize-cache). run: optimize each mesh and compare restricted-label fidelity and
       the reconstructed quality (as drawn) before and after; candidates are scored by the
       quality as drawn (--objective primal, default) or restricted-label fidelity (restricted),
-      --parallel at a time (default 6). sample: random valid labelings around the start (--samples, each --steps moves) with both measures, for rank correlation.
+      --parallel at a time (default 6). --initial runs once before the search: redraw every
+      boundary in turn (default), or relax all boundaries at once (patch graph and labels kept). sample: random valid labelings around the start (--samples, each --steps moves) with both measures, for rank correlation.
 
 QUALITY (the criterion used to compare solutions):
   score = -(distortion + 0.1 boundary + 0.05 curvature + 0.5 features) - beta * loops
