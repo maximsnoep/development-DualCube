@@ -2,6 +2,7 @@
 
 use dualcube_dual::{Loop, LoopID};
 use dualcube_types::prelude::{Direction, EdgeID, Sign, Vector3D};
+use serde::{Deserialize, Serialize};
 use slotmap::{SecondaryMap, SlotMap};
 use std::collections::HashMap;
 
@@ -21,20 +22,20 @@ slotmap::new_key_type! {
 /// Successful extraction returns connected genus-zero patches with disjoint boundaries.
 /// Regions may contain no original vertices. Input mesh topology remains immutable.
 /// Validation reconstructs the regions from crossing order and face arcs.
-#[derive(Clone, Debug, Default)]
+#[derive(Clone, Debug, Default, Serialize, Deserialize)]
 pub struct Skeleton {
     pub nodes: SlotMap<SkeletonNodeID, SkeletonNode>,
     pub edges: SlotMap<SkeletonEdgeID, SkeletonEdge>,
     pub surface: BoundarySurface,
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct SkeletonNode {
     /// Embedded position in the coordinate system of the original input mesh.
     pub position: Vector3D,
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct SkeletonEdge {
     /// Left and right surface regions along the oriented boundary loop.
     /// Their order also defines the orientation used by [`EdgeLabel`].
@@ -43,14 +44,14 @@ pub struct SkeletonEdge {
 }
 
 /// An oriented, simple closed curve on the input surface; no axis is prescribed.
-#[derive(Clone, Debug, Default)]
+#[derive(Clone, Debug, Default, Serialize, Deserialize)]
 pub struct PatchBoundary {
     /// Cyclic traversal, without repeating the first occurrence at the end.
     /// An input edge may occur repeatedly, with distinct crossing IDs.
     pub crossings: Vec<BoundaryCrossingID>,
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct BoundaryCrossing {
     /// Half-edge of the triangle the traversal exits; it enters through its twin.
     /// The arc to the next crossing lies in the triangle of that twin.
@@ -58,7 +59,7 @@ pub struct BoundaryCrossing {
 }
 
 /// Shared combinatorial ordering of all boundary crossings on the immutable input.
-#[derive(Clone, Debug, Default)]
+#[derive(Clone, Debug, Default, Serialize, Deserialize)]
 pub struct BoundarySurface {
     pub crossings: SlotMap<BoundaryCrossingID, BoundaryCrossing>,
     /// Root-to-tip order on the smaller of each pair of twin half-edge IDs.
@@ -69,7 +70,7 @@ pub struct BoundarySurface {
 
 /// Signed principal axis from `SkeletonEdge::nodes[0]` to `nodes[1]` in the
 /// target cube layout, not necessarily in the input-space embedding.
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Copy, Debug, Serialize, Deserialize)]
 pub struct EdgeLabel {
     pub direction: Direction,
     pub sign: Sign,
@@ -112,7 +113,7 @@ pub struct CuboidLayout {
 /// Combinatorial labeling, before cube placement. Every edge has a signed axis.
 /// Incident outward ports are distinct, and positive edge lengths admit consistent
 /// coordinates. Global intersections and coincident nodes are allowed.
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct LabeledSkeleton {
     pub skeleton: Skeleton,
     pub labels: SecondaryMap<SkeletonEdgeID, EdgeLabel>,

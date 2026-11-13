@@ -16,7 +16,7 @@ mehsh-tetgen.workspace = true
 nalgebra.workspace = true
 petgraph.workspace = true
 serde = { workspace = true, features = ["derive"] }
-slotmap.workspace = true
+slotmap = { workspace = true, features = ["serde"] }
 tracing.workspace = true
 
 [dev-dependencies]
