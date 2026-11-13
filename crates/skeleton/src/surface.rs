@@ -121,74 +121,8 @@ impl Regions {
 
         let mut cells = Vec::new();
         for face in mesh.face_ids() {
-            let mut perimeter = Cell {
-                face,
-                vertices: Vec::new(),
-                sides: Vec::new(),
-            };
-            for edge in mesh.edges(face) {
-                let key = canonical(mesh, edge);
-                let order = skeleton
-                    .surface
-                    .edge_order
-                    .get(&key)
-                    .map_or(&[][..], Vec::as_slice);
-                perimeter.vertices.push(Vertex::Input(mesh.root(edge)));
-                if edge == key {
-                    perimeter
-                        .vertices
-                        .extend(order.iter().copied().map(Vertex::Crossing));
-                } else {
-                    perimeter
-                        .vertices
-                        .extend(order.iter().rev().copied().map(Vertex::Crossing));
-                }
-                perimeter.sides.extend((0..=order.len()).map(|i| {
-                    Side::Gap(Gap {
-                        edge: key,
-                        index: if edge == key { i } else { order.len() - i },
-                    })
-                }));
-            }
-            let mut parts = vec![perimeter];
-            for &(start, end) in arcs.get(&face).map_or(&[][..], Vec::as_slice) {
-                let mut found = None;
-                for (index, cell) in parts.iter().enumerate() {
-                    if let (Some(a), Some(b)) = (
-                        cell.vertices
-                            .iter()
-                            .position(|v| *v == Vertex::Crossing(start)),
-                        cell.vertices
-                            .iter()
-                            .position(|v| *v == Vertex::Crossing(end)),
-                    ) {
-                        found = Some((index, a, b));
-                        break;
-                    }
-                }
-                let (index, a, b) = found.ok_or("Boundary arcs cross inside a triangle")?;
-                let cell = parts.remove(index);
-                let cut = |from: usize, to: usize, forward: bool| {
-                    let mut vertices = vec![cell.vertices[from]];
-                    let mut sides = Vec::new();
-                    let mut i = from;
-                    while i != to {
-                        sides.push(cell.sides[i]);
-                        i = (i + 1) % cell.vertices.len();
-                        vertices.push(cell.vertices[i]);
-                    }
-                    sides.push(Side::Arc { start, forward });
-                    Cell {
-                        face,
-                        vertices,
-                        sides,
-                    }
-                };
-                // Digons are valid: a returning arc may enclose no input vertices.
-                parts.push(cut(a, b, false));
-                parts.push(cut(b, a, true));
-            }
-            cells.extend(parts);
+            let arcs = arcs.get(&face).map_or(&[][..], Vec::as_slice);
+            cells.extend(split_face(mesh, &skeleton.surface.edge_order, face, arcs)?);
         }
         let mut gaps = HashMap::<Gap, Vec<usize>>::new();
         let mut arc_sides = HashMap::new();
@@ -296,6 +230,79 @@ impl Regions {
             arc_sides,
         })
     }
+}
+
+/// A triangle's cells cut out by boundary arcs `(start, end)` lying in it.
+pub(crate) fn split_face(
+    mesh: &Mesh<INPUT>,
+    edge_order: &HashMap<EdgeID, Vec<BoundaryCrossingID>>,
+    face: FaceID,
+    arcs: &[(BoundaryCrossingID, BoundaryCrossingID)],
+) -> SkeletonResult<Vec<Cell>> {
+    let mut perimeter = Cell {
+        face,
+        vertices: Vec::new(),
+        sides: Vec::new(),
+    };
+    for edge in mesh.edges(face) {
+        let key = canonical(mesh, edge);
+        let order = edge_order.get(&key).map_or(&[][..], Vec::as_slice);
+        perimeter.vertices.push(Vertex::Input(mesh.root(edge)));
+        if edge == key {
+            perimeter
+                .vertices
+                .extend(order.iter().copied().map(Vertex::Crossing));
+        } else {
+            perimeter
+                .vertices
+                .extend(order.iter().rev().copied().map(Vertex::Crossing));
+        }
+        perimeter.sides.extend((0..=order.len()).map(|i| {
+            Side::Gap(Gap {
+                edge: key,
+                index: if edge == key { i } else { order.len() - i },
+            })
+        }));
+    }
+    let mut parts = vec![perimeter];
+    for &(start, end) in arcs {
+        let mut found = None;
+        for (index, cell) in parts.iter().enumerate() {
+            if let (Some(a), Some(b)) = (
+                cell.vertices
+                    .iter()
+                    .position(|v| *v == Vertex::Crossing(start)),
+                cell.vertices
+                    .iter()
+                    .position(|v| *v == Vertex::Crossing(end)),
+            ) {
+                found = Some((index, a, b));
+                break;
+            }
+        }
+        let (index, a, b) = found.ok_or("Boundary arcs cross inside a triangle")?;
+        let cell = parts.remove(index);
+        let cut = |from: usize, to: usize, forward: bool| {
+            let mut vertices = vec![cell.vertices[from]];
+            let mut sides = Vec::new();
+            let mut i = from;
+            while i != to {
+                sides.push(cell.sides[i]);
+                i = (i + 1) % cell.vertices.len();
+                vertices.push(cell.vertices[i]);
+            }
+            sides.push(Side::Arc { start, forward });
+            Cell {
+                face,
+                vertices,
+                sides,
+            }
+        };
+        // Digons are valid: a returning arc may enclose no input vertices.
+        parts.push(cut(a, b, false));
+        parts.push(cut(b, a, true));
+    }
+    Ok(parts)
 }
 
 /// Representative geometry for initial label costs, not a region centroid.
