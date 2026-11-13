@@ -84,7 +84,7 @@ impl Default for Params {
                 rounds: 2,
             },
             relax: RelaxParams::default(),
-            initial: InitialPass::Redraw,
+            initial: InitialPass::Relax,
             parallel: 6,
             iterations: 400,
             patience: 150,

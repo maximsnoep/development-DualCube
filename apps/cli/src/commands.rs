@@ -307,7 +307,7 @@ Commands:
       the reconstructed quality (as drawn) before and after; candidates are scored by the
       quality as drawn (--objective primal, default) or restricted-label fidelity (restricted),
       --parallel at a time (default 6). --initial runs once before the search: redraw every
-      boundary in turn (default), or relax all boundaries at once (patch graph and labels kept). sample: random valid labelings around the start (--samples, each --steps moves) with both measures, for rank correlation.
+      boundary in turn, or relax all boundaries at once (default; patch graph and labels kept). sample: random valid labelings around the start (--samples, each --steps moves) with both measures, for rank correlation.
 
 QUALITY (the criterion used to compare solutions):
   score = -(distortion + 0.1 boundary + 0.05 curvature + 0.5 features) - beta * loops
