@@ -92,3 +92,118 @@ fn missing_executable_reports_an_error() {
     assert_eq!(error.kind(), io::ErrorKind::NotFound);
     assert!(error.to_string().contains("Could not launch TetGen"));
 }
+
+/// TetGen output for the fixture's tetrahedron with Steiner points. Tets index the corners
+/// (origin, x, y, z) and then the Steiner points, and are oriented positively here.
+fn with_steiner(steiner: &[Vector3D], tets: &[[usize; 4]]) -> (Mesh<TEST>, TetrahedralMesh<TEST>) {
+    let (mesh, input, _) = fixture();
+    let corners = [Vector3D::zeros(), Vector3D::x(), Vector3D::y(), Vector3D::z()];
+    let node = |i: usize| {
+        corners
+            .get(i)
+            .map_or(i, |&p| input.iter().position(|&v| mesh.position(v) == p).unwrap())
+    };
+    let mut nodes: Vec<_> = input
+        .iter()
+        .enumerate()
+        .map(|(i, &v)| TetNode {
+            position: mesh.position(v),
+            marker: -(i as i32) - 2,
+        })
+        .collect();
+    nodes.extend(steiner.iter().map(|&position| TetNode {
+        position,
+        marker: 0,
+    }));
+    let tets = tets
+        .iter()
+        .map(|tet| {
+            let [a, b, c, d] = tet.map(node);
+            let [p, q, r, s] = [a, b, c, d].map(|i| nodes[i].position);
+            if (q - p).cross(&(r - p)).dot(&(s - p)) < 0. {
+                [a, b, d, c]
+            } else {
+                [a, b, c, d]
+            }
+        })
+        .collect();
+    let result = map_output(&mesh, input, TetMeshData { nodes, tets }).unwrap();
+    (mesh, result)
+}
+
+/// The result is a valid tetrahedralization of the fixture with its input boundary.
+fn assert_valid(mesh: &Mesh<TEST>, result: &TetrahedralMesh<TEST>) {
+    let index: HashMap<_, _> = result
+        .input_vertices
+        .iter()
+        .enumerate()
+        .map(|(i, &v)| (v, i))
+        .collect();
+    let expected: HashSet<[usize; 3]> = mesh
+        .face_ids()
+        .into_iter()
+        .map(|f| {
+            let mut face: Vec<_> = mesh.vertices(f).map(|v| index[&v]).collect();
+            face.sort_unstable();
+            [face[0], face[1], face[2]]
+        })
+        .collect();
+    let mut count = HashMap::<[usize; 3], usize>::new();
+    let mut total = 0.;
+    for &t in &result.tets {
+        let [a, b, c, d] = t.map(|i| result.vertices[i]);
+        let volume = (b - a).cross(&(c - a)).dot(&(d - a));
+        assert!(volume > 1e-9, "inverted or flat tet {t:?}: {volume}");
+        total += volume;
+        for [i, j, k] in [[0, 1, 2], [0, 1, 3], [0, 2, 3], [1, 2, 3]] {
+            let mut face = [t[i], t[j], t[k]];
+            face.sort_unstable();
+            *count.entry(face).or_default() += 1;
+        }
+    }
+    let boundary: HashSet<_> = count
+        .into_iter()
+        .filter_map(|(face, count)| (count == 1).then_some(face))
+        .collect();
+    assert_eq!(boundary, expected);
+    // Positive tets with the input boundary filling the input volume do not overlap.
+    assert!((total - 1.).abs() < 1e-9, "volume {total}");
+}
+
+#[test]
+fn a_steiner_point_on_an_input_edge_is_moved_inside() {
+    let (mesh, result) = with_steiner(
+        &[Vector3D::new(0.5, 0., 0.)],
+        &[[4, 0, 2, 3], [4, 1, 2, 3]],
+    );
+    assert_valid(&mesh, &result);
+    assert_eq!(result.tets.len(), 4);
+}
+
+#[test]
+fn several_steiner_points_on_one_edge_are_moved_inside() {
+    let (mesh, result) = with_steiner(
+        &[Vector3D::new(0.5, 0., 0.), Vector3D::new(0.25, 0., 0.), Vector3D::new(0.75, 0., 0.)],
+        &[[5, 0, 2, 3], [5, 4, 2, 3], [6, 4, 2, 3], [6, 1, 2, 3]],
+    );
+    assert_valid(&mesh, &result);
+}
+
+#[test]
+fn a_steiner_point_inside_an_input_face_is_moved_inside() {
+    let (mesh, result) = with_steiner(
+        &[Vector3D::new(0.25, 0.25, 0.)],
+        &[[4, 0, 1, 3], [4, 1, 2, 3], [4, 2, 0, 3]],
+    );
+    assert_valid(&mesh, &result);
+}
+
+#[test]
+fn steiner_points_on_edges_of_one_face_are_moved_inside() {
+    // On the edges 0-1 and 0-2 of the face 0-1-2.
+    let (mesh, result) = with_steiner(
+        &[Vector3D::new(0.5, 0., 0.), Vector3D::new(0., 0.5, 0.)],
+        &[[4, 1, 2, 3], [4, 5, 2, 3], [4, 0, 5, 3]],
+    );
+    assert_valid(&mesh, &result);
+}

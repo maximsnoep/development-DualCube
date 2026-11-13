@@ -49,7 +49,8 @@ pub fn tetrahedralize<M: Tag>(mesh: &Mesh<M>) -> io::Result<TetrahedralMesh<M>> 
     tetrahedralize_with_options(mesh, &TetgenOptions::default())
 }
 
-/// Run TetGen with boundary splitting disabled and verify the returned boundary.
+/// Run TetGen with boundary splitting disabled, move boundary Steiner points it adds anyway
+/// inside, and verify the returned boundary.
 pub fn tetrahedralize_with_options<M: Tag>(
     mesh: &Mesh<M>,
     options: &TetgenOptions,
@@ -146,7 +147,7 @@ fn map_output<M: Tag>(
     for (new, &old) in order.iter().enumerate() {
         remap[old] = new;
     }
-    let vertices: Vec<_> = order.iter().map(|&i| data.nodes[i].position).collect();
+    let mut vertices: Vec<_> = order.iter().map(|&i| data.nodes[i].position).collect();
     let mut tets = Vec::new();
     let mut tet_set = HashSet::new();
     let mut incidence = HashMap::<[usize; 3], usize>::new();
@@ -194,14 +195,32 @@ fn map_output<M: Tag>(
             [tri[0], tri[1], tri[2]]
         })
         .collect();
-    let boundary: HashSet<_> = incidence
-        .into_iter()
-        .filter_map(|(face, count)| (count == 1).then_some(face))
-        .collect();
-    if boundary != expected {
-        return Err(io::Error::other(
-            "TetGen changed the input surface triangulation",
-        ));
+    let boundary = |incidence: HashMap<[usize; 3], usize>| -> HashSet<[usize; 3]> {
+        incidence
+            .into_iter()
+            .filter_map(|(face, count)| (count == 1).then_some(face))
+            .collect()
+    };
+    if boundary(incidence) != expected {
+        // Boundary Steiner points refine input faces; moved inside, the boundary is the input again.
+        if steiner::move_inside(n, &mut vertices, &mut tets, &expected).is_none() {
+            return Err(io::Error::other(
+                "TetGen split the input surface triangulation and the split could not be undone",
+            ));
+        }
+        let mut incidence = HashMap::<[usize; 3], usize>::new();
+        for t in &tets {
+            for [i, j, k] in [[0, 1, 2], [0, 1, 3], [0, 2, 3], [1, 2, 3]] {
+                let mut face = [t[i], t[j], t[k]];
+                face.sort();
+                *incidence.entry(face).or_default() += 1;
+            }
+        }
+        if incidence.values().any(|&count| count > 2) || boundary(incidence) != expected {
+            return Err(io::Error::other(
+                "TetGen changed the input surface triangulation",
+            ));
+        }
     }
     Ok(TetrahedralMesh {
         vertices,
@@ -233,6 +252,8 @@ impl Drop for TempDirectory {
         let _ = std::fs::remove_dir_all(&self.0);
     }
 }
+
+mod steiner;
 
 #[cfg(test)]
 mod tests;
