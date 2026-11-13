@@ -50,6 +50,7 @@ pub enum Command {
         last: crate::stages::Stage,
         report: Option<PathBuf>,
     },
+    Optimize(crate::optimize::Options),
 }
 
 impl Args {
@@ -270,6 +271,67 @@ impl Args {
                     report,
                 }
             }
+            "optimize" => {
+                use crate::optimize::{Mode, Options, parse_measure};
+                use dualcube::skeleton::optimize::Operator;
+                let mut options = Options::default();
+                parse_kv_flags(it.collect(), |flag, value| {
+                    let value = require_value(flag, value)?;
+                    let params = &mut options.params;
+                    match flag {
+                        "--input" | "-i" => options.inputs.push(PathBuf::from(value)),
+                        "--report" => options.report = Some(PathBuf::from(value)),
+                        "--cache" => options.cache = PathBuf::from(value),
+                        "--mode" => {
+                            options.mode = match value {
+                                "run" => Mode::Run,
+                                "sample" => Mode::Sample,
+                                other => anyhow::bail!("unknown mode `{other}` (run or sample)"),
+                            }
+                        }
+                        "--samples" | "-s" => options.samples = value.parse()?,
+                        "--steps" => options.steps = value.parse()?,
+                        "--objective" => {
+                            options.primal = match value {
+                                "primal" => true,
+                                "fidelity" => false,
+                                other => anyhow::bail!(
+                                    "unknown objective `{other}` (primal or fidelity)"
+                                ),
+                            }
+                        }
+                        "--parallel" => params.parallel = value.parse()?,
+                        "--node-cost" => params.node_cost = value.parse()?,
+                        "--measure" => {
+                            params.measure = parse_measure(value)?;
+                            params.redraw.measure = params.measure;
+                        }
+                        "--smoothness" => params.redraw.smoothness = value.parse()?,
+                        "--iterations" => params.iterations = value.parse()?,
+                        "--patience" => params.patience = value.parse()?,
+                        "--seconds" => params.seconds = value.parse()?,
+                        "--seed" => params.seed = value.parse()?,
+                        "--sweep" => params.initial_sweep = value.parse()?,
+                        "--operators" => {
+                            params.operators = value
+                                .split(',')
+                                .map(|name| {
+                                    Operator::ALL
+                                        .into_iter()
+                                        .find(|o| format!("{o:?}").eq_ignore_ascii_case(name))
+                                        .ok_or_else(|| anyhow::anyhow!("unknown operator `{name}`"))
+                                })
+                                .collect::<anyhow::Result<_>>()?;
+                        }
+                        other => anyhow::bail!("unknown flag for optimize: {other}"),
+                    }
+                    Ok(())
+                })?;
+                if options.inputs.is_empty() {
+                    anyhow::bail!("missing required --input");
+                }
+                Command::Optimize(options)
+            }
             other => anyhow::bail!("unknown command: {other}"),
         };
 
@@ -335,6 +397,18 @@ where
                 | "--csv"
                 | "--stop-after"
                 | "--report"
+                | "--cache"
+                | "--mode"
+                | "--steps"
+                | "--node-cost"
+                | "--measure"
+                | "--smoothness"
+                | "--seconds"
+                | "--seed"
+                | "--sweep"
+                | "--operators"
+                | "--objective"
+                | "--parallel"
         );
 
         let value = if takes_value {

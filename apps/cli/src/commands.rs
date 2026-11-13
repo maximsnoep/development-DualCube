@@ -124,6 +124,7 @@ pub fn run(args: anyhow::Result<Args>) -> anyhow::Result<()> {
             last,
             report,
         } => crate::stages::run(&inputs, last, report.as_deref())?,
+        Command::Optimize(options) => crate::optimize::run(&options)?,
     }
 
     Ok(())
@@ -294,6 +295,18 @@ Commands:
       reconstruction (default).
       --report: CSV file, rewritten after every mesh.
       Positive genus needs TETGEN_EXECUTABLE and DiskScissors (DISKSCISSORS_EXECUTABLE).
+
+  optimize --input <path> [--input <path> ...] [--mode run|sample] [--report <csv>] [--cache <dir>]
+           [--samples <n>] [--steps <n>] [--node-cost <f>] [--measure alignment|distortion]
+           [--smoothness <f>] [--iterations <n>] [--patience <n>] [--seconds <f>] [--seed <n>]
+           [--sweep true|false] [--operators redraw,relabel,shorten,lengthen,removeleaf,addleaf]
+           [--objective primal|fidelity] [--parallel <n>]
+      Skeleton optimization experiments on certified skeletons (cached in --cache, default
+      target/optimize-cache). run: optimize each mesh and compare restricted-label fidelity and
+      the reconstructed quality (as drawn) before and after; candidates are scored by the
+      quality as drawn (--objective primal, default) or restricted-label fidelity, --parallel
+      at a time (default 6). sample: random valid labelings
+      around the start (--samples, each --steps moves) with both measures, for rank correlation.
 
 QUALITY (the criterion used to compare solutions):
   score = -(distortion + 0.1 boundary + 0.05 curvature + 0.5 features) - beta * loops

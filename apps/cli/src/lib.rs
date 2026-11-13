@@ -1,4 +1,5 @@
 pub mod commands;
+pub mod optimize;
 pub mod parser;
 pub mod stages;
 
