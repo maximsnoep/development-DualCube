@@ -9,6 +9,7 @@
 use super::fidelity::{Fidelity, Measure, Tables};
 use super::moves::{self, Chain};
 use super::redraw::{self, RedrawParams};
+use super::relax::{self, RelaxParams};
 use crate::{LabeledSkeleton, SkeletonResult};
 use dualcube_types::prelude::*;
 use std::time::Instant;
@@ -40,14 +41,24 @@ impl Operator {
     ];
 }
 
+/// What runs once before the search.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum InitialPass {
+    None,
+    /// Redraw every boundary once, one at a time.
+    Redraw,
+    /// Move all boundaries at once by isotopies.
+    Relax,
+}
+
 #[derive(Clone, Debug)]
 pub struct Params {
     pub measure: Measure,
     /// Score cost of every node, in units of the area-weighted gain.
     pub node_cost: f64,
     pub redraw: RedrawParams,
-    /// Redraw every boundary once before the search.
-    pub initial_sweep: bool,
+    pub relax: RelaxParams,
+    pub initial: InitialPass,
     /// Candidates proposed and scored in parallel per step.
     pub parallel: usize,
     pub iterations: usize,
@@ -72,7 +83,8 @@ impl Default for Params {
                 measure: Measure::Alignment,
                 rounds: 2,
             },
-            initial_sweep: true,
+            relax: RelaxParams::default(),
+            initial: InitialPass::Redraw,
             parallel: 6,
             iterations: 400,
             patience: 150,
@@ -93,6 +105,8 @@ pub struct Stats {
     pub score: [f64; 2],
     pub initial: Fidelity,
     pub after_sweep: Fidelity,
+    /// Score of the relaxed skeleton, kept or not.
+    pub relaxed: Option<f64>,
     pub result: Fidelity,
     pub naive: Fidelity,
     pub nodes: [usize; 2],
@@ -381,8 +395,19 @@ pub fn search(
     stats.initial = current.fidelity;
     stats.naive = current.tables.naive;
     stats.nodes[0] = current.labeled.skeleton.nodes.len();
-    if params.initial_sweep {
-        current = sweep(mesh, current, params, objective);
+    match params.initial {
+        InitialPass::None => {}
+        InitialPass::Redraw => current = sweep(mesh, current, params, objective),
+        InitialPass::Relax => {
+            if let Some(relaxed) = relax::relax(mesh, &current.labeled, &params.relax)
+                .and_then(|l| state(mesh, l, params, objective))
+            {
+                stats.relaxed = Some(relaxed.score);
+                if relaxed.score > current.score {
+                    current = relaxed;
+                }
+            }
+        }
     }
     stats.after_sweep = current.fidelity;
     let mut weights = vec![1.; params.operators.len()];

@@ -228,3 +228,103 @@ fn added_leaves_are_valid_disks_at_a_free_port() {
         }
     }
 }
+
+/// Per-patch areas of a skeleton.
+fn patch_areas(mesh: &Mesh<INPUT>, skeleton: &crate::Skeleton) -> Vec<f64> {
+    let regions = Regions::build(mesh, skeleton).unwrap();
+    let positions = fidelity::crossing_positions(mesh, skeleton);
+    let mut areas: HashMap<_, f64> = HashMap::new();
+    for cell in fidelity::cells(mesh, &regions, &positions) {
+        *areas.entry(cell.owner).or_default() += cell.area;
+    }
+    areas.into_values().collect()
+}
+
+/// The torus with one boundary copied twice beside itself: two vertex-free slivers.
+fn stacked() -> (Mesh<INPUT>, LabeledSkeleton) {
+    let (mesh, mut labeled) = torus();
+    let edge = labeled.skeleton.edges.keys().next().unwrap();
+    for _ in 0..2 {
+        let (split, added) =
+            crate::label::subdivide::collar(&mesh, &labeled.skeleton, edge, 0).unwrap();
+        labeled.labels.insert(added, labeled.labels[edge]);
+        labeled.skeleton = split;
+    }
+    labeled.validate(&mesh).unwrap();
+    (mesh, labeled)
+}
+
+#[test]
+fn every_relaxation_move_is_valid_local_and_undoable() {
+    for (mesh, labeled) in [torus(), stacked()] {
+        let faces = mesh.face_ids();
+        let (stars, free) = relax::stars(&mesh, &labeled, &labeled.skeleton).unwrap();
+        let mut work = relax::Work::new(&mesh, &labeled, labeled.skeleton.clone()).unwrap();
+        let measure = Measure::Alignment;
+        let total = |work: &relax::Work<'_>| work.local(&faces, &stars, &free, measure).unwrap();
+        let start = total(&work);
+        let mut applied = 0;
+        for mv in work.moves() {
+            let Some(plan) = work.plan(mv) else {
+                continue;
+            };
+            let before = work.local(&plan.faces, &stars, &free, measure).unwrap();
+            let undo = work.apply(&plan);
+            let after = work.local(&plan.faces, &stars, &free, measure).unwrap();
+            work.export().validate(&mesh).unwrap();
+            // Only the planned triangles change.
+            let whole = total(&work);
+            for (node, [area, gain]) in whole.sums() {
+                let [s, a, b] = [&start, &after, &before].map(|l| l.sum(node));
+                assert!((area - (s[0] + a[0] - b[0])).abs() < 1e-9);
+                assert!((gain - (s[1] + a[1] - b[1])).abs() < 1e-9);
+            }
+            for (lp, length) in whole.lengths() {
+                let expected = start.length(lp) + after.length(lp) - before.length(lp);
+                assert!((length - expected).abs() < 1e-9);
+            }
+            work.undo(undo);
+            let restored = work.export();
+            restored.validate(&mesh).unwrap();
+            assert_eq!(
+                restored.surface.crossings.len(),
+                labeled.skeleton.surface.crossings.len()
+            );
+            applied += 1;
+        }
+        assert!(applied > 0);
+    }
+}
+
+#[test]
+fn relaxing_keeps_the_patch_graph_and_labels() {
+    for (mesh, labeled) in [torus(), stacked()] {
+        let Some(result) = relax::relax(&mesh, &labeled, &RelaxParams::default()) else {
+            continue;
+        };
+        result.validate(&mesh).unwrap();
+        assert_eq!(result.skeleton.nodes.len(), labeled.skeleton.nodes.len());
+        for (id, edge) in &labeled.skeleton.edges {
+            assert_eq!(result.skeleton.edges[id].nodes, edge.nodes);
+            assert!(moves::same_label(result.labels[id], labeled.labels[id]));
+        }
+    }
+}
+
+#[test]
+fn relaxing_spreads_stacked_slivers() {
+    let (mesh, labeled) = stacked();
+    let smallest = |s: &crate::Skeleton| {
+        patch_areas(&mesh, s)
+            .into_iter()
+            .fold(f64::INFINITY, f64::min)
+    };
+    let params = RelaxParams {
+        smoothness: 0.,
+        thinness: 1.,
+        ..RelaxParams::default()
+    };
+    let result = relax::relax(&mesh, &labeled, &params).unwrap();
+    result.validate(&mesh).unwrap();
+    assert!(smallest(&result.skeleton) > 2. * smallest(&labeled.skeleton));
+}

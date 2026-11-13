@@ -5,11 +5,13 @@ mod cut;
 pub mod fidelity;
 pub(crate) mod moves;
 pub(crate) mod redraw;
+pub(crate) mod relax;
 pub mod search;
 
 pub use fidelity::{Fidelity, Measure, Tables};
 pub use redraw::RedrawParams;
-pub use search::{Objective, Operator, Params, Stats};
+pub use relax::RelaxParams;
+pub use search::{InitialPass, Objective, Operator, Params, Stats};
 
 use crate::{LabeledSkeleton, RealizedSkeleton, SkeletonResult, place_cubes};
 use dualcube_types::prelude::*;

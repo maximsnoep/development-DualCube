@@ -162,7 +162,7 @@ pub struct RedrawParams {
 }
 
 /// Gain of a cell placed in a star with the given labels and free ports.
-fn cell_gain(
+pub(crate) fn cell_gain(
     star: &Star,
     free: u8,
     labeled: &LabeledSkeleton,
