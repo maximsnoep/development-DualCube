@@ -111,11 +111,11 @@ fn primal(solution: &Solution, mesh: &Mesh<INPUT>, labeled: &LabeledSkeleton) ->
                 format(estimate.as_ref().and_then(|e| e.alignment)),
             ),
             (
-                "e_fidelity".into(),
-                format(estimate.as_ref().and_then(|e| e.fidelity)),
+                "e_distortion".into(),
+                format(estimate.as_ref().and_then(|e| e.distortion)),
             ),
             ("p_alignment".into(), format(report.alignment)),
-            ("p_fidelity".into(), format(report.fidelity)),
+            ("p_distortion".into(), format(report.distortion)),
             ("p_score".into(), format(Some(score))),
             ("p_loops".into(), report.loops.to_string()),
             ("p_error".into(), String::new()),
@@ -144,7 +144,7 @@ fn primal_score(solution: &Solution, mesh: &Mesh<INPUT>, labeled: &LabeledSkelet
 }
 
 fn error_row(error: &str) -> Row {
-    ["p_alignment", "p_fidelity", "p_score", "p_loops"]
+    ["p_alignment", "p_distortion", "p_score", "p_loops"]
         .into_iter()
         .map(|k| (k.to_owned(), String::new()))
         .chain([("p_error".to_owned(), error.replace(['\n', ','], " "))])
@@ -305,7 +305,7 @@ pub fn run(options: &Options) -> anyhow::Result<()> {
                         r.iter()
                             .filter(|(k, _)| {
                                 k.contains("alignment")
-                                    || k.contains("fidelity")
+                                    || k.contains("distortion")
                                     || k.ends_with("nodes")
                             })
                             .map(|(k, v)| format!("{k}={v}"))

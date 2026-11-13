@@ -42,7 +42,7 @@ fn check(solution: &Solution, what: &str) -> Result<f64, String> {
         return Err(format!("{what}: quality {quality}"));
     }
     let report = solution.quality_report().ok_or(format!("{what}: no report"))?;
-    let terms = [report.fidelity, report.path_backtrack, report.path_stretch, report.coherence, report.rectangularity, report.corner_regularity, report.non_degeneracy, report.correspondence];
+    let terms = [report.distortion, report.path_backtrack, report.path_stretch, report.coherence, report.rectangularity, report.corner_regularity, report.non_degeneracy, report.correspondence];
     if terms.iter().flatten().any(|t| !t.is_finite() || *t < 0.) {
         return Err(format!("{what}: bad term in {report:?}"));
     }

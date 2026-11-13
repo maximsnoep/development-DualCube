@@ -294,9 +294,9 @@ impl Args {
                         "--objective" => {
                             options.primal = match value {
                                 "primal" => true,
-                                "fidelity" => false,
+                                "restricted" => false,
                                 other => anyhow::bail!(
-                                    "unknown objective `{other}` (primal or fidelity)"
+                                    "unknown objective `{other}` (primal or restricted)"
                                 ),
                             }
                         }

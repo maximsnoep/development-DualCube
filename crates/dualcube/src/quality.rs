@@ -3,7 +3,7 @@
 //! A [`QualityReport`] collects the quality terms of a solution; they are combined into a single score (to be
 //! maximized) with the weights in [`QualityParams`]:
 //!
-//! penalty P = w_F * fidelity + w_P * path regularity + w_C * coherence + w_R * rectangularity
+//! penalty P = w_D * distortion + w_P * path regularity + w_C * coherence + w_R * rectangularity
 //!     + w_K * corner regularity + w_N * non-degeneracy + w_S * correspondence + complexity * #loops,
 //! score = 1 / (1 + P),
 //!
@@ -12,22 +12,23 @@
 //! Earlier criteria (fidelity + orthogonality - beta * #loops, and fidelity - beta * #loops as in the paper) were
 //! dropped: on organic shapes they hardly correlate with the fidelity of the results (they keep solutions too coarse),
 //! and fidelity itself is redundant with distortion (correlation -0.99 over all experiments) while distortion
-//! penalizes badly aligned regions much more strongly. Fidelity is still reported (to compare with the paper).
+//! penalizes badly aligned regions much more strongly. Fidelity is still reported, as alignment (to compare with the
+//! paper).
 //!
 //! The terms:
 //!
 //! - *alignment* (reported only; the fidelity of the paper): area-weighted mean of n(t) . l(t) over all triangles (normal
 //!   vs. label direction)
 //!   [LVS13, DPM22].
-//! - *fidelity*: area-weighted mean of (1/c - c)^2 with c = n(t) . l(t), the (symmetric Dirichlet) distortion of
-//!   flattening a triangle onto the plane of its label (singular values 1 and c). Unlike fidelity, it grows quickly
-//!   for badly aligned triangles (0 at 0 degrees, 0.08 at 30, 0.5 at 45, 2.25 at 60, 13 at 75), and is capped for
+//! - *distortion*: area-weighted mean of (1/c - c)^2 with c = n(t) . l(t), the (symmetric Dirichlet) distortion of
+//!   flattening a triangle onto the plane of its label (singular values 1 and c); lower is better. Unlike alignment,
+//!   it grows quickly for badly aligned triangles (0 at 0 degrees, 0.08 at 30, 0.5 at 45, 2.25 at 60, 13 at 75), and is capped for
 //!   (nearly) folded triangles. Small but badly aligned features thus justify a loop, while refining well aligned
 //!   regions gains little: this suits the coarse-to-fine construction.
 //! - *path regularity*: length-weighted mean over all patch boundaries (paths) of (a) the fraction of the path length
 //!   that runs backwards along the axis of its polycube edge (non-monotone boundaries / turning points [LVS13]), and
 //!   (b) log^2 of the ratio between the path length and the distance between its corners along its axis (straightness).
-//! - *coherence*: how much the normals within every patch differ, whatever their direction (unlike fidelity,
+//! - *coherence*: how much the normals within every patch differ, whatever their direction (unlike distortion,
 //!   which compares them with the label): 1 - |area-weighted mean normal| of a patch (0 for a flat patch), the
 //!   area-weighted mean over the patches.
 //! - *rectangularity*: how far every patch is from a rectangle: log^2 of the ratios of the lengths of its opposite
@@ -68,7 +69,8 @@ const MIN_STRETCH_RATIO: f64 = 1. / 20.;
 /// Weights of the quality terms (all terms are penalties).
 #[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
 pub struct QualityWeights {
-    pub fidelity: f64,
+    #[serde(alias = "fidelity")]
+    pub distortion: f64,
     pub path_regularity: f64,
     pub coherence: f64,
     pub rectangularity: f64,
@@ -82,7 +84,7 @@ pub struct QualityWeights {
 impl Default for QualityWeights {
     fn default() -> Self {
         Self {
-            fidelity: 1.,
+            distortion: 1.,
             path_regularity: 0.1,
             coherence: 2.,
             rectangularity: 0.2,
@@ -111,7 +113,7 @@ impl Default for QualityParams {
 /// Which terms to compute.
 #[derive(Clone, Copy, Debug, Default)]
 pub struct QualityTerms {
-    pub fidelity: bool,
+    pub distortion: bool,
     pub path_regularity: bool,
     pub coherence: bool,
     pub rectangularity: bool,
@@ -125,7 +127,7 @@ impl QualityTerms {
     #[must_use]
     pub const fn all() -> Self {
         Self {
-            fidelity: true,
+            distortion: true,
             path_regularity: true,
             coherence: true,
             rectangularity: true,
@@ -140,7 +142,7 @@ impl QualityTerms {
     #[must_use]
     pub fn needed(weights: &QualityWeights) -> Self {
         Self {
-            fidelity: weights.fidelity != 0.,
+            distortion: weights.distortion != 0.,
             path_regularity: weights.path_regularity != 0.,
             coherence: weights.coherence != 0.,
             rectangularity: weights.rectangularity != 0.,
@@ -157,7 +159,9 @@ impl QualityTerms {
 pub struct QualityReport {
     /// The fidelity of the paper (area-weighted mean alignment of the triangles with their labels; reported only).
     pub alignment: Option<f64>,
-    pub fidelity: Option<f64>,
+    /// Area-weighted mean flattening distortion of the triangles onto their label planes.
+    #[serde(alias = "fidelity")]
+    pub distortion: Option<f64>,
     /// Fraction of the path length running backwards along its axis.
     pub path_backtrack: Option<f64>,
     /// Mean log^2 of the path length over the distance between its corners along its axis.
@@ -197,7 +201,7 @@ impl QualityReport {
             }
         };
         Some(
-            term(w.fidelity, self.fidelity)?
+            term(w.distortion, self.distortion)?
                 + term(w.path_regularity, self.path_regularity())?
                 + term(w.coherence, self.coherence)?
                 + term(w.rectangularity, self.rectangularity)?
@@ -213,7 +217,7 @@ impl QualityReport {
     pub fn partial_score(&self, w: &QualityWeights) -> f64 {
         let term = |weight: f64, value: Option<f64>| value.map_or(0., |v| weight * v);
         normalized(
-            term(w.fidelity, self.fidelity)
+            term(w.distortion, self.distortion)
                 + term(w.path_regularity, self.path_regularity())
                 + term(w.coherence, self.coherence)
                 + term(w.rectangularity, self.rectangularity)
@@ -239,8 +243,8 @@ impl QualityReport {
             loops,
             ..Self::default()
         };
-        if terms.fidelity {
-            report.fidelity = layout_distortion(layout);
+        if terms.distortion {
+            report.distortion = layout_distortion(layout);
         }
         if terms.path_regularity
             && let Some((backtrack, stretch)) = boundary_terms(layout)
@@ -298,7 +302,7 @@ impl QualityReport {
         }
 
         let mut area = 0.;
-        let mut fidelity = 0.;
+        let mut alignment = 0.;
         let mut distortion = 0.;
         for face in mesh.face_ids() {
             let normal = mesh.normal(face).normalize();
@@ -313,7 +317,7 @@ impl QualityReport {
             }
             let a = mesh.size(face);
             area += a;
-            fidelity += a * best;
+            alignment += a * best;
             distortion += a * flattening_distortion(best);
         }
 
@@ -322,9 +326,9 @@ impl QualityReport {
             ..Self::default()
         };
         if area > 0. {
-            report.alignment = Some(fidelity / area);
-            if terms.fidelity {
-                report.fidelity = Some(distortion / area);
+            report.alignment = Some(alignment / area);
+            if terms.distortion {
+                report.distortion = Some(distortion / area);
             }
         }
         if terms.corners {
@@ -617,16 +621,16 @@ pub fn element_penalties(layout: &Layout, weights: &QualityWeights) -> ElementPe
         .map(|(_, a)| a)
         .sum::<f64>()
         .max(1e-300);
-    // Patches: fidelity, coherence, rectangularity, and non-degeneracy.
+    // Patches: distortion, coherence, rectangularity, and non-degeneracy.
     let shapes = patch_shapes(layout).unwrap_or_default();
     let small = small_bad_per_patch(&shapes);
     let mut patches: HashMap<FaceKey<POLYCUBE>, f64> = HashMap::new();
     for (patch, triangles) in &layout.patch_triangles {
-        let fidelity: f64 = triangles
+        let distortion: f64 = triangles
             .iter()
             .map(|&(a, c)| a * flattening_distortion(c))
             .sum();
-        *patches.entry(*patch).or_default() += weights.fidelity * fidelity / total_area;
+        *patches.entry(*patch).or_default() += weights.distortion * distortion / total_area;
     }
     for (patch, &(normal_sum, area)) in &layout.patch_normals {
         *patches.entry(*patch).or_default() +=
@@ -705,7 +709,7 @@ pub fn penalty_per_input_face(layout: &Layout, weights: &QualityWeights) -> Vec<
 }
 
 /// The penalty of every triangle of the layout (of its refined mesh), for showing where the quality is lost: the
-/// weighted fidelity penalty of the triangle, plus the weighted coherence, rectangularity, and non-degeneracy penalties
+/// weighted distortion penalty of the triangle, plus the weighted coherence, rectangularity, and non-degeneracy penalties
 /// of its patch. The terms of paths and corners (path regularity, corner regularity, correspondence) are not included.
 #[must_use]
 pub fn penalty_per_triangle(layout: &Layout, weights: &QualityWeights) -> HashMap<FaceID, f64> {
@@ -731,7 +735,7 @@ pub fn penalty_per_triangle(layout: &Layout, weights: &QualityWeights) -> HashMa
                 .alignment_per_triangle
                 .get(&face)
                 .map_or(0., |&c| flattening_distortion(c));
-            penalties.insert(face, weights.fidelity * distortion + patch_penalty);
+            penalties.insert(face, weights.distortion * distortion + patch_penalty);
         }
     }
     penalties

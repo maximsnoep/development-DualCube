@@ -35,7 +35,7 @@ const LAYOUT_MUTATIONS: [&str; 8] = [
 fn quality_weights(ui: &mut egui::Ui, weights: &mut QualityWeights) {
     let defaults = QualityWeights::default();
     for (name, value, max) in [
-        ("fidelity", &mut weights.fidelity, 5.),
+        ("distortion", &mut weights.distortion, 5.),
         ("path regularity", &mut weights.path_regularity, 2.),
         ("coherence", &mut weights.coherence, 10.),
         ("rectangularity", &mut weights.rectangularity, 2.),

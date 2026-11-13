@@ -161,7 +161,7 @@ impl ScoreCache {
             layout.granulated_mesh.nr_faces(),
             layout.alignment.unwrap_or(f64::NAN).to_bits(),
             [
-                w.fidelity,
+                w.distortion,
                 w.path_regularity,
                 w.coherence,
                 w.rectangularity,

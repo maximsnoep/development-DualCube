@@ -244,7 +244,7 @@ fn quality_matches_the_formula() {
     let solution = initialized();
     let report = solution.quality_report().unwrap();
     let w = solution.quality.weights;
-    let penalty = w.fidelity * report.fidelity.unwrap()
+    let penalty = w.distortion * report.distortion.unwrap()
         + w.path_regularity * report.path_regularity().unwrap()
         + w.coherence * report.coherence.unwrap()
         + w.rectangularity * report.rectangularity.unwrap()
@@ -262,9 +262,9 @@ fn quality_matches_the_formula() {
 fn quality_report_is_sane() {
     let solution = initialized();
     let report = solution.quality_report().unwrap();
-    let fidelity = report.alignment.unwrap();
-    assert!((-1. ..=1.).contains(&fidelity));
-    assert!(report.fidelity.unwrap() >= 0.);
+    let alignment = report.alignment.unwrap();
+    assert!((-1. ..=1.).contains(&alignment));
+    assert!(report.distortion.unwrap() >= 0.);
     assert!((0. ..=1.).contains(&report.path_backtrack.unwrap()));
     assert!(report.path_stretch.unwrap() >= 0.);
     assert!((0. ..=1.).contains(&report.coherence.unwrap()));
@@ -277,7 +277,7 @@ fn quality_report_is_sane() {
     assert_eq!(report.irregular_corners, Some(8));
     let score = solution.get_quality();
     assert!(score.is_some_and(f64::is_finite), "{score:?}");
-    // The estimate (from the dual structure only) is close to the actual fidelity for a cube.
+    // The estimate (from the dual structure only) is close to the actual quality for a cube.
     let estimate = solution.estimate_quality().unwrap();
     assert!(estimate.is_finite());
 }
