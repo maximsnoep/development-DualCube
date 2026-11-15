@@ -61,7 +61,7 @@ fn realize(labeled: &LabeledSkeleton) -> SkeletonResult<RealizedSkeleton> {
     for (edge, data) in &labeled.skeleton.edges {
         let [a, b] = data.nodes;
         let delta = node_positions[b] - node_positions[a];
-        let axis = crate::label::Port::from_label(labeled.labels[edge]) as usize / 2;
+        let axis = crate::label::Port::from_label(labeled.labels[edge]).axis();
         let mut size = Vector3D::repeat(1.);
         size[axis] = delta[axis].abs() - 1.;
         let connection = cuboids.cuboids.insert(Cuboid {

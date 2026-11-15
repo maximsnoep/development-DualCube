@@ -551,13 +551,7 @@ impl<'a> Surgery<'a> {
             self.patch_mut(patch).arcs.remove(&arc);
         }
         for c in removed.crossings {
-            let exit = self.surface.crossings.remove(c).unwrap().exit;
-            let key = canonical(self.mesh, exit);
-            let order = self.surface.edge_order.get_mut(&key).unwrap();
-            order.retain(|&o| o != c);
-            if order.is_empty() {
-                self.surface.edge_order.remove(&key);
-            }
+            self.surface.remove(self.mesh, c);
         }
         if let Some([f, g]) = removed.ends {
             for j in [f, g] {

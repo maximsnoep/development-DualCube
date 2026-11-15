@@ -267,15 +267,8 @@ pub fn spanning_tree(
         .enumerate()
         .map(|(i, n)| (n, i))
         .collect();
-    let mut parent: Vec<_> = (0..index.len()).collect();
-    fn root(parent: &mut [usize], mut i: usize) -> usize {
-        while parent[i] != i {
-            parent[i] = parent[parent[i]];
-            i = parent[i];
-        }
-        i
-    }
-    let length = |e: SkeletonEdgeID| loop_length(mesh, skeleton, e);
+    let mut components = petgraph::unionfind::UnionFind::new(index.len());
+    let length = |e: SkeletonEdgeID| skeleton.edges[e].boundary.length(mesh, &skeleton.surface);
     let mut rest: Vec<_> = skeleton
         .edges
         .keys()
@@ -284,34 +277,14 @@ pub fn spanning_tree(
     rest.sort_by(|&a, &b| length(b).total_cmp(&length(a)).then(a.cmp(&b)));
     let mut tree = Vec::new();
     for (i, &edge) in forced.iter().chain(&rest).enumerate() {
-        let [a, b] = skeleton.edges[edge]
-            .nodes
-            .map(|n| root(&mut parent, index[&n]));
-        if a == b {
-            if i < forced.len() {
-                return None;
-            }
-            continue;
+        let [a, b] = skeleton.edges[edge].nodes.map(|n| index[&n]);
+        if components.union(a, b) {
+            tree.push(edge);
+        } else if i < forced.len() {
+            return None;
         }
-        parent[a] = b;
-        tree.push(edge);
     }
     Some(tree)
-}
-
-fn loop_length(mesh: &Mesh<INPUT>, skeleton: &Skeleton, edge: SkeletonEdgeID) -> f64 {
-    let points: Vec<_> = skeleton.edges[edge]
-        .boundary
-        .crossings
-        .iter()
-        .map(|&c| {
-            let exit = skeleton.surface.crossings[c].exit;
-            (mesh.position(mesh.root(exit)) + mesh.position(mesh.toor(exit))) / 2.
-        })
-        .collect();
-    (0..points.len())
-        .map(|i| (points[(i + 1) % points.len()] - points[i]).norm())
-        .sum()
 }
 
 /// A simple vertex walk beside a boundary loop, if either side has one.

@@ -28,12 +28,12 @@ pub(super) fn solve(
         let min = |e| costs[e].iter().copied().fold(f64::INFINITY, f64::min);
         min(*a).total_cmp(&min(*b)).then_with(|| a.cmp(b))
     });
-    let mut union = constraints::Union::new(nodes.len());
+    let mut union = petgraph::unionfind::UnionFind::new(nodes.len());
     let mut tree = Vec::new();
     let mut adjacent = vec![Vec::new(); nodes.len()];
     for e in edges {
         let [a, b] = skeleton.edges[e].nodes.map(|n| index[&n]);
-        if union.join(a, b) {
+        if union.union(a, b) {
             tree.push(e);
             adjacent[a].push((b, e));
             adjacent[b].push((a, e));

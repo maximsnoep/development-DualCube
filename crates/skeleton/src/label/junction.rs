@@ -8,26 +8,12 @@ use crate::surface::{Regions, edit};
 pub(super) fn reduce(mesh: &Mesh<INPUT>, result: &mut Attempt) -> SkeletonResult<()> {
     // TODO: Search alternative split sequences instead of committing greedily.
     loop {
-        let mut degree = SecondaryMap::new();
-        for node in result.skeleton.nodes.keys() {
-            degree.insert(node, 0usize);
-        }
-        for edge in result.skeleton.edges.values() {
-            for node in edge.nodes {
-                degree[node] += 1;
-            }
-        }
+        let degree = result.skeleton.degrees();
         let Some((node, &count)) = degree.iter().find(|(_, d)| **d > 6) else {
             return Ok(());
         };
         let regions = Regions::build(mesh, &result.skeleton)?;
-        let incident: Vec<_> = result
-            .skeleton
-            .edges
-            .iter()
-            .filter(|(_, e)| e.nodes.contains(&node))
-            .map(|(id, _)| id)
-            .collect();
+        let incident: Vec<_> = result.skeleton.incident(node).map(|(id, _)| id).collect();
         let mut best: Option<(f64, usize, Skeleton, SkeletonNodeID, SkeletonEdgeID)> = None;
         for a in 0..incident.len() {
             for b in a + 1..incident.len() {
@@ -125,14 +111,12 @@ fn score(skeleton: &Skeleton, connector: SkeletonEdgeID) -> f64 {
     let endpoints = skeleton.edges[connector].nodes;
     let mut costs = [Vec::new(), Vec::new()];
     for (side, node) in endpoints.into_iter().enumerate() {
-        for (id, edge) in &skeleton.edges {
-            if id == connector || !edge.nodes.contains(&node) {
-                continue;
+        for (id, edge) in skeleton.incident(node) {
+            if id != connector {
+                costs[side].push(angle_costs(
+                    skeleton.nodes[edge.other(node)].position - skeleton.nodes[node].position,
+                ));
             }
-            let other = edge.nodes[usize::from(edge.nodes[0] == node)];
-            costs[side].push(angle_costs(
-                skeleton.nodes[other].position - skeleton.nodes[node].position,
-            ));
         }
     }
     let connector =

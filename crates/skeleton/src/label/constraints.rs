@@ -1,33 +1,6 @@
 use super::*;
+use petgraph::unionfind::UnionFind;
 use std::collections::{HashMap, VecDeque};
-
-pub(super) struct Union(pub Vec<usize>);
-impl Union {
-    pub fn new(n: usize) -> Self {
-        Self((0..n).collect())
-    }
-    pub fn root(&mut self, i: usize) -> usize {
-        let mut root = i;
-        while self.0[root] != root {
-            root = self.0[root];
-        }
-        let mut current = i;
-        while self.0[current] != current {
-            let next = self.0[current];
-            self.0[current] = root;
-            current = next;
-        }
-        root
-    }
-    pub fn join(&mut self, a: usize, b: usize) -> bool {
-        let (a, b) = (self.root(a), self.root(b));
-        if a == b {
-            return false;
-        }
-        self.0[a] = b;
-        true
-    }
-}
 
 /// A path's internal degree-two nodes can be eliminated exactly using its mask.
 /// Neither sign means equality, one means strict order, both mean no constraint.
@@ -71,10 +44,10 @@ pub(crate) fn coordinate_levels(
         return None;
     }
     for axis in 0..3 {
-        let mut union = Union::new(ids.len());
+        let mut union = UnionFind::new(ids.len());
         for &(nodes, mask) in &relations {
             if (mask >> (axis * 2)) & 3 == 0 {
-                union.join(ids[&nodes[0]], ids[&nodes[1]]);
+                union.union(ids[&nodes[0]], ids[&nodes[1]]);
             }
         }
         let mut outgoing = vec![Vec::new(); ids.len()];
@@ -84,8 +57,8 @@ pub(crate) fn coordinate_levels(
             if signs != 1 && signs != 2 {
                 continue;
             }
-            let mut a = union.root(ids[&nodes[0]]);
-            let mut b = union.root(ids[&nodes[1]]);
+            let mut a = union.find_mut(ids[&nodes[0]]);
+            let mut b = union.find_mut(ids[&nodes[1]]);
             if signs == 2 {
                 std::mem::swap(&mut a, &mut b);
             }
@@ -119,7 +92,7 @@ pub(crate) fn coordinate_levels(
             }
         }
         for i in 0..ids.len() {
-            coordinates[i][axis] = level[union.root(i)];
+            coordinates[i][axis] = level[union.find_mut(i)];
         }
     }
     Some(

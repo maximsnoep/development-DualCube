@@ -6,16 +6,6 @@ use crate::{EdgeLabel, LabeledSkeleton, SkeletonEdgeID, SkeletonNodeID, Skeleton
 use dualcube_types::prelude::*;
 use slotmap::SecondaryMap;
 
-pub(crate) fn degrees(skeleton: &crate::Skeleton) -> SecondaryMap<SkeletonNodeID, usize> {
-    let mut degree: SecondaryMap<_, _> = skeleton.nodes.keys().map(|n| (n, 0)).collect();
-    for edge in skeleton.edges.values() {
-        for node in edge.nodes {
-            degree[node] += 1;
-        }
-    }
-    degree
-}
-
 /// Delete a boundary and merge its other patch into `keep` (merge lemma). Fails when the
 /// graph would get parallel edges; labels may need repair afterwards.
 pub(crate) fn dissolve(
@@ -42,20 +32,14 @@ pub(crate) fn dissolve(
             return Err("Merging would create a self-loop".into());
         }
         if data.nodes.contains(&keep) {
-            let neighbor = data.nodes[usize::from(data.nodes[0] == keep)];
+            let neighbor = data.other(keep);
             if !neighbors.insert(neighbor) {
                 return Err("Merging would create parallel edges".into());
             }
         }
     }
     for crossing in removed.boundary.crossings {
-        let data = skeleton.surface.crossings.remove(crossing).unwrap();
-        let key = crate::surface::canonical(mesh, data.exit);
-        let order = skeleton.surface.edge_order.get_mut(&key).unwrap();
-        order.retain(|&c| c != crossing);
-        if order.is_empty() {
-            skeleton.surface.edge_order.remove(&key);
-        }
+        skeleton.surface.remove(mesh, crossing);
     }
     skeleton.nodes.remove(other);
     labeled.labels.remove(edge);
@@ -82,7 +66,7 @@ impl Chain {
 
 /// All chains, each once.
 pub(crate) fn chains(skeleton: &crate::Skeleton) -> Vec<Chain> {
-    let degree = degrees(skeleton);
+    let degree = skeleton.degrees();
     let mut incident = SecondaryMap::<SkeletonNodeID, Vec<SkeletonEdgeID>>::new();
     for node in skeleton.nodes.keys() {
         incident.insert(node, Vec::new());
@@ -112,7 +96,7 @@ pub(crate) fn chains(skeleton: &crate::Skeleton) -> Vec<Chain> {
                 chain.edges.push(edge);
                 let data = &skeleton.edges[edge];
                 let current = *chain.nodes.last().unwrap();
-                let next = data.nodes[usize::from(data.nodes[0] == current)];
+                let next = data.other(current);
                 chain.nodes.push(next);
                 if degree[next] != 2 {
                     break;
@@ -138,7 +122,7 @@ pub(crate) fn chains(skeleton: &crate::Skeleton) -> Vec<Chain> {
             chain.edges.push(edge);
             let data = &skeleton.edges[edge];
             let current = *chain.nodes.last().unwrap();
-            let next = data.nodes[usize::from(data.nodes[0] == current)];
+            let next = data.other(current);
             chain.nodes.push(next);
             if next == start {
                 break;

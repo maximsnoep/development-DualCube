@@ -2,7 +2,6 @@
 //! graph is simple.
 
 use super::Surgery;
-use crate::surface::canonical;
 use crate::surface::edit::parallel;
 use crate::{PatchBoundary, Skeleton, SkeletonEdge, SkeletonNode};
 use dualcube_types::prelude::*;
@@ -46,7 +45,7 @@ pub(super) fn simplify(mesh: &Mesh<INPUT>, skeleton: &mut Skeleton) {
         let node = skeleton.edges[edge].nodes[0];
         let boundary = skeleton.edges[edge].boundary.clone();
         let p = skeleton.nodes[node].position;
-        let c = centroid(mesh, skeleton, &boundary);
+        let c = boundary.centroid(mesh, &skeleton.surface);
         let [left, right] = [(p + 2. * c) / 3., (2. * p + c) / 3.]
             .map(|position| skeleton.nodes.insert(SkeletonNode { position }));
         let left_copy = parallel(mesh, skeleton, &boundary, 0);
@@ -78,18 +77,6 @@ pub(super) fn simplify(mesh: &Mesh<INPUT>, skeleton: &mut Skeleton) {
             boundary: copy,
         });
     }
-}
-
-fn centroid(mesh: &Mesh<INPUT>, skeleton: &Skeleton, boundary: &PatchBoundary) -> Vector3D {
-    let sum: Vector3D = boundary
-        .crossings
-        .iter()
-        .map(|&c| {
-            let exit = skeleton.surface.crossings[c].exit;
-            (mesh.position(mesh.root(exit)) + mesh.position(mesh.toor(exit))) / 2.
-        })
-        .sum();
-    sum / boundary.crossings.len() as f64
 }
 
 /// Remove turns back across one mesh edge (into a triangle and out through the same edge),
@@ -128,23 +115,16 @@ fn untangle_boundary(
             skeleton.surface.crossings[c].exit,
             skeleton.surface.crossings[d].exit,
         );
-        let order = &skeleton.surface.edge_order[&canonical(mesh, x)];
-        let at = |id| order.iter().position(|&o| o == id).unwrap();
-        if y != mesh.twin(x) || at(c).abs_diff(at(d)) != 1 {
+        let (rank_c, rank_d) = (
+            skeleton.surface.rank(mesh, c).1,
+            skeleton.surface.rank(mesh, d).1,
+        );
+        if y != mesh.twin(x) || rank_c.abs_diff(rank_d) != 1 {
             i += 1;
             continue;
         }
-        let order = skeleton
-            .surface
-            .edge_order
-            .get_mut(&canonical(mesh, x))
-            .unwrap();
-        order.retain(|&o| o != c && o != d);
-        if order.is_empty() {
-            skeleton.surface.edge_order.remove(&canonical(mesh, x));
-        }
-        skeleton.surface.crossings.remove(c);
-        skeleton.surface.crossings.remove(d);
+        skeleton.surface.remove(mesh, c);
+        skeleton.surface.remove(mesh, d);
         if j == 0 {
             crossings.remove(i);
             crossings.remove(0);

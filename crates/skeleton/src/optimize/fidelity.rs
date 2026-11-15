@@ -357,7 +357,7 @@ impl Tables {
             used[edge.nodes[0]] |= port.bit();
             used[edge.nodes[1]] |= port.opposite().bit();
             for node in edge.nodes {
-                let [a, d] = self.arm(node, id, port as usize / 2);
+                let [a, d] = self.arm(node, id, port.axis());
                 sum[0] += a;
                 sum[1] += d;
             }

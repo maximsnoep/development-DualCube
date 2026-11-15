@@ -56,24 +56,15 @@ pub fn dissolve_straight(
 ) -> SkeletonResult<LabeledSkeleton> {
     let mut labeled = labeled.clone();
     loop {
-        let degree = moves::degrees(&labeled.skeleton);
+        let degree = labeled.skeleton.degrees();
         let candidate = labeled.skeleton.nodes.keys().find_map(|node| {
             if degree[node] != 2 {
                 return None;
             }
-            let edges: Vec<_> = labeled
-                .skeleton
-                .edges
-                .iter()
-                .filter(|(_, e)| e.nodes.contains(&node))
-                .map(|(id, _)| id)
-                .collect();
+            let edges: Vec<_> = labeled.skeleton.incident(node).map(|(id, _)| id).collect();
             // Valid local ports on one axis must be opposite, irrespective of stored edge orientation.
-            (labeled.labels[edges[0]].direction == labeled.labels[edges[1]].direction).then(|| {
-                let removed = &labeled.skeleton.edges[edges[0]];
-                let neighbor = removed.nodes[usize::from(removed.nodes[0] == node)];
-                (edges[0], neighbor)
-            })
+            (labeled.labels[edges[0]].direction == labeled.labels[edges[1]].direction)
+                .then(|| (edges[0], labeled.skeleton.edges[edges[0]].other(node)))
         });
         let Some((edge, keep)) = candidate else {
             break;

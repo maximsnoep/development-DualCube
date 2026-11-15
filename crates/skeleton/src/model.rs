@@ -43,6 +43,35 @@ pub struct SkeletonEdge {
     pub boundary: PatchBoundary,
 }
 
+impl SkeletonEdge {
+    /// The endpoint that is not `node`.
+    pub fn other(&self, node: SkeletonNodeID) -> SkeletonNodeID {
+        self.nodes[usize::from(self.nodes[0] == node)]
+    }
+}
+
+impl Skeleton {
+    /// Edges at a node.
+    pub fn incident(
+        &self,
+        node: SkeletonNodeID,
+    ) -> impl Iterator<Item = (SkeletonEdgeID, &SkeletonEdge)> {
+        self.edges
+            .iter()
+            .filter(move |(_, e)| e.nodes.contains(&node))
+    }
+
+    pub fn degrees(&self) -> SecondaryMap<SkeletonNodeID, usize> {
+        let mut degree: SecondaryMap<_, _> = self.nodes.keys().map(|n| (n, 0)).collect();
+        for edge in self.edges.values() {
+            for node in edge.nodes {
+                degree[node] += 1;
+            }
+        }
+        degree
+    }
+}
+
 /// An oriented, simple closed curve on the input surface; no axis is prescribed.
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]
 pub struct PatchBoundary {

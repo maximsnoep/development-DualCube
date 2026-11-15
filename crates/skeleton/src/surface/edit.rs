@@ -1,7 +1,7 @@
 //! Boundary edits in crossing order, independent of mesh resolution.
 
 use super::*;
-use crate::{BoundaryCrossing, BoundarySurface, SkeletonEdge, SkeletonNode};
+use crate::{SkeletonEdge, SkeletonNode};
 use std::collections::VecDeque;
 
 /// Copy a loop immediately to its left (side 0) or right (side 1).
@@ -26,14 +26,10 @@ pub(crate) fn parallel_crossings(
 ) -> Vec<BoundaryCrossingID> {
     let mut crossings = Vec::new();
     for &old in original {
-        let crossing = surface.crossings[old];
-        let id = surface.crossings.insert(crossing);
-        let key = canonical(mesh, crossing.exit);
-        let order = surface.edge_order.get_mut(&key).unwrap();
-        let rank = order.iter().position(|&c| c == old).unwrap();
-        let after = (side == 0) == (key == crossing.exit);
-        order.insert(rank + usize::from(after), id);
-        crossings.push(id);
+        let exit = surface.crossings[old].exit;
+        let (key, rank) = surface.rank(mesh, old);
+        let after = (side == 0) == (key == exit);
+        crossings.push(surface.insert(mesh, exit, rank + usize::from(after)));
     }
     crossings
 }

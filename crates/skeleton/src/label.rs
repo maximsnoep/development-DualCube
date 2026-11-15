@@ -35,12 +35,16 @@ impl Port {
     pub fn opposite(self) -> Self {
         Self::ALL[(self as usize) ^ 1]
     }
+    /// 0, 1, 2 for X, Y, Z.
+    pub fn axis(self) -> usize {
+        self as usize / 2
+    }
     pub fn bit(self) -> u8 {
         1 << self as u8
     }
     pub fn label(self) -> EdgeLabel {
         EdgeLabel {
-            direction: [Direction::X, Direction::Y, Direction::Z][self as usize / 2],
+            direction: [Direction::X, Direction::Y, Direction::Z][self.axis()],
             sign: if self as usize % 2 == 0 {
                 Sign::Positive
             } else {

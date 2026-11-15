@@ -1,6 +1,9 @@
 //! Combinatorial cells cut out by disjoint boundary arcs on an immutable mesh.
 
-use crate::{BoundaryCrossingID, PatchBoundary, Skeleton, SkeletonNodeID, SkeletonResult};
+use crate::{
+    BoundaryCrossing, BoundaryCrossingID, BoundarySurface, PatchBoundary, Skeleton, SkeletonNodeID,
+    SkeletonResult,
+};
 use dualcube_types::prelude::*;
 use std::collections::{HashMap, HashSet};
 
@@ -46,6 +49,81 @@ pub(crate) fn canonical(mesh: &Mesh<INPUT>, edge: EdgeID) -> EdgeID {
         edge
     } else {
         mesh.twin(edge)
+    }
+}
+
+impl BoundarySurface {
+    /// The canonical edge an occurrence lies on and its index in that edge's order.
+    pub(crate) fn rank(&self, mesh: &Mesh<INPUT>, id: BoundaryCrossingID) -> (EdgeID, usize) {
+        let edge = canonical(mesh, self.crossings[id].exit);
+        let rank = self.edge_order[&edge].iter().position(|&c| c == id);
+        (edge, rank.unwrap())
+    }
+
+    /// Add an occurrence at `index` of its edge's order.
+    pub(crate) fn insert(
+        &mut self,
+        mesh: &Mesh<INPUT>,
+        exit: EdgeID,
+        index: usize,
+    ) -> BoundaryCrossingID {
+        let id = self.crossings.insert(BoundaryCrossing { exit });
+        self.edge_order
+            .entry(canonical(mesh, exit))
+            .or_default()
+            .insert(index, id);
+        id
+    }
+
+    pub(crate) fn remove(&mut self, mesh: &Mesh<INPUT>, id: BoundaryCrossingID) {
+        let edge = canonical(mesh, self.crossings.remove(id).unwrap().exit);
+        self.unorder(edge, id);
+    }
+
+    /// Take an occurrence out of its edge's order, keeping its data.
+    pub(crate) fn unorder(&mut self, edge: EdgeID, id: BoundaryCrossingID) {
+        let order = self.edge_order.get_mut(&edge).unwrap();
+        order.retain(|&c| c != id);
+        if order.is_empty() {
+            self.edge_order.remove(&edge);
+        }
+    }
+
+    /// Uniformly spaced point of an occurrence on its edge.
+    pub(crate) fn position(&self, mesh: &Mesh<INPUT>, id: BoundaryCrossingID) -> Vector3D {
+        let (edge, rank) = self.rank(mesh, id);
+        let t = (rank + 1) as f64 / (self.edge_order[&edge].len() + 1) as f64;
+        mesh.position(mesh.root(edge)) * (1. - t) + mesh.position(mesh.toor(edge)) * t
+    }
+
+    /// Midpoint of the edge an occurrence crosses.
+    pub(crate) fn midpoint(&self, mesh: &Mesh<INPUT>, id: BoundaryCrossingID) -> Vector3D {
+        let exit = self.crossings[id].exit;
+        (mesh.position(mesh.root(exit)) + mesh.position(mesh.toor(exit))) / 2.
+    }
+}
+
+impl PatchBoundary {
+    /// Length of the closed polyline through the midpoints of the crossed edges.
+    pub(crate) fn length(&self, mesh: &Mesh<INPUT>, surface: &BoundarySurface) -> f64 {
+        let points: Vec<_> = self
+            .crossings
+            .iter()
+            .map(|&c| surface.midpoint(mesh, c))
+            .collect();
+        (0..points.len())
+            .map(|i| (points[(i + 1) % points.len()] - points[i]).norm())
+            .sum()
+    }
+
+    /// Mean of the midpoints of the crossed edges.
+    pub(crate) fn centroid(&self, mesh: &Mesh<INPUT>, surface: &BoundarySurface) -> Vector3D {
+        let sum: Vector3D = self
+            .crossings
+            .iter()
+            .map(|&c| surface.midpoint(mesh, c))
+            .sum();
+        sum / self.crossings.len() as f64
     }
 }
 
@@ -209,11 +287,7 @@ impl Regions {
                     }
                 }
             }
-            let boundaries = skeleton
-                .edges
-                .values()
-                .filter(|e| e.nodes.contains(&owner))
-                .count();
+            let boundaries = skeleton.incident(owner).count();
             let chi = vertices.len() as i64 - (intervals.len() + boundary_arcs.len()) as i64
                 + component.len() as i64;
             if chi != 2 - boundaries as i64 {
@@ -311,13 +385,8 @@ pub(crate) fn position(
     skeleton: &Skeleton,
     id: BoundaryCrossingID,
 ) -> Vector3D {
-    let exit = skeleton.surface.crossings[id].exit;
-    let edge = canonical(mesh, exit);
-    let order = &skeleton.surface.edge_order[&edge];
-    let rank = order.iter().position(|&c| c == id).unwrap();
     // TODO: Optimize crossing placement using surface geometry and label costs.
-    let t = (rank + 1) as f64 / (order.len() + 1) as f64;
-    mesh.position(mesh.root(edge)) * (1. - t) + mesh.position(mesh.toor(edge)) * t
+    skeleton.surface.position(mesh, id)
 }
 
 #[cfg(test)]

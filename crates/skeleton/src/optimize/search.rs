@@ -302,7 +302,7 @@ fn propose(
             relabeled(mesh, candidate, &chain, params.measure)
         }
         Operator::RemoveLeaf => {
-            let degree = moves::degrees(skeleton);
+            let degree = skeleton.degrees();
             let leaves: Vec<_> = skeleton
                 .edges
                 .iter()
@@ -321,7 +321,7 @@ fn propose(
             Some(candidate)
         }
         Operator::AddLeaf => {
-            let degree = moves::degrees(skeleton);
+            let degree = skeleton.degrees();
             let nodes: Vec<_> = degree
                 .iter()
                 .filter(|(_, d)| **d < 6)

@@ -9,7 +9,7 @@ use super::cut::Network;
 use super::fidelity::{self, Element, Measure, Star};
 use super::moves::gain;
 use crate::label::Port;
-use crate::surface::{Gap, Regions, Side, Vertex, canonical};
+use crate::surface::{Gap, Regions, Side, Vertex};
 use crate::{
     BoundaryCrossing, BoundaryCrossingID, LabeledSkeleton, Skeleton, SkeletonEdgeID, SkeletonNodeID,
 };
@@ -121,13 +121,7 @@ pub(crate) fn insert(skeleton: &mut Skeleton, path: &[(Gap, EdgeID)]) -> Vec<Bou
 /// Remove a loop's crossings from the surface.
 pub(crate) fn erase(mesh: &Mesh<INPUT>, skeleton: &mut Skeleton, crossings: &[BoundaryCrossingID]) {
     for &crossing in crossings {
-        let data = skeleton.surface.crossings.remove(crossing).unwrap();
-        let key = canonical(mesh, data.exit);
-        let order = skeleton.surface.edge_order.get_mut(&key).unwrap();
-        order.retain(|&c| c != crossing);
-        if order.is_empty() {
-            skeleton.surface.edge_order.remove(&key);
-        }
+        skeleton.surface.remove(mesh, crossing);
     }
 }
 
@@ -171,10 +165,7 @@ pub(crate) fn cell_gain(
 ) -> f64 {
     let c = match star.element(cell.centroid) {
         Element::Cube => fidelity::best_per_mask(cell.normal)[free as usize],
-        Element::Arm(e) => fidelity::wall(
-            cell.normal,
-            Port::from_label(labeled.labels[e]) as usize / 2,
-        ),
+        Element::Arm(e) => fidelity::wall(cell.normal, Port::from_label(labeled.labels[e]).axis()),
     };
     gain(measure, [c, fidelity::distortion(c)])
 }
@@ -445,10 +436,8 @@ pub(crate) fn add_leaf(
     let cells = fidelity::cells(mesh, &regions, &positions);
     let stars = fidelity::stars(skeleton, &cells, &fidelity::loops(skeleton, &positions));
     let pinned: HashMap<_, _> = skeleton
-        .edges
-        .values()
-        .filter(|e| e.nodes.contains(&node))
-        .flat_map(|e| e.boundary.crossings.iter().map(|&c| (c, false)))
+        .incident(node)
+        .flat_map(|(_, e)| e.boundary.crossings.iter().map(|&c| (c, false)))
         .collect();
     let free = 63 & !used[node];
     let leaf_free = 63 & !port.opposite().bit();

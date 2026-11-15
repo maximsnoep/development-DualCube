@@ -12,9 +12,7 @@
 use super::fidelity::{self, CellGeometry, Measure, Star};
 use super::redraw::cell_gain;
 use crate::surface::{Regions, Side, Vertex, canonical, split_face};
-use crate::{
-    BoundaryCrossing, BoundaryCrossingID, LabeledSkeleton, Skeleton, SkeletonEdgeID, SkeletonNodeID,
-};
+use crate::{BoundaryCrossingID, LabeledSkeleton, Skeleton, SkeletonEdgeID, SkeletonNodeID};
 use dualcube_types::prelude::*;
 use slotmap::SecondaryMap;
 use std::collections::{HashMap, HashSet, VecDeque};
@@ -283,8 +281,7 @@ impl<'a> Work<'a> {
         if self.edge_of(d) != edge || len < 4 {
             return None;
         }
-        let order = &self.skeleton.surface.edge_order[&edge];
-        let rank = |x| order.iter().position(|&y| y == x).unwrap();
+        let rank = |x| self.skeleton.surface.rank(self.mesh, x).1;
         if rank(c).abs_diff(rank(d)) != 1 {
             return None;
         }
@@ -307,7 +304,7 @@ impl<'a> Work<'a> {
         touched.extend(plan.added.iter().map(|&h| canonical(mesh, h)));
         touched.sort_by(|a, b| a.partial_cmp(b).unwrap());
         touched.dedup();
-        let orders = &mut self.skeleton.surface.edge_order;
+        let orders = &self.skeleton.surface.edge_order;
         let saved = touched
             .iter()
             .map(|&e| (e, orders.get(&e).cloned()))
@@ -318,29 +315,22 @@ impl<'a> Work<'a> {
         }
         let head = (plan.lp, self.heads[plan.lp].0, self.heads[plan.lp].1);
         for &c in &plan.removed {
-            let e = canonical(mesh, self.skeleton.surface.crossings[c].exit);
-            let order = orders.get_mut(&e).unwrap();
-            order.retain(|&x| x != c);
-            if order.is_empty() {
-                orders.remove(&e);
-            }
+            // Kept in the slotmap for undo.
+            let e = self.edge_of(c);
+            self.skeleton.surface.unorder(e, c);
             self.member.remove(c);
         }
         let mut added = Vec::new();
         let mut chain = vec![plan.before];
         for &exit in &plan.added {
-            let id = self
-                .skeleton
-                .surface
-                .crossings
-                .insert(BoundaryCrossing { exit });
             let e = canonical(mesh, exit);
-            let order = orders.entry(e).or_default();
-            if Some(mesh.root(e)) == plan.vertex {
-                order.insert(0, id);
+            let surface = &mut self.skeleton.surface;
+            let index = if Some(mesh.root(e)) == plan.vertex {
+                0
             } else {
-                order.push(id);
-            }
+                surface.edge_order.get(&e).map_or(0, Vec::len)
+            };
+            let id = surface.insert(mesh, exit, index);
             self.member.insert(id, plan.lp);
             added.push(id);
             chain.push(id);

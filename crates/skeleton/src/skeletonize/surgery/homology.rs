@@ -233,22 +233,8 @@ pub(super) fn volume_cocycles(
     }
 
     // A spanning tree of the edges is zero: cocycles are only defined up to coboundaries.
-    let mut parent: Vec<u32> = (0..n_vertices as u32).collect();
-    fn root(parent: &mut [u32], mut i: u32) -> u32 {
-        while parent[i as usize] != i {
-            parent[i as usize] = parent[parent[i as usize] as usize];
-            i = parent[i as usize];
-        }
-        i
-    }
-    let mut known = vec![false; edges.len()];
-    for (e, &[a, b]) in edges.iter().enumerate() {
-        let [a, b] = [a, b].map(|v| root(&mut parent, v));
-        if a != b {
-            parent[a as usize] = b;
-            known[e] = true;
-        }
-    }
+    let mut components = petgraph::unionfind::UnionFind::<u32>::new(n_vertices);
+    let mut known: Vec<bool> = edges.iter().map(|&[a, b]| components.union(a, b)).collect();
 
     // Values as combinations of free generators. A remaining triangle with one unknown edge
     // fixes it; when none has, an unknown edge becomes a generator. Triangles left with no
