@@ -644,7 +644,7 @@ fn off_middle(map: &LoopMap, pieces: &HashSet<usize>, breaks: &[usize]) -> HashM
         .collect();
     heads.sort_unstable();
     let mut result = HashMap::new();
-    let mut walk = |head: usize, result: &mut HashMap<usize, f64>| {
+    let walk = |head: usize, result: &mut HashMap<usize, f64>| {
         let mut run = vec![];
         let (mut h, mut at) = (head, 0.);
         loop {
