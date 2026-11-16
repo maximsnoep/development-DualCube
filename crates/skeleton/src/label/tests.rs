@@ -348,7 +348,7 @@ fn overfull_junctions_split_even_when_all_patches_share_one_mesh_edge() {
 }
 
 #[test]
-fn cycle_repair_uses_real_annuli_and_preserves_mst_membership() {
+fn cycle_repair_uses_real_annuli_and_relabels_the_whole_chain() {
     for positions in [
         vec![[0., 0., 0.], [2., 0., 0.]],
         vec![[0., 0., 0.], [2., 0., 0.], [2., 2., 0.]],
@@ -375,14 +375,16 @@ fn cycle_repair_uses_real_annuli_and_preserves_mst_membership() {
                 result.skeleton.edges[edge].boundary.crossings,
                 skeleton.edges[edge].boundary.crossings
             );
-            assert_eq!(
-                result.skeleton.edges[edge].nodes,
-                skeleton.edges[edge].nodes
-            );
-            assert_eq!(
-                Port::from_label(result.labels[edge]),
-                Port::from_label(result.tree_labels[edge])
-            );
+        }
+        // The whole ring is relabelled: a ring of four needs no collar and no second choice.
+        if positions.len() == 4 {
+            assert_eq!(path.len(), 1);
+            for (edge, &label) in &result.labels {
+                let normal = boundary_normal(&mesh, &result.skeleton, edge);
+                let port = Port::from_label(label);
+                let along = normal[port.axis()] * if port.is_positive() { 1. } else { -1. };
+                assert!(along >= normal.amax() - 1e-9);
+            }
         }
         result.labeled().validate(&mesh).unwrap();
         skeleton.validate(&mesh).unwrap();

@@ -147,7 +147,7 @@ pub fn attempt(mesh: &Mesh<INPUT>, skeleton: &Skeleton) -> SkeletonResult<Attemp
     result.tree_labels = labels.clone();
     result.labels = labels;
     for edge in remaining {
-        let (skeleton, path, solution) = repair(
+        let (skeleton, added, labels) = repair(
             mesh,
             &result.skeleton,
             &result.labels,
@@ -155,9 +155,9 @@ pub fn attempt(mesh: &Mesh<INPUT>, skeleton: &Skeleton) -> SkeletonResult<Attemp
             &mut cost_cache,
         )?;
         result.skeleton = skeleton;
-        for (&e, p) in path.iter().zip(solution.ports) {
-            result.labels.insert(e, p.label());
-        }
+        result.labels.extend(labels);
+        let mut path = vec![edge];
+        path.extend(added);
         result.repairs.push(Repair {
             original_edge: edge,
             path,
@@ -209,63 +209,192 @@ fn cached_cost(
     *cache.entry(key).or_insert_with(|| angle_costs(vector))
 }
 
+/// The chain through `edge`: the maximal path whose interior nodes have degree two, as steps
+/// (edge, whether it is traversed from its first node) from the chain's first node to its last.
+/// A component that is one ring is a chain from a node back to itself.
+fn chain(
+    skeleton: &Skeleton,
+    edge: SkeletonEdgeID,
+) -> (Vec<(SkeletonEdgeID, bool)>, [SkeletonNodeID; 2]) {
+    let degree = skeleton.degrees();
+    let [first, last] = skeleton.edges[edge].nodes;
+    // Steps leaving `from` through degree-two nodes, not continuing past `stop`.
+    let walk = |from: SkeletonNodeID, stop: SkeletonNodeID| {
+        let (mut node, mut previous, mut steps) = (from, edge, Vec::new());
+        while degree[node] == 2 && node != stop {
+            let (next, data) = skeleton
+                .edges
+                .iter()
+                .find(|(id, e)| *id != previous && e.nodes.contains(&node))
+                .expect("a degree-two node has a second edge");
+            steps.push((next, data.nodes[0] == node));
+            node = data.other(node);
+            previous = next;
+        }
+        (steps, node)
+    };
+    let (after, end) = walk(last, first);
+    let (before, start) = if end == first {
+        (Vec::new(), first)
+    } else {
+        walk(first, last)
+    };
+    // Steps before the edge were walked away from it.
+    let mut steps: Vec<_> = before.into_iter().rev().map(|(e, f)| (e, !f)).collect();
+    steps.push((edge, true));
+    steps.extend(after);
+    (steps, [start, end])
+}
+
+/// Costs along a chain: a step against its edge swaps the signs.
+fn along(
+    mesh: &Mesh<INPUT>,
+    skeleton: &Skeleton,
+    steps: &[(SkeletonEdgeID, bool)],
+    cache: &mut HashMap<[u64; 3], [f64; 6]>,
+) -> Vec<[f64; 6]> {
+    steps
+        .iter()
+        .map(|&(e, forward)| {
+            let cost = cached_cost(mesh, skeleton, e, cache);
+            std::array::from_fn(|p| cost[if forward { p } else { p ^ 1 }])
+        })
+        .collect()
+}
+
+/// The cheapest valid ports along a chain for given costs, all other labels fixed.
+fn chain_solver(
+    skeleton: &Skeleton,
+    labels: &SecondaryMap<SkeletonEdgeID, EdgeLabel>,
+    steps: &[(SkeletonEdgeID, bool)],
+    [start, end]: [SkeletonNodeID; 2],
+) -> SkeletonResult<impl Fn(&[[f64; 6]]) -> Option<path::Solution>> {
+    let mut others = labels.clone();
+    for &(e, _) in steps {
+        others.remove(e);
+    }
+    let used = constraints::used_ports(skeleton, &others)?;
+    let mut masks = [false; 64];
+    for (mask, feasible) in masks.iter_mut().enumerate() {
+        *feasible = constraints::feasible(skeleton, &others, Some(([start, end], mask as u8)));
+    }
+    let (first, last) = (used[start], used[end]);
+    Ok(move |costs: &[[f64; 6]]| {
+        if start != end {
+            let limits = path::Constraints {
+                start_ports: 63 & !first,
+                end_ports: 63 & !last,
+                masks,
+            };
+            return path::optimize(costs, &limits);
+        }
+        // A ring leaves and enters one node: through two different ports.
+        Port::ALL
+            .into_iter()
+            .filter(|p| first & p.bit() == 0)
+            .filter_map(|p| {
+                let limits = path::Constraints {
+                    start_ports: p.bit(),
+                    end_ports: 63 & !first & !p.bit(),
+                    masks,
+                };
+                path::optimize(costs, &limits)
+            })
+            .min_by(|a, b| a.cost.total_cmp(&b.cost))
+    })
+}
+
+/// Close the cycle of an unlabeled edge: relabel its whole chain, tree edges included, with the
+/// fewest parallel collars that admit a valid labeling, and among those the cheapest. Returns
+/// the skeleton, the added collars, and the chain's labels.
 fn repair(
     mesh: &Mesh<INPUT>,
     skeleton: &Skeleton,
     labels: &SecondaryMap<SkeletonEdgeID, EdgeLabel>,
     edge: SkeletonEdgeID,
     cache: &mut HashMap<[u64; 3], [f64; 6]>,
-) -> SkeletonResult<(Skeleton, Vec<SkeletonEdgeID>, path::Solution)> {
-    let endpoints = skeleton.edges[edge].nodes;
-    let used = constraints::used_ports(skeleton, labels)?;
-    let mut limits = path::Constraints {
-        start_ports: 63 & !used[endpoints[0]],
-        end_ports: 63 & !used[endpoints[1]],
-        ..Default::default()
-    };
-    for mask in 0..64 {
-        limits.masks[mask] = constraints::feasible(skeleton, labels, Some((endpoints, mask as u8)));
-    }
-    let mut candidates = vec![(skeleton.clone(), vec![edge])];
-    // TODO: Allow more liberal subdivision tradeoffs instead of minimizing count first.
-    for subdivisions in 0..=4 {
-        let mut best = None;
-        for (candidate, edges) in &candidates {
-            let costs: Vec<_> = edges
-                .iter()
-                .map(|&e| cached_cost(mesh, candidate, e, cache))
-                .collect();
-            if let Some(solution) = path::optimize(&costs, &limits)
-                && best.as_ref().is_none_or(
-                    |(_, _, old): &(Skeleton, Vec<SkeletonEdgeID>, path::Solution)| {
-                        solution.cost < old.cost
-                    },
-                )
+) -> SkeletonResult<(Skeleton, Vec<SkeletonEdgeID>, Vec<(SkeletonEdgeID, EdgeLabel)>)> {
+    let (steps, [start, end]) = chain(skeleton, edge);
+    let solve = chain_solver(skeleton, labels, &steps, [start, end])?;
+    // Costs along the chain: a step against its edge swaps the signs.
+    let costs = along(mesh, skeleton, &steps, cache);
+    // A collar copies a boundary, so it costs what its original costs: choose which steps to
+    // copy on the costs alone, then build only the chosen skeleton.
+    for collars in 0..=4 {
+        let mut best: Option<(f64, Vec<usize>)> = None;
+        for copied in copies(steps.len(), collars) {
+            let mut sequence = Vec::new();
+            for (i, &cost) in costs.iter().enumerate() {
+                let count = 1 + copied.iter().filter(|&&c| c == i).count();
+                sequence.extend(std::iter::repeat_n(cost, count));
+            }
+            if let Some(solution) = solve(&sequence)
+                && best.as_ref().is_none_or(|(old, _)| solution.cost < *old)
             {
-                best = Some((candidate.clone(), edges.clone(), solution));
+                best = Some((solution.cost, copied));
             }
         }
-        if let Some(best) = best {
-            return Ok(best);
-        }
-        if subdivisions == 4 {
-            break;
-        }
-        // TODO: Search loop sequences jointly with the path DP beyond endpoint-only parallel collars.
-        let mut next = Vec::new();
-        for (candidate, edges) in candidates {
-            for side in 0..2 {
-                let index = if side == 0 { 0 } else { edges.len() - 1 };
-                let (split, added) = subdivide::collar(mesh, &candidate, edges[index], side)?;
-                let mut path = edges.clone();
-                path.insert(index + 1, added);
-                next.push((split, path));
+        let Some((_, copied)) = best else {
+            continue;
+        };
+        let mut split = skeleton.clone();
+        let mut added = Vec::new();
+        let mut path = Vec::new();
+        for (i, &(e, forward)) in steps.iter().enumerate() {
+            // Along the edge: the edge, then its collars from the last added to the first.
+            let mut run = vec![e];
+            for _ in copied.iter().filter(|&&c| c == i) {
+                let (next, collar) = subdivide::collar(mesh, &split, e, 1)?;
+                split = next;
+                run.insert(1, collar);
+                added.push(collar);
             }
+            if !forward {
+                run.reverse();
+            }
+            path.extend(run.into_iter().map(|e| (e, forward)));
         }
-        candidates = next;
+        let solution = solve(&along(mesh, &split, &path, cache))
+            .expect("Impossible: a collar costs what its original costs");
+        let labels = path
+            .iter()
+            .zip(solution.ports)
+            .map(|(&(e, forward), port)| {
+                (e, if forward { port } else { port.opposite() }.label())
+            })
+            .collect();
+        return Ok((split, added, labels));
     }
     // Any unlabeled edge closes with at most four subdivisions (theory: labeling cycle closing).
     panic!("Impossible: cycle edge {edge:?} has no valid labeling with 0–4 subdivisions")
+}
+
+/// Which of `steps` chain steps to copy, `count` times in all, as sorted positions. Long chains
+/// only copy their two ends.
+fn copies(steps: usize, count: usize) -> Vec<Vec<usize>> {
+    const LIMIT: usize = 2000;
+    let grow = |positions: &[usize]| {
+        let mut sets = vec![vec![]];
+        for _ in 0..count {
+            sets = sets
+                .into_iter()
+                .flat_map(|set: Vec<usize>| {
+                    let least = set.last().copied().unwrap_or(0);
+                    positions.iter().filter(move |&&p| p >= least).map(move |&p| {
+                        let mut next = set.clone();
+                        next.push(p);
+                        next
+                    })
+                })
+                .collect();
+            if sets.len() > LIMIT {
+                return None;
+            }
+        }
+        Some(sets)
+    };
+    let all: Vec<usize> = (0..steps).collect();
+    grow(&all).unwrap_or_else(|| grow(&[0, steps - 1]).expect("two positions stay within the limit"))
 }
 
 #[cfg(test)]
