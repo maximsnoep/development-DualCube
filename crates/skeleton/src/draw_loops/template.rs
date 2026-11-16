@@ -1,6 +1,7 @@
 //! The loop structure of the labeled skeleton's cube surface, from the labels alone.
 //!
-//! Every node is a cube and every edge a cuboid between two cube faces. Their free faces are
+//! Every node that is not a leaf is a cube and every edge a cuboid, capped at a leaf and
+//! otherwise between two cube faces. Their free faces are
 //! the quads of a closed quad mesh; corners are identified only across the connected faces, so
 //! coincident solids stay distinct. The dual loops of that quad mesh are the template: every
 //! quad holds one crossing. A loop of axis a crosses the quads whose normal is not a, turning
@@ -26,8 +27,15 @@ const CORNERS: usize = 8;
 impl Template {
     pub fn build(labeled: &LabeledSkeleton) -> SkeletonResult<Self> {
         let skeleton = &labeled.skeleton;
-        // Solids: node cubes, then edge cuboids.
-        let nodes: HashMap<_, _> = skeleton.nodes.keys().zip(0..).collect();
+        // Solids: cubes of the nodes that are not leaves, then edge cuboids. A leaf's cube
+        // would only lengthen its cuboid, so the cuboid's end is the leaf's cap.
+        let degree = skeleton.degrees();
+        let nodes: HashMap<_, _> = skeleton
+            .nodes
+            .keys()
+            .filter(|&n| degree[n] != 1)
+            .zip(0..)
+            .collect();
         let edges: HashMap<_, _> = skeleton.edges.keys().zip(nodes.len()..).collect();
         let solids = nodes.len() + edges.len();
         let mut axis_of = vec![None; solids];
@@ -47,8 +55,12 @@ impl Template {
         };
         for (id, edge) in &skeleton.edges {
             let port = Port::from_label(labeled.labels[id]);
-            glue(nodes[&edge.nodes[0]], edges[&id], port);
-            glue(edges[&id], nodes[&edge.nodes[1]], port);
+            if let Some(&node) = nodes.get(&edge.nodes[0]) {
+                glue(node, edges[&id], port);
+            }
+            if let Some(&node) = nodes.get(&edge.nodes[1]) {
+                glue(edges[&id], node, port);
+            }
         }
         // Free faces as quads, counterclockwise seen from outside, with the axis of the loop
         // joining sides 0 and 2, of the loop joining sides 1 and 3, and whether that one runs

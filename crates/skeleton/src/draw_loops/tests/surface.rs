@@ -79,6 +79,19 @@ impl Surface {
         }
         let (mesh, _, face_map) = Mesh::<INPUT>::from(&triangles, &positions)
             .map_err(|_| "Cuboid surface is not manifold")?;
+        // A leaf's cube only caps its cuboid: it has no section across the cuboid's axis.
+        let skeleton = &realized.labeled.skeleton;
+        let degree = skeleton.degrees();
+        let mut capped = HashMap::new();
+        for (id, cuboid) in &layout.cuboids {
+            if let CuboidOwner::Node(node) = cuboid.owner
+                && degree[node] == 1
+            {
+                let (edge, _) = skeleton.incident(node).next().unwrap();
+                let axis = crate::label::Port::from_label(realized.labeled.labels[edge]).axis();
+                capped.insert(id, axis);
+            }
+        }
         let mut arcs = HashMap::new();
         let mut entries = Vec::new();
         for face in mesh.face_ids() {
@@ -86,7 +99,7 @@ impl Surface {
             let (id, normal_axis) = owners[index];
             let cuboid = &layout.cuboids[id];
             for axis in 0..3 {
-                if axis == normal_axis {
+                if axis == normal_axis || capped.get(&id) == Some(&axis) {
                     continue;
                 }
                 let mut points = Vec::new();
