@@ -21,7 +21,7 @@ pub fn coordinates(
     let levels = crate::label::constraints::coordinate_levels(
         &labeled.skeleton,
         &labeled.labels,
-        None,
+        &[],
         true,
     )
     .ok_or("Labels imply contradictory coordinate orders")?;

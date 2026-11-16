@@ -9,6 +9,15 @@ pub(crate) fn feasible(
     labels: &SecondaryMap<SkeletonEdgeID, EdgeLabel>,
     extra: Option<([SkeletonNodeID; 2], u8)>,
 ) -> bool {
+    coordinate_levels(skeleton, labels, extra.as_slice(), false).is_some()
+}
+
+/// Feasibility with several eliminated paths at once.
+pub(crate) fn feasible_with(
+    skeleton: &Skeleton,
+    labels: &SecondaryMap<SkeletonEdgeID, EdgeLabel>,
+    extra: &[([SkeletonNodeID; 2], u8)],
+) -> bool {
     coordinate_levels(skeleton, labels, extra, false).is_some()
 }
 
@@ -16,7 +25,7 @@ pub(crate) fn feasible(
 pub(crate) fn coordinate_levels(
     skeleton: &Skeleton,
     labels: &SecondaryMap<SkeletonEdgeID, EdgeLabel>,
-    extra: Option<([SkeletonNodeID; 2], u8)>,
+    extra: &[([SkeletonNodeID; 2], u8)],
     compact: bool,
 ) -> Option<SecondaryMap<SkeletonNodeID, [usize; 3]>> {
     let ids: HashMap<_, _> = skeleton
@@ -36,7 +45,7 @@ pub(crate) fn coordinate_levels(
         }
         relations.push((edge.nodes, Port::from_label(*label).bit()));
     }
-    relations.extend(extra);
+    relations.extend(extra.iter().copied());
     if relations
         .iter()
         .any(|(nodes, _)| nodes.iter().any(|n| !ids.contains_key(n)))

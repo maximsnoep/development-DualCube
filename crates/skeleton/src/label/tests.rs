@@ -427,3 +427,19 @@ fn labels_follow_the_boundary_planes_not_the_patch_centres() {
         }
     }
 }
+
+#[test]
+fn a_path_through_a_junction_avoids_its_ports_in_use() {
+    // Both boundaries prefer +X; straight through is free.
+    let costs = [angle_costs(Vector3D::new(1., 0.2, 0.1)); 2];
+    let limits = path::Constraints::default();
+    let straight = path::optimize(&costs, &limits).unwrap();
+    assert_eq!(straight.ports, [Port::PositiveX, Port::PositiveX]);
+    // The junction between them already uses +X: the path must leave it another way.
+    let turned = path::optimize_through(&costs, &limits, &[0, Port::PositiveX.bit()]).unwrap();
+    assert_eq!(turned.ports, [Port::PositiveX, Port::PositiveY]);
+    // It already uses -X: the path cannot arrive along +X.
+    let arriving = path::optimize_through(&costs, &limits, &[0, Port::NegativeX.bit()]).unwrap();
+    assert_ne!(arriving.ports[0], Port::PositiveX);
+    assert!(arriving.cost > straight.cost && turned.cost > straight.cost);
+}

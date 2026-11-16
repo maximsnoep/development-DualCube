@@ -56,6 +56,16 @@ pub struct Solution {
 /// The final port is reversed when checking the end junction's available ports.
 /// Complexity: O(n * 6 * 64 * 6), with 384 states per boundary.
 pub fn optimize(costs: &[[f64; 6]], constraints: &Constraints) -> Option<Solution> {
+    optimize_through(costs, constraints, &[])
+}
+
+/// As [`optimize`], for a path through junctions: `taken[i]` are the ports already in use at
+/// the node before boundary `i` (missing entries and `taken[0]` count as none).
+pub fn optimize_through(
+    costs: &[[f64; 6]],
+    constraints: &Constraints,
+    taken: &[u8],
+) -> Option<Solution> {
     // TODO: Jointly select boundaries and labels over bounded candidate intervals, including
     // boundary removal; precompute each candidate patch/label cost once before the DP.
     if costs.is_empty() {
@@ -75,8 +85,12 @@ pub fn optimize(costs: &[[f64; 6]], constraints: &Constraints) -> Option<Solutio
                 continue;
             }
             let (d, mask) = (state / 64, state % 64);
+            let taken = taken.get(i).copied().unwrap_or(0);
+            if taken & (1 << (d ^ 1)) != 0 {
+                continue;
+            }
             for (out, &angle) in cost.iter().enumerate() {
-                if out == (d ^ 1) || !angle.is_finite() {
+                if out == (d ^ 1) || taken & (1 << out) != 0 || !angle.is_finite() {
                     continue;
                 }
                 let target = out * 64 + (mask | (1 << out));
