@@ -338,26 +338,27 @@ fn route(
     Some(steps)
 }
 
-/// One way to close a cycle: steps, the positions copied by collars, and a port per boundary
-/// of the copied sequence.
+/// One way to close a cycle: steps, the slots that get a new boundary, and a port per
+/// boundary of the resulting sequence.
 struct Closing {
     steps: Vec<(SkeletonEdgeID, bool)>,
-    copied: Vec<usize>,
+    slots: Vec<usize>,
     ports: Vec<Port>,
 }
 
-/// Costs of the steps with the copied ones repeated.
-fn repeated(costs: &[[f64; 6]], copied: &[usize]) -> Vec<[f64; 6]> {
-    let mut sequence = Vec::new();
-    for (i, &cost) in costs.iter().enumerate() {
-        let count = 1 + copied.iter().filter(|&&c| c == i).count();
-        sequence.extend(std::iter::repeat_n(cost, count));
+/// New boundaries per step: slot `2 i` lies before step `i` along the path, in the patch the
+/// step leaves, and slot `2 i + 1` after it, in the patch it enters.
+fn additions(steps: usize, slots: &[usize]) -> Vec<[usize; 2]> {
+    let mut counts = vec![[0; 2]; steps];
+    for &slot in slots {
+        counts[slot / 2][slot % 2] += 1;
     }
-    sequence
+    counts
 }
 
-/// Close the cycle of an unlabeled edge with the fewest parallel collars that admit a valid
-/// labeling, and among those the cheapest. The whole cycle is relabelled when that is valid:
+/// Close the cycle of an unlabeled edge with the fewest new boundaries that admit a valid
+/// labeling, and among those the cheapest. A new boundary runs through the middle of a patch
+/// beside one of the cycle's boundaries (a parallel collar where the patch has no middle). The whole cycle is relabelled when that is valid:
 /// the edge's chain and the labelled route between its ends, junctions included. Otherwise
 /// only the chain is, which always works. Returns the skeleton, the added collars, and the
 /// new labels.
@@ -370,7 +371,6 @@ fn repair(
 ) -> SkeletonResult<(Skeleton, Vec<SkeletonEdgeID>, Vec<(SkeletonEdgeID, EdgeLabel)>)> {
     let (chain, [start, end]) = chain(skeleton, edge);
     let solve = chain_solver(skeleton, labels, &chain, [start, end])?;
-    let chain_costs = along(mesh, skeleton, &chain, cache);
     // The cycle: the chain, then back along labelled edges outside it.
     let mut others = labels.clone();
     for &(e, _) in &chain {
@@ -384,25 +384,50 @@ fn repair(
         others.remove(e);
     }
     let used = constraints::used_ports(skeleton, &others)?;
-    let cycle_costs = along(mesh, skeleton, &cycle, cache);
+    let costs = along(mesh, skeleton, &cycle, cache);
     // The node before every step, and the first again.
     let mut nodes = vec![start];
     for &(e, _) in &cycle {
         nodes.push(skeleton.edges[e].other(*nodes.last().unwrap()));
     }
+    // What a new boundary in every slot would cost: its own plane decides, as for any edge.
+    let ground = subdivide::Ground::build(mesh, skeleton)?;
+    let mut slot_costs = Vec::new();
+    for (i, &(e, _)) in cycle.iter().enumerate() {
+        for (k, node) in [nodes[i], nodes[i + 1]].into_iter().enumerate() {
+            slot_costs.push(
+                match subdivide::middle(mesh, skeleton, &ground, e, node) {
+                    // Along the path the normal points into the patch after the step, and out
+                    // of the patch before it.
+                    Some(middle) => {
+                        angle_costs(if k == 1 { middle.normal } else { -middle.normal })
+                    }
+                    None => costs[i],
+                },
+            );
+        }
+    }
+    // Costs and ports in use along the first `steps` steps with the slots filled; nothing is
+    // in use between a boundary and the new ones beside it.
+    let sequence = |steps: usize, slots: &[usize]| {
+        let (mut sequence, mut taken) = (Vec::new(), Vec::new());
+        for (i, [before, after]) in additions(steps, slots).into_iter().enumerate() {
+            let from = sequence.len();
+            sequence.extend(std::iter::repeat_n(slot_costs[2 * i], before));
+            sequence.push(costs[i]);
+            sequence.extend(std::iter::repeat_n(slot_costs[2 * i + 1], after));
+            taken.resize(sequence.len(), 0);
+            taken[from] = used[nodes[i]];
+        }
+        (sequence, taken)
+    };
     // A closed path is order-feasible alone when every axis has both signs or neither.
     let mut closed = [false; 64];
     for (mask, ok) in closed.iter_mut().enumerate() {
         *ok = (0..3).all(|axis| matches!((mask >> (axis * 2)) & 3, 0 | 3));
     }
-    let around = |copied: &[usize]| -> Option<(f64, Vec<Port>)> {
-        let costs = repeated(&cycle_costs, copied);
-        // Ports in use at the node before every boundary; none between a boundary's copies.
-        let mut taken = Vec::new();
-        for i in 0..cycle.len() {
-            taken.push(used[nodes[i]]);
-            taken.extend(copied.iter().filter(|&&c| c == i).map(|_| 0));
-        }
+    let around = |slots: &[usize]| -> Option<(f64, Vec<Port>)> {
+        let (sequence, taken) = sequence(cycle.len(), slots);
         // The cycle leaves and enters its first node through two different free ports.
         let best = Port::ALL
             .into_iter()
@@ -413,41 +438,39 @@ fn repair(
                     end_ports: 63 & !used[start] & !p.bit(),
                     masks: closed,
                 };
-                path::optimize_through(&costs, &limits, &taken)
+                path::optimize_through(&sequence, &limits, &taken)
             })
             .min_by(|a, b| a.cost.total_cmp(&b.cost))?;
         // Other cycles through these nodes can still contradict it: check all orders.
         let mut runs = Vec::new();
         let mut at = 0;
-        for i in 0..cycle.len() {
-            let count = 1 + copied.iter().filter(|&&c| c == i).count();
+        for (i, [before, after]) in additions(cycle.len(), slots).into_iter().enumerate() {
+            let count = before + 1 + after;
             let mask = best.ports[at..at + count].iter().fold(0, |m, p| m | p.bit());
             runs.push(([nodes[i], nodes[i + 1]], mask));
             at += count;
         }
         constraints::feasible_with(skeleton, &others, &runs).then_some((best.cost, best.ports))
     };
-    // A collar copies a boundary, so it costs what its original costs: choose which steps to
-    // copy on the costs alone, then build only the chosen skeleton.
-    for collars in 0..=4 {
+    for added in 0..=4 {
         let mut best: Option<(f64, Closing)> = None;
         if cycle.len() > chain.len() {
-            for copied in copies(cycle.len(), collars) {
-                if let Some((cost, ports)) = around(&copied)
+            for slots in copies(2 * cycle.len(), added) {
+                if let Some((cost, ports)) = around(&slots)
                     && best.as_ref().is_none_or(|(old, _)| cost < *old)
                 {
                     let steps = cycle.clone();
-                    best = Some((cost, Closing { steps, copied, ports }));
+                    best = Some((cost, Closing { steps, slots, ports }));
                 }
             }
         }
         if best.is_none() {
-            for copied in copies(chain.len(), collars) {
-                if let Some(solution) = solve(&repeated(&chain_costs, &copied))
+            for slots in copies(2 * chain.len(), added) {
+                if let Some(solution) = solve(&sequence(chain.len(), &slots).0)
                     && best.as_ref().is_none_or(|(old, _)| solution.cost < *old)
                 {
                     let (steps, ports) = (chain.clone(), solution.ports);
-                    best = Some((solution.cost, Closing { steps, copied, ports }));
+                    best = Some((solution.cost, Closing { steps, slots, ports }));
                 }
             }
         }
@@ -455,22 +478,54 @@ fn repair(
             continue;
         };
         let mut split = skeleton.clone();
-        let mut added = Vec::new();
+        let mut new = Vec::new();
         let mut path = Vec::new();
+        let counts = additions(closing.steps.len(), &closing.slots);
         for (i, &(e, forward)) in closing.steps.iter().enumerate() {
-            // Along the edge: the edge, then its collars from the last added to the first.
+            // The run along the edge's own direction; `outer` are its boundaries next to the
+            // patches at the edge's two ends.
             let mut run = vec![e];
-            for _ in closing.copied.iter().filter(|&&c| c == i) {
-                let (next, collar) = subdivide::collar(mesh, &split, e, 1)?;
-                split = next;
-                run.insert(1, collar);
-                added.push(collar);
+            let mut outer = [e, e];
+            let ends = split.edges[e].nodes;
+            for (k, &count) in counts[i].iter().enumerate() {
+                // Before the step is the edge's first end when the step runs forward.
+                let side = usize::from((k == 1) == forward);
+                for _ in 0..count {
+                    if let Some((next, loop_)) =
+                        subdivide::split(mesh, &split, outer[side], ends[side])
+                    {
+                        split = next;
+                        if side == 1 {
+                            run.push(loop_);
+                        } else {
+                            run.insert(0, loop_);
+                        }
+                        outer[side] = loop_;
+                        new.push(loop_);
+                    } else {
+                        // The collar follows its original, which keeps its first end.
+                        let (next, collar) = subdivide::collar(mesh, &split, outer[side], 1)?;
+                        split = next;
+                        if side == 1 {
+                            run.push(collar);
+                            outer[side] = collar;
+                        } else {
+                            run.insert(1, collar);
+                            // The original's second end now belongs to the collar.
+                            if outer[1] == outer[0] {
+                                outer[1] = collar;
+                            }
+                        }
+                        new.push(collar);
+                    }
+                }
             }
             if !forward {
                 run.reverse();
             }
             path.extend(run.into_iter().map(|e| (e, forward)));
         }
+        let added = new;
         let labels = path
             .iter()
             .zip(closing.ports)

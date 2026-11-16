@@ -127,7 +127,7 @@ pub(crate) fn erase(mesh: &Mesh<INPUT>, skeleton: &mut Skeleton, crossings: &[Bo
 
 /// Replace a boundary's loop, keeping its orientation (`nodes[0]` on the left); `None` if
 /// neither traversal direction validates.
-fn replace(
+pub(crate) fn replace(
     mesh: &Mesh<INPUT>,
     skeleton: &Skeleton,
     edge: SkeletonEdgeID,
@@ -265,7 +265,7 @@ fn redraw_once(
         a,
         &pinned,
         &gains,
-        params.smoothness,
+        &|_, area| params.smoothness * area,
     )?;
     let side = |v: Vertex| match v {
         Vertex::Input(v) => sides[index[&v]],
@@ -281,10 +281,10 @@ fn redraw_once(
 
 /// Vertex sides within `owner`'s region by a minimum cut: `gains(cell)` is the cell's gain on
 /// the `true` and `false` side, `pinned` fixes crossings, and cutting an interval costs
-/// `smoothness` × its length × its edge length. Islands not touching their side's loops are
+/// `cutting(its ends, its length × its edge length)`. Islands not touching their side's loops are
 /// flipped (a side without loops keeps its largest component).
 #[allow(clippy::too_many_arguments)]
-fn cut_sides(
+pub(crate) fn cut_sides(
     mesh: &Mesh<INPUT>,
     union: &Regions,
     union_cells: &[fidelity::CellGeometry],
@@ -292,7 +292,7 @@ fn cut_sides(
     owner: SkeletonNodeID,
     pinned: &HashMap<BoundaryCrossingID, bool>,
     gains: &dyn Fn(usize) -> [f64; 2],
-    smoothness: f64,
+    cutting: &dyn Fn([Vertex; 2], f64) -> f64,
 ) -> Option<(HashMap<VertID, usize>, Vec<bool>)> {
     let mut index = HashMap::<VertID, usize>::new();
     for (i, cell) in union.cells.iter().enumerate() {
@@ -339,7 +339,7 @@ fn cut_sides(
                 Vertex::Crossing(c) => union_positions[&c],
             };
             let span = (length(ends[1]) - length(ends[0])).norm();
-            let weight = smoothness * span * mesh.vector(gap.edge).norm();
+            let weight = cutting(ends, span * mesh.vector(gap.edge).norm());
             match ends {
                 [Vertex::Input(x), Vertex::Input(y)] => {
                     let (x, y) = (index[&x], index[&y]);
@@ -464,7 +464,7 @@ pub(crate) fn add_leaf(
         &pinned,
         &gains,
         // A disk pays its whole perimeter; the score decides whether it is worth it.
-        params.smoothness / 8.,
+        &|_, area| params.smoothness / 8. * area,
     )?;
     if !sides.iter().any(|&s| s) {
         return None;

@@ -443,3 +443,25 @@ fn a_path_through_a_junction_avoids_its_ports_in_use() {
     assert_ne!(arriving.ports[0], Port::PositiveX);
     assert!(arriving.cost > straight.cost && turned.cost > straight.cost);
 }
+
+#[test]
+fn boundaries_added_to_close_a_cycle_run_through_the_middle_of_a_patch() {
+    // A ring of two patches needs two more boundaries.
+    let (mesh, skeleton) = crate::surface::tests::bands(&[[0., 0., 0.], [2., 0., 0.]]);
+    let result = attempt(&mesh, &skeleton).unwrap();
+    let crossed = |s: &Skeleton, e: SkeletonEdgeID| -> std::collections::HashSet<_> {
+        s.edges[e]
+            .boundary
+            .crossings
+            .iter()
+            .map(|&c| crate::surface::canonical(&mesh, s.surface.crossings[c].exit))
+            .collect()
+    };
+    let original: Vec<_> = skeleton.edges.keys().map(|e| crossed(&skeleton, e)).collect();
+    let added = &result.repairs[0].path[1..];
+    assert!(!added.is_empty());
+    for &edge in added {
+        // Not a copy: it crosses other mesh edges than every original boundary.
+        assert!(!original.contains(&crossed(&result.skeleton, edge)));
+    }
+}

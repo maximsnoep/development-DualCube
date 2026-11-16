@@ -3,7 +3,7 @@
 
 use super::Surgery;
 use crate::surface::edit::parallel;
-use crate::{PatchBoundary, Skeleton, SkeletonEdge, SkeletonNode};
+use crate::{PatchBoundary, Skeleton, SkeletonEdge, SkeletonEdgeID, SkeletonNode};
 use dualcube_types::prelude::*;
 
 impl Surgery<'_> {
@@ -33,8 +33,11 @@ impl Surgery<'_> {
 }
 
 /// Subdivide with parallel boundaries: a self-loop gets one on each side (a triangle), and
-/// each further edge between the same two nodes gets one (a path of two).
+/// each further edge between the same two nodes gets one (a path of two). A copy says nothing
+/// about where a boundary belongs, so the boundaries of every such group are then spread: each
+/// in turn moves to the middle between its neighbours.
 pub(super) fn simplify(mesh: &Mesh<INPUT>, skeleton: &mut Skeleton) {
+    let mut groups: Vec<Vec<SkeletonEdgeID>> = Vec::new();
     let loops: Vec<_> = skeleton
         .edges
         .iter()
@@ -51,14 +54,15 @@ pub(super) fn simplify(mesh: &Mesh<INPUT>, skeleton: &mut Skeleton) {
         let left_copy = parallel(mesh, skeleton, &boundary, 0);
         let right_copy = parallel(mesh, skeleton, &boundary, 1);
         skeleton.edges[edge].nodes = [left, right];
-        skeleton.edges.insert(SkeletonEdge {
+        let before = skeleton.edges.insert(SkeletonEdge {
             nodes: [node, left],
             boundary: left_copy,
         });
-        skeleton.edges.insert(SkeletonEdge {
+        let after = skeleton.edges.insert(SkeletonEdge {
             nodes: [right, node],
             boundary: right_copy,
         });
+        groups.push(vec![before, edge, after]);
     }
     let mut seen = HashSet::new();
     let edges: Vec<_> = skeleton.edges.keys().collect();
@@ -72,10 +76,18 @@ pub(super) fn simplify(mesh: &Mesh<INPUT>, skeleton: &mut Skeleton) {
         let middle = skeleton.nodes.insert(SkeletonNode { position });
         let copy = parallel(mesh, skeleton, &boundary, 0);
         skeleton.edges[edge].nodes = [middle, b];
-        skeleton.edges.insert(SkeletonEdge {
+        let added = skeleton.edges.insert(SkeletonEdge {
             nodes: [a, middle],
             boundary: copy,
         });
+        groups.push(vec![added, edge]);
+    }
+    for _ in 0..3 {
+        for &edge in groups.iter().flatten() {
+            if let Some(spread) = crate::label::subdivide::recentre(mesh, skeleton, edge) {
+                *skeleton = spread;
+            }
+        }
     }
 }
 
@@ -103,7 +115,7 @@ pub(super) fn untangle(mesh: &Mesh<INPUT>, skeleton: &mut Skeleton) {
 fn untangle_boundary(
     mesh: &Mesh<INPUT>,
     skeleton: &mut Skeleton,
-    edge: crate::SkeletonEdgeID,
+    edge: SkeletonEdgeID,
 ) -> usize {
     let mut removed = 0;
     let mut crossings = std::mem::take(&mut skeleton.edges[edge].boundary.crossings);
