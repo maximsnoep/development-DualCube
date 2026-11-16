@@ -64,11 +64,8 @@ pub fn run(mesh: &Mesh<INPUT>, skeleton: &RealizedSkeleton) -> SkeletonResult<Du
 pub fn attempt(mesh: &Mesh<INPUT>, realized: &RealizedSkeleton) -> SkeletonResult<Attempt> {
     let timer = std::time::Instant::now();
     realized.validate(mesh)?;
-    let template = template::Template::build(realized)?;
-    let target = dualcube_dual::insertion::Template::new(LoopMap::from_loops(
-        &template.mesh,
-        &template.loops,
-    )?);
+    let template = template::Template::build(&realized.labeled)?;
+    let target = &template.target;
     let mut drawn: HashSet<_> = template.boundaries.values().copied().collect();
     let mut result = Attempt {
         loops: DualLoops::with_key(),
@@ -116,7 +113,7 @@ pub fn attempt(mesh: &Mesh<INPUT>, realized: &RealizedSkeleton) -> SkeletonResul
             })
             .unwrap();
         let axis = template.loops[id].direction;
-        let plan = Plan::new(&target, &drawn, id);
+        let plan = Plan::new(target, &drawn, id);
         let next = if plan.is_empty() {
             route::seed(mesh, &flows, &map, id, axis)
                 .map(|map| (map, vec![]))

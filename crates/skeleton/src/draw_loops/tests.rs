@@ -1,11 +1,13 @@
 use super::*;
 
+mod surface;
+
 #[test]
 fn isolated_cube_template_has_three_loops_and_eight_regions() {
     let (mesh, skeleton) = crate::surface::tests::lenses(0);
     let labeled = crate::label::run(&mesh, &skeleton).unwrap();
     let realized = crate::place_cubes::run(&mesh, &labeled).unwrap();
-    let template = template::Template::build(&realized).unwrap();
+    let template = surface::Surface::build(&realized).unwrap();
     assert_eq!(template.loops.len(), 3);
     let topology = PartialTopology::new(&template.mesh, &template.loops).unwrap();
     assert_eq!(topology.regions, 8);
@@ -31,7 +33,7 @@ fn draws_single_node_on_a_cube_surface() {
     let (input, skeleton) = crate::surface::tests::lenses(0);
     let labeled = crate::label::run(&input, &skeleton).unwrap();
     let realized = crate::place_cubes::run(&input, &labeled).unwrap();
-    let template = template::Template::build(&realized).unwrap();
+    let template = surface::Surface::build(&realized).unwrap();
     let result = attempt(&template.mesh, &realized).unwrap();
     assert!(result.failure.is_none(), "{:?}", result.failure);
     assert_eq!(result.loops.len(), 3);
@@ -116,8 +118,8 @@ fn graph_realized(
     }
 }
 
-fn star_template(ports: &[crate::label::Port]) -> template::Template {
-    template::Template::build(&star_realized(ports)).unwrap()
+fn star_template(ports: &[crate::label::Port]) -> surface::Surface {
+    surface::Surface::build(&star_realized(ports)).unwrap()
 }
 
 #[test]
@@ -207,7 +209,7 @@ fn repaired_cycle_produces_a_valid_template() {
         crate::surface::tests::bands(&[[0., 0., 0.], [1., 0., 0.], [0., 1., 0.]]);
     let labeled = crate::label::run(&mesh, &skeleton).unwrap();
     let realized = crate::place_cubes::run(&mesh, &labeled).unwrap();
-    let template = template::Template::build(&realized).unwrap();
+    let template = surface::Surface::build(&realized).unwrap();
     let source = PartialTopology::new(&mesh, &DualLoops::with_key()).unwrap();
     let target = PartialTopology::new(&template.mesh, &DualLoops::with_key()).unwrap();
     assert!(source.equivalent(&target));
@@ -231,7 +233,7 @@ fn coincident_endpoints_do_not_close_a_template_handle() {
         realized.node_positions[nodes[4]]
     );
     realized.validate_geometry().unwrap();
-    let template = template::Template::build(&realized).unwrap();
+    let template = surface::Surface::build(&realized).unwrap();
     let target = PartialTopology::new(&template.mesh, &DualLoops::with_key()).unwrap();
     let sphere = PartialTopology::new(
         &crate::surface::tests::tetrahedron(),
@@ -242,8 +244,8 @@ fn coincident_endpoints_do_not_close_a_template_handle() {
 }
 
 /// A skeleton whose boundaries are the template's boundary loops, on the template's own mesh.
-fn on_template(mut realized: RealizedSkeleton) -> (template::Template, RealizedSkeleton) {
-    let template = template::Template::build(&realized).unwrap();
+fn on_template(mut realized: RealizedSkeleton) -> (surface::Surface, RealizedSkeleton) {
+    let template = surface::Surface::build(&realized).unwrap();
     for (&edge, &id) in &template.boundaries {
         let mut l = template.loops[id].clone();
         if realized.labeled.labels[edge].sign == Sign::Negative {
@@ -278,9 +280,10 @@ fn assert_draws(realized: RealizedSkeleton) {
     let result = attempt(&template.mesh, &realized).unwrap();
     assert!(result.failure.is_none(), "{:?}", result.failure);
     assert_eq!(realized.labeled.skeleton.surface.edge_order, before);
+    // The drawn curves, arranged geometrically, are the combinatorial template.
     let actual = PartialTopology::new(&template.mesh, &result.loops).unwrap();
-    let expected = PartialTopology::new(&template.mesh, &template.loops).unwrap();
-    assert!(actual.equivalent(&expected));
+    let expected = template::Template::build(&realized.labeled).unwrap();
+    assert!(actual.equivalent(&PartialTopology::from_map(expected.target.map())));
 }
 
 #[test]
@@ -338,15 +341,94 @@ fn draws_a_six_way_junction() {
 
 #[test]
 fn every_plan_crosses_the_drawn_loops_in_template_order() {
-    let template = star_template(&crate::label::Port::ALL);
-    let map = LoopMap::from_loops(&template.mesh, &template.loops).unwrap();
-    let target = dualcube_dual::insertion::Template::new(map);
-    let topology = PartialTopology::new(&template.mesh, &template.loops).unwrap();
+    let realized = star_realized(&crate::label::Port::ALL);
+    let template = template::Template::build(&realized.labeled).unwrap();
+    let target = &template.target;
+    let topology = PartialTopology::from_map(target.map());
     for id in template.loops.keys() {
         let drawn: HashSet<_> = template.loops.keys().filter(|&other| other != id).collect();
-        let plan = Plan::new(&target, &drawn, id);
+        let plan = Plan::new(target, &drawn, id);
         assert_eq!(plan.len(), topology.along[&id].len());
         assert_eq!(plan.len(), target.partners(id).len());
-        assert!(Plan::new(&target, &HashSet::new(), id).is_empty());
+        assert!(Plan::new(target, &HashSet::new(), id).is_empty());
+    }
+}
+
+/// Loops per axis and crossing count, regions, and crossings.
+fn summary(topology: &PartialTopology, loops: &DualLoops) -> (Vec<(usize, usize)>, usize, usize) {
+    let mut per_loop: Vec<_> = loops
+        .iter()
+        .map(|(id, l)| (l.direction as usize, topology.along[&id].len()))
+        .collect();
+    per_loop.sort();
+    (per_loop, topology.regions, topology.crossings.len())
+}
+
+#[test]
+fn the_template_of_a_cube_has_three_loops_and_eight_regions() {
+    let (mesh, skeleton) = crate::surface::tests::lenses(0);
+    let labeled = crate::label::run(&mesh, &skeleton).unwrap();
+    let template = template::Template::build(&labeled).unwrap();
+    assert_eq!(template.loops.len(), 3);
+    assert!(template.boundaries.is_empty());
+    let topology = PartialTopology::from_map(template.target.map());
+    assert_eq!((topology.regions, topology.crossings.len()), (8, 6));
+}
+
+#[test]
+fn templates_agree_with_the_plane_sections_of_the_cuboid_surface() {
+    use crate::label::Port::*;
+    let mut cases: Vec<_> = (0..64)
+        .map(|mask| {
+            let ports: Vec<_> = crate::label::Port::ALL
+                .into_iter()
+                .filter(|p| mask & p.bit() != 0)
+                .collect();
+            star_realized(&ports)
+        })
+        .collect();
+    // A ring, and a path whose ends coincide.
+    cases.push(graph_realized(
+        4,
+        &[
+            (0, 1, PositiveX),
+            (1, 2, PositiveY),
+            (2, 3, NegativeX),
+            (3, 0, NegativeY),
+        ],
+    ));
+    cases.push(graph_realized(
+        5,
+        &[
+            (0, 1, PositiveX),
+            (1, 2, PositiveY),
+            (2, 3, NegativeX),
+            (3, 4, NegativeY),
+        ],
+    ));
+    for realized in cases {
+        let template = template::Template::build(&realized.labeled).unwrap();
+        let reference = surface::Surface::build(&realized).unwrap();
+        assert_eq!(
+            template.boundaries.len(),
+            realized.labeled.skeleton.edges.len()
+        );
+        assert_eq!(
+            summary(
+                &PartialTopology::from_map(template.target.map()),
+                &template.loops
+            ),
+            summary(
+                &PartialTopology::new(&reference.mesh, &reference.loops).unwrap(),
+                &reference.loops
+            )
+        );
+        // Boundaries are the same loops: same axis and crossings.
+        for (edge, &id) in &template.boundaries {
+            assert_eq!(
+                template.loops[id].direction,
+                reference.loops[reference.boundaries[edge]].direction
+            );
+        }
     }
 }

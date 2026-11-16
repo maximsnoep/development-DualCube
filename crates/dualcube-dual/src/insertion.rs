@@ -285,6 +285,10 @@ impl Template {
         }
     }
 
+    pub fn map(&self) -> &LoopMap {
+        &self.map
+    }
+
     /// The loops crossed by loop `id`, in order along it.
     pub fn partners(&self, id: LoopID) -> Vec<LoopID> {
         let chain = self.chains.get(&id).map_or(&[][..], Vec::as_slice);

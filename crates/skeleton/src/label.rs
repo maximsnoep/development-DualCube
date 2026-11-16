@@ -39,6 +39,9 @@ impl Port {
     pub fn axis(self) -> usize {
         self as usize / 2
     }
+    pub fn is_positive(self) -> bool {
+        self as usize % 2 == 0
+    }
     pub fn bit(self) -> u8 {
         1 << self as u8
     }

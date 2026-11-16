@@ -212,6 +212,91 @@ impl LoopMap {
         Ok(map)
     }
 
+    /// The dual loops of a closed quad mesh, as a map of that mesh: every quad holds the
+    /// crossing of its two loops, which continue through opposite sides. `quads` lists corners
+    /// counterclockwise; side `i` runs from corner `i` to `i + 1`. `chords[q][k]` is the loop
+    /// joining sides `k` and `k + 2` of quad `q`, and whether it runs from `k` to `k + 2`.
+    /// Purely combinatorial: positions and input triangles are placeholders.
+    pub fn from_quads(
+        vertices: usize,
+        quads: &[[usize; 4]],
+        chords: &[[(LoopID, bool); 2]],
+    ) -> Result<Self, PropertyViolationError> {
+        let mut sides = HashMap::new();
+        for (q, quad) in quads.iter().enumerate() {
+            for i in 0..4 {
+                if sides.insert((quad[i], quad[(i + 1) % 4]), (q, i)).is_some() {
+                    return Err(PropertyViolationError::UnknownError);
+                }
+            }
+        }
+        let mut map = Self::default();
+        map.points = vec![Point::Other; vertices];
+        // A point on every quad edge, then a crossing in every quad.
+        let mut middle = HashMap::new();
+        for &(a, b) in sides.keys() {
+            middle.entry((a.min(b), a.max(b))).or_insert_with(|| {
+                map.points.push(Point::OnEdge);
+                map.points.len() - 1
+            });
+        }
+        let middle = |q: usize, i: usize| {
+            let (a, b) = (quads[q][i % 4], quads[q][(i + 1) % 4]);
+            middle[&(a.min(b), a.max(b))]
+        };
+        let center = map.points.len();
+        map.points.extend(quads.iter().map(|_| Point::Crossing));
+        map.positions = vec![Vector3D::zeros(); map.points.len()];
+        let triangle = FaceID::default();
+        // Quarter `i` of quad `q`: corner i, the point on side i, the crossing, the point on
+        // side i - 1. Its half-edges are 16 q + 4 i + 0..4.
+        for (q, quad) in quads.iter().enumerate() {
+            for i in 0..4 {
+                let base = 16 * q + 4 * i;
+                let Some(&(q2, j)) = sides.get(&(quad[(i + 1) % 4], quad[i])) else {
+                    return Err(PropertyViolationError::UnknownError);
+                };
+                let Some(&(q3, l)) = sides.get(&(quad[i], quad[(i + 3) % 4])) else {
+                    return Err(PropertyViolationError::UnknownError);
+                };
+                // Along the loop when entering by the side the loop comes from.
+                let piece = |side: usize, inward: bool| {
+                    let (id, forward) = chords[q][side % 2];
+                    Piece::Loop(id, (forward == (side < 2)) == inward)
+                };
+                let origins = [quad[i], middle(q, i), center + q, middle(q, i + 3)];
+                let twins = [
+                    16 * q2 + 4 * ((j + 1) % 4) + 3,
+                    16 * q + 4 * ((i + 1) % 4) + 2,
+                    16 * q + 4 * ((i + 3) % 4) + 1,
+                    16 * q3 + 4 * l,
+                ];
+                let pieces = [
+                    Piece::Free,
+                    piece(i, true),
+                    piece((i + 3) % 4, false),
+                    Piece::Free,
+                ];
+                for k in 0..4 {
+                    map.halves.push(Half {
+                        twin: twins[k],
+                        next: base + (k + 1) % 4,
+                        prev: base + (k + 3) % 4,
+                        origin: origins[k],
+                        face: 4 * q + i,
+                        piece: pieces[k],
+                    });
+                }
+                map.faces.push(Face {
+                    half: base,
+                    triangle,
+                });
+            }
+        }
+        map.index_vertices();
+        Ok(map)
+    }
+
     /// Add disjoint curves given by their input-edge crossings. `exits[o]` is the half-edge that
     /// occurrence `o` leaves its triangle through; each curve lists its occurrences in order,
     /// and `order` lists the occurrences on every canonical half-edge from root to tip.
