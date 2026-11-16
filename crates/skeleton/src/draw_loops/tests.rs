@@ -160,7 +160,10 @@ fn rejects_wrong_hole_separation_with_the_same_crossing_sequence() {
     let partners = |t: &PartialTopology| {
         t.along[&added]
             .iter()
-            .map(|&c| other(t.crossings[c], added))
+            .map(|&c| {
+                let [a, b] = t.crossings[c];
+                if a == added { b } else { a }
+            })
             .collect::<Vec<_>>()
     };
     assert_eq!(partners(&correct), partners(&wrong));
@@ -238,44 +241,8 @@ fn coincident_endpoints_do_not_close_a_template_handle() {
     assert!(target.equivalent(&sphere));
 }
 
-#[test]
-fn plans_every_loop_when_solids_coincide() {
-    use crate::label::Port::*;
-    // A cycle doubling back on itself: node 4 coincides with node 0 and node 7 with node 1.
-    // The X-section through 0–4 and the Z-section through 0, 5, 6, 7, 4 each pass both cubes
-    // of the pair, so the same two loops cross twice at one position.
-    let realized = graph_realized(
-        8,
-        &[
-            (0, 1, PositiveY),
-            (1, 2, PositiveZ),
-            (2, 3, NegativeY),
-            (3, 4, NegativeZ),
-            (0, 5, PositiveX),
-            (5, 6, PositiveY),
-            (6, 7, NegativeX),
-            (7, 4, NegativeY),
-        ],
-    );
-    let nodes: Vec<_> = realized.labeled.skeleton.nodes.keys().collect();
-    let at = |i: usize| realized.node_positions[nodes[i]];
-    assert_eq!((at(0), at(1)), (at(4), at(7)));
-    let template = template::Template::build(&realized).unwrap();
-    for id in template.loops.keys() {
-        let drawn: HashSet<_> = template.loops.keys().filter(|&other| other != id).collect();
-        let before = subset(&template.loops, &drawn);
-        let plan = Plan::new(&template.mesh, &before, &template.loops, id);
-        assert!(plan.is_ok(), "{id:?}: {:?}", plan.err());
-    }
-}
-
-#[test]
-fn draws_a_junction_preserving_boundary_topology() {
-    let mut realized = star_realized(&[
-        crate::label::Port::NegativeX,
-        crate::label::Port::PositiveX,
-        crate::label::Port::PositiveY,
-    ]);
+/// A skeleton whose boundaries are the template's boundary loops, on the template's own mesh.
+fn on_template(mut realized: RealizedSkeleton) -> (template::Template, RealizedSkeleton) {
     let template = template::Template::build(&realized).unwrap();
     for (&edge, &id) in &template.boundaries {
         let mut l = template.loops[id].clone();
@@ -301,6 +268,12 @@ fn draws_a_junction_preserving_boundary_topology() {
         }
     }
     realized.validate(&template.mesh).unwrap();
+    (template, realized)
+}
+
+/// Draw every loop from the boundaries alone and compare with the template independently.
+fn assert_draws(realized: RealizedSkeleton) {
+    let (template, realized) = on_template(realized);
     let before = realized.labeled.skeleton.surface.edge_order.clone();
     let result = attempt(&template.mesh, &realized).unwrap();
     assert!(result.failure.is_none(), "{:?}", result.failure);
@@ -311,46 +284,69 @@ fn draws_a_junction_preserving_boundary_topology() {
 }
 
 #[test]
-fn reconstructs_each_missing_loop_on_a_six_way_template() {
+fn draws_every_loop_when_solids_coincide() {
+    use crate::label::Port::*;
+    // A cycle doubling back on itself: node 4 coincides with node 0 and node 7 with node 1.
+    // The X-section through 0–4 and the Z-section through 0, 5, 6, 7, 4 each pass both cubes
+    // of the pair, so the same two loops cross twice at one position.
+    let realized = graph_realized(
+        8,
+        &[
+            (0, 1, PositiveY),
+            (1, 2, PositiveZ),
+            (2, 3, NegativeY),
+            (3, 4, NegativeZ),
+            (0, 5, PositiveX),
+            (5, 6, PositiveY),
+            (6, 7, NegativeX),
+            (7, 4, NegativeY),
+        ],
+    );
+    let nodes: Vec<_> = realized.labeled.skeleton.nodes.keys().collect();
+    let at = |i: usize| realized.node_positions[nodes[i]];
+    assert_eq!((at(0), at(1)), (at(4), at(7)));
+    assert_draws(realized);
+}
+
+#[test]
+fn draws_a_junction_preserving_boundary_topology() {
+    assert_draws(star_realized(&[
+        crate::label::Port::NegativeX,
+        crate::label::Port::PositiveX,
+        crate::label::Port::PositiveY,
+    ]));
+}
+
+#[test]
+fn draws_a_ring_whose_loops_have_one_region_on_both_sides() {
+    use crate::label::Port::*;
+    assert_draws(graph_realized(
+        4,
+        &[
+            (0, 1, PositiveX),
+            (1, 2, PositiveY),
+            (2, 3, NegativeX),
+            (3, 0, NegativeY),
+        ],
+    ));
+}
+
+#[test]
+fn draws_a_six_way_junction() {
+    assert_draws(star_realized(&crate::label::Port::ALL));
+}
+
+#[test]
+fn every_plan_crosses_the_drawn_loops_in_template_order() {
     let template = star_template(&crate::label::Port::ALL);
-    let flows = route::Flows::new(&template.mesh, true);
-    let expected = PartialTopology::new(&template.mesh, &template.loops).unwrap();
+    let map = LoopMap::from_loops(&template.mesh, &template.loops).unwrap();
+    let target = dualcube_dual::insertion::Template::new(map);
+    let topology = PartialTopology::new(&template.mesh, &template.loops).unwrap();
     for id in template.loops.keys() {
         let drawn: HashSet<_> = template.loops.keys().filter(|&other| other != id).collect();
-        let before = subset(&template.loops, &drawn);
-        let plan = Plan::new(&template.mesh, &before, &template.loops, id).unwrap();
-        let map = LoopMap::from_loops(&template.mesh, &before).unwrap();
-        let actual = PartialTopology::from_map(&map);
-        let correspondence = &plan.before.correspondences(&actual, 1)[0];
-        let target = route::Target {
-            plan: &plan,
-            correspondence,
-            steps: plan.steps(correspondence),
-        };
-        assert!(target.steps.iter().all(|s| s.segment.is_some()));
-        let find = |avoid: &[HashSet<FaceID>]| {
-            route::find(
-                &template.mesh,
-                &flows,
-                &map,
-                &actual,
-                template.loops[id].direction,
-                id,
-                &target,
-                &expected,
-                avoid,
-                &mut 0,
-            )
-        };
-        let accepted = find(&[]);
-        assert!(accepted.is_ok(), "{id:?}: {:?}", accepted.err());
-        let accepted = accepted.unwrap();
-        assert!(PartialTopology::from_map(&accepted).equivalent(&expected));
-        let alternative = find(&[accepted.triangles(id)]);
-        assert!(
-            alternative.is_ok(),
-            "No alternative for {id:?}: {:?}",
-            alternative.err()
-        );
+        let plan = Plan::new(&target, &drawn, id);
+        assert_eq!(plan.len(), topology.along[&id].len());
+        assert_eq!(plan.len(), target.partners(id).len());
+        assert!(Plan::new(&target, &HashSet::new(), id).is_empty());
     }
 }

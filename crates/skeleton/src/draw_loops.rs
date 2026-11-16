@@ -1,8 +1,15 @@
-//! Incremental surface routing, accepting only the template's marked region topology.
+//! Draw the template's loops on the input surface, one arc at a time.
+//!
+//! The patch boundaries are lifted first. Every further loop is inserted so that the drawing
+//! stays equivalent to the template restricted to the loops drawn: crossings carry their
+//! template vertices, and every arc cuts its region as the template's arc does. Such an arc
+//! always exists, so nothing is searched or retried; geometry only chooses among valid routes.
 
 use crate::{DualLoops, RealizedSkeleton, SkeletonResult};
 use dualcube_dual::{
-    Loop, LoopID, LoopSampler, LoopState, insertion::Plan, loop_map::LoopMap,
+    Loop, LoopID, LoopSampler, LoopState,
+    insertion::{DrawError, Plan},
+    loop_map::LoopMap,
     partial::PartialTopology,
 };
 use dualcube_types::prelude::*;
@@ -11,24 +18,11 @@ mod lift;
 mod route;
 mod template;
 
-#[derive(Clone, Debug, Default)]
-pub struct SearchStats {
-    pub searches: usize,
-    pub no_route: usize,
-    pub expansion_limit: usize,
-    pub duplicates: usize,
-    pub invalid_arrangement: usize,
-    /// Drawings stopped because an arc could not be placed as routed; never expected.
-    pub revisits: usize,
-    pub topology_rejections: usize,
-    /// Drawings stopped because the regions after an arc differed from the template.
-    pub arc_mismatches: usize,
-}
-
+/// Each of these reports a bug: valid input always has a drawing.
 #[derive(Clone, Debug)]
 pub enum Failure {
     BoundaryTopology,
-    SearchExhausted { loop_id: LoopID, stats: SearchStats },
+    Arc { loop_id: LoopID, error: DrawError },
     InvalidDual(String),
 }
 
@@ -38,17 +32,9 @@ impl std::fmt::Display for Failure {
             Self::BoundaryTopology => {
                 f.write_str("Lifted boundaries do not match the cuboid template topology")
             }
-            Self::SearchExhausted { loop_id, stats } => write!(
+            Self::Arc { loop_id, error } => write!(
                 f,
-                "Could not draw loop {loop_id:?} after {} searches ({} no route, {} search limits, {} duplicates, {} invalid arrangements, {} revisits, {} topology rejections, {} arc mismatches); retained the accepted partial drawing",
-                stats.searches,
-                stats.no_route,
-                stats.expansion_limit,
-                stats.duplicates,
-                stats.invalid_arrangement,
-                stats.revisits,
-                stats.topology_rejections,
-                stats.arc_mismatches
+                "Could not draw loop {loop_id:?}: {error}; retained the partial drawing"
             ),
             Self::InvalidDual(error) => {
                 write!(f, "Completed loop structure failed validation: {error}")
@@ -64,9 +50,6 @@ pub struct Attempt {
     /// The dual structure of a complete drawing, read from its loop map.
     pub dual: Option<dualcube_dual::Dual>,
     pub planned: usize,
-    pub searches: usize,
-    /// Earlier loops redrawn after a later one failed.
-    pub backtracks: usize,
     pub failure: Option<Failure>,
 }
 
@@ -82,13 +65,15 @@ pub fn attempt(mesh: &Mesh<INPUT>, realized: &RealizedSkeleton) -> SkeletonResul
     let timer = std::time::Instant::now();
     realized.validate(mesh)?;
     let template = template::Template::build(realized)?;
+    let target = dualcube_dual::insertion::Template::new(LoopMap::from_loops(
+        &template.mesh,
+        &template.loops,
+    )?);
     let mut drawn: HashSet<_> = template.boundaries.values().copied().collect();
     let mut result = Attempt {
         loops: DualLoops::with_key(),
         dual: None,
         planned: template.loops.len(),
-        searches: 0,
-        backtracks: 0,
         failure: None,
     };
     // Topology lives in the loop map; curves are drawn from it only for output.
@@ -100,28 +85,29 @@ pub fn attempt(mesh: &Mesh<INPUT>, realized: &RealizedSkeleton) -> SkeletonResul
         }
         Ok(loops)
     };
-    let expected = PartialTopology::new(&template.mesh, &subset(&template.loops, &drawn))?;
-    if !PartialTopology::from_map(&map).equivalent(&expected) {
+    // The template vertex of every crossing vertex of the drawing.
+    let mut known = HashMap::new();
+    if !target.matches(&map, &drawn, &known) {
         result.loops = output(&map, &drawn)?;
         result.failure = Some(Failure::BoundaryTopology);
         return Ok(result);
     }
     let flows = route::Flows::new(mesh, drawn.is_empty());
-    let full = PartialTopology::new(&template.mesh, &template.loops)?;
-    let mut history = Vec::<(LoopID, LoopMap)>::new();
-    let mut alternatives = HashMap::<LoopID, Vec<HashSet<FaceID>>>::new();
-    let mut failures = HashMap::<LoopID, usize>::new();
+    let partners: HashMap<_, _> = template
+        .loops
+        .keys()
+        .map(|id| (id, target.partners(id)))
+        .collect();
     while drawn.len() < template.loops.len() {
+        // Most drawn loops crossed first; the template is connected, so only the first loop
+        // of an empty drawing crosses none.
         let id = template
             .loops
             .keys()
             .filter(|id| !drawn.contains(id))
             .max_by_key(|&id| {
-                let neighbors: Vec<_> = full.along[&id]
-                    .iter()
-                    .map(|&c| other(full.crossings[c], id))
-                    .filter(|id| drawn.contains(id))
-                    .collect();
+                let neighbors: Vec<_> =
+                    partners[&id].iter().filter(|p| drawn.contains(p)).collect();
                 (
                     neighbors.iter().collect::<HashSet<_>>().len(),
                     neighbors.len(),
@@ -129,105 +115,24 @@ pub fn attempt(mesh: &Mesh<INPUT>, realized: &RealizedSkeleton) -> SkeletonResul
                 )
             })
             .unwrap();
-        let mut selected = drawn.clone();
-        selected.insert(id);
-        let expected = PartialTopology::new(&template.mesh, &subset(&template.loops, &selected))?;
-        let plan = Plan::new(
-            &template.mesh,
-            &subset(&template.loops, &drawn),
-            &subset(&template.loops, &selected),
-            id,
-        )?;
-        let actual = PartialTopology::from_map(&map);
-        let correspondences = plan.before.correspondences(&actual, 16);
-        if correspondences.is_empty() {
-            return Err("Lost partial topology correspondence".into());
-        }
-        let crossings: Vec<_> = plan.itinerary.iter().map(|i| i.partner).collect();
-        let (regions, _) = map.regions();
-        let mut room = vec![0usize; actual.regions];
-        for &r in &regions {
-            room[r] += 1;
-        }
-        // Distinct correspondences can prescribe identical steps.
-        let mut options: Vec<route::Target<'_>> = Vec::new();
-        for correspondence in &correspondences {
-            let steps = plan.steps(correspondence);
-            if !options.iter().any(|o| o.steps == steps) {
-                options.push(route::Target {
-                    plan: &plan,
-                    correspondence,
-                    steps,
-                });
-            }
-        }
-        options.sort_by_key(|o| {
-            std::cmp::Reverse(o.steps.iter().map(|s| room[s.region]).min().unwrap_or(0))
-        });
-        let mut routed = None;
-        for target in &options {
-            let candidate = route::find(
-                mesh,
-                &flows,
-                &map,
-                &actual,
-                template.loops[id].direction,
-                id,
-                target,
-                &expected,
-                alternatives.get(&id).map_or(&[], Vec::as_slice),
-                &mut result.searches,
-            );
-            let success = candidate.is_ok();
-            routed = Some(candidate);
-            if success {
-                break;
-            }
-        }
-        match routed.unwrap() {
-            Ok(next) => {
-                history.push((id, std::mem::replace(&mut map, next)));
+        let axis = template.loops[id].direction;
+        let plan = Plan::new(&target, &drawn, id);
+        let next = if plan.is_empty() {
+            route::seed(mesh, &flows, &map, id, axis)
+                .map(|map| (map, vec![]))
+                .ok_or(DrawError::NoStart)
+        } else {
+            plan.draw(&map, &known, flows.cost(axis))
+        };
+        match next {
+            Ok((next, crossings)) => {
+                map = next;
+                known.extend(crossings);
                 drawn.insert(id);
             }
-            Err(failure) => {
-                let neighbors: Vec<_> = history
-                    .iter()
-                    .enumerate()
-                    .rev()
-                    .filter(|(_, (previous, _))| crossings.contains(previous))
-                    .map(|(i, _)| i)
-                    .collect();
-                let failed = failures.entry(id).or_default();
-                let index = if neighbors.is_empty() {
-                    None
-                } else {
-                    Some(neighbors[(*failed / 2) % neighbors.len()])
-                };
-                *failed += 1;
-                if result.backtracks < 24
-                    && let Some(index) = index
-                {
-                    let previous = history[index].0;
-                    alternatives
-                        .entry(previous)
-                        .or_default()
-                        .push(map.triangles(previous));
-                    for (undone, before) in history.drain(index..).rev() {
-                        drawn.remove(&undone);
-                        if undone != previous {
-                            alternatives.remove(&undone);
-                        }
-                        map = before;
-                    }
-                    result.backtracks += 1;
-                    tracing::info!(
-                        "Loop drawing: reconsidering {previous:?} after {id:?} failed ({}/24 retries)",
-                        result.backtracks
-                    );
-                    continue;
-                }
+            Err(error) => {
                 result.loops = output(&map, &drawn)?;
-                result.failure = Some(failure);
+                result.failure = Some(Failure::Arc { loop_id: id, error });
                 return Ok(result);
             }
         }
@@ -237,6 +142,7 @@ pub fn attempt(mesh: &Mesh<INPUT>, realized: &RealizedSkeleton) -> SkeletonResul
             template.loops.len()
         );
     }
+    debug_assert!(target.matches(&map, &drawn, &known));
     result.loops = output(&map, &drawn)?;
     // The dual structure comes from the map; drawn curves are for output only.
     match dualcube_dual::Dual::from_map(std::sync::Arc::new(mesh.clone()), &map, &result.loops) {
@@ -244,14 +150,14 @@ pub fn attempt(mesh: &Mesh<INPUT>, realized: &RealizedSkeleton) -> SkeletonResul
         Err(error) => result.failure = Some(Failure::InvalidDual(error.to_string())),
     }
     // Rebuilding the dual from the curves alone (e.g. after loading them) relies on geometry.
-    if !PartialTopology::new(mesh, &result.loops).is_ok_and(|t| t.equivalent(&full)) {
+    let reproduced = PartialTopology::new(mesh, &result.loops)
+        .is_ok_and(|t| t.equivalent(&PartialTopology::from_map(&map)));
+    if !reproduced {
         tracing::warn!("Drawn curves do not reproduce the loop map's topology geometrically");
     }
     tracing::info!(
-        "Loop drawing complete: {} loops, {} searches, {} backtracks (elapsed {:.2}s)",
+        "Loop drawing complete: {} loops (elapsed {:.2}s)",
         result.loops.len(),
-        result.searches,
-        result.backtracks,
         timer.elapsed().as_secs_f64()
     );
     Ok(result)
@@ -262,9 +168,5 @@ fn subset(loops: &DualLoops, selected: &HashSet<LoopID>) -> DualLoops {
     result.retain(|id, _| selected.contains(&id));
     result
 }
-fn other(pair: [LoopID; 2], id: LoopID) -> LoopID {
-    if pair[0] == id { pair[1] } else { pair[0] }
-}
-
 #[cfg(test)]
 mod tests;

@@ -372,26 +372,6 @@ impl LoopMap {
         n
     }
 
-    /// Reverse the direction of loop `id`.
-    pub fn reverse_loop(&mut self, id: LoopID) {
-        for h in &mut self.halves {
-            if let Piece::Loop(l, forward) = h.piece
-                && l == id
-            {
-                h.piece = Piece::Loop(l, !forward);
-            }
-        }
-    }
-
-    /// Input triangles that loop `id` passes through.
-    pub fn triangles(&self, id: LoopID) -> HashSet<FaceID> {
-        self.halves
-            .iter()
-            .filter(|h| h.piece.wall() == Some(id))
-            .map(|h| self.faces[h.face].triangle)
-            .collect()
-    }
-
     /// The end vertex of half-edge `h`.
     pub fn target(&self, h: usize) -> usize {
         self.halves[self.halves[h].twin].origin

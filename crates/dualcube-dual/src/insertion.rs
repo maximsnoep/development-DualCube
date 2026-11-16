@@ -1,42 +1,41 @@
-//! Inserting a loop into a loop map, arc by arc. Arc `j` runs from crossing `j` to crossing
-//! `j + 1` of the template itinerary. After every arc the regions must correspond to the
-//! template's after the same arcs, bounded by the same wall intervals; regions are planar, so
-//! these intervals determine them. A correct prefix can always be completed, so arcs are chosen
-//! greedily.
+//! Inserting a template loop into a drawing of other template loops, arc by arc.
 //!
-//! An arc returning to the boundary cycle it starts from splits its region. Which side every
-//! other boundary of that region ends up on is required through crossing parities with cuts.
-//! Everything here is combinatorial; positions only score routes.
+//! The drawing's crossing vertices carry the template's crossing vertices, so every wall
+//! interval and every region has the same name in both: a region is the set of wall intervals
+//! bounding it (regions are planar, so these determine it). Arc `j` runs from crossing `j` to
+//! crossing `j + 1` of the loop inside one region. It may end only on the template's partner
+//! interval, from the template's side; if it returns to the boundary cycle it left, crossing
+//! parities with cuts put every other boundary of the region on the template's side. Any such
+//! arc keeps the drawing equivalent to the template, and one always exists, so nothing is
+//! searched or retried. Everything here is combinatorial; positions only score routes.
 
+use crate::LoopID;
 use crate::loop_map::{LoopMap, Piece, Point};
-use crate::partial::{Correspondence, Insertion, PartialTopology};
-use crate::{Loop, LoopID, PropertyViolationError};
 use dualcube_types::prelude::*;
-use slotmap::SlotMap;
 use std::collections::{BTreeSet, BinaryHeap, VecDeque};
 
-/// One prescribed crossing of a routed loop.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
-pub struct Step {
-    pub partner: LoopID,
-    /// The partner's crossing preceding the crossed interval; `None` allows any interval.
-    pub segment: Option<usize>,
-    /// Region entered by crossing.
-    pub region: usize,
-    /// Whether it is entered on the partner's left; the region alone does not fix the side
-    /// when the partner segment has it on both sides.
-    pub left: bool,
-}
-
-/// Why drawing a loop arc by arc stopped, with the arc's itinerary index.
-#[derive(Clone, Copy, Debug)]
+/// Why an arc could not be drawn, with its index along the loop. The construction always
+/// succeeds on a drawing equivalent to the template, so each of these reports a bug.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum DrawError {
+    /// No piece of the drawing matches the template's first crossing.
+    NoStart,
     NoRoute(usize),
-    ExpansionLimit(usize),
     /// The regions after this arc differ from the template's.
     Mismatch(usize),
-    /// The arc could not be placed as routed; never expected, since arcs are made simple.
-    Revisit(usize),
+    /// The arc could not be placed as routed.
+    Unplaced(usize),
+}
+
+impl std::fmt::Display for DrawError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::NoStart => f.write_str("no piece to start from"),
+            Self::NoRoute(arc) => write!(f, "arc {arc} has no route"),
+            Self::Mismatch(arc) => write!(f, "arc {arc} cut regions unlike the template's"),
+            Self::Unplaced(arc) => write!(f, "arc {arc} could not be placed as routed"),
+        }
+    }
 }
 
 fn root(parent: &mut [usize], mut i: usize) -> usize {
@@ -113,12 +112,14 @@ impl Window {
     }
 }
 
-// Crossings of a map in template terms: by vertex, previous crossings by their template index
-// and crossings of the inserted loop `id` by itinerary index.
+// Crossings of a map in template terms: by vertex, crossings of drawn loops by their template
+// vertex and crossings of the inserted loop `id` by itinerary index. Loops outside `walls`
+// are transparent (template loops not drawn yet).
 struct Labels {
     id: LoopID,
     old: HashMap<usize, usize>,
     new: HashMap<usize, usize>,
+    walls: HashSet<LoopID>,
 }
 
 impl Labels {
@@ -187,10 +188,17 @@ impl Labels {
     }
 
     // The mark of every wall half-edge in `window`; `None` where not a wall there.
-    fn marks(&self, map: &LoopMap, window: &Window) -> Vec<Option<Mark>> {
+    fn marks(
+        &self,
+        map: &LoopMap,
+        chains: &HashMap<LoopID, Vec<usize>>,
+        window: &Window,
+    ) -> Vec<Option<Mark>> {
         let mut marks = vec![None; map.halves.len()];
-        for (wall, chain) in map.chains() {
-            self.chain_marks(map, wall, &chain, window, |h, m| marks[h] = Some(m));
+        for (&wall, chain) in chains {
+            if self.walls.contains(&wall) {
+                self.chain_marks(map, wall, chain, window, |h, m| marks[h] = Some(m));
+            }
         }
         marks
     }
@@ -204,7 +212,9 @@ impl Labels {
     ) -> HashMap<usize, Mark> {
         let mut loops = HashMap::new();
         for h in halves {
-            if let Some(wall) = map.halves[h].piece.wall() {
+            if let Some(wall) = map.halves[h].piece.wall()
+                && self.walls.contains(&wall)
+            {
                 loops.entry(wall).or_insert(h);
             }
         }
@@ -217,8 +227,13 @@ impl Labels {
         marks
     }
 
-    fn partition(&self, map: &LoopMap, window: &Window) -> Partition {
-        let marks = self.marks(map, window);
+    fn partition(
+        &self,
+        map: &LoopMap,
+        chains: &HashMap<LoopID, Vec<usize>>,
+        window: &Window,
+    ) -> Partition {
+        let marks = self.marks(map, chains, window);
         let mut parent: Vec<usize> = (0..map.faces.len()).collect();
         for (i, h) in map.halves.iter().enumerate() {
             if marks[i].is_none() {
@@ -238,229 +253,181 @@ impl Labels {
     }
 }
 
-/// A template loop insertion: crossings in order, and the template after every prefix of arcs.
-pub struct Plan {
+/// The complete loop structure to draw, as a loop map of its own surface. Its crossing
+/// vertices name the crossings of every drawing.
+pub struct Template {
+    map: LoopMap,
+    chains: HashMap<LoopID, Vec<usize>>,
+    // The two loops of every crossing vertex.
+    crossings: HashMap<usize, [LoopID; 2]>,
+}
+
+impl Template {
+    pub fn new(map: LoopMap) -> Self {
+        let chains = map.chains();
+        let mut crossings = HashMap::new();
+        for v in (0..map.points.len()).filter(|&v| map.points[v] == Point::Crossing) {
+            let mut walls: Vec<_> = map
+                .outgoing(v)
+                .iter()
+                .filter_map(|&h| map.halves[h].piece.wall())
+                .collect();
+            walls.sort();
+            walls.dedup();
+            if let [a, b] = walls[..] {
+                crossings.insert(v, [a, b]);
+            }
+        }
+        Self {
+            map,
+            chains,
+            crossings,
+        }
+    }
+
+    /// The loops crossed by loop `id`, in order along it.
+    pub fn partners(&self, id: LoopID) -> Vec<LoopID> {
+        let chain = self.chains.get(&id).map_or(&[][..], Vec::as_slice);
+        chain
+            .iter()
+            .filter_map(|&h| self.crossings.get(&self.map.halves[h].origin))
+            .map(|&[a, b]| if a == id { b } else { a })
+            .collect()
+    }
+
+    // Labels of the template restricted to the `drawn` loops and `id`.
+    fn labels(&self, drawn: &HashSet<LoopID>, id: LoopID) -> Labels {
+        let old = self
+            .crossings
+            .iter()
+            .filter(|(_, pair)| pair.iter().all(|l| drawn.contains(l)))
+            .map(|(&v, _)| (v, v))
+            .collect();
+        let mut walls = drawn.clone();
+        walls.insert(id);
+        Labels {
+            id,
+            old,
+            new: HashMap::new(),
+            walls,
+        }
+    }
+
+    /// Whether `map` holds exactly the `drawn` loops with the template's regions: every region
+    /// bounded by the same wall intervals. `known` gives the template vertex of every crossing
+    /// vertex of `map`.
+    pub fn matches(
+        &self,
+        map: &LoopMap,
+        drawn: &HashSet<LoopID>,
+        known: &HashMap<usize, usize>,
+    ) -> bool {
+        let none = Window::none(0);
+        let template = self.labels(drawn, LoopID::default());
+        let drawing = Labels {
+            old: known.clone(),
+            ..self.labels(drawn, LoopID::default())
+        };
+        template.partition(&self.map, &self.chains, &none)
+            == drawing.partition(map, &map.chains(), &none)
+    }
+}
+
+/// A template loop to insert into a drawing of some of the template's other loops.
+pub struct Plan<'a> {
     pub id: LoopID,
-    pub itinerary: Vec<Insertion>,
-    /// Template topology before insertion; correspondences to drawings start here.
-    pub before: PartialTopology,
-    template: LoopMap,
+    template: &'a Template,
+    // Template vertices of the crossings with drawn loops, along the loop.
+    crossings: Vec<usize>,
+    partners: Vec<LoopID>,
+    // Whether the loop leaves each crossing on its partner's left.
+    left: Vec<bool>,
     labels: Labels,
     // Template partitions by window (start, arcs, crossings).
     partitions: std::cell::RefCell<HashMap<(usize, usize, usize), std::rc::Rc<Partition>>>,
 }
 
-impl Plan {
-    pub fn new(
-        mesh: &Mesh<INPUT>,
-        before: &SlotMap<LoopID, Loop>,
-        after: &SlotMap<LoopID, Loop>,
-        id: LoopID,
-    ) -> Result<Self, PropertyViolationError> {
-        let old_map = LoopMap::from_loops(mesh, before)?;
-        let topology = PartialTopology::from_map(&old_map);
-        let template = LoopMap::from_loops(mesh, after)?;
-        // Old crossings keep their loops and triangles in both maps. Positions cannot identify
-        // them: overlapping solids put distinct crossings at one point.
-        let triangles = |map: &LoopMap, v: usize| -> HashSet<FaceID> {
-            map.outgoing(v)
-                .iter()
-                .map(|&h| map.faces[map.halves[h].face].triangle)
-                .collect()
-        };
-        let candidates: Vec<_> = (0..template.points.len())
-            .filter(|&w| template.points[w] == Point::Crossing)
-            .map(|w| (w, triangles(&template, w)))
-            .collect();
-        let mut old = HashMap::new();
-        for (c, &v) in topology.vertices.iter().enumerate() {
-            let pair = topology.crossings[c];
-            let here = triangles(&old_map, v);
-            let mut found = candidates.iter().filter(|(w, t)| {
-                *t == here
-                    && pair.iter().all(|&l| {
-                        template
-                            .outgoing(*w)
-                            .iter()
-                            .any(|&h| template.halves[h].piece.wall() == Some(l))
-                    })
-            });
-            let (Some(&(w, _)), None) = (found.next(), found.next()) else {
-                return Err(PropertyViolationError::UnknownError);
+impl<'a> Plan<'a> {
+    pub fn new(template: &'a Template, drawn: &HashSet<LoopID>, id: LoopID) -> Self {
+        let map = &template.map;
+        let mut labels = template.labels(drawn, id);
+        let (mut crossings, mut partners, mut left) = (vec![], vec![], vec![]);
+        for &h in template.chains.get(&id).map_or(&[][..], Vec::as_slice) {
+            let v = map.halves[h].origin;
+            let Some(&[a, b]) = template.crossings.get(&v) else {
+                continue;
             };
-            old.insert(w, c);
+            let partner = if a == id { b } else { a };
+            if !drawn.contains(&partner) {
+                continue;
+            }
+            // The loop leaves `v` along `h`, on the partner's left when `h` is the next
+            // outgoing half-edge counterclockwise after the partner's forward one.
+            let forward = map
+                .outgoing(v)
+                .into_iter()
+                .find(|&o| map.halves[o].piece == Piece::Loop(partner, true))
+                .expect("a crossing has its partner's forward piece");
+            left.push(map.halves[map.halves[forward].prev].twin == h);
+            labels.new.insert(v, crossings.len());
+            crossings.push(v);
+            partners.push(partner);
         }
-        let chain = template
-            .chains()
-            .remove(&id)
-            .ok_or(PropertyViolationError::UnknownError)?;
-        let crossings: Vec<_> = chain
-            .iter()
-            .map(|&h| template.halves[h].origin)
-            .filter(|&v| template.points[v] == Point::Crossing)
-            .collect();
-        let k = crossings.len();
-        let new: HashMap<_, _> = crossings.iter().enumerate().map(|(j, &v)| (v, j)).collect();
-        let labels = Labels { id, old, new };
-        // Previous regions of template faces: matched by their walls, with the loop transparent.
-        let none = Window::none(k);
-        let regions_before = {
-            let previous = Labels {
-                id,
-                old: topology
-                    .vertices
-                    .iter()
-                    .enumerate()
-                    .map(|(c, &v)| (v, c))
-                    .collect(),
-                new: HashMap::new(),
-            };
-            let (region, _) = old_map.regions();
-            let marks = previous.marks(&old_map, &none);
-            let mut by_marks = HashMap::<BTreeSet<Mark>, usize>::new();
-            let mut sets = HashMap::<usize, BTreeSet<Mark>>::new();
-            for (i, h) in old_map.halves.iter().enumerate() {
-                if let Some(m) = marks[i] {
-                    sets.entry(region[h.face]).or_default().insert(m);
-                }
-            }
-            for (r, s) in sets {
-                by_marks.insert(s, r);
-            }
-            by_marks
-        };
-        let template_regions = {
-            let marks = labels.marks(&template, &none);
-            let mut parent: Vec<usize> = (0..template.faces.len()).collect();
-            for (i, h) in template.halves.iter().enumerate() {
-                if marks[i].is_none() {
-                    join(&mut parent, h.face, template.halves[h.twin].face);
-                }
-            }
-            let mut sets = HashMap::<usize, BTreeSet<Mark>>::new();
-            for (i, h) in template.halves.iter().enumerate() {
-                if let Some(m) = marks[i] {
-                    let r = root(&mut parent, h.face);
-                    sets.entry(r).or_default().insert(m);
-                }
-            }
-            let single = topology.regions == 1;
-            (0..template.faces.len())
-                .map(|f| {
-                    let r = root(&mut parent, f);
-                    if single {
-                        Some(0)
-                    } else {
-                        sets.get(&r).and_then(|s| regions_before.get(s).copied())
-                    }
-                })
-                .collect::<Vec<_>>()
-        };
-        let itinerary = chain
-            .iter()
-            .filter(|&&h| template.points[template.halves[h].origin] == Point::Crossing)
-            .map(|&h| {
-                let v = template.halves[h].origin;
-                let partner = template
-                    .outgoing(v)
-                    .iter()
-                    .find_map(|&o| template.halves[o].piece.wall().filter(|&l| l != id))
-                    .ok_or(PropertyViolationError::UnknownError)?;
-                // The partner's previous crossing before this one, by its index along the partner.
-                let pieces = &topology.along[&partner];
-                let mut after = None;
-                if !pieces.is_empty() {
-                    let mut p = template
-                        .outgoing(v)
-                        .into_iter()
-                        .find(|&o| template.halves[o].piece == Piece::Loop(partner, true))
-                        .ok_or(PropertyViolationError::UnknownError)?;
-                    loop {
-                        p = template
-                            .previous_along(p)
-                            .ok_or(PropertyViolationError::UnknownError)?;
-                        if let Some(&c) = labels.old.get(&template.halves[p].origin) {
-                            after = pieces.iter().position(|&x| x == c);
-                            break;
-                        }
-                    }
-                }
-                let region = template_regions[template.halves[h].face]
-                    .ok_or(PropertyViolationError::UnknownError)?;
-                // The loop leaves `v` along `h`; it lies on the partner's left when it is the
-                // next outgoing half-edge counterclockwise after the partner's forward one.
-                let forward = template
-                    .outgoing(v)
-                    .into_iter()
-                    .find(|&o| template.halves[o].piece == Piece::Loop(partner, true))
-                    .ok_or(PropertyViolationError::UnknownError)?;
-                let left = template.halves[template.halves[forward].prev].twin == h;
-                Ok(Insertion {
-                    partner,
-                    after,
-                    region,
-                    left,
-                })
-            })
-            .collect::<Result<Vec<_>, _>>()?;
-        Ok(Self {
+        Self {
             id,
-            itinerary,
-            before: topology,
             template,
+            crossings,
+            partners,
+            left,
             labels,
             partitions: Default::default(),
-        })
+        }
     }
 
-    /// Router steps in a drawing: corresponding regions and partner segments.
-    pub fn steps(&self, correspondence: &Correspondence) -> Vec<Step> {
-        self.itinerary
-            .iter()
-            .map(|i| Step {
-                partner: i.partner,
-                segment: i
-                    .after
-                    .map(|k| correspondence.crossings[self.before.along[&i.partner][k]]),
-                region: correspondence.regions[i.region],
-                left: i.left,
-            })
-            .collect()
+    /// The number of crossings with drawn loops.
+    pub fn len(&self) -> usize {
+        self.crossings.len()
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.crossings.is_empty()
     }
 
     fn expected(&self, window: &Window) -> std::rc::Rc<Partition> {
         self.partitions
             .borrow_mut()
             .entry((window.start, window.len, window.count))
-            .or_insert_with(|| std::rc::Rc::new(self.labels.partition(&self.template, window)))
+            .or_insert_with(|| {
+                let template = self.template;
+                std::rc::Rc::new(
+                    self.labels
+                        .partition(&template.map, &template.chains, window),
+                )
+            })
             .clone()
     }
 
     // In `expected`, the region beside arc `j` holding the partner interval arriving at
     // crossing `j`.
     fn arriving(&self, expected: &Partition, window: &Window, j: usize) -> Option<usize> {
-        let v = self
-            .labels
-            .new
-            .iter()
-            .find_map(|(&v, &i)| (i == j).then_some(v))?;
-        let map = &self.template;
-        let partner = map
-            .outgoing(v)
-            .iter()
-            .find_map(|&o| map.halves[o].piece.wall().filter(|&l| l != self.id))?;
+        let v = self.crossings[j];
+        let map = &self.template.map;
+        let partner = self.partners[j];
         let arriving = map
             .outgoing(v)
             .into_iter()
             .find(|&o| map.halves[o].piece == Piece::Loop(partner, false))
             .map(|o| map.halves[o].twin)?;
-        let marks = self.labels.marks(map, window);
+        let marks = self.labels.marks_of(map, [arriving], window);
         let beside = Mark {
             wall: self.id,
             after: After::New(j),
             left: None,
         };
-        let sides = [marks[arriving]?, marks[map.halves[arriving].twin]?];
+        let sides = [
+            *marks.get(&arriving)?,
+            *marks.get(&map.halves[arriving].twin)?,
+        ];
         expected
             .iter()
             .position(|p| p.contains(&beside) && sides.iter().any(|m| p.contains(m)))
@@ -473,100 +440,69 @@ impl Plan {
         &self,
         map: &LoopMap,
         labels: &Labels,
-        partner: LoopID,
         j: usize,
         window: &Window,
-    ) -> Option<HashSet<usize>> {
-        let v = self
-            .labels
-            .new
-            .iter()
-            .find_map(|(&v, &i)| (i == j).then_some(v))?;
-        let template = &self.template;
+    ) -> HashSet<usize> {
+        let partner = self.partners[j];
+        let template = &self.template.map;
         let into = template
-            .outgoing(v)
+            .outgoing(self.crossings[j])
             .into_iter()
             .find(|&o| template.halves[o].piece == Piece::Loop(partner, false))
-            .map(|o| template.halves[o].twin)?;
-        let want = self
-            .labels
-            .marks_of(template, [into], window)
-            .get(&into)?
-            .after;
+            .map(|o| template.halves[o].twin)
+            .expect("a crossing has its partner's arriving piece");
+        let want = self.labels.marks_of(template, [into], window)[&into].after;
         let walls: Vec<_> = (0..map.halves.len())
             .filter(|&h| map.halves[h].piece.wall() == Some(partner))
             .collect();
         let marks = labels.marks_of(map, walls.iter().copied(), window);
-        Some(
-            walls
-                .into_iter()
-                .filter(|h| marks.get(h).is_some_and(|m| m.after == want))
-                .collect(),
-        )
-    }
-
-    /// Where `steps[j]` may cross in a drawing: wall half-edges of its partner and segment,
-    /// leaving the region of the previous step.
-    pub fn anchors(
-        &self,
-        map: &LoopMap,
-        actual: &PartialTopology,
-        steps: &[Step],
-        j: usize,
-    ) -> Vec<usize> {
-        let k = steps.len();
-        let (region, _) = map.regions();
-        let segments = segments(map, actual);
-        let step = steps[j];
-        (0..map.halves.len())
-            .filter(|&h| {
-                let half = &map.halves[h];
-                // Crossing `h` enters its twin's side: the partner's left when `h` runs backwards.
-                half.piece == Piece::Loop(step.partner, !step.left)
-                    && step.segment.is_none_or(|s| segments[h] == Some(s))
-                    && region[half.face] == steps[(j + k - 1) % k].region
-                    && region[map.halves[half.twin].face] == step.region
-            })
+        walls
+            .into_iter()
+            .filter(|h| marks.get(h).is_some_and(|m| m.after == want))
             .collect()
     }
 
-    /// Draw the loop arc by arc into a copy of `map`, starting by crossing `anchor` (an anchor of
-    /// `steps[start]`). `actual` and `correspondence` describe the map's previous arrangement.
-    /// `cost` scores moves by input triangle, displacement, and arc.
-    #[allow(clippy::too_many_arguments)]
+    // Where to start: the crossing with the fewest pieces to cross first, and the first of
+    // them. Every piece of the template's interval, crossed towards the template's side, is
+    // equivalent, so this choice only affects the shape.
+    fn start(&self, map: &LoopMap, labels: &Labels) -> Option<(usize, usize)> {
+        let none = Window::none(self.len());
+        (0..self.len())
+            .filter_map(|j| {
+                // Crossing a piece enters its twin's side: the partner's left when it runs
+                // backwards.
+                let side = Piece::Loop(self.partners[j], !self.left[j]);
+                let mut anchors: Vec<_> = self
+                    .crossable(map, labels, j, &none)
+                    .into_iter()
+                    .filter(|&h| map.halves[h].piece == side)
+                    .collect();
+                anchors.sort_unstable();
+                Some((anchors.len(), j, *anchors.first()?))
+            })
+            .min()
+            .map(|(_, j, anchor)| (j, anchor))
+    }
+
+    /// Draw the loop arc by arc into a copy of `map`, a drawing of the plan's drawn loops whose
+    /// crossing vertices have the template vertices `known`. Returns the new map and the template
+    /// vertex of every new crossing vertex. `cost` scores moves by input triangle, displacement,
+    /// and arc.
     pub fn draw(
         &self,
         map: &LoopMap,
-        actual: &PartialTopology,
-        correspondence: &Correspondence,
-        steps: &[Step],
-        start: usize,
-        anchor: usize,
+        known: &HashMap<usize, usize>,
         cost: impl Fn(FaceID, Vector3D, usize) -> f64,
-    ) -> Result<LoopMap, DrawError> {
-        let k = steps.len();
-        let inverse: HashMap<_, _> = correspondence
-            .crossings
-            .iter()
-            .enumerate()
-            .map(|(t, &a)| (a, t))
-            .collect();
+    ) -> Result<(LoopMap, Vec<(usize, usize)>), DrawError> {
+        let k = self.len();
         let mut labels = Labels {
             id: self.id,
-            old: actual
-                .vertices
-                .iter()
-                .enumerate()
-                .filter_map(|(c, &v)| Some((v, *inverse.get(&c)?)))
-                .collect(),
+            old: known.clone(),
             new: HashMap::new(),
+            walls: self.labels.walls.clone(),
         };
-        let (region, _) = map.regions();
-        let mut drawing = Drawing {
-            segment: segments(map, actual),
-            region,
-            map: map.clone(),
-        };
+        let (start, anchor) = self.start(map, &labels).ok_or(DrawError::NoStart)?;
+        let mut drawing = Drawing { map: map.clone() };
         let (x0, after) = drawing.split(anchor, Point::Crossing);
         labels.new.insert(x0, start);
         // The loop closes into the start from the anchor's side, along the anchor's piece.
@@ -597,6 +533,7 @@ impl Plan {
             }
             let next = Window::after(start, step + 1, k);
             let expected = self.expected(&next);
+            let target = (arc + 1) % k;
             let goal = if step + 1 == k {
                 // Later crossings may have split the anchor; find the piece arriving now.
                 let arriving = drawing
@@ -605,41 +542,37 @@ impl Plan {
                     .into_iter()
                     .map(|o| drawing.map.halves[o].twin)
                     .find(|&i| drawing.map.halves[i].piece == closing);
-                Goal::Close(arriving.ok_or(DrawError::Revisit(arc))?)
+                Goal::Close(arriving.ok_or(DrawError::Unplaced(arc))?)
             } else {
-                Goal::Cross(steps[(arc + 1) % k])
+                // Only pieces of the template's interval, crossed towards the template's side.
+                let side = Piece::Loop(self.partners[target], !self.left[target]);
+                let window = Window::after(start, step, k);
+                let mut pieces = self.crossable(&drawing.map, &labels, target, &window);
+                pieces.retain(|&h| drawing.map.halves[h].piece == side);
+                Goal::Cross(pieces)
             };
             let sides = drawing.sides(
                 &labels,
                 &mut tip,
-                steps[arc].partner,
+                self.partners[arc],
                 &expected,
                 self.arriving(&expected, &next, arc),
                 &next,
             );
-            let crossable = match &goal {
-                Goal::Cross(next) => Some(
-                    self.crossable(
-                        &drawing.map,
-                        &labels,
-                        next.partner,
-                        (arc + 1) % k,
-                        &Window::after(start, step, k),
-                    )
-                    .ok_or(DrawError::Revisit(arc))?,
-                ),
-                Goal::Close(_) => None,
-            };
-            let path =
-                drawing.route(tip.1, &goal, sides.as_ref(), crossable.as_ref(), arc, &cost)?;
+            let path = drawing.route(tip.1, &goal, sides.as_ref(), arc, &cost)?;
             let piece;
             (tip, piece) = drawing.insert(self.id, tip, &path, &goal, arc)?;
             last = Some(piece);
             if let Goal::Cross(_) = goal {
-                labels.new.insert(tip.0, (arc + 1) % k);
+                labels.new.insert(tip.0, target);
             }
         }
-        Ok(drawing.map)
+        let new = labels
+            .new
+            .into_iter()
+            .map(|(v, j)| (v, self.crossings[j]))
+            .collect();
+        Ok((drawing.map, new))
     }
 }
 
@@ -678,33 +611,10 @@ pub(crate) fn uncross<P: Copy, K: Ord>(
     }
 }
 
-// The previous crossing (by index in `actual`) before every wall half-edge along its loop.
-fn segments(map: &LoopMap, actual: &PartialTopology) -> Vec<Option<usize>> {
-    let index: HashMap<_, _> = actual
-        .vertices
-        .iter()
-        .enumerate()
-        .map(|(c, &v)| (v, c))
-        .collect();
-    let mut result = vec![None; map.halves.len()];
-    for chain in map.chains().values() {
-        let mut last = None;
-        for _ in 0..2 {
-            for &h in chain {
-                if let Some(&c) = index.get(&map.halves[h].origin) {
-                    last = Some(c);
-                }
-                result[h] = last;
-                result[map.halves[h].twin] = last;
-            }
-        }
-    }
-    result
-}
-
-// Where an arc ends: across the next crossing, or back in the face of the closing half-edge.
+// Where an arc ends: across one of these half-edges of the next partner, or back in the face
+// of the closing half-edge.
 enum Goal {
-    Cross(Step),
+    Cross(HashSet<usize>),
     Close(usize),
 }
 
@@ -736,32 +646,22 @@ impl Sides {
     }
 }
 
-// A map being drawn into, with the previous region of every face and the previous segment of
-// every wall half-edge.
+// A map being drawn into.
 struct Drawing {
     map: LoopMap,
-    region: Vec<usize>,
-    segment: Vec<Option<usize>>,
 }
 
 impl Drawing {
     // Split the edge of `h`; returns the new vertex and its half-edge on the twin's side.
     fn split(&mut self, h: usize, point: Point) -> (usize, usize) {
-        let t = self.map.halves[h].twin;
         let (a, b) = (self.map.halves[h].origin, self.map.target(h));
         let position = (self.map.positions[a] + self.map.positions[b]) / 2.;
         let x = self.map.split(h, point, position);
-        self.segment.push(self.segment[h]);
-        self.segment.push(self.segment[t]);
         (x, self.map.halves.len() - 1)
     }
 
     fn connect(&mut self, a: usize, b: usize, piece: Piece) -> usize {
-        let face = self.map.halves[a].face;
-        let h = self.map.connect(a, b, piece);
-        self.segment.extend([None, None]);
-        self.region.push(self.region[face]);
-        h
+        self.map.connect(a, b, piece)
     }
 
     // A cut of free edges from vertex `from` of face `start` to vertex `to` of face `end`,
@@ -903,7 +803,6 @@ impl Drawing {
         start: usize,
         goal: &Goal,
         sides: Option<&Sides>,
-        crossable: Option<&HashSet<usize>>,
         arc: usize,
         cost: &impl Fn(FaceID, Vector3D, usize) -> f64,
     ) -> Result<Vec<usize>, DrawError> {
@@ -923,7 +822,6 @@ impl Drawing {
         best.insert((start, 0u32), 0.);
         heap.push((std::cmp::Reverse(OrderedFloat(0.)), (start, 0u32)));
         let mut done = None;
-        let mut expansions = 0;
         while let Some((std::cmp::Reverse(distance), state)) = heap.pop() {
             if distance.0 > best[&state] {
                 continue;
@@ -933,10 +831,6 @@ impl Drawing {
                 done = Some(state);
                 break;
             }
-            expansions += 1;
-            if expansions > 1_000_000 {
-                return Err(DrawError::ExpansionLimit(arc));
-            }
             let here = center(face);
             for h in self.boundary(face) {
                 let half = &map.halves[h];
@@ -945,20 +839,19 @@ impl Drawing {
                 let there = center(next);
                 let step_cost = cost(map.faces[face].triangle, portal - here, arc)
                     + cost(map.faces[next].triangle, there - portal, arc);
-                if !step_cost.is_finite() || step_cost <= 0. {
-                    continue;
-                }
+                // Geometry only scores: a degenerate step is free, never forbidden.
+                let step_cost = if step_cost.is_finite() {
+                    step_cost.max(0.)
+                } else {
+                    0.
+                };
                 let mut next_bits = bits;
                 match half.piece {
-                    Piece::Loop(wall, forward) => {
-                        let Goal::Cross(step) = goal else {
+                    Piece::Loop(..) => {
+                        let Goal::Cross(pieces) = goal else {
                             continue;
                         };
-                        if wall != step.partner
-                            || forward == step.left
-                            || crossable.is_some_and(|c| !c.contains(&h))
-                            || step.segment.is_some_and(|s| self.segment[h] != Some(s))
-                            || self.region[next] != step.region
+                        if !pieces.contains(&h)
                             || sides.is_some_and(|s| !s.accepts_crossing(h, half.origin, bits))
                         {
                             continue;
@@ -1012,23 +905,24 @@ impl Drawing {
             Corner(usize),
             Cross(usize),
         }
-        let start = self.leaving(tip.0, tip.1).ok_or(DrawError::Revisit(arc))?;
+        let start = self.leaving(tip.0, tip.1).ok_or(DrawError::Unplaced(arc))?;
         let mut spots = vec![Spot::Corner(start)];
         spots.extend((0..path.len()).map(Spot::Cross));
         // Chord `j` runs from `spots[j]` to `spots[j + 1]` in face `faces[j]`.
         let mut faces = vec![tip.1];
         faces.extend(path.iter().map(|&h| halves[halves[h].twin].face));
-        // Beyond the last crossing, where the next arc starts.
-        let beyond = match goal {
+        // No chord lies beyond the last crossing.
+        match goal {
             Goal::Close(closing) => {
                 if halves[*closing].face != *faces.last().unwrap() {
-                    return Err(DrawError::Revisit(arc));
+                    return Err(DrawError::Unplaced(arc));
                 }
                 spots.push(Spot::Corner(halves[*closing].next));
-                None
             }
-            Goal::Cross(_) => faces.pop(),
-        };
+            Goal::Cross(_) => {
+                faces.pop();
+            }
+        }
         // Crossings of every edge (by its lesser half-edge), ordered from that half's origin.
         let key = |h: usize| h.min(halves[h].twin);
         let mut along = HashMap::<usize, Vec<usize>>::new();
@@ -1103,24 +997,33 @@ impl Drawing {
             };
         let mut first = None;
         for (j, &f) in faces.iter().enumerate() {
-            let a = corner(&self.map, &family, spots[j], f).ok_or(DrawError::Revisit(arc))?;
-            let b = corner(&self.map, &family, spots[j + 1], f).ok_or(DrawError::Revisit(arc))?;
+            let a = corner(&self.map, &family, spots[j], f).ok_or(DrawError::Unplaced(arc))?;
+            let b = corner(&self.map, &family, spots[j + 1], f).ok_or(DrawError::Unplaced(arc))?;
             let face = self.map.halves[a].face;
             if self.map.halves[b].face != face || family_of(&family, face) != f {
-                return Err(DrawError::Revisit(arc));
+                return Err(DrawError::Unplaced(arc));
             }
             let h = self.connect(a, b, Piece::Loop(id, true));
             family.insert(self.map.faces.len() - 1, f);
             first.get_or_insert(h);
         }
-        let first = first.ok_or(DrawError::Revisit(arc))?;
+        let first = first.ok_or(DrawError::Unplaced(arc))?;
         let tip = match goal {
             Goal::Close(_) => tip,
-            // Nothing is added beyond the partner, so that face is unchanged.
-            Goal::Cross(_) => (
-                vertex[path.len() - 1],
-                beyond.ok_or(DrawError::Revisit(arc))?,
-            ),
+            // The corner beyond the partner, between its two pieces. The arc may have passed
+            // there before when the partner has one region on both sides, so the face is
+            // looked up after the chords are connected.
+            Goal::Cross(_) => {
+                let x = vertex[path.len() - 1];
+                let map = &self.map;
+                let other = |h: usize| map.halves[h].piece.wall().is_some_and(|wall| wall != id);
+                let beyond = map
+                    .outgoing(x)
+                    .into_iter()
+                    .find(|&o| other(o) && other(map.halves[o].prev))
+                    .ok_or(DrawError::Unplaced(arc))?;
+                (x, map.halves[beyond].face)
+            }
         };
         Ok((tip, first))
     }

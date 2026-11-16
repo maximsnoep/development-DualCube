@@ -26,11 +26,10 @@ fn main() {
         let attempt =
             skeleton::draw_loops::attempt(&mesh, progress.optimized.as_ref().unwrap()).unwrap();
         println!(
-            "run={} elapsed={:.3}s loops={} searches={} failure={:?}",
+            "run={} elapsed={:.3}s loops={} failure={:?}",
             run + 1,
             start.elapsed().as_secs_f64(),
             attempt.loops.len(),
-            attempt.searches,
             attempt.failure
         );
         assert!(attempt.failure.is_none());

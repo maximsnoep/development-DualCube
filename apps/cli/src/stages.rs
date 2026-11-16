@@ -101,8 +101,6 @@ pub struct Row {
     pub optimized_boundaries: Option<usize>,
     pub loops_drawn: Option<usize>,
     pub loops_planned: Option<usize>,
-    pub searches: Option<usize>,
-    pub backtracks: Option<usize>,
     pub quality: Option<f64>,
 }
 
@@ -154,8 +152,6 @@ impl Row {
             ("optimized_boundaries", count(self.optimized_boundaries)),
             ("loops_drawn", count(self.loops_drawn)),
             ("loops_planned", count(self.loops_planned)),
-            ("searches", count(self.searches)),
-            ("backtracks", count(self.backtracks)),
             (
                 "quality",
                 self.quality.map(|q| format!("{q:.6}")).unwrap_or_default(),
@@ -202,8 +198,6 @@ impl Row {
                 if let Some(drawing) = &progress.drawing {
                     self.loops_drawn = Some(drawing.loops.len());
                     self.loops_planned = Some(drawing.planned);
-                    self.searches = Some(drawing.searches);
-                    self.backtracks = Some(drawing.backtracks);
                 }
             }
             Stage::Reconstruction => self.quality = solution.get_quality(),
