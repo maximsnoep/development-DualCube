@@ -476,13 +476,15 @@ impl<'a> Plan<'a> {
                 // Crossing a piece enters its twin's side: the partner's left when it runs
                 // backwards.
                 let side = Piece::Loop(self.partners[j], !self.left[j]);
-                let mut anchors: Vec<_> = self
+                let anchors: HashSet<_> = self
                     .crossable(map, labels, j, &none)
                     .into_iter()
                     .filter(|&h| map.halves[h].piece == side)
                     .collect();
-                anchors.sort_unstable();
-                Some((anchors.len(), j, *anchors.first()?))
+                let middle = off_middle(map, &anchors, &[])
+                    .into_iter()
+                    .min_by_key(|&(h, d)| (OrderedFloat(d), h))?;
+                Some((anchors.len(), j, middle.0))
             })
             .min()
             .map(|(_, j, anchor)| (j, anchor))
@@ -553,7 +555,7 @@ impl<'a> Plan<'a> {
                 let window = Window::after(start, step, k);
                 let mut pieces = self.crossable(&drawing.map, &labels, target, &window);
                 pieces.retain(|&h| drawing.map.halves[h].piece == side);
-                Goal::Cross(pieces)
+                Goal::Cross(off_middle(&drawing.map, &pieces, &[tip.0, x0]))
             };
             let sides = drawing.sides(
                 &labels,
@@ -615,11 +617,61 @@ pub(crate) fn uncross<P: Copy, K: Ord>(
     }
 }
 
-// Where an arc ends: across one of these half-edges of the next partner, or back in the face
-// of the closing half-edge.
+// Where an arc ends: across one of these half-edges of the next partner, each with its distance
+// from the middle of the interval, or back in the face of the closing half-edge.
 enum Goal {
-    Cross(HashSet<usize>),
+    Cross(HashMap<usize, f64>),
     Close(usize),
+}
+
+/// Cost of ending an arc outside the middle band of its interval, per unit of distance.
+const MIDDLE: f64 = 10.;
+/// Half-width of the free middle band, as a fraction of the interval.
+const BAND: f64 = 0.3;
+
+/// Distance along the loop from every piece to the middle band of its run of consecutive
+/// `pieces`. A run closing on itself is opened at one of the `breaks` vertices if it passes
+/// one. Any piece of the interval is valid; a cost on the ends of the interval keeps a loop
+/// that is free to shrink from collapsing around a crossing.
+fn off_middle(map: &LoopMap, pieces: &HashSet<usize>, breaks: &[usize]) -> HashMap<usize, f64> {
+    let from: HashMap<usize, usize> = pieces.iter().map(|&h| (map.halves[h].origin, h)).collect();
+    let length = |h: usize| (map.positions[map.target(h)] - map.positions[map.halves[h].origin]).norm();
+    let targets: HashSet<usize> = pieces.iter().map(|&h| map.target(h)).collect();
+    let mut heads: Vec<usize> = pieces
+        .iter()
+        .copied()
+        .filter(|&h| !targets.contains(&map.halves[h].origin))
+        .collect();
+    heads.sort_unstable();
+    let mut result = HashMap::new();
+    let mut walk = |head: usize, result: &mut HashMap<usize, f64>| {
+        let mut run = vec![];
+        let (mut h, mut at) = (head, 0.);
+        loop {
+            let l = length(h);
+            run.push((h, at + l / 2.));
+            at += l;
+            match from.get(&map.target(h)) {
+                Some(&next) if next != head && !result.contains_key(&next) => h = next,
+                _ => break,
+            }
+        }
+        for (h, s) in run {
+            result.insert(h, ((s - at / 2.).abs() - BAND * at).max(0.));
+        }
+    };
+    for head in heads {
+        walk(head, &mut result);
+    }
+    // Closed runs.
+    let mut rest: Vec<usize> = pieces.iter().copied().filter(|h| !result.contains_key(h)).collect();
+    rest.sort_unstable_by_key(|&h| (!breaks.contains(&map.halves[h].origin), h));
+    for head in rest {
+        if !result.contains_key(&head) {
+            walk(head, &mut result);
+        }
+    }
+    result
 }
 
 // Parity constraints of one arc.
@@ -850,16 +902,19 @@ impl Drawing {
                     0.
                 };
                 let mut next_bits = bits;
+                let mut ending = 0.;
                 match half.piece {
                     Piece::Loop(..) => {
                         let Goal::Cross(pieces) = goal else {
                             continue;
                         };
-                        if !pieces.contains(&h)
-                            || sides.is_some_and(|s| !s.accepts_crossing(h, half.origin, bits))
-                        {
+                        let Some(off) = pieces.get(&h) else {
+                            continue;
+                        };
+                        if sides.is_some_and(|s| !s.accepts_crossing(h, half.origin, bits)) {
                             continue;
                         }
+                        ending = MIDDLE * off;
                         next_bits = EXITED;
                     }
                     _ => {
@@ -870,7 +925,7 @@ impl Drawing {
                         }
                     }
                 }
-                let d = distance.0 + step_cost;
+                let d = distance.0 + step_cost + ending;
                 let state = (next, next_bits);
                 if best.get(&state).is_none_or(|&old| d < old) {
                     best.insert(state, d);
