@@ -7,7 +7,7 @@ pub(crate) mod subdivide;
 mod tree;
 
 use crate::{EdgeLabel, LabeledSkeleton, Skeleton, SkeletonEdgeID, SkeletonNodeID, SkeletonResult};
-use dualcube_types::prelude::{Direction, INPUT, Mesh, Sign, Vector3D};
+use dualcube_types::prelude::{Direction, HasPosition, INPUT, Mesh, Sign, Vector3D};
 use slotmap::SecondaryMap;
 use std::collections::HashMap;
 
@@ -134,7 +134,7 @@ pub fn attempt(mesh: &Mesh<INPUT>, skeleton: &Skeleton) -> SkeletonResult<Attemp
         .skeleton
         .edges
         .keys()
-        .map(|e| (e, cached_cost(&result.skeleton, e, &mut cost_cache)))
+        .map(|e| (e, cached_cost(mesh, &result.skeleton, e, &mut cost_cache)))
         .collect();
     let (tree_edges, labels) = tree::solve(&result.skeleton, &table)?;
     let remaining: Vec<_> = result
@@ -175,13 +175,35 @@ pub fn attempt(mesh: &Mesh<INPUT>, skeleton: &Skeleton) -> SkeletonResult<Attemp
     Ok(result)
 }
 
+/// Direction of an edge: the normal of its boundary's plane, scaled by the enclosed area, from
+/// its first patch to its second (the boundary runs counterclockwise around the first, seen
+/// from outside). The loop is drawn with the label's axis, so its own plane decides; the
+/// direction between patch centres can differ from it by any angle.
+fn boundary_normal(mesh: &Mesh<INPUT>, skeleton: &Skeleton, edge: SkeletonEdgeID) -> Vector3D {
+    let points: Vec<Vector3D> = skeleton.edges[edge]
+        .boundary
+        .crossings
+        .iter()
+        .map(|&c| {
+            let e = skeleton.surface.crossings[c].exit;
+            (mesh.position(mesh.root(e)) + mesh.position(mesh.toor(e))) / 2.
+        })
+        .collect();
+    let centre: Vector3D = points.iter().sum::<Vector3D>() / points.len() as f64;
+    let mut normal = Vector3D::zeros();
+    for i in 0..points.len() {
+        normal -= (points[i] - centre).cross(&(points[(i + 1) % points.len()] - centre));
+    }
+    normal
+}
+
 fn cached_cost(
+    mesh: &Mesh<INPUT>,
     skeleton: &Skeleton,
     edge: SkeletonEdgeID,
     cache: &mut HashMap<[u64; 3], [f64; 6]>,
 ) -> [f64; 6] {
-    let [a, b] = skeleton.edges[edge].nodes;
-    let vector = skeleton.nodes[b].position - skeleton.nodes[a].position;
+    let vector = boundary_normal(mesh, skeleton, edge);
     // TODO: Include surface candidate identity and labels when caching richer patch costs.
     let key = [vector.x.to_bits(), vector.y.to_bits(), vector.z.to_bits()];
     *cache.entry(key).or_insert_with(|| angle_costs(vector))
@@ -211,7 +233,7 @@ fn repair(
         for (candidate, edges) in &candidates {
             let costs: Vec<_> = edges
                 .iter()
-                .map(|&e| cached_cost(candidate, e, cache))
+                .map(|&e| cached_cost(mesh, candidate, e, cache))
                 .collect();
             if let Some(solution) = path::optimize(&costs, &limits)
                 && best.as_ref().is_none_or(

@@ -395,3 +395,33 @@ fn cycle_repair_uses_real_annuli_and_preserves_mst_membership() {
         );
     }
 }
+
+#[test]
+fn labels_follow_the_boundary_planes_not_the_patch_centres() {
+    let positions: Vec<_> = (0..4)
+        .map(|i| {
+            let angle = std::f64::consts::TAU * (2. * i as f64 + 0.5) / 8.;
+            [3. * angle.cos(), 3. * angle.sin(), 0.]
+        })
+        .collect();
+    let (mesh, mut skeleton) = crate::surface::tests::bands(&positions);
+    let expected = attempt(&mesh, &skeleton).unwrap();
+    // Centres that say nothing, or the wrong thing, about the boundaries.
+    for scramble in [Vector3D::zeros(), Vector3D::new(0., 0., 5.)] {
+        for (i, node) in skeleton.nodes.values_mut().enumerate() {
+            node.position = scramble * i as f64;
+        }
+        let result = attempt(&mesh, &skeleton).unwrap();
+        for &edge in &result.tree_edges {
+            assert_eq!(
+                Port::from_label(result.labels[edge]),
+                Port::from_label(expected.labels[edge])
+            );
+            let normal = boundary_normal(&mesh, &result.skeleton, edge);
+            let port = Port::from_label(result.labels[edge]);
+            let along = normal[port.axis()] * if port.is_positive() { 1. } else { -1. };
+            // The label is the axis nearest to the boundary's normal, with its sign.
+            assert!(along >= normal.amax() - 1e-9, "{normal:?} labelled {port:?}");
+        }
+    }
+}
