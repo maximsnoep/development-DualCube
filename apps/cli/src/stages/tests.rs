@@ -70,7 +70,7 @@ fn report_has_a_header_and_one_line_per_row() {
     let text = std::fs::read_to_string(path).unwrap();
     let lines: Vec<_> = text.lines().collect();
     assert_eq!(lines.len(), 3);
-    assert!(lines[0].starts_with("input,genus,faces,status,error,"));
-    assert!(lines[1].starts_with("a.obj,,0,failed at drawing,\"x, \"\"y\"\"\","));
+    assert!(lines[0].starts_with("input,genus,faces,steiner,status,error,"));
+    assert!(lines[1].starts_with("a.obj,,0,0,failed at drawing,\"x, \"\"y\"\"\","));
     assert!(lines[2].contains(",ok,"));
 }

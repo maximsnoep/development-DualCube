@@ -112,3 +112,26 @@ pub(crate) fn volume<M: Tag>(mesh: &Mesh<M>) -> f64 {
         .sum::<f64>()
         .abs()
 }
+
+/// The input as the pipeline should use it: for positive genus, the surface of its TetGen volume,
+/// with the boundary Steiner points TetGen added where it split input edges or faces.
+/// Returns the refined mesh and the number of added vertices, or `None` if unchanged. The volume
+/// is reused by every later tetrahedralization of the returned mesh in this process.
+pub fn conform_input(mesh: &Mesh<INPUT>) -> SkeletonResult<Option<(Mesh<INPUT>, usize)>> {
+    let genus = input_genus(mesh)?;
+    if genus == 0 {
+        return Ok(None);
+    }
+    let Some(surface) = mehsh_tetgen::conform(mesh, &mehsh_tetgen::TetgenOptions::default())?
+    else {
+        return Ok(None);
+    };
+    let faces: Vec<Vec<usize>> = surface.faces.iter().map(|f| f.to_vec()).collect();
+    let refined = Mesh::from(&faces, &surface.positions)
+        .map_err(|e| format!("TetGen surface is not a valid mesh: {e:?}"))?
+        .0;
+    if input_genus(&refined)? != genus {
+        return Err("TetGen surface changed the genus".into());
+    }
+    Ok(Some((refined, surface.positions.len() - mesh.nr_verts())))
+}
