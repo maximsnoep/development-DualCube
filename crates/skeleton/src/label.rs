@@ -2,6 +2,7 @@
 
 pub(crate) mod constraints;
 pub(crate) mod exact;
+pub mod flow;
 mod junction;
 pub mod path;
 pub(crate) mod subdivide;

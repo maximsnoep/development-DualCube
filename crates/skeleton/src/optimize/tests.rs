@@ -328,3 +328,30 @@ fn relaxing_spreads_stacked_slivers() {
     result.validate(&mesh).unwrap();
     assert!(smallest(&result.skeleton) > 2. * smallest(&labeled.skeleton));
 }
+
+#[test]
+fn reduction_keeps_a_valid_ring_and_drops_copies() {
+    let (mesh, labeled) = stacked();
+    let flow = crate::label::flow::Flow::new(&mesh);
+    let params = ReduceParams::default();
+    let relabelled = reduce::label(&mesh, &labeled, &flow, &params).unwrap();
+    relabelled.validate(&mesh).unwrap();
+    assert_eq!(relabelled.skeleton.edges.len(), 6);
+    let result = reduce::run(&mesh, &labeled, &flow, &params).unwrap();
+    result.validate(&mesh).unwrap();
+    // A closed ring needs both signs of two axes.
+    assert_eq!(result.skeleton.edges.len(), 4);
+}
+
+#[test]
+fn flow_costs_prefer_the_boundary_planes_axis() {
+    let (mesh, labeled) = torus();
+    let flow = crate::label::flow::Flow::new(&mesh);
+    for (id, _) in &labeled.skeleton.edges {
+        let costs = flow.costs(&mesh, &labeled.skeleton, id);
+        // Boundaries of the torus bands lie in vertical planes: Z is never their axis.
+        let best = (0..6).min_by(|&a, &b| costs[a].total_cmp(&costs[b])).unwrap();
+        assert_ne!(best / 2, 2, "{costs:?}");
+        assert!(costs.iter().all(|&c| c >= 1. - 1e-9));
+    }
+}

@@ -5,11 +5,13 @@ mod cut;
 pub mod fidelity;
 pub(crate) mod moves;
 pub(crate) mod redraw;
+pub mod reduce;
 pub(crate) mod relax;
 pub mod search;
 
 pub use fidelity::{Fidelity, Measure, Tables};
 pub use redraw::RedrawParams;
+pub use reduce::{LabelMeasure, ReduceParams};
 pub use relax::RelaxParams;
 pub use search::{InitialPass, Objective, Operator, Params, Stats};
 
