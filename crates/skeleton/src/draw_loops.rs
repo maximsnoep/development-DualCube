@@ -14,9 +14,12 @@ use dualcube_dual::{
 };
 use dualcube_types::prelude::*;
 
+mod chords;
 mod lift;
 mod route;
 mod template;
+
+pub use chords::chords;
 
 /// Each of these reports a bug: valid input always has a drawing.
 #[derive(Clone, Debug)]
