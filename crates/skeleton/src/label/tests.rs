@@ -104,6 +104,88 @@ fn path_dp_matches_exhaustive_search_for_free_and_fixed_endpoints() {
     }
 }
 
+/// The selection cost by its definition, or `None` if the selection is invalid.
+fn selection_cost(
+    costs: &[[f64; 6]],
+    constraints: &path::Constraints,
+    boundary: f64,
+    kept: &[usize],
+    ports: &[Port],
+) -> Option<f64> {
+    let (first, last) = (ports[0], *ports.last().unwrap());
+    if constraints.start_ports & first.bit() == 0
+        || constraints.end_ports & last.opposite().bit() == 0
+        || ports.windows(2).any(|p| p[1] == p[0] || p[1] == p[0].opposite())
+        || !constraints.masks[ports.iter().fold(0, |m, p| m | p.bit()) as usize]
+    {
+        return None;
+    }
+    let mut cost = 0.;
+    for (i, row) in costs.iter().enumerate() {
+        cost += match kept.iter().position(|&k| k == i) {
+            Some(j) => row[ports[j] as usize] + boundary,
+            None => match kept.iter().position(|&k| k > i) {
+                Some(0) => row[first as usize],
+                None => row[last as usize],
+                Some(j) => row[ports[j - 1] as usize].min(row[ports[j] as usize]),
+            },
+        };
+    }
+    Some(cost)
+}
+
+#[test]
+fn selection_dp_matches_exhaustive_search() {
+    let costs: Vec<_> = (0..5)
+        .map(|i| angle_costs(Vector3D::new(1. + i as f64, 2. - i as f64, 0.7 - 0.4 * i as f64)))
+        .collect();
+    for (constraints, boundary) in [
+        (path::Constraints::default(), 0.3),
+        (
+            path::Constraints {
+                start_ports: Port::PositiveY.bit(),
+                end_ports: Port::NegativeX.bit(),
+                ..Default::default()
+            },
+            0.05,
+        ),
+        (
+            path::Constraints::default().with_orders([
+                path::Order::Increasing,
+                path::Order::Decreasing,
+                path::Order::Equal,
+            ]),
+            0.,
+        ),
+    ] {
+        let mut best = f64::INFINITY;
+        for subset in 1..1usize << costs.len() {
+            let kept: Vec<usize> = (0..costs.len()).filter(|i| subset & 1 << i != 0).collect();
+            enumerate(kept.len(), |ports| {
+                if let Some(cost) = selection_cost(&costs, &constraints, boundary, &kept, ports) {
+                    best = best.min(cost);
+                }
+            });
+        }
+        let solved = path::select(&costs, &constraints, boundary).unwrap();
+        assert!((solved.cost - best).abs() < 1e-12, "{} vs {best}", solved.cost);
+        let check = selection_cost(&costs, &constraints, boundary, &solved.kept, &solved.ports);
+        assert!((check.unwrap() - best).abs() < 1e-12);
+    }
+}
+
+#[test]
+fn selection_keeps_one_boundary_per_direction() {
+    // Three boundaries facing +X, then three facing +Y: one of each describes all six.
+    let mut costs = vec![[1.; 6]; 6];
+    for (i, row) in costs.iter_mut().enumerate() {
+        row[if i < 3 { 0 } else { 2 }] = 0.;
+    }
+    let solved = path::select(&costs, &path::Constraints::default(), 0.1).unwrap();
+    assert_eq!(solved.ports, [Port::PositiveX, Port::PositiveY]);
+    assert!((solved.cost - 0.2).abs() < 1e-12);
+}
+
 #[test]
 fn path_ports_allow_straight_travel_but_not_reversals() {
     let x = Port::PositiveX.bit();

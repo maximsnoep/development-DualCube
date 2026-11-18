@@ -66,8 +66,6 @@ pub fn optimize_through(
     constraints: &Constraints,
     taken: &[u8],
 ) -> Option<Solution> {
-    // TODO: Jointly select boundaries and labels over bounded candidate intervals, including
-    // boundary removal; precompute each candidate patch/label cost once before the DP.
     if costs.is_empty() {
         return None;
     }
@@ -120,4 +118,92 @@ pub fn optimize_through(
         }
     }
     Some(Solution { ports, cost, mask })
+}
+
+/// Kept boundaries (indices into the path) with their ports.
+#[derive(Clone, Debug)]
+pub struct Selection {
+    pub kept: Vec<usize>,
+    pub ports: Vec<Port>,
+    pub cost: f64,
+    pub mask: u8,
+}
+
+/// Keep a subset of the boundaries and label it. A kept boundary costs `costs[i][port]` plus
+/// `boundary`; a dropped one lies inside the merged patch between the kept boundaries around
+/// it and costs the cheaper of their two ports (before the first or after the last kept
+/// boundary: that boundary's port). Merged patches never run straight on. At least one
+/// boundary is kept. Complexity: O(n² * 384 * 6).
+pub fn select(costs: &[[f64; 6]], constraints: &Constraints, boundary: f64) -> Option<Selection> {
+    let n = costs.len();
+    if n == 0 || costs.iter().flatten().any(|c| !c.is_finite()) {
+        return None;
+    }
+    // `prefix[k][p][q]`: dropped cost of boundaries `0..k` between ports `p` and `q`.
+    let mut prefix = vec![[[0.; 6]; 6]; n + 1];
+    for (i, cost) in costs.iter().enumerate() {
+        for p in 0..6 {
+            for q in 0..6 {
+                prefix[i + 1][p][q] = prefix[i][p][q] + cost[p].min(cost[q]);
+            }
+        }
+    }
+    let dropped = |from: usize, to: usize, p: usize, q: usize| prefix[to][p][q] - prefix[from][p][q];
+    let mut value = vec![[f64::INFINITY; 384]; n];
+    let mut back = vec![[(usize::MAX, usize::MAX); 384]; n];
+    for i in 0..n {
+        for q in 0..6 {
+            if constraints.start_ports & (1 << q) != 0 {
+                value[i][q * 64 + (1 << q)] = dropped(0, i, q, q) + costs[i][q] + boundary;
+            }
+        }
+        for j in 0..i {
+            for state in 0..384 {
+                let current = value[j][state];
+                if !current.is_finite() {
+                    continue;
+                }
+                let (p, mask) = (state / 64, state % 64);
+                for q in 0..6 {
+                    if q == p || q == p ^ 1 {
+                        continue;
+                    }
+                    let next = current + dropped(j + 1, i, p, q) + costs[i][q] + boundary;
+                    let target = q * 64 + (mask | (1 << q));
+                    if next < value[i][target] {
+                        value[i][target] = next;
+                        back[i][target] = (j, state);
+                    }
+                }
+            }
+        }
+    }
+    let (mut i, mut state, cost) = (0..n)
+        .flat_map(|i| (0..384).map(move |s| (i, s)))
+        .filter(|&(i, s)| {
+            value[i][s].is_finite()
+                && constraints.end_ports & (1 << ((s / 64) ^ 1)) != 0
+                && constraints.masks[s % 64]
+        })
+        .map(|(i, s)| (i, s, value[i][s] + dropped(i + 1, n, s / 64, s / 64)))
+        .min_by(|a, b| a.2.total_cmp(&b.2))?;
+    let mask = (state % 64) as u8;
+    let (mut kept, mut ports) = (Vec::new(), Vec::new());
+    loop {
+        kept.push(i);
+        ports.push(Port::ALL[state / 64]);
+        let (j, previous) = back[i][state];
+        if j == usize::MAX {
+            break;
+        }
+        (i, state) = (j, previous);
+    }
+    kept.reverse();
+    ports.reverse();
+    Some(Selection {
+        kept,
+        ports,
+        cost,
+        mask,
+    })
 }
