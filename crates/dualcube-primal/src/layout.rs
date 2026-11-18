@@ -742,7 +742,7 @@ impl Layout {
                     .and_then(|regions| regions.vertex_map.get(&vert).copied())
                     .unwrap_or(vert),
                 CornerCandidate::Point(face, point) => {
-                    self.insert_point(face, point, &mut face_to_pieces)
+                    self.insert_point(face, point, region_id, &mut face_to_pieces)
                 }
             };
 
@@ -789,19 +789,28 @@ impl Layout {
             .collect()
     }
 
-    // Insert a point inside a face (of the input mesh) as a new vertex of the granulated mesh.
+    // Insert a point inside a face (of the input mesh) as a new vertex of the granulated mesh, in loop region `region`.
     // `face_to_pieces` tracks the faces of the granulated mesh that a face of the input mesh has been split into.
     fn insert_point(
         &mut self,
         face: FaceID,
         point: Vector3D,
+        region: LoopRegionID,
         face_to_pieces: &mut HashMap<FaceID, Vec<FaceID>>,
     ) -> VertID {
         let pieces = face_to_pieces.entry(face).or_insert_with(|| vec![face]);
+        // With region tracking, only pieces of the region qualify: where many loops pass a face, the drawing within it
+        // can be too thin to tell its pieces apart by position.
+        let in_region = |piece: &FaceID| {
+            self.regions
+                .as_ref()
+                .is_none_or(|r| r.face_region.get(piece) == Some(&region))
+        };
         // The piece that contains the point (the one with the largest minimal barycentric coordinate)
         let piece = pieces
             .iter()
             .copied()
+            .filter(in_region)
             .max_by_key(|&piece| {
                 let Some([a, b, c]) = self
                     .granulated_mesh
