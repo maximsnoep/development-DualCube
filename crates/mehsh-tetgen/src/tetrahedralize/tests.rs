@@ -77,7 +77,7 @@ fn rejects_a_changed_volume_boundary() {
         map_output(&mesh, input, data)
             .unwrap_err()
             .to_string()
-            .contains("triangulation")
+            .contains("refined")
     );
 }
 
@@ -93,117 +93,111 @@ fn missing_executable_reports_an_error() {
     assert!(error.to_string().contains("Could not launch TetGen"));
 }
 
-/// TetGen output for the fixture's tetrahedron with Steiner points. Tets index the corners
-/// (origin, x, y, z) and then the Steiner points, and are oriented positively here.
-fn with_steiner(steiner: &[Vector3D], tets: &[[usize; 4]]) -> (Mesh<TEST>, TetrahedralMesh<TEST>) {
+/// The fixture's surface and volume with a Steiner point at the middle of the edge from the
+/// origin to x, splitting the tetrahedron in two.
+fn split_on_edge() -> Option<Surface> {
     let (mesh, input, _) = fixture();
-    let corners = [Vector3D::zeros(), Vector3D::x(), Vector3D::y(), Vector3D::z()];
-    let node = |i: usize| {
-        corners
-            .get(i)
-            .map_or(i, |&p| input.iter().position(|&v| mesh.position(v) == p).unwrap())
-    };
-    let mut nodes: Vec<_> = input
-        .iter()
-        .enumerate()
-        .map(|(i, &v)| TetNode {
-            position: mesh.position(v),
-            marker: -(i as i32) - 2,
-        })
-        .collect();
-    nodes.extend(steiner.iter().map(|&position| TetNode {
-        position,
-        marker: 0,
-    }));
-    let tets = tets
-        .iter()
-        .map(|tet| {
-            let [a, b, c, d] = tet.map(node);
-            let [p, q, r, s] = [a, b, c, d].map(|i| nodes[i].position);
-            if (q - p).cross(&(r - p)).dot(&(s - p)) < 0. {
-                [a, b, d, c]
-            } else {
-                [a, b, c, d]
-            }
-        })
-        .collect();
-    let result = map_output(&mesh, input, TetMeshData { nodes, tets }).unwrap();
-    (mesh, result)
-}
-
-/// The result is a valid tetrahedralization of the fixture with its input boundary.
-fn assert_valid(mesh: &Mesh<TEST>, result: &TetrahedralMesh<TEST>) {
-    let index: HashMap<_, _> = result
-        .input_vertices
-        .iter()
-        .enumerate()
-        .map(|(i, &v)| (v, i))
-        .collect();
-    let expected: HashSet<[usize; 3]> = mesh
-        .face_ids()
-        .into_iter()
-        .map(|f| {
-            let mut face: Vec<_> = mesh.vertices(f).map(|v| index[&v]).collect();
-            face.sort_unstable();
-            [face[0], face[1], face[2]]
-        })
-        .collect();
-    let mut count = HashMap::<[usize; 3], usize>::new();
-    let mut total = 0.;
-    for &t in &result.tets {
-        let [a, b, c, d] = t.map(|i| result.vertices[i]);
-        let volume = (b - a).cross(&(c - a)).dot(&(d - a));
-        assert!(volume > 1e-9, "inverted or flat tet {t:?}: {volume}");
-        total += volume;
+    let at = |p: Vector3D| input.iter().position(|&v| mesh.position(v) == p).unwrap();
+    let [o, x, y, z] = [Vector3D::zeros(), Vector3D::x(), Vector3D::y(), Vector3D::z()].map(at);
+    let mut vertices: Vec<_> = input.iter().map(|&v| mesh.position(v)).collect();
+    vertices.push(Vector3D::new(0.5, 0., 0.));
+    let tets = vec![[4, o, y, z], [4, x, z, y]];
+    let mut incidence = HashMap::new();
+    for t in &tets {
         for [i, j, k] in [[0, 1, 2], [0, 1, 3], [0, 2, 3], [1, 2, 3]] {
             let mut face = [t[i], t[j], t[k]];
-            face.sort_unstable();
-            *count.entry(face).or_default() += 1;
+            face.sort();
+            *incidence.entry(face).or_default() += 1;
         }
     }
-    let boundary: HashSet<_> = count
+    boundary_surface(&mesh, &input, &vertices, &tets, &incidence).unwrap()
+}
+
+#[test]
+fn a_boundary_steiner_point_refines_the_surface() {
+    let surface = split_on_edge().expect("refined surface");
+    // The two faces beside the split edge become four.
+    assert_eq!(surface.positions.len(), 5);
+    assert_eq!(surface.faces.len(), 6);
+    assert_eq!(surface.positions[4], Vector3D::new(0.5, 0., 0.));
+    Mesh::<TEST>::from(
+        &surface.faces.iter().map(|f| f.to_vec()).collect::<Vec<_>>(),
+        &surface.positions,
+    )
+    .expect("closed manifold surface");
+    // The two input faces away from the split edge are kept, with their orientation.
+    let (mesh, input, _) = fixture();
+    let index: HashMap<_, _> = input.iter().enumerate().map(|(i, &v)| (v, i)).collect();
+    let kept: Vec<_> = mesh
+        .face_ids()
         .into_iter()
-        .filter_map(|(face, count)| (count == 1).then_some(face))
+        .map(|f| rotated(mesh.vertices(f).map(|v| index[&v]).collect_array::<3>().unwrap()))
+        .filter(|f| surface.faces.iter().any(|&g| rotated(g) == *f))
         .collect();
-    assert_eq!(boundary, expected);
-    // Positive tets with the input boundary filling the input volume do not overlap.
-    assert!((total - 1.).abs() < 1e-9, "volume {total}");
+    assert_eq!(kept.len(), 2);
+}
+
+/// A tetrahedron surface with the given corners, vertices listed in the order `perm`.
+fn tetrahedron(corners: [Vector3D; 4], perm: [usize; 4]) -> Mesh<TEST> {
+    let at = |i: usize| perm.iter().position(|&p| p == i).unwrap();
+    let faces = [[0, 2, 1], [0, 1, 3], [0, 3, 2], [1, 2, 3]]
+        .map(|f| f.map(at).to_vec())
+        .to_vec();
+    Mesh::from(&faces, &perm.map(|i| corners[i])).unwrap().0
 }
 
 #[test]
-fn a_steiner_point_on_an_input_edge_is_moved_inside() {
-    let (mesh, result) = with_steiner(
-        &[Vector3D::new(0.5, 0., 0.)],
-        &[[4, 0, 2, 3], [4, 1, 2, 3]],
-    );
-    assert_valid(&mesh, &result);
-    assert_eq!(result.tets.len(), 4);
+fn a_stored_volume_is_found_for_its_surface_in_any_vertex_order() {
+    let corners = [
+        Vector3D::new(10., 0., 0.),
+        Vector3D::new(11., 0., 0.),
+        Vector3D::new(10., 1., 0.),
+        Vector3D::new(10., 0., 1.),
+    ];
+    let mut vertices = corners.to_vec();
+    vertices.push(Vector3D::new(10.1, 0.1, 0.1));
+    let tets = vec![[0, 1, 2, 4], [0, 1, 4, 3], [0, 4, 2, 3], [4, 1, 2, 3]];
+    cache::store(vertices, tets);
+    let mesh = tetrahedron(corners, [2, 0, 3, 1]);
+    let found = cache::lookup(&mesh).expect("stored volume");
+    assert_eq!(found.input_vertices, mesh.vert_ids());
+    assert_eq!(found.tets.len(), 4);
+    for (i, &v) in mesh.vert_ids().iter().enumerate() {
+        assert_eq!(found.vertices[i], mesh.position(v));
+    }
 }
 
 #[test]
-fn several_steiner_points_on_one_edge_are_moved_inside() {
-    let (mesh, result) = with_steiner(
-        &[Vector3D::new(0.5, 0., 0.), Vector3D::new(0.25, 0., 0.), Vector3D::new(0.75, 0., 0.)],
-        &[[5, 0, 2, 3], [5, 4, 2, 3], [6, 4, 2, 3], [6, 1, 2, 3]],
-    );
-    assert_valid(&mesh, &result);
+fn a_stored_volume_is_not_found_for_another_surface() {
+    let corners = [
+        Vector3D::new(20., 0., 0.),
+        Vector3D::new(21., 0., 0.),
+        Vector3D::new(20., 1., 0.),
+        Vector3D::new(20., 0., 1.),
+    ];
+    cache::store(corners.to_vec(), vec![[0, 1, 2, 3]]);
+    let mut moved = corners;
+    moved[3].z = 2.;
+    assert!(cache::lookup(&tetrahedron(moved, [0, 1, 2, 3])).is_none());
 }
 
 #[test]
-fn a_steiner_point_inside_an_input_face_is_moved_inside() {
-    let (mesh, result) = with_steiner(
-        &[Vector3D::new(0.25, 0.25, 0.)],
-        &[[4, 0, 1, 3], [4, 1, 2, 3], [4, 2, 0, 3]],
-    );
-    assert_valid(&mesh, &result);
+fn conform_with_a_missing_executable_reports_an_error() {
+    let corners = [
+        Vector3D::new(30., 0., 0.),
+        Vector3D::new(31., 0., 0.),
+        Vector3D::new(30., 1., 0.),
+        Vector3D::new(30., 0., 1.),
+    ];
+    let options = TetgenOptions {
+        executable: "/nonexistent/tetgen".into(),
+        use_wsl: false,
+    };
+    assert!(conform(&tetrahedron(corners, [0, 1, 2, 3]), &options).is_err());
 }
 
 #[test]
-fn steiner_points_on_edges_of_one_face_are_moved_inside() {
-    // On the edges 0-1 and 0-2 of the face 0-1-2.
-    let (mesh, result) = with_steiner(
-        &[Vector3D::new(0.5, 0., 0.), Vector3D::new(0., 0.5, 0.)],
-        &[[4, 1, 2, 3], [4, 5, 2, 3], [4, 0, 5, 3]],
-    );
-    assert_valid(&mesh, &result);
+fn rotation_starts_at_the_smallest_vertex_and_keeps_orientation() {
+    assert_eq!(rotated([5, 2, 7]), [2, 7, 5]);
+    assert_ne!(rotated([5, 2, 7]), rotated([5, 7, 2]));
 }
