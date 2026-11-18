@@ -29,6 +29,17 @@ fn draws_returning_boundary_arcs_without_refining_the_input() {
 }
 
 #[test]
+fn chords_refuse_curves_that_revisit_triangles() {
+    // Lens triangles are coarse: the drawn loops revisit them, which chords cannot express.
+    let (mesh, skeleton) = crate::surface::tests::lenses(1);
+    let labeled = crate::label::run(&mesh, &skeleton).unwrap();
+    let realized = crate::place_cubes::run(&mesh, &labeled).unwrap();
+    let result = attempt(&mesh, &realized).unwrap();
+    assert!(result.failure.is_none(), "{:?}", result.failure);
+    assert!(chords(&mesh, &result.loops).is_none());
+}
+
+#[test]
 fn draws_single_node_on_a_cube_surface() {
     let (input, skeleton) = crate::surface::tests::lenses(0);
     let labeled = crate::label::run(&input, &skeleton).unwrap();
