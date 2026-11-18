@@ -1,6 +1,7 @@
-//! Angle-based tree labeling followed by surface-preserving cycle repair.
+//! Angle-based tree labeling, surface-preserving cycle repair, then exact relabeling.
 
 pub(crate) mod constraints;
+pub(crate) mod exact;
 mod junction;
 pub mod path;
 pub(crate) mod subdivide;
@@ -163,7 +164,10 @@ pub fn attempt(mesh: &Mesh<INPUT>, skeleton: &Skeleton) -> SkeletonResult<Attemp
             path,
         });
     }
-    // TODO: Refine this initial solution with joint path/junction optimization and simplification.
+    // The tree and the repairs fix labels greedily; cycles they close often force mislabels
+    // that a labeling of all edges at once avoids.
+    let penalties = exact::plane_penalties(mesh, &result.skeleton);
+    result.labels = exact::search(&result.skeleton, &result.labels, &penalties, exact::BUDGET);
     result.labeled().validate(mesh)?;
     tracing::info!(
         "Labeling: {} edges labeled, {} junction splits, {} cycle repairs, {:.2}s",
@@ -179,7 +183,11 @@ pub fn attempt(mesh: &Mesh<INPUT>, skeleton: &Skeleton) -> SkeletonResult<Attemp
 /// its first patch to its second (the boundary runs counterclockwise around the first, seen
 /// from outside). The loop is drawn with the label's axis, so its own plane decides; the
 /// direction between patch centres can differ from it by any angle.
-fn boundary_normal(mesh: &Mesh<INPUT>, skeleton: &Skeleton, edge: SkeletonEdgeID) -> Vector3D {
+pub(crate) fn boundary_normal(
+    mesh: &Mesh<INPUT>,
+    skeleton: &Skeleton,
+    edge: SkeletonEdgeID,
+) -> Vector3D {
     let points: Vec<Vector3D> = skeleton.edges[edge]
         .boundary
         .crossings
