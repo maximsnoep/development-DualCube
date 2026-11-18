@@ -514,6 +514,7 @@ impl<'a> Plan<'a> {
         // The loop closes into the start from the anchor's side, along the anchor's piece.
         let closing = drawing.map.halves[anchor].piece;
         let mut tip = (x0, drawing.map.halves[after].face);
+        let mut spread = Spread::new(&drawing.map, self.id);
         let mut last = None;
         for step in 0..k {
             let arc = (start + step) % k;
@@ -565,7 +566,15 @@ impl<'a> Plan<'a> {
                 self.arriving(&expected, &next, arc),
                 &next,
             );
-            let path = drawing.route(tip.1, &goal, sides.as_ref(), arc, &cost)?;
+            let path = drawing.route(tip.1, &goal, sides.as_ref(), &spread, arc, &cost)?;
+            let triangle = |f: usize| drawing.map.faces[f].triangle;
+            spread.own.insert(triangle(tip.1));
+            for &h in &path {
+                spread.own.insert(triangle(drawing.map.halves[drawing.map.halves[h].twin].face));
+            }
+            if let (Goal::Cross(_), Some(&h)) = (&goal, path.last()) {
+                spread.crowded.insert(triangle(drawing.map.halves[h].face));
+            }
             let piece;
             (tip, piece) = drawing.insert(self.id, tip, &path, &goal, arc)?;
             last = Some(piece);
@@ -628,6 +637,63 @@ enum Goal {
 const MIDDLE: f64 = 10.;
 /// Half-width of the free middle band, as a fraction of the interval.
 const BAND: f64 = 0.3;
+/// Cost of entering an input triangle that the loop already passes, in triangle sizes.
+const REVISIT: f64 = 4.;
+/// Cost of a crossing in an input triangle that already holds one, in triangle sizes.
+const CROWDED: f64 = 4.;
+
+/// Input triangles a new arc should stay out of. Legacy straight-chord loops (as loop evolution
+/// mutates) reproduce a drawing from the order of crossings along the input edges alone when
+/// every loop passes a triangle at most once and no triangle holds more than one crossing.
+struct Spread {
+    /// Triangles the loop being drawn passes.
+    own: HashSet<FaceID>,
+    /// Triangles holding a crossing.
+    crowded: HashSet<FaceID>,
+    /// Mean edge length of every triangle.
+    size: HashMap<FaceID, f64>,
+}
+
+impl Spread {
+    fn new(map: &LoopMap, id: LoopID) -> Self {
+        let mut corners = HashMap::<FaceID, Vec<usize>>::new();
+        let mut own = HashSet::new();
+        let mut crowded = HashSet::new();
+        for h in &map.halves {
+            let triangle = map.faces[h.face].triangle;
+            match map.points[h.origin] {
+                Point::Input(_) => {
+                    let list = corners.entry(triangle).or_default();
+                    if !list.contains(&h.origin) {
+                        list.push(h.origin);
+                    }
+                }
+                Point::Crossing => {
+                    crowded.insert(triangle);
+                }
+                _ => {}
+            }
+            if h.piece.wall() == Some(id) {
+                own.insert(triangle);
+            }
+        }
+        let size = corners
+            .into_iter()
+            .map(|(t, list)| {
+                let n = list.len();
+                let perimeter: f64 = (0..n)
+                    .map(|i| (map.positions[list[i]] - map.positions[list[(i + 1) % n]]).norm())
+                    .sum();
+                (t, perimeter / n.max(1) as f64)
+            })
+            .collect();
+        Self { own, crowded, size }
+    }
+
+    fn size(&self, triangle: FaceID) -> f64 {
+        self.size.get(&triangle).copied().unwrap_or(0.)
+    }
+}
 
 /// Distance along the loop from every piece to the middle band of its run of consecutive
 /// `pieces`. A run closing on itself is opened at one of the `breaks` vertices if it passes
@@ -859,6 +925,7 @@ impl Drawing {
         start: usize,
         goal: &Goal,
         sides: Option<&Sides>,
+        spread: &Spread,
         arc: usize,
         cost: &impl Fn(FaceID, Vector3D, usize) -> f64,
     ) -> Result<Vec<usize>, DrawError> {
@@ -903,6 +970,7 @@ impl Drawing {
                 };
                 let mut next_bits = bits;
                 let mut ending = 0.;
+                let (here_t, next_t) = (map.faces[face].triangle, map.faces[next].triangle);
                 match half.piece {
                     Piece::Loop(..) => {
                         let Goal::Cross(pieces) = goal else {
@@ -915,9 +983,15 @@ impl Drawing {
                             continue;
                         }
                         ending = MIDDLE * off;
+                        if spread.crowded.contains(&here_t) {
+                            ending += CROWDED * spread.size(here_t);
+                        }
                         next_bits = EXITED;
                     }
                     _ => {
+                        if here_t != next_t && spread.own.contains(&next_t) {
+                            ending += REVISIT * spread.size(next_t);
+                        }
                         for (c, cut) in sides.map_or(&[][..], |s| &s.cuts[..]).iter().enumerate() {
                             if cut.contains(&h) {
                                 next_bits ^= 1 << c;
