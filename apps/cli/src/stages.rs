@@ -87,6 +87,8 @@ pub struct Row {
     pub input: PathBuf,
     pub genus: Option<usize>,
     pub faces: usize,
+    /// Boundary vertices TetGen added to the input (`faces` counts the refined mesh).
+    pub steiner: usize,
     /// The failing stage and its error or panic message.
     pub failure: Option<(Stage, String)>,
     pub seconds: [Option<f64>; 7],
@@ -119,6 +121,7 @@ impl Row {
             ("input", self.input.display().to_string()),
             ("genus", count(self.genus)),
             ("faces", self.faces.to_string()),
+            ("steiner", self.steiner.to_string()),
             ("status", self.status()),
             (
                 "error",
@@ -211,8 +214,11 @@ pub fn run_mesh(input: &Path, last: Stage) -> Row {
         input: input.to_owned(),
         ..Row::default()
     };
-    let mut solution = match io::import_solution(input) {
-        Ok(solution) => solution,
+    let mut solution = match io::import_mesh(input) {
+        Ok((mesh, steiner)) => {
+            row.steiner = steiner;
+            Solution::new(std::sync::Arc::new(mesh))
+        }
         Err(error) => {
             row.failure = Some((Stage::Extraction, format!("import: {error}")));
             return row;

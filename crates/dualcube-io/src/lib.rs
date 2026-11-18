@@ -32,14 +32,29 @@ fn extension_of(path: &Path) -> anyhow::Result<String> {
 
 pub fn import_solution(path: &Path) -> anyhow::Result<Solution> {
     match extension_of(path)?.as_str() {
-        "obj" | "stl" => {
-            let (mesh, ..) = Mesh::from_file(path)
-                .map_err(|err| anyhow::anyhow!("reading mesh {}: {err}", path.display()))?;
-            Ok(Solution::new(Arc::new(mesh)))
-        }
+        "obj" | "stl" => Ok(Solution::new(Arc::new(import_mesh(path)?.0))),
         "dc" | "dsol" => Dc::import(path),
         "loops" => Loops::import(path),
         ext => anyhow::bail!("unsupported file extension `{ext}` for {}", path.display()),
+    }
+}
+
+/// Read a surface mesh, for positive genus replaced by its TetGen surface when TetGen needed
+/// boundary Steiner points (also returned: how many). A TetGen failure keeps the mesh as read;
+/// the skeleton pipeline reports it again.
+pub fn import_mesh(path: &Path) -> anyhow::Result<(Mesh<INPUT>, usize)> {
+    let (mesh, ..) = Mesh::from_file(path)
+        .map_err(|err| anyhow::anyhow!("reading mesh {}: {err}", path.display()))?;
+    match dualcube::skeleton::validate::conform_input(&mesh) {
+        Ok(Some((refined, added))) => {
+            info!("{}: TetGen added {added} boundary vertices", path.display());
+            Ok((refined, added))
+        }
+        Ok(None) => Ok((mesh, 0)),
+        Err(error) => {
+            warn!("{}: input kept as read ({error})", path.display());
+            Ok((mesh, 0))
+        }
     }
 }
 
