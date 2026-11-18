@@ -1,4 +1,5 @@
-//! Tetrahedralization with an unchanged surface boundary.
+//! Tetrahedralization of a closed surface. TetGen may refine the surface with boundary Steiner
+//! points; [`conform`] adopts that surface as the input and remembers its volume.
 //!
 //! Uses `tetgen` on PATH, or `TETGEN_EXECUTABLE`. On Windows, commands run
 //! through WSL unless the executable has an `.exe` extension. Explicit options
@@ -49,12 +50,142 @@ pub fn tetrahedralize<M: Tag>(mesh: &Mesh<M>) -> io::Result<TetrahedralMesh<M>> 
     tetrahedralize_with_options(mesh, &TetgenOptions::default())
 }
 
-/// Run TetGen with boundary splitting disabled, move boundary Steiner points it adds anyway
-/// inside, and verify the returned boundary.
+/// The volume of `mesh` from an earlier [`conform`], else TetGen's, which must keep the surface.
 pub fn tetrahedralize_with_options<M: Tag>(
     mesh: &Mesh<M>,
     options: &TetgenOptions,
 ) -> io::Result<TetrahedralMesh<M>> {
+    if let Some(volume) = cache::lookup(mesh) {
+        return Ok(volume);
+    }
+    let (input_vertices, data) = run(mesh, options, FLAGS)?;
+    map_output(mesh, input_vertices, data)
+}
+
+/// The input surface refined by the boundary Steiner points TetGen needed.
+#[derive(Clone, Debug)]
+pub struct Surface {
+    /// Input vertices first, in `mesh.vert_ids()` order, then the Steiner points.
+    pub positions: Vec<Vector3D>,
+    /// Triangles oriented like the input.
+    pub faces: Vec<[usize; 3]>,
+}
+
+/// Tetrahedralize `mesh` once for all later [`tetrahedralize`] calls in this process. Returns
+/// `None` when the volume keeps the input surface, else the refined surface: TetGen may split
+/// input edges and faces, and the refined surface replaces the input. The volume is remembered
+/// for that surface, since TetGen need not reproduce it from the refined surface.
+/// Boundary splitting is allowed (no `-Y`): TetGen's surface is taken as it is.
+pub fn conform<M: Tag>(mesh: &Mesh<M>, options: &TetgenOptions) -> io::Result<Option<Surface>> {
+    if cache::lookup(mesh).is_some() {
+        return Ok(None);
+    }
+    let (input_vertices, data) = run(mesh, options, FLAGS)?;
+    let (vertices, tets, incidence) = order(mesh, input_vertices.clone(), data)?;
+    let surface = boundary_surface(mesh, &input_vertices, &vertices, &tets, &incidence)?;
+    cache::store(vertices, tets);
+    if let Some(surface) = &surface {
+        info!(
+            "TetGen refined the input surface with {} boundary Steiner points",
+            surface.positions.len() - input_vertices.len()
+        );
+    }
+    Ok(surface)
+}
+
+/// The volume's boundary as a surface, or `None` if it is the input's.
+fn boundary_surface<M: Tag>(
+    mesh: &Mesh<M>,
+    input_vertices: &[VertKey<M>],
+    vertices: &[Vector3D],
+    tets: &[[usize; 4]],
+    incidence: &HashMap<[usize; 3], usize>,
+) -> io::Result<Option<Surface>> {
+    let n = input_vertices.len();
+    // Boundary triangles, oriented away from their tet.
+    let mut faces = vec![];
+    for t in tets {
+        let positive = volume(vertices, *t) > 0.;
+        for [i, j, k] in [[1, 2, 3], [0, 3, 2], [0, 1, 3], [0, 2, 1]] {
+            let mut key = [t[i], t[j], t[k]];
+            key.sort();
+            if incidence[&key] == 1 {
+                faces.push(if positive {
+                    [t[i], t[j], t[k]]
+                } else {
+                    [t[i], t[k], t[j]]
+                });
+            }
+        }
+    }
+    // Same orientation as the input faces TetGen kept.
+    let index: HashMap<_, _> = input_vertices
+        .iter()
+        .enumerate()
+        .map(|(i, &v)| (v, i))
+        .collect();
+    let input: HashSet<[usize; 3]> = mesh
+        .face_ids()
+        .into_iter()
+        .filter_map(|f| {
+            let [a, b, c] = mesh.vertices(f).map(|v| index[&v]).collect_array::<3>()?;
+            Some(rotated([a, b, c]))
+        })
+        .collect();
+    let (mut same, mut flipped) = (0, 0);
+    for &[a, b, c] in &faces {
+        if input.contains(&rotated([a, b, c])) {
+            same += 1;
+        } else if input.contains(&rotated([a, c, b])) {
+            flipped += 1;
+        }
+    }
+    if flipped > same {
+        for face in &mut faces {
+            face.swap(1, 2);
+        }
+    }
+    // Surface vertices: the input ones keep their index, Steiner points follow.
+    let mut on = vec![false; vertices.len()];
+    for &v in faces.iter().flatten() {
+        on[v] = true;
+    }
+    if on[..n].iter().any(|&on| !on) {
+        return Err(io::Error::other("TetGen moved an input vertex off the boundary"));
+    }
+    let mut surface = vec![usize::MAX; vertices.len()];
+    let mut positions = vec![];
+    for (v, _) in on.iter().enumerate().filter(|(_, on)| **on) {
+        surface[v] = positions.len();
+        positions.push(vertices[v]);
+    }
+    let faces: Vec<_> = faces.iter().map(|f| f.map(|v| surface[v])).collect();
+    let unchanged = positions.len() == n
+        && faces.len() == input.len()
+        && faces.iter().all(|&f| input.contains(&rotated(f)));
+    Ok((!unchanged).then_some(Surface { positions, faces }))
+}
+
+/// A triangle's rotation starting at its smallest vertex, so equal oriented triangles compare equal.
+fn rotated(t: [usize; 3]) -> [usize; 3] {
+    let i = (0..3).min_by_key(|&i| t[i]).unwrap();
+    [t[i], t[(i + 1) % 3], t[(i + 2) % 3]]
+}
+
+fn volume(vertices: &[Vector3D], [a, b, c, d]: [usize; 4]) -> f64 {
+    let [a, b, c, d] = [a, b, c, d].map(|i| vertices[i]);
+    (b - a).cross(&(c - a)).dot(&(d - a))
+}
+
+/// Piecewise linear complex, no facet merging, quiet; boundary Steiner points allowed.
+const FLAGS: &str = "-pMQ";
+
+/// Run TetGen with `flags` on `mesh` and read the result, input vertices marked.
+fn run<M: Tag>(
+    mesh: &Mesh<M>,
+    options: &TetgenOptions,
+    flags: &str,
+) -> io::Result<(Vec<VertKey<M>>, TetMeshData)> {
     if mesh.nr_verts() == 0 || mesh.face_ids().is_empty() {
         return Err(io::Error::other("Cannot tetrahedralize an empty mesh"));
     }
@@ -70,36 +201,51 @@ pub fn tetrahedralize_with_options<M: Tag>(
     let work = TempDirectory::new()?;
     let input = work.0.join("surface.smesh");
     let input_vertices = write_smesh(mesh, &input)?;
-    let mut command;
-    let path;
-    if options.use_wsl {
-        let converted = Command::new("wsl.exe")
-            .args(["--exec", "wslpath", "-u"])
-            .arg(&input)
-            .output()?;
-        if !converted.status.success() {
+    let tetgen = |flags: &str| -> io::Result<std::process::Output> {
+        let mut command;
+        let path;
+        if options.use_wsl {
+            let converted = Command::new("wsl.exe")
+                .args(["--exec", "wslpath", "-u"])
+                .arg(&input)
+                .output()?;
+            if !converted.status.success() {
+                return Err(io::Error::other(format!(
+                    "WSL path conversion failed: {}",
+                    String::from_utf8_lossy(&converted.stderr)
+                )));
+            }
+            path = PathBuf::from(String::from_utf8_lossy(&converted.stdout).trim());
+            command = Command::new("wsl.exe");
+            command.arg("--exec").arg(&options.executable);
+        } else {
+            path = input.clone();
+            command = Command::new(&options.executable);
+        }
+        command.arg(flags).arg(path).output().map_err(|e| {
+            io::Error::new(
+                e.kind(),
+                format!(
+                    "Could not launch TetGen ({}): {e}",
+                    options.executable.display()
+                ),
+            )
+        })
+    };
+    let output = tetgen(flags)?;
+    if !output.status.success() {
+        // Exit code 3 is TetGen's self-intersection stop; it may also crash on intersecting
+        // facets, which its detection mode reports before crashing too.
+        let intersects = output.status.code() == Some(3)
+            || tetgen("-pd").is_ok_and(|o| {
+                String::from_utf8_lossy(&o.stdout).contains("intersect")
+            });
+        if intersects {
             return Err(io::Error::other(format!(
-                "WSL path conversion failed: {}",
-                String::from_utf8_lossy(&converted.stderr)
+                "The input surface self-intersects (TetGen {flags}: {})",
+                output.status
             )));
         }
-        path = PathBuf::from(String::from_utf8_lossy(&converted.stdout).trim());
-        command = Command::new("wsl.exe");
-        command.arg("--exec").arg(&options.executable);
-    } else {
-        path = input;
-        command = Command::new(&options.executable);
-    }
-    let output = command.arg("-pMYQ").arg(path).output().map_err(|e| {
-        io::Error::new(
-            e.kind(),
-            format!(
-                "Could not launch TetGen ({}): {e}",
-                options.executable.display()
-            ),
-        )
-    })?;
-    if !output.status.success() {
         return Err(io::Error::other(format!(
             "TetGen failed ({}):\n{}\n{}",
             output.status,
@@ -109,7 +255,7 @@ pub fn tetrahedralize_with_options<M: Tag>(
     }
     let (nodes, raw_to_local) = read_node_file(&work.0.join("surface.1.node"))?;
     let tets = read_ele_file(&work.0.join("surface.1.ele"), &raw_to_local)?;
-    map_output(mesh, input_vertices, TetMeshData { nodes, tets })
+    Ok((input_vertices, TetMeshData { nodes, tets }))
 }
 
 fn map_output<M: Tag>(
@@ -117,6 +263,47 @@ fn map_output<M: Tag>(
     input_vertices: Vec<VertKey<M>>,
     data: TetMeshData,
 ) -> io::Result<TetrahedralMesh<M>> {
+    let (vertices, tets, incidence) = order(mesh, input_vertices.clone(), data)?;
+    let indices: HashMap<_, _> = input_vertices
+        .iter()
+        .enumerate()
+        .map(|(i, &v)| (v, i))
+        .collect();
+    let expected: HashSet<_> = mesh
+        .face_ids()
+        .into_iter()
+        .map(|f| {
+            let mut tri: Vec<_> = mesh.vertices(f).map(|v| indices[&v]).collect();
+            tri.sort();
+            [tri[0], tri[1], tri[2]]
+        })
+        .collect();
+    let boundary = |incidence: HashMap<[usize; 3], usize>| -> HashSet<[usize; 3]> {
+        incidence
+            .into_iter()
+            .filter_map(|(face, count)| (count == 1).then_some(face))
+            .collect()
+    };
+    if boundary(incidence) != expected {
+        return Err(io::Error::other(
+            "TetGen refined the input surface; use the surface from `conform` as the input",
+        ));
+    }
+    Ok(TetrahedralMesh {
+        vertices,
+        tets,
+        input_vertices,
+    })
+}
+
+/// Input vertices first, validated cells, and how many cells contain each (sorted) triangle.
+type Ordered = (Vec<Vector3D>, Vec<[usize; 4]>, HashMap<[usize; 3], usize>);
+
+fn order<M: Tag>(
+    mesh: &Mesh<M>,
+    input_vertices: Vec<VertKey<M>>,
+    data: TetMeshData,
+) -> io::Result<Ordered> {
     let n = input_vertices.len();
     let mut original = vec![None; n];
     for (i, node) in data.nodes.iter().enumerate() {
@@ -147,7 +334,7 @@ fn map_output<M: Tag>(
     for (new, &old) in order.iter().enumerate() {
         remap[old] = new;
     }
-    let mut vertices: Vec<_> = order.iter().map(|&i| data.nodes[i].position).collect();
+    let vertices: Vec<_> = order.iter().map(|&i| data.nodes[i].position).collect();
     let mut tets = Vec::new();
     let mut tet_set = HashSet::new();
     let mut incidence = HashMap::<[usize; 3], usize>::new();
@@ -181,52 +368,7 @@ fn map_output<M: Tag>(
             "TetGen returned an empty or non-manifold volume",
         ));
     }
-    let indices: HashMap<_, _> = input_vertices
-        .iter()
-        .enumerate()
-        .map(|(i, &v)| (v, i))
-        .collect();
-    let expected: HashSet<_> = mesh
-        .face_ids()
-        .into_iter()
-        .map(|f| {
-            let mut tri: Vec<_> = mesh.vertices(f).map(|v| indices[&v]).collect();
-            tri.sort();
-            [tri[0], tri[1], tri[2]]
-        })
-        .collect();
-    let boundary = |incidence: HashMap<[usize; 3], usize>| -> HashSet<[usize; 3]> {
-        incidence
-            .into_iter()
-            .filter_map(|(face, count)| (count == 1).then_some(face))
-            .collect()
-    };
-    if boundary(incidence) != expected {
-        // Boundary Steiner points refine input faces; moved inside, the boundary is the input again.
-        if steiner::move_inside(n, &mut vertices, &mut tets, &expected).is_none() {
-            return Err(io::Error::other(
-                "TetGen split the input surface triangulation and the split could not be undone",
-            ));
-        }
-        let mut incidence = HashMap::<[usize; 3], usize>::new();
-        for t in &tets {
-            for [i, j, k] in [[0, 1, 2], [0, 1, 3], [0, 2, 3], [1, 2, 3]] {
-                let mut face = [t[i], t[j], t[k]];
-                face.sort();
-                *incidence.entry(face).or_default() += 1;
-            }
-        }
-        if incidence.values().any(|&count| count > 2) || boundary(incidence) != expected {
-            return Err(io::Error::other(
-                "TetGen changed the input surface triangulation",
-            ));
-        }
-    }
-    Ok(TetrahedralMesh {
-        vertices,
-        tets,
-        input_vertices,
-    })
+    Ok((vertices, tets, incidence))
 }
 
 struct TempDirectory(PathBuf);
@@ -253,7 +395,7 @@ impl Drop for TempDirectory {
     }
 }
 
-mod steiner;
+mod cache;
 
 #[cfg(test)]
 mod tests;

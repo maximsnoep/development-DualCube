@@ -3,7 +3,7 @@ mod tetrahedralize;
 mod utils;
 
 pub use tetrahedralize::{
-    TetgenOptions, TetrahedralMesh, tetrahedralize, tetrahedralize_with_options,
+    Surface, TetgenOptions, TetrahedralMesh, conform, tetrahedralize, tetrahedralize_with_options,
 };
 
 use mehsh::prelude::*;
