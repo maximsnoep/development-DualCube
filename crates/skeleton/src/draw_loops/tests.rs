@@ -346,6 +346,25 @@ fn draws_a_ring_whose_loops_have_one_region_on_both_sides() {
 }
 
 #[test]
+fn draws_an_arc_leaving_a_partner_with_its_region_on_both_sides() {
+    use crate::label::Port::*;
+    // A ring with a branch of two cubes. When a loop is inserted, the partner interval it starts
+    // from has one region on both sides, which the arc splits: the arc's side of the interval
+    // decides where the other boundaries of the region belong.
+    assert_draws(graph_realized(
+        6,
+        &[
+            (0, 1, PositiveX),
+            (1, 2, PositiveY),
+            (2, 3, NegativeX),
+            (3, 0, NegativeY),
+            (3, 4, PositiveZ),
+            (4, 5, PositiveY),
+        ],
+    ));
+}
+
+#[test]
 fn draws_a_six_way_junction() {
     assert_draws(star_realized(&crate::label::Port::ALL));
 }

@@ -412,7 +412,8 @@ impl<'a> Plan<'a> {
     }
 
     // In `expected`, the region beside arc `j` holding the partner interval arriving at
-    // crossing `j`.
+    // crossing `j`, on the side the arc leaves to. The interval's other side may lie beside
+    // the arc too, in the region beyond it.
     fn arriving(&self, expected: &Partition, window: &Window, j: usize) -> Option<usize> {
         let v = self.crossings[j];
         let map = &self.template.map;
@@ -428,13 +429,16 @@ impl<'a> Plan<'a> {
             after: After::New(j),
             left: None,
         };
-        let sides = [
-            *marks.get(&arriving)?,
-            *marks.get(&map.halves[arriving].twin)?,
-        ];
+        // A forward piece has its left side in its face.
+        let side = if self.left[j] {
+            arriving
+        } else {
+            map.halves[arriving].twin
+        };
+        let mark = *marks.get(&side)?;
         expected
             .iter()
-            .position(|p| p.contains(&beside) && sides.iter().any(|m| p.contains(m)))
+            .position(|p| p.contains(&beside) && p.contains(&mark))
     }
 
     /// Partner half-edges of `map` in the template's interval for crossing `j`: after the same
