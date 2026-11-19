@@ -5,7 +5,7 @@ use std::collections::HashSet;
 pub(super) fn add(
     object: &mut RenderObject,
     realized: &RealizedSkeleton,
-    colors: &HashMap<dualcube::skeleton::SkeletonNodeID, colors::Kolor>,
+    palette: &HashMap<SkeletonNodeID, colors::Kolor>,
 ) {
     let layout = &realized.cuboids;
     if layout.cuboids.is_empty() {
@@ -19,9 +19,6 @@ pub(super) fn add(
     }
     let scale = 32. / (upper - lower).amax();
     let translation = -(lower + upper) * (scale / 2.);
-    // Nodes missing from the patch colors (none in practice) get their own.
-    let mut palette = io::figure::region_colors(&realized.labeled.skeleton);
-    palette.extend(colors);
     let mut hidden = HashSet::new();
     for &[a, b] in &layout.connections {
         let delta = layout.cuboids[b].center - layout.cuboids[a].center;
@@ -39,7 +36,7 @@ pub(super) fn add(
     let mut lines = GizmoAsset::new();
     for (id, cube) in &layout.cuboids {
         let color = match cube.owner {
-            CuboidOwner::Node(node) => palette[&node],
+            CuboidOwner::Node(node) => palette.get(&node).copied().unwrap_or(colors::LIGHT_GRAY),
             CuboidOwner::Edge(edge) => colors::from_direction(
                 realized.labeled.labels[edge].direction,
                 Some(Perspective::Primal),
