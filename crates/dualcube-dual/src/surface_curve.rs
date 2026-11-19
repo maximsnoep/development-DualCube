@@ -60,6 +60,13 @@ impl Loop {
         }
     }
 
+    /// The input half-edges through which the loop leaves its triangles, in order, with the
+    /// position along each (from root to tip); repeated visits included. `None` for a curve
+    /// that does not end its triangle visits on their sides.
+    pub fn exits(&self, mesh: &Mesh<INPUT>) -> Option<Vec<(EdgeID, f64)>> {
+        crate::sampler::exits(mesh, self)
+    }
+
     /// Every segment in traversal order, including repeated triangle and edge visits.
     pub fn surface_arcs(
         &self,

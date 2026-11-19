@@ -26,6 +26,10 @@ use std::collections::{BinaryHeap, HashMap, HashSet};
 use std::rc::Rc;
 use std::time::Instant;
 
+mod crossings;
+mod curve;
+pub(crate) use crossings::{Crossings, exits};
+
 pub type FlowGraph = grapff::fixed::FixedGraph<EdgeID, f64>;
 
 /// Scales of the A* lower bounds of a flow graph and measure (see `LoopSampler::flow_graph_heuristic`).
@@ -328,6 +332,8 @@ pub struct LoopSampler<'a> {
     flow_graphs: Option<&'a [FlowGraph; 3]>,
     // The proximity of the loops to every face (see `loop_proximity`), computed once (the loops do not change).
     proximity: std::sync::OnceLock<FxHashMap<FaceID, f64>>,
+    // The crossings by occurrence, when some loops are explicit curves (which `occupied` leaves out).
+    crossings: std::sync::OnceLock<Option<Crossings>>,
 }
 
 impl<'a> LoopSampler<'a> {
@@ -344,6 +350,26 @@ impl<'a> LoopSampler<'a> {
             occupied,
             flow_graphs,
             proximity: std::sync::OnceLock::new(),
+            crossings: std::sync::OnceLock::new(),
+        }
+    }
+
+    fn crossings(&self) -> Option<&Crossings> {
+        self.crossings
+            .get_or_init(|| {
+                self.loops
+                    .values()
+                    .any(|l| !l.surface.is_empty())
+                    .then(|| Crossings::new(self.mesh_ref, self.loops))
+            })
+            .as_ref()
+    }
+
+    // The position (from root to tip) of the `rank`th crossing along the half-edge.
+    fn offset_at(&self, edge: EdgeID, rank: usize) -> Option<f64> {
+        match self.crossings() {
+            Some(crossings) => crossings.offset(edge, rank),
+            None => self.loops[*self.loops_on_edge_ref(edge).get(rank)?].offset(edge),
         }
     }
 
@@ -357,6 +383,9 @@ impl<'a> LoopSampler<'a> {
         }
         let result = Self::new(self.mesh_ref, self.loops, self.occupied, self.flow_graphs);
         let _ = result.proximity.set(proximity);
+        if let Some(crossings) = self.crossings.get() {
+            let _ = result.crossings.set(crossings.clone());
+        }
         result
     }
 
@@ -430,6 +459,9 @@ impl<'a> LoopSampler<'a> {
     }
 
     fn loops_on_edge_ref(&self, edge: EdgeID) -> &[LoopID] {
+        if let Some(crossings) = self.crossings() {
+            return crossings.loops_on(edge);
+        }
         self.occupied.get(&edge).map_or(&[], Vec::as_slice)
     }
 
@@ -453,6 +485,9 @@ impl<'a> LoopSampler<'a> {
 
     // All existing loops passing through the face.
     fn face_chords(&self, face: FaceID) -> Vec<FaceChord> {
+        if let Some(crossings) = self.crossings() {
+            return crossings.visits(face).to_vec();
+        }
         let mut ends: HashMap<LoopID, Vec<u64>> = HashMap::new();
         for (side, edge) in self.mesh_ref.edges(face).enumerate() {
             for (rank, &loop_id) in self.loops_on_edge_ref(edge).iter().enumerate() {
@@ -640,12 +675,12 @@ impl<'a> LoopSampler<'a> {
                 let lo = if gap == 0 {
                     0.
                 } else {
-                    self.loops[list[gap - 1]].offset(edge).unwrap_or(0.)
+                    self.offset_at(edge, gap - 1).unwrap_or(0.)
                 };
                 let hi = if gap == list.len() {
                     1.
                 } else {
-                    self.loops[list[gap]].offset(edge).unwrap_or(1.)
+                    self.offset_at(edge, gap).unwrap_or(1.)
                 };
                 // Keep some distance to neighboring loops, but only a tiny distance to the mesh vertices (and never
                 // more than a quarter of the gap, as neighboring loops can be arbitrarily close).
@@ -866,12 +901,12 @@ impl<'a> LoopSampler<'a> {
         let lo = if gap == 0 {
             0.
         } else {
-            self.loops[list[gap - 1]].offset(edge).unwrap_or(0.)
+            self.offset_at(edge, gap - 1).unwrap_or(0.)
         };
         let hi = if gap == list.len() {
             1.
         } else {
-            self.loops[list[gap]].offset(edge).unwrap_or(1.)
+            self.offset_at(edge, gap).unwrap_or(1.)
         };
         (lo + hi) / 2.
     }
@@ -1023,7 +1058,11 @@ impl<'a> LoopSampler<'a> {
         let mut proximity: FxHashMap<FaceID, f64> = FxHashMap::default();
         for lewp in self.loops.values() {
             let mut hops: FxHashMap<FaceID, usize> = FxHashMap::default();
-            let mut frontier = lewp.edges.iter().map(|&e| mesh.face(e)).collect_vec();
+            let mut frontier = if lewp.surface.is_empty() {
+                lewp.edges.iter().map(|&e| mesh.face(e)).collect_vec()
+            } else {
+                lewp.surface.iter().map(|arc| arc.face).unique().collect_vec()
+            };
             for &face in &frontier {
                 hops.insert(face, 0);
             }
@@ -1228,7 +1267,7 @@ impl<'a> LoopSampler<'a> {
         multiple_crossings: bool,
         allowed: impl Fn(P, GapNode) -> bool,
     ) -> Result<(Vec<EdgeID>, f64, Vec<(usize, usize)>), SearchFailure> {
-        if self.loops.values().any(|l| !l.surface.is_empty()) {
+        if self.crossings().is_some_and(|crossings| !crossings.complete) {
             return Err(SearchFailure::NoRoute);
         }
         const MAX_EXPANSIONS: usize = 1_000_000;
@@ -1297,7 +1336,7 @@ impl<'a> LoopSampler<'a> {
                             let sub = coord as u32 as usize;
                             let e = mesh.edges(face).nth(side).unwrap();
                             let list = self.loops_on_edge_ref(e);
-                            let at = |i: usize| self.loops[list[i]].offset(e).unwrap();
+                            let at = |i: usize| self.offset_at(e, i).unwrap_or(0.5);
                             let rank = sub / 2;
                             let t = if sub % 2 == 1 {
                                 at(rank)

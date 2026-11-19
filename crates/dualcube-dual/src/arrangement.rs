@@ -22,11 +22,11 @@ pub(crate) type Components = (Vec<usize>, usize, HashMap<VertID, usize>);
 const CORNERS: [Point2; 3] = [[0., 0.], [1., 0.], [0., 1.]];
 const EPSILON: f64 = 1e-14;
 
-fn orient(a: Point2, b: Point2, p: Point2) -> f64 {
+pub(crate) fn orient(a: Point2, b: Point2, p: Point2) -> f64 {
     (b[0] - a[0]) * (p[1] - a[1]) - (b[1] - a[1]) * (p[0] - a[0])
 }
 
-fn lerp(a: Point2, b: Point2, t: f64) -> Point2 {
+pub(crate) fn lerp(a: Point2, b: Point2, t: f64) -> Point2 {
     [a[0] + t * (b[0] - a[0]), a[1] + t * (b[1] - a[1])]
 }
 
@@ -246,7 +246,7 @@ fn side_index(sides: &[EdgeID; 3], edge: EdgeID) -> usize {
     sides.iter().position(|&e| e == edge).unwrap()
 }
 
-fn point_on_side(side: usize, t: f64) -> Point2 {
+pub(crate) fn point_on_side(side: usize, t: f64) -> Point2 {
     lerp(CORNERS[side], CORNERS[(side + 1) % 3], t)
 }
 
