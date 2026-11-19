@@ -236,13 +236,18 @@ fn flips_free_a_stuck_surgery() {
 }
 
 #[test]
-fn search_fails_within_an_exhausted_budget() {
+fn search_reports_an_exhausted_budget() {
     let mesh = tetrahedron();
     let mut surgery = stuck(&mesh);
     surgery.options.flip_budget = 0;
     // Depth one is always tried; on the tetrahedron one flip may already succeed.
-    let depth_one = surgery.search();
-    assert!(depth_one.is_none_or(|s| s.len() == 1));
+    match surgery.search() {
+        Ok(sequence) => assert_eq!(sequence.len(), 1),
+        Err(stuck) => assert!(
+            matches!(stuck, super::flip::Stuck::Budget { .. }),
+            "{stuck}"
+        ),
+    }
 }
 
 /// Merge an edge's endpoints and drop its boundary.

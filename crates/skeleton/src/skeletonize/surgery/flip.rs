@@ -65,9 +65,33 @@ fn smallest_first(spokes: [Spoke; 3]) -> [Spoke; 3] {
     rotate(spokes, *spokes.iter().min().unwrap())
 }
 
+/// Why no flip sequence frees a junction.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) enum Stuck {
+    /// Every reachable rotation system was tried: no flip sequence exists.
+    Exhausted { states: usize },
+    /// The budget of distinct rotation systems was reached first.
+    Budget { states: usize },
+}
+
+impl std::fmt::Display for Stuck {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Exhausted { states } => write!(
+                f,
+                "no flip sequence frees a junction (all {states} reachable rotation systems tried)"
+            ),
+            Self::Budget { states } => write!(
+                f,
+                "flip budget exhausted ({states} rotation systems tried, more remain)"
+            ),
+        }
+    }
+}
+
 impl Surgery<'_> {
     /// Shortest flip sequence after which the last flipped arc's loop bounds.
-    pub(super) fn search(&mut self) -> Option<Vec<ArcID>> {
+    pub(super) fn search(&mut self) -> Result<Vec<ArcID>, Stuck> {
         let arcs: Vec<_> = self
             .arcs
             .iter()
@@ -76,7 +100,7 @@ impl Surgery<'_> {
             .collect();
         for &arc in &arcs {
             if self.bounds(arc) {
-                return Some(Vec::new());
+                return Ok(Vec::new());
             }
         }
         let arc_index: HashMap<_, _> = arcs.iter().enumerate().map(|(i, &a)| (a, i)).collect();
@@ -118,6 +142,7 @@ impl Surgery<'_> {
             hasher.finish()
         };
         let mut seen = HashSet::from([fingerprint(&start)]);
+        let mut truncated = false;
         let mut queue = VecDeque::from([(start, Vec::new())]);
         while let Some((rotation, path)) = queue.pop_front() {
             for e in 0..arcs.len() {
@@ -131,14 +156,26 @@ impl Surgery<'_> {
                         "Connectivity surgery: {} flips free a junction",
                         sequence.len()
                     );
-                    return Some(sequence.into_iter().map(|i| arcs[i]).collect());
+                    return Ok(sequence.into_iter().map(|i| arcs[i]).collect());
                 }
-                if seen.len() < self.options.flip_budget && seen.insert(fingerprint(&next)) {
+                let key = fingerprint(&next);
+                if seen.contains(&key) {
+                    continue;
+                }
+                if seen.len() < self.options.flip_budget {
+                    seen.insert(key);
                     queue.push_back((next, sequence));
+                } else {
+                    truncated = true;
                 }
             }
         }
-        None
+        let states = seen.len();
+        Err(if truncated {
+            Stuck::Budget { states }
+        } else {
+            Stuck::Exhausted { states }
+        })
     }
 
     /// Flip an arc between two distinct junctions on the surface: b continues along e, d

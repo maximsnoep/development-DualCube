@@ -367,23 +367,28 @@ impl<'a> Surgery<'a> {
             let Some(candidate) = self.heap.pop() else {
                 // Every arc at a junction has one patch on both sides and a loop that does
                 // not bound. Flip arcs until one bounds.
-                if let Some(sequence) = self.search() {
-                    flips += sequence.len();
-                    for &arc in &sequence {
-                        self.flip(arc);
+                let stuck = match self.search() {
+                    Ok(sequence) => {
+                        flips += sequence.len();
+                        for &arc in &sequence {
+                            self.flip(arc);
+                        }
+                        self.pending.push(*sequence.last().unwrap());
+                        continue;
                     }
-                    self.pending.push(*sequence.last().unwrap());
-                    continue;
-                }
+                    Err(stuck) => stuck,
+                };
                 let (graph, remaining) = self.diagnostic();
                 warn!(
-                    "Connectivity surgery stuck: no flip sequence within the budget frees one of {} junctions ({} arcs, {} patches, after {merges} merges)",
+                    "Connectivity surgery stuck: {stuck}; {} junctions remain ({} arcs, {} patches, after {merges} merges)",
                     self.junctions.len(),
                     self.arcs.len(),
                     self.patches.iter().flatten().count()
                 );
                 return Err(SurgeryFailure {
-                    reason: "Connectivity surgery stopped with remaining junctions".into(),
+                    reason: format!(
+                        "Connectivity surgery stopped with remaining junctions: {stuck}"
+                    ),
                     graph,
                     remaining_face_positions: remaining,
                 });
