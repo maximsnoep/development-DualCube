@@ -40,7 +40,7 @@
 //! returned.
 
 use crate::prelude::*;
-use rand::seq::{IteratorRandom, SliceRandom};
+use rand::seq::SliceRandom;
 use serde::{Deserialize, Serialize};
 use slotmap::Key as _;
 use std::collections::VecDeque;
@@ -121,28 +121,30 @@ impl LoopPhase {
                 ("add", 0.35),
                 ("feature", 0.1),
                 ("free loops", 0.1),
-                ("replace", 0.2),
-                ("reroute", 0.2),
-                ("merge", 0.05),
+                // (Replace, reroute, and merge are commented out for now: only additions and removals.)
+                // ("replace", 0.2),
+                // ("reroute", 0.2),
+                // ("merge", 0.05),
             ],
             Self::Optimization => &[
-                ("replace", 0.35),
-                ("reroute", 0.35),
-                ("merge", 0.15),
+                // ("replace", 0.35),
+                // ("reroute", 0.35),
+                // ("merge", 0.15),
                 ("remove", 0.15),
             ],
-            Self::Pruning => &[("remove", 0.6), ("merge", 0.4)],
+            Self::Pruning => &[("remove", 0.6) /* , ("merge", 0.4) */],
         }
     }
 }
 
 /// The mutations of the loops, by their names in the statistics (see the module documentation).
-pub const LOOP_MUTATIONS: [&str; 7] = [
+pub const LOOP_MUTATIONS: [&str; 4] = [
     "add",
     "remove",
-    "replace",
-    "reroute",
-    "merge",
+    // (Commented out for now: only additions and removals.)
+    // "replace",
+    // "reroute",
+    // "merge",
     "feature",
     "free loops",
 ];
@@ -318,6 +320,7 @@ pub struct MutationChance {
 
 /// A random element, with a chance proportional to its weight (its penalty), plus a small floor
 /// (`ELEMENT_FLOOR` of the mean weight) so that every element can still be chosen, but good ones hardly ever are.
+/* Commented out for now (only additions and removals): helpers of `Solution::merge`.
 // The distance (relative to their size) below which two loops count as close for a merge (see `Solution::merge`).
 const MERGE_DISTANCE: f64 = 0.05;
 
@@ -389,6 +392,7 @@ fn union_order(first: &[LoopID], second: &[LoopID]) -> Vec<LoopID> {
         .min_by_key(Vec::len)
         .unwrap_or_else(|| first.to_vec())
 }
+*/
 
 pub(crate) fn pick_weighted<T: Copy>(items: impl IntoIterator<Item = (T, f64)>) -> Option<T> {
     const ELEMENT_FLOOR: f64 = 0.02;
@@ -1040,10 +1044,6 @@ impl Solution {
         params: &EvolutionParams,
         monitor: &EvolutionMonitor,
     ) -> Result<Self, SolutionError> {
-        // TODO: Migrate mutations to occurrence-aware surface curves.
-        if self.has_surface_curves() {
-            return Err(SolutionError::SurfaceCurveEvolution);
-        }
         let (mut live, mut mu, mut lambda) = params.live(monitor);
         let Some(initial_quality) = self.get_quality() else {
             return Err(SolutionError::NoPrimal);
@@ -1057,7 +1057,9 @@ impl Solution {
         } else {
             monitor.begin_phase(initial_quality, || self.clone());
         }
+        // Evolution works on explicit curves only (legacy loops become their straight chords, exactly).
         let mut seed = self.clone();
+        seed.convert_to_curves();
         seed.prepare_flow();
         // Score the seed like the offspring (fast embedding near the corners of its layout), such that they are
         // compared fairly; its layout (e.g., optimized) is largely kept.
@@ -1392,18 +1394,19 @@ impl Solution {
         let mut child = self.clone_loop_state();
         let enough = self.loops.len() > 3;
 
-        if self.loops.len() > 4 && op == "merge" {
-            child.dual = self.dual.clone();
-            return child.merge().map(|()| (child, "merge"));
-        }
-        if enough && op == "replace" {
-            child.dual = self.dual.clone();
-            return child.replace(self).map(|()| (child, "replace"));
-        }
-        if enough && op == "reroute" {
-            child.dual = self.dual.clone();
-            return child.reroute(self).map(|()| (child, "reroute"));
-        }
+        // (Commented out for now: only additions and removals.)
+        // if self.loops.len() > 4 && op == "merge" {
+        //     child.dual = self.dual.clone();
+        //     return child.merge().map(|()| (child, "merge"));
+        // }
+        // if enough && op == "replace" {
+        //     child.dual = self.dual.clone();
+        //     return child.replace(self).map(|()| (child, "replace"));
+        // }
+        // if enough && op == "reroute" {
+        //     child.dual = self.dual.clone();
+        //     return child.reroute(self).map(|()| (child, "reroute"));
+        // }
 
         // The dual structure of the parent is up to date for the child (until loops are added or removed).
         child.dual = self.dual.clone();
@@ -1479,7 +1482,11 @@ impl Solution {
         let Some((edges, _, gaps)) = found else {
             return false;
         };
-        let loop_id = profile::timed(1, || self.add_loop_in_gaps(Loop::new(edges, axis), gaps));
+        // As an explicit curve: placed as legacy loops were, straight where possible (see `add_curve_in_gaps`).
+        let Some(loop_id) = profile::timed(1, || self.add_curve_in_gaps(&edges, gaps, axis)) else {
+            debug!("add_valid_loop: the loop could not be drawn as a curve");
+            return false;
+        };
         match profile::timed(2, || Dual::from(self.mesh_ref.clone(), &self.loops)) {
             Ok(dual) => {
                 self.dual = Ok(dual);
@@ -1510,6 +1517,8 @@ impl Solution {
         Some(())
     }
 
+/* Commented out for now (only additions and removals): merge, reroute, and replace. They read the legacy `edges`
+    of loops, so they need porting to explicit curves first.
     // Merge: replace two loops of the same axis that bound a common loop region (neighbors without loops of their axis
     // between them) by one loop. Loops that run alongside each other (crossing the same loops, close together) are
     // preferred. The new loop crosses everything that the two cross (the union of their crossings, see `union_order`),
@@ -1800,6 +1809,7 @@ impl Solution {
             }
         }
     }
+*/
 
     // The penalty of a loop (see `compute_loop_penalties`; the mean of the others for a new loop, 1 if unknown).
     fn loop_penalty(&self, loop_id: LoopID) -> f64 {
@@ -1849,6 +1859,7 @@ impl Solution {
         )
     }
 
+/* Commented out for now (only additions and removals): used by reroute and replace.
     // A loop among the given ones, chosen by its penalty (see `loop_penalty`) if known, else with probability
     // proportional to its misalignment (flow cost per length).
     fn badly_aligned_loop(&self, loops: &[LoopID]) -> Option<LoopID> {
@@ -1890,6 +1901,7 @@ impl Solution {
             .or(weighted.last())
             .map(|(loop_id, _)| *loop_id)
     }
+*/
 
     // Add a valid loop of the given axis, returns whether a loop was added. Targeted: through a badly aligned triangle
     // of the parent's layout (see `targeted_face`) or a point of interest (then possibly along another axis).
@@ -2025,16 +2037,17 @@ impl Solution {
     }
 
     /// A canonical signature of the loop structure (independent of the order of the loops and of where each loop's
-    /// edge sequence starts).
+    /// edge sequence starts). A loop is given by the half-edges it leaves its triangles through.
     #[must_use]
     pub fn loop_signature(&self) -> LoopSignature {
         self.loops
             .values()
             .map(|lewp| {
                 let raw = lewp
-                    .edges
-                    .iter()
-                    .map(|e| e.raw().data().as_ffi())
+                    .exits(&self.mesh_ref)
+                    .unwrap_or_default()
+                    .into_iter()
+                    .map(|(edge, _)| edge.raw().data().as_ffi())
                     .collect_vec();
                 let start = raw.iter().position_min().unwrap_or(0);
                 let mut rotated = raw[start..].to_vec();
@@ -2089,6 +2102,7 @@ mod selection_tests {
     }
 }
 
+/* Commented out for now (only additions and removals): tests of merge and reroute.
 #[cfg(test)]
 mod mutation_tests {
     use crate::prelude::*;
@@ -2161,3 +2175,4 @@ mod mutation_tests {
         );
     }
 }
+*/

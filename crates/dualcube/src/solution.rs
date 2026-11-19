@@ -27,8 +27,6 @@ use thiserror::Error;
 
 #[derive(Error, Debug, Clone, Serialize, Deserialize)]
 pub enum SolutionError {
-    #[error("Evolution of explicit surface curves is not implemented yet.")]
-    SurfaceCurveEvolution,
     #[error("Something is wrong with the DUAL representation: {0}")]
     DualError(#[from] PropertyViolationError),
     #[error("Something is wrong with the PRIMAL representation: {0}")]
