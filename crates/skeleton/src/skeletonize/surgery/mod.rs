@@ -19,12 +19,9 @@ use nalgebra::{Matrix4, Vector4};
 use slotmap::SlotMap;
 use tracing::{info, warn};
 
-mod f2_rref;
 mod flip;
-mod handle_subspace;
 mod homology;
 mod output;
-mod tet_boundary;
 mod tetrahedralize;
 
 use super::deflate::CONTRACTION;
@@ -38,7 +35,7 @@ use homology::{Bits, Class, Homology};
 pub struct Options {
     pub shape_weight: f64,
     pub sampling_weight: f64,
-    /// Subtracted once per handle cycle crossed by the dissolved arc. Not from Au et al.
+    /// Subtracted once per volume cocycle that is nonzero on the dissolved arc. Not from Au et al.
     pub handle_bonus: f64,
     /// Flip sequences tried when surgery is stuck, before it fails.
     pub flip_budget: usize,
@@ -166,7 +163,7 @@ struct Arc {
     /// Class of a loop crossing it once from left to right; set once one patch is on both
     /// sides. Reversing the arc negates it.
     class: Option<Class>,
-    /// Handle cycles it crosses.
+    /// Volume cocycles nonzero on its crossings.
     handles: Bits,
 }
 

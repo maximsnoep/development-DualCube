@@ -297,6 +297,33 @@ fn torus_surgery_keeps_one_loop_beyond_a_tree() {
 }
 
 #[test]
+#[ignore = "requires TetGen; set TETGEN_EXECUTABLE and run with --include-ignored"]
+fn every_loop_around_the_torus_ring_crosses_a_biased_edge() {
+    let mesh = torus();
+    let index: HashMap<_, _> = mesh
+        .vert_ids()
+        .into_iter()
+        .enumerate()
+        .map(|(i, v)| (v, i))
+        .collect();
+    let homology = Homology::new(&mesh, &index, 1).unwrap();
+    // Vertex i * 6 + j sits at ring step i and tube step j (see `torus`).
+    for j in 0..6 {
+        let ring: Vec<usize> = (0..12).map(|i| i * 6 + j).collect();
+        let biased = (0..12)
+            .filter(|&i| homology.handles([ring[i], ring[(i + 1) % 12]]).count_ones() > 0)
+            .count();
+        assert!(biased > 0, "ring {j} crosses no biased edge");
+    }
+    // A loop around the tube bounds, so it has no net crossing.
+    let tube: Vec<usize> = (0..6).collect();
+    let class = (0..6).fold(Class::default(), |sum, j| {
+        &sum + &homology.edge(tube[j], tube[(j + 1) % 6])
+    });
+    assert!(class.is_zero());
+}
+
+#[test]
 fn turns_back_across_a_mesh_edge_are_removed() {
     let (mesh, mut skeleton) =
         crate::surface::tests::bands(&[[0., 0., 0.], [1., 0., 0.], [0., 1., 0.]]);
