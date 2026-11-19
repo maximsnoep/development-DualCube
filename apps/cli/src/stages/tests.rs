@@ -61,6 +61,7 @@ fn report_has_a_header_and_one_line_per_row() {
         Row {
             input: "a.obj".into(),
             failure: Some((Stage::Drawing, "x, \"y\"".to_owned())),
+            peak_mb: Some(42),
             ..Row::default()
         },
         Row::default(),
@@ -72,5 +73,14 @@ fn report_has_a_header_and_one_line_per_row() {
     assert_eq!(lines.len(), 3);
     assert!(lines[0].starts_with("input,genus,faces,steiner,status,error,"));
     assert!(lines[1].starts_with("a.obj,,0,0,failed at drawing,\"x, \"\"y\"\"\","));
+    assert!(lines[0].ends_with(",quality,peak_mb"));
+    assert!(lines[1].ends_with(",42"));
     assert!(lines[2].contains(",ok,"));
+}
+
+#[test]
+fn peak_memory_is_read_on_linux() {
+    if cfg!(target_os = "linux") {
+        assert!(super::peak_memory_mb().is_some_and(|mb| mb > 0));
+    }
 }
