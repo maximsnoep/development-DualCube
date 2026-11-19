@@ -228,16 +228,7 @@ pub fn show(
                 ui.spacing_mut().item_spacing.x += 6.;
                 ui.spacing_mut().button_padding.y += 2.;
                 ui.add_space(8.);
-                menu_bar(
-                    ui,
-                    &mut jobs,
-                    &mut conf,
-                    &solution,
-                    &input,
-                    &skeleton,
-                    view,
-                    &mut automatic_rotation,
-                );
+                menu_bar(ui, &mut jobs, &mut conf, &solution, &input, &skeleton, view);
                 ui.separator();
                 pipeline_bar(
                     ui,
@@ -446,7 +437,6 @@ fn menu_bar(
     input: &InputResource,
     skeleton: &SkeletonResource,
     view: Option<ViewSettings>,
-    automatic_rotation: &mut AutomaticRotation,
 ) {
     menu_button(ui, "File", |ui| {
         if sleek_button(ui, "Load") {
@@ -490,8 +480,8 @@ fn menu_bar(
             }
         }
         sep(ui);
-        // Figures for papers (see `io::figure`): the model, its loops, its segmentation and its polycube, as seen; with a
-        // save and a text to make them again.
+        // Figures for papers (see `io::figure`): one per view preset and the polycube, as seen; with a save and a text
+        // to make them again. The camera lock is in the View menu.
         label(ui, "Figures", TEXT_COLOR2);
         ui.horizontal(|ui| {
             for format in FigureFormat::ALL {
@@ -499,7 +489,6 @@ fn menu_bar(
             }
         });
         ui.checkbox(&mut conf.figure_label, text("label"));
-        lock_checkbox(ui, conf, automatic_rotation);
         if sleek_button(ui, "Export figures")
             && let Some(view) = view
             && let Some(dir) = rfd::FileDialog::new().pick_folder()

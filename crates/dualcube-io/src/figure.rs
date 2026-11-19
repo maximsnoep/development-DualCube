@@ -1,9 +1,10 @@
-//! Figures of a solution for papers: the input mesh, the loop structure on it, the polycube segmentation, and the
-//! polycube, as SVG, PDF (vector) or PNG.
+//! Figures of a solution for papers, one per view preset of the GUI (the input mesh, the skeleton stages, the loop
+//! structure, the polycube segmentation, the quad mesh) and the polycube, as SVG, PDF (vector) or PNG.
 //!
-//! All figures share one view direction. The polycube is drawn in a parallel (axonometric) projection, the surfaces in
-//! a perspective projection. Every figure is a square of the same size with the shape fitted inside it, so that figures
-//! line up in a paper; optionally with a label below it (the input, the object, the score, and the date).
+//! All figures share one view direction. The polycube and the cubes are drawn in a parallel (axonometric) projection,
+//! the rest in a perspective projection fitted to the input mesh, so that those line up exactly. Every figure is a
+//! square of the same size with the shape fitted inside it; optionally with a label below it (the input, the object,
+//! the score, and the date). Skeleton graphs are drawn over a light rendering of the input mesh, as if seen through it.
 //!
 //! Hidden surfaces are removed with the painter's algorithm: the faces that face the camera are drawn back to front,
 //! and every line on the surface is drawn right after the (last drawn) face it lies on, so the faces in front of it
@@ -12,6 +13,7 @@
 //!
 //! The PDF and PNG are converted from the SVG, so all formats show the same.
 
+use crate::SkeletonSave;
 use anyhow::{Context, anyhow, bail};
 use dualcube::prelude::*;
 use std::collections::HashMap;
@@ -22,24 +24,51 @@ use std::sync::{Arc, OnceLock};
 /// A color (sRGB, components in [0, 1]).
 pub type Rgb = [f32; 3];
 
-/// The figures of a solution.
+/// The figures of a solution: one per view preset of the GUI, in its order, and the polycube.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum Figure {
     /// The input mesh (shaded).
     InputMesh,
+    /// The contracted (deflated) mesh.
+    Deflated,
+    /// The skeleton before refinement.
+    RawSkeleton,
+    /// The skeleton as labeled (with its junction splits and repairs).
+    Skeleton,
+    /// The input mesh colored by the skeleton's patches, with their boundaries.
+    Patches,
+    /// The patches after optimization.
+    OptimizedPatches,
+    /// The patches (light) with the skeleton graph.
+    Combined,
+    /// The skeleton graph with the axis labels of its edges.
+    Labeled,
+    /// The cube placement, in a parallel projection.
+    Cubes,
     /// The loops on the input mesh.
     LoopStructure,
     /// The input mesh colored by the patches of the layout, with their boundaries (the paths).
     Segmentation,
+    /// The quad mesh, colored by the axes of its polycube faces, with its edges and irregular edge loops.
+    Quad,
     /// The polycube, in a parallel projection.
     Polycube,
 }
 
 impl Figure {
-    pub const ALL: [Self; 4] = [
+    pub const ALL: [Self; 13] = [
         Self::InputMesh,
+        Self::Deflated,
+        Self::RawSkeleton,
+        Self::Skeleton,
+        Self::Patches,
+        Self::OptimizedPatches,
+        Self::Combined,
+        Self::Labeled,
+        Self::Cubes,
         Self::LoopStructure,
         Self::Segmentation,
+        Self::Quad,
         Self::Polycube,
     ];
 
@@ -48,8 +77,17 @@ impl Figure {
     pub const fn name(self) -> &'static str {
         match self {
             Self::InputMesh => "input mesh",
+            Self::Deflated => "deflated mesh",
+            Self::RawSkeleton => "raw skeleton",
+            Self::Skeleton => "skeleton",
+            Self::Patches => "skeleton patches",
+            Self::OptimizedPatches => "optimized patches",
+            Self::Combined => "patches and skeleton",
+            Self::Labeled => "labeled skeleton",
+            Self::Cubes => "cube placement",
             Self::LoopStructure => "loop structure",
             Self::Segmentation => "polycube segmentation",
+            Self::Quad => "quad mesh",
             Self::Polycube => "polycube",
         }
     }
@@ -59,10 +97,24 @@ impl Figure {
     pub const fn slug(self) -> &'static str {
         match self {
             Self::InputMesh => "mesh",
+            Self::Deflated => "deflated",
+            Self::RawSkeleton => "raw",
+            Self::Skeleton => "skeleton",
+            Self::Patches => "patches",
+            Self::OptimizedPatches => "optimized",
+            Self::Combined => "combined",
+            Self::Labeled => "labeled",
+            Self::Cubes => "cubes",
             Self::LoopStructure => "loops",
             Self::Segmentation => "segmentation",
+            Self::Quad => "quad",
             Self::Polycube => "polycube",
         }
+    }
+
+    // Drawn in perspective, fitted to the input mesh.
+    const fn on_model(self) -> bool {
+        !matches!(self, Self::Cubes | Self::Polycube)
     }
 }
 
@@ -153,24 +205,50 @@ const SEAM: f64 = 0.25;
 // Pixels per point of a PNG.
 const PNG_SCALE: f32 = 4.;
 
-/// The SVG of a figure of the solution, or `None` if the solution does not have it yet (no loops, layout or
-/// polycube).
+/// The SVG of a figure of the solution (and of the skeleton stages, if given), or `None` if it does not have it yet
+/// (e.g., no skeleton, loops, layout, quad mesh or polycube).
 #[must_use]
 pub fn figure_svg(
     solution: &Solution,
+    skeleton: Option<&SkeletonSave>,
     figure: Figure,
     params: &FigureParams,
     style: &FigureStyle,
 ) -> Option<String> {
+    let model = Model {
+        solution,
+        skeleton: skeleton.unwrap_or(&NO_SKELETON),
+        camera: model_camera(solution, params),
+        params,
+        style,
+    };
     let items = match figure {
-        Figure::InputMesh => input_mesh(solution, params, style),
-        Figure::LoopStructure => loop_structure(solution, params, style)?,
-        Figure::Segmentation => segmentation(solution, params, style)?,
+        Figure::InputMesh => input_mesh(&model),
+        Figure::Deflated => skeleton::deflated(&model)?,
+        Figure::RawSkeleton => skeleton::graph(&model, skeleton::Graph::Raw)?,
+        Figure::Skeleton => skeleton::graph(&model, skeleton::Graph::Current)?,
+        Figure::Patches => skeleton::patches(&model, false)?,
+        Figure::OptimizedPatches => skeleton::patches(&model, true)?,
+        Figure::Combined => skeleton::combined(&model)?,
+        Figure::Labeled => skeleton::graph(&model, skeleton::Graph::Labeled)?,
+        Figure::Cubes => skeleton::cubes(&model)?,
+        Figure::LoopStructure => loop_structure(&model)?,
+        Figure::Segmentation => segmentation(&model)?,
+        Figure::Quad => skeleton::quad(&model)?,
         Figure::Polycube => polycube(solution, params, style)?,
     };
     if items.is_empty() {
         return None;
     }
+    let frame = if figure.on_model() {
+        let mesh = &*solution.mesh_ref;
+        mesh.vert_ids()
+            .into_iter()
+            .map(|v| model.camera.project(mesh.position(v)))
+            .collect()
+    } else {
+        vec![]
+    };
     let label = params.annotation.as_ref().map(|a| {
         let mut parts = vec![a.input.clone(), figure.name().to_owned()];
         if let Some(score) = a.score {
@@ -179,7 +257,7 @@ pub fn figure_svg(
         parts.push(a.date.clone());
         parts.join(" \u{b7} ")
     });
-    Some(to_svg(items, params.size, label.as_deref()))
+    Some(to_svg(items, &frame, params.size, label.as_deref()))
 }
 
 /// Saves a figure (an SVG, see [`figure_svg`]) in the format given by the extension of the path: SVG, PDF or PNG.
@@ -217,9 +295,11 @@ pub fn save_figure(svg: &str, path: &Path) -> anyhow::Result<()> {
     std::fs::write(path, bytes).with_context(|| format!("writing {path:?}"))
 }
 
-/// Saves all figures the solution has, as `<dir>/<stem>_<figure>.<extension>`; returns their paths.
+/// Saves all figures the solution (with the skeleton stages, if given) has, as `<dir>/<stem>_<figure>.<extension>`;
+/// returns their paths.
 pub fn export_figures(
     solution: &Solution,
+    skeleton: Option<&SkeletonSave>,
     dir: &Path,
     stem: &str,
     extension: &str,
@@ -228,7 +308,7 @@ pub fn export_figures(
 ) -> anyhow::Result<Vec<PathBuf>> {
     let mut saved = vec![];
     for figure in Figure::ALL {
-        let Some(svg) = figure_svg(solution, figure, params, style) else {
+        let Some(svg) = figure_svg(solution, skeleton, figure, params, style) else {
             continue;
         };
         let path = dir.join(format!("{stem}_{}.{extension}", figure.slug()));
@@ -407,6 +487,95 @@ enum Item {
         color: Rgb,
         width: f64,
     },
+    // A dot with a ring around it; radius and ring width as fractions of the figure's size.
+    Disk {
+        center: [f64; 2],
+        radius: f64,
+        fill: Rgb,
+        ring: Rgb,
+    },
+}
+
+// What a figure is drawn from: the solution, the skeleton stages, and the perspective camera of the input mesh.
+struct Model<'a> {
+    solution: &'a Solution,
+    skeleton: &'a SkeletonSave,
+    camera: Camera,
+    params: &'a FigureParams,
+    style: &'a FigureStyle,
+}
+
+static NO_SKELETON: SkeletonSave = SkeletonSave {
+    extraction: None,
+    labeling: None,
+    labeled: None,
+    realized: None,
+    optimized: None,
+    drawing: None,
+    loops: None,
+    failure: None,
+};
+
+// A face of a surface; one without a color hides what is behind it but is not drawn.
+struct Face {
+    corners: Vec<Vector3D>,
+    normal: Vector3D,
+    color: Option<Rgb>,
+}
+
+fn mesh_faces<M: Tag>(mesh: &Mesh<M>, color: impl Fn(FaceKey<M>) -> Option<Rgb>) -> Vec<Face> {
+    mesh.face_ids()
+        .into_iter()
+        .map(|face| Face {
+            corners: mesh.vertices(face).map(|v| mesh.position(v)).collect(),
+            normal: mesh.normal(face),
+            color: color(face),
+        })
+        .collect()
+}
+
+// How the faces of a surface are drawn: also those facing away (for surfaces that are not closed and consistently
+// oriented), and how far their shaded colors are lightened toward white.
+#[derive(Clone, Copy, Default)]
+struct Look {
+    two_sided: bool,
+    lighten: f32,
+}
+
+// A line on a surface (width as a fraction of the figure's size); drawn where the surface does not hide it.
+struct SurfaceLine {
+    points: Vec<Vector3D>,
+    color: Rgb,
+    width: f64,
+}
+
+fn mix(color: Rgb, toward: Rgb, t: f32) -> Rgb {
+    [0, 1, 2].map(|k| color[k] + (toward[k] - color[k]) * t)
+}
+
+/// A color per region (patch, node), spread around the hue wheel (as in the GUI).
+#[must_use]
+pub fn region_color(region: usize) -> Rgb {
+    let hue = (0.58 + region as f64 * 0.618_033_988_749_895).fract() * 6.;
+    let (saturation, value) = match region % 3 {
+        0 => (0.78, 0.90),
+        1 => (0.65, 0.76),
+        _ => (0.85, 0.98),
+    };
+    let f = (hue - hue.floor()) as f32;
+    let (p, q, t) = (
+        value * (1. - saturation),
+        value * (1. - saturation * f),
+        value * (1. - saturation * (1. - f)),
+    );
+    match hue as usize % 6 {
+        0 => [value, t, p],
+        1 => [q, value, p],
+        2 => [p, value, t],
+        3 => [p, q, value],
+        4 => [t, p, value],
+        _ => [value, p, q],
+    }
 }
 
 // A band on a surface (flat colored): a polyline (closed: a loop) and the offsets of its other side. Drawn as one
@@ -515,40 +684,45 @@ impl DepthBuffer {
     }
 }
 
-// The faces of a surface that face the camera, back to front, then the marks on it, back to front, where the surface does
-// not hide them (seen through a depth buffer of the faces). Faces without a color are not drawn.
-fn surface<M: Tag>(
-    mesh: &Mesh<M>,
+// The faces of a surface that face the camera (or all, if two-sided), back to front, then the marks and lines on it,
+// back to front, where the surface does not hide them (seen through a depth buffer of the faces).
+fn surface(
+    faces: Vec<Face>,
     camera: &Camera,
-    color: impl Fn(FaceKey<M>) -> Option<Rgb>,
+    look: Look,
     marks: &[SurfaceMark],
+    lines: &[SurfaceLine],
 ) -> Vec<Item> {
-    let mut faces = mesh
-        .face_ids()
+    let mut faces = faces
         .into_iter()
         .filter_map(|face| {
-            let corners = mesh
-                .vertices(face)
-                .map(|v| mesh.position(v))
-                .collect::<Vec<_>>();
+            let Face {
+                corners,
+                normal,
+                color,
+            } = face;
             let centroid = corners.iter().sum::<Vector3D>() / corners.len().max(1) as f64;
-            let normal = mesh.normal(face);
-            camera
-                .faces(centroid, normal)
-                .then(|| (camera.depth(centroid), face, corners, normal))
+            let normal = if camera.faces(centroid, normal) {
+                normal
+            } else if look.two_sided {
+                -normal
+            } else {
+                return None;
+            };
+            Some((camera.depth(centroid), color, corners, normal))
         })
         .collect::<Vec<_>>();
     faces.sort_by(|a, b| b.0.total_cmp(&a.0));
     let mut items = vec![];
-    for (_, face, corners, normal) in &faces {
-        if let Some(base) = color(*face) {
+    for (_, color, corners, normal) in &faces {
+        if let Some(base) = color {
             items.push(Item::Polygon {
                 points: corners.iter().map(|&p| camera.project(p)).collect(),
-                fill: scaled(base, camera.shade(*normal)),
+                fill: mix(scaled(*base, camera.shade(*normal)), [1.; 3], look.lighten),
             });
         }
     }
-    if marks.is_empty() {
+    if marks.is_empty() && lines.is_empty() {
         return items;
     }
 
@@ -634,12 +808,27 @@ fn surface<M: Tag>(
             shown.push((depth, item));
         }
     }
+    for line in lines {
+        for pair in line.points.windows(2) {
+            if shows((pair[0] + pair[1]) / 2.) {
+                let item = Item::Line {
+                    from: camera.project(pair[0]),
+                    to: camera.project(pair[1]),
+                    color: line.color,
+                    width: line.width,
+                };
+                shown.push((camera.depth((pair[0] + pair[1]) / 2.), item));
+            }
+        }
+    }
     shown.sort_by(|a, b| b.0.total_cmp(&a.0));
     items.extend(shown.into_iter().map(|(_, item)| item));
     items
 }
 
-fn perspective_camera<M: Tag>(mesh: &Mesh<M>, params: &FigureParams) -> Camera {
+// The perspective camera of all figures on the model: it sees the whole input mesh.
+fn model_camera(solution: &Solution, params: &FigureParams) -> Camera {
+    let mesh = &*solution.mesh_ref;
     let points = mesh
         .vert_ids()
         .into_iter()
@@ -648,10 +837,9 @@ fn perspective_camera<M: Tag>(mesh: &Mesh<M>, params: &FigureParams) -> Camera {
     Camera::new(params, Some(&points))
 }
 
-fn input_mesh(solution: &Solution, params: &FigureParams, style: &FigureStyle) -> Vec<Item> {
-    let mesh = &*solution.mesh_ref;
-    let camera = perspective_camera(mesh, params);
-    surface(mesh, &camera, |_| Some(style.surface), &[])
+fn input_mesh(model: &Model<'_>) -> Vec<Item> {
+    let faces = mesh_faces(&model.solution.mesh_ref, |_| Some(model.style.surface));
+    surface(faces, &model.camera, Look::default(), &[], &[])
 }
 
 fn axis(direction: Direction) -> usize {
@@ -664,11 +852,8 @@ fn axis(direction: Direction) -> usize {
 
 // The loops on the input mesh, as bands (see `Solution::loop_frames`): between consecutive crossings, a strip on either
 // side of the loop, its positive side in the loop's color and its negative side lighter (as in the GUI).
-fn loop_structure(
-    solution: &Solution,
-    params: &FigureParams,
-    style: &FigureStyle,
-) -> Option<Vec<Item>> {
+fn loop_structure(model: &Model<'_>) -> Option<Vec<Item>> {
+    let (solution, params, style) = (model.solution, model.params, model.style);
     if solution.loops.is_empty() {
         return None;
     }
@@ -696,16 +881,13 @@ fn loop_structure(
             });
         }
     }
-    let camera = perspective_camera(mesh, params);
-    Some(surface(mesh, &camera, |_| Some(style.dark), &lines))
+    let faces = mesh_faces(mesh, |_| Some(style.dark));
+    Some(surface(faces, &model.camera, Look::default(), &lines, &[]))
 }
 
 // The input mesh (refined by the layout) colored by patch, with the paths between the patches.
-fn segmentation(
-    solution: &Solution,
-    params: &FigureParams,
-    style: &FigureStyle,
-) -> Option<Vec<Item>> {
+fn segmentation(model: &Model<'_>) -> Option<Vec<Item>> {
+    let (solution, params, style) = (model.solution, model.params, model.style);
     let (layout, polycube) = (solution.layout.as_ref()?, solution.polycube.as_ref()?);
     let mesh = &layout.granulated_mesh;
     let structure = &polycube.structure;
@@ -754,13 +936,10 @@ fn segmentation(
             });
         }
     }
-    let camera = perspective_camera(mesh, params);
-    Some(surface(
-        mesh,
-        &camera,
-        |face| Some(colors.get(&face).copied().unwrap_or(style.surface)),
-        &lines,
-    ))
+    let faces = mesh_faces(mesh, |face| {
+        Some(colors.get(&face).copied().unwrap_or(style.surface))
+    });
+    Some(surface(faces, &model.camera, Look::default(), &lines, &[]))
 }
 
 // The polycube in a parallel projection: its (axis-aligned, rectangular) faces cut on the lattice of all their
@@ -769,17 +948,8 @@ fn segmentation(
 fn polycube(solution: &Solution, params: &FigureParams, style: &FigureStyle) -> Option<Vec<Item>> {
     let structure = &solution.polycube.as_ref()?.structure;
     let camera = Camera::new(params, None);
-    let view = [camera.forward.x, camera.forward.y, camera.forward.z];
 
-    // The faces that face the camera: normal axis, plane coordinate, and extent on the two other axes.
-    struct Face {
-        n: usize,
-        c: f64,
-        rect: [f64; 4],
-        fill: Rgb,
-    }
     let mut faces = vec![];
-    let mut extent = 0f64;
     for face in structure.face_ids() {
         let corners = structure
             .vertices(face)
@@ -799,26 +969,45 @@ fn polycube(solution: &Solution, params: &FigureParams, style: &FigureStyle) -> 
                 .map(|p| p[k])
                 .fold(f64::NEG_INFINITY, f64::max)
         };
-        extent = extent.max((0..3).map(|k| hi(k) - lo(k)).fold(0., f64::max));
         // Flat colors (as in the GUI): the axes are told apart by their colors.
         let (direction, _) = to_principal_direction(normal);
-        faces.push(Face {
+        faces.push(AxisFace {
             n,
             c: centroid[n],
             rect: [lo(ia), hi(ia), lo(ib), hi(ib)],
             fill: style.primal[axis(direction)],
         });
     }
+    boxes(&faces, &camera, style)
+}
+
+// An axis-aligned rectangle facing the camera: normal axis, plane coordinate, and extent on the two other axes (in
+// their cyclic order).
+struct AxisFace {
+    n: usize,
+    c: f64,
+    rect: [f64; 4],
+    fill: Rgb,
+}
+
+// Axis-aligned faces in a parallel projection: cut on the lattice of all their coordinates, drawn back to front by
+// their position in the lattice; every cell with the sides of its face that it has.
+fn boxes(faces: &[AxisFace], camera: &Camera, style: &FigureStyle) -> Option<Vec<Item>> {
     if faces.is_empty() {
         return None;
     }
+    let view = [camera.forward.x, camera.forward.y, camera.forward.z];
+    let extent = faces
+        .iter()
+        .map(|f| (f.rect[1] - f.rect[0]).max(f.rect[3] - f.rect[2]))
+        .fold(0., f64::max);
 
     // The lattice: the distinct coordinates per axis.
     let eps = 1e-9 * extent.max(1e-12);
     let levels = (0..3)
         .map(|k| {
             let mut values = vec![];
-            for f in &faces {
+            for f in faces {
                 let (ia, ib) = ((f.n + 1) % 3, (f.n + 2) % 3);
                 if f.n == k {
                     values.push(f.c);
@@ -843,13 +1032,13 @@ fn polycube(solution: &Solution, params: &FigureParams, style: &FigureStyle) -> 
     let sign = view.map(|v| if v.abs() < 1e-9 { 0. } else { v.signum() });
 
     struct Cell<'a> {
-        face: &'a Face,
+        face: &'a AxisFace,
         a: [f64; 2],
         b: [f64; 2],
         key: f64,
     }
     let mut cells = vec![];
-    for f in &faces {
+    for f in faces {
         let (ia, ib) = ((f.n + 1) % 3, (f.n + 2) % 3);
         let (i0, i1) = (index(ia, f.rect[0]), index(ia, f.rect[1]));
         let (j0, j1) = (index(ib, f.rect[2]), index(ib, f.rect[3]));
@@ -925,8 +1114,9 @@ fn escape(text: &str) -> String {
         .replace('"', "&quot;")
 }
 
-// The items fitted (centered) in a square of the given size, with the label below it.
-fn to_svg(items: Vec<Item>, size: f64, label: Option<&str>) -> String {
+// The items, and the frame (projected points), fitted (centered) in a square of the given size, with the label below
+// it.
+fn to_svg(items: Vec<Item>, frame: &[[f64; 2]], size: f64, label: Option<&str>) -> String {
     let (mut min, mut max) = ([f64::INFINITY; 2], [f64::NEG_INFINITY; 2]);
     let mut extend = |p: &[f64; 2]| {
         for k in 0..2 {
@@ -941,8 +1131,10 @@ fn to_svg(items: Vec<Item>, size: f64, label: Option<&str>) -> String {
                 extend(from);
                 extend(to);
             }
+            Item::Disk { center, .. } => extend(center),
         }
     }
+    frame.iter().for_each(&mut extend);
     let span = (max[0] - min[0]).max(max[1] - min[1]).max(1e-12);
     let scale = size * (1. - 2. * MARGIN) / span;
     let center = [(min[0] + max[0]) / 2., (min[1] + max[1]) / 2.];
@@ -993,6 +1185,22 @@ fn to_svg(items: Vec<Item>, size: f64, label: Option<&str>) -> String {
                     width * size
                 );
             }
+            Item::Disk {
+                center,
+                radius,
+                fill,
+                ring,
+            } => {
+                let (x, y) = page(center);
+                let _ = writeln!(
+                    svg,
+                    r#"<circle cx="{x:.2}" cy="{y:.2}" r="{:.2}" fill="{}" stroke="{}" stroke-width="{:.2}"/>"#,
+                    radius * size,
+                    hex(*fill),
+                    hex(*ring),
+                    0.25 * radius * size
+                );
+            }
         }
     }
     if let Some(label) = label {
@@ -1008,6 +1216,8 @@ fn to_svg(items: Vec<Item>, size: f64, label: Option<&str>) -> String {
     svg.push_str("</svg>\n");
     svg
 }
+
+mod skeleton;
 
 #[cfg(test)]
 mod tests {

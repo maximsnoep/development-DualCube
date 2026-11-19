@@ -368,16 +368,9 @@ fn tube(builder: &mut MeshBuilder, a: Vector3D, b: Vector3D, radius: f64, color:
     }
 }
 
-/// Spread successive regions around the hue wheel without fading larger patch sets.
+/// Spread successive regions around the hue wheel without fading larger patch sets (shared with the figures).
 fn region_color(region: usize) -> [f32; 3] {
-    let hue = ((0.58 + region as f64 * 0.618_033_988_749_895).fract() * 360.) as f32;
-    let (saturation, value) = match region % 3 {
-        0 => (0.78, 0.90),
-        1 => (0.65, 0.76),
-        _ => (0.85, 0.98),
-    };
-    let srgb = Srgba::from(Hsva::new(hue, saturation, value, 1.));
-    [srgb.red, srgb.green, srgb.blue]
+    io::figure::region_color(region)
 }
 
 #[cfg(test)]
