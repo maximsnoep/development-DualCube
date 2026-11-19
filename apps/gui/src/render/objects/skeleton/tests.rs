@@ -137,6 +137,26 @@ fn large_patch_sets_keep_saturated_colors_and_neighboring_indices_distinct() {
 }
 
 #[test]
+fn region_colors_match_bevy_hsv_conversion() {
+    for region in 0..1000 {
+        let hue = ((0.58 + region as f64 * 0.618_033_988_749_895).fract() * 360.) as f32;
+        let (saturation, value) = match region % 3 {
+            0 => (0.78, 0.90),
+            1 => (0.65, 0.76),
+            _ => (0.85, 0.98),
+        };
+        let expected = Srgba::from(Hsva::new(hue, saturation, value, 1.));
+        let color = region_color(region);
+        for (c, e) in color
+            .iter()
+            .zip([expected.red, expected.green, expected.blue])
+        {
+            assert!((c - e).abs() < 1e-4, "region {region}: {color:?}");
+        }
+    }
+}
+
+#[test]
 fn cube_view_distinguishes_stretched_edges_and_keeps_finite_geometry() {
     let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
         .join("../../crates/mehsh/assets/tetrahedron.obj");

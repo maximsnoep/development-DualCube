@@ -60,7 +60,7 @@ impl Job {
                 return None;
             }
             info!("Exporting figures to {}", dir.display());
-            let figures = figures(&solution, &dir, &name, &view, &date);
+            let figures = figures(&solution, skeleton.as_ref(), &dir, &name, &view, &date);
             let save = dir.join(format!("{name}.dc"));
             let save = match io::formats::dc::write(
                 &solution,
@@ -135,6 +135,7 @@ impl Job {
 // The figures as seen in `view`; returns the paths saved.
 fn figures(
     solution: &Solution,
+    skeleton: Option<&io::SkeletonSave>,
     dir: &Path,
     name: &str,
     view: &ViewSettings,
@@ -169,6 +170,7 @@ fn figures(
     };
     match io::figure::export_figures(
         solution,
+        skeleton,
         dir,
         name,
         view.format.extension(),

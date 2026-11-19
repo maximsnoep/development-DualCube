@@ -16,7 +16,12 @@ fn main() -> anyhow::Result<()> {
         .position(|a| a == "--evolve")
         .and_then(|i| args.get(i + 1)?.parse::<usize>().ok());
 
-    let mut solution = io::import_solution(&path)?;
+    // A save may also hold the skeleton stages (for their figures).
+    let io::Save {
+        mut solution,
+        skeleton,
+        ..
+    } = io::import_save(&path)?;
     if solution.layout.is_none() {
         if solution.loops.is_empty() {
             solution.initialize();
@@ -48,6 +53,7 @@ fn main() -> anyhow::Result<()> {
     std::fs::create_dir_all(&dir)?;
     for saved in export_figures(
         &solution,
+        skeleton.as_ref(),
         &dir,
         &stem,
         extension,
