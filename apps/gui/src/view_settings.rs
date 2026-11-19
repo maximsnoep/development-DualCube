@@ -13,7 +13,8 @@ const PREFIX: &str = "view:";
 pub struct ViewSettings {
     pub eye: Vec3,
     pub target: Vec3,
-    /// The world up of the orbit (the screen up is made orthogonal to the view).
+    /// The camera's up (the screen up is its part orthogonal to the view); applying a view also makes it the orbit
+    /// axis. It reads as the orbit axis, or its opposite once the camera has gone over the top.
     pub up: Vec3,
     pub loop_width: f64,
     pub format: FigureFormat,
@@ -30,7 +31,7 @@ impl ViewSettings {
         Self {
             eye: look.eye,
             target: look.target,
-            up: conf.camera_up,
+            up: look.up,
             loop_width: conf.loop_width,
             format: conf.figure_format,
             label: conf.figure_label,

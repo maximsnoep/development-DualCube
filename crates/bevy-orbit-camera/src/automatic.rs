@@ -1,4 +1,4 @@
-use crate::{control::OrbitControllerState, transform::LookTransform};
+use crate::{control::Controller, transform::LookTransform};
 use bevy::prelude::*;
 
 #[derive(Component)]
@@ -20,7 +20,7 @@ impl Default for AutomaticRotation {
 }
 
 pub(crate) fn update(
-    mut cameras: Query<(&mut LookTransform, Option<&mut OrbitControllerState>), With<Marker>>,
+    mut cameras: Query<(&mut LookTransform, Option<&Controller>), With<Marker>>,
     automatic_rotation: Res<AutomaticRotation>,
     time: Res<Time>,
 ) {
@@ -28,22 +28,12 @@ pub(crate) fn update(
         return;
     }
 
-    for (mut t, controller_state) in cameras.iter_mut() {
-        let up = t.up.try_normalize().unwrap_or(Vec3::Y);
-        let Some(mut forward) = (t.target - t.eye).try_normalize() else {
-            continue;
-        };
-        let radius = t.radius();
-
-        // radians per second * dt
-        let yaw = automatic_rotation.sensitivity * time.delta_secs();
-
-        forward = Quat::from_axis_angle(up, yaw) * forward;
-        if let Some(mut controller_state) = controller_state {
-            controller_state.yaw += yaw;
-        }
-
-        // eye = target - forward * radius  (forward is eye->target)
-        t.eye = t.target - forward * radius;
+    // radians per second * dt
+    let yaw = automatic_rotation.sensitivity * time.delta_secs();
+    for (mut t, controller) in cameras.iter_mut() {
+        // Spins about the orbit axis, the same way a horizontal drag does.
+        let axis = controller.map_or(t.up, |c| c.orbit_axis);
+        let sign = crate::control::yaw_sign(&t, axis);
+        crate::control::turn(&mut t, axis, yaw * sign, 0.0);
     }
 }

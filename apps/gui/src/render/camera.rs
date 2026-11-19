@@ -194,7 +194,7 @@ pub fn update(
     view: Res<'_, ViewResource>,
     mut custom_materials: ResMut<'_, Assets<ToonMaterial>>,
     window: Single<'_, '_, &Window>,
-    mut main_camera: Query<'_, '_, (&mut LookTransform, &Transform, &mut Camera), With<Controller>>,
+    mut main_camera: Query<'_, '_, (&mut LookTransform, &mut Controller, &Transform, &mut Camera)>,
     mut other_cameras: Query<
         '_,
         '_,
@@ -202,7 +202,8 @@ pub fn update(
         Without<Controller>,
     >,
 ) {
-    let (mut look, main_transform, mut main_camera) = main_camera.single_mut().unwrap();
+    let (mut look, mut controller, main_transform, mut main_camera) =
+        main_camera.single_mut().unwrap();
 
     main_camera.is_active = false;
     if let Some(viewport) = view
@@ -215,7 +216,12 @@ pub fn update(
         }
     }
 
-    look.up = configuration.camera_up.normalize();
+    // A new up axis (clicked, or from an applied view) becomes the orbit axis, and the camera levels to it.
+    let axis = configuration.camera_up.normalize_or(Vec3::Y);
+    if controller.orbit_axis != axis {
+        controller.orbit_axis = axis;
+        look.up = axis;
+    }
 
     // Store sub-camera transforms relative to their object origins so every view matches the main camera.
     let normalized_translation = main_transform.translation - Vec3::from(Objects::InputMesh);
