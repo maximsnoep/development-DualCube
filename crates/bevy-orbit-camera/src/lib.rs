@@ -28,17 +28,24 @@ pub struct OrbitCameraBundle {
 impl OrbitCameraBundle {
     pub fn new(controller: control::Controller, eye: Vec3, target: Vec3, up: Vec3) -> Self {
         let look_transform = transform::LookTransform::new(eye, target, up);
-        let up = up.try_normalize().unwrap_or(Vec3::Y);
-        let controller_state = (target - eye)
-            .try_normalize()
-            .map(|forward| control::OrbitControllerState::from_forward(forward, up))
-            .unwrap_or_else(|| control::OrbitControllerState::from_forward(Vec3::NEG_Z, up));
-
         Self {
             controller,
-            controller_state,
+            controller_state: orbit_state(look_transform),
             look_transform,
             transform: look_transform.into(),
         }
     }
+}
+
+/// Moves an orbit camera to `look`; its orbit restarts from there.
+pub fn look_at(camera: &mut EntityCommands<'_>, look: LookTransform) {
+    camera.insert((look, Transform::from(look), orbit_state(look)));
+}
+
+fn orbit_state(look: LookTransform) -> control::OrbitControllerState {
+    let up = look.up.try_normalize().unwrap_or(Vec3::Y);
+    let forward = (look.target - look.eye)
+        .try_normalize()
+        .unwrap_or(Vec3::NEG_Z);
+    control::OrbitControllerState::from_forward(forward, up)
 }

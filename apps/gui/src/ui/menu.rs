@@ -8,7 +8,10 @@ use crate::jobs::{EvolutionLive, Job, JobState};
 use crate::render::Objects;
 use crate::render::objects::skeleton::SkeletonLayer;
 use crate::render::store::{RenderObjectSetting, RenderObjectSettingStore};
-use crate::resources::{Configuration, FigureFormat, InputResource, SolutionResource};
+use crate::resources::{
+    Configuration, FigureFormat, InputResource, SkeletonResource, SolutionResource,
+};
+use crate::view_settings::{ApplyView, ViewSettings};
 use bevy::prelude::*;
 use bevy_egui::egui::{
     self, Checkbox, CollapsingHeader, CursorIcon, MenuBar, Panel, RectAlign, RichText, Ui,
@@ -198,21 +201,20 @@ pub fn show(
     mut evolution_live: ResMut<'_, EvolutionLive>,
     mut view_preview: ResMut<'_, ModelView>,
     input: Res<'_, InputResource>,
-    skeleton: Res<'_, crate::resources::SkeletonResource>,
-    main_camera: Query<'_, '_, &Transform, With<bevy_orbit_camera::Controller>>,
+    skeleton: Res<'_, SkeletonResource>,
+    main_camera: Query<
+        '_,
+        '_,
+        &bevy_orbit_camera::LookTransform,
+        With<bevy_orbit_camera::Controller>,
+    >,
+    mut apply_view: MessageWriter<'_, ApplyView>,
 ) -> Result<(), BevyError> {
     // The figures are seen as the model is (the polycube window shares its rotation).
-    let camera = main_camera.single().ok().map(|transform| {
-        let (forward, up) = (transform.forward(), transform.up());
-        (
-            Vector3D::new(
-                f64::from(forward.x),
-                f64::from(forward.y),
-                f64::from(forward.z),
-            ),
-            Vector3D::new(f64::from(up.x), f64::from(up.y), f64::from(up.z)),
-        )
-    });
+    let view = main_camera
+        .single()
+        .ok()
+        .map(|look| ViewSettings::current(look, &conf));
     let mut root = super::root_ui(egui_ctx.ctx_mut()?, "top bar root");
     Panel::top(super::TOP_BAR)
         .show_separator_line(true)
@@ -231,8 +233,9 @@ pub fn show(
                     &mut jobs,
                     &mut conf,
                     &solution,
-                    &input.name,
-                    camera,
+                    &input,
+                    &skeleton,
+                    view,
                     &mut automatic_rotation,
                 );
                 ui.separator();
@@ -295,6 +298,8 @@ pub fn show(
                     &solution,
                     &mut automatic_rotation,
                     &mut render_setting_store,
+                    view,
+                    &mut apply_view,
                 );
             });
             ui.add_space(6.);
@@ -311,6 +316,8 @@ fn view_menu(
     solution: &SolutionResource,
     automatic_rotation: &mut AutomaticRotation,
     render_setting_store: &mut RenderObjectSettingStore,
+    view: Option<ViewSettings>,
+    apply_view: &mut MessageWriter<'_, ApplyView>,
 ) {
     let response = ui.button(RichText::new("View").color(TEXT_COLOR).size(TEXT_SIZE));
     super::menus::popup(&response)
@@ -421,6 +428,10 @@ fn view_menu(
                             }
                         }
                     });
+                    if let Some(view) = view {
+                        space(ui);
+                        view_fields(ui, view, apply_view);
+                    }
                 });
             });
         });
@@ -432,8 +443,9 @@ fn menu_bar(
     jobs: &mut MessageWriter<'_, Job>,
     conf: &mut Configuration,
     solution: &SolutionResource,
-    name: &str,
-    camera: Option<(Vector3D, Vector3D)>,
+    input: &InputResource,
+    skeleton: &SkeletonResource,
+    view: Option<ViewSettings>,
     automatic_rotation: &mut AutomaticRotation,
 ) {
     menu_button(ui, "File", |ui| {
@@ -449,10 +461,13 @@ fn menu_bar(
             }
         }
         sep(ui);
+        // With the skeleton stages, so a save restores every view.
         if sleek_button(ui, "Save as") {
             if let Some(path) = rfd::FileDialog::new().save_file() {
-                jobs.write(Job::export(
+                jobs.write(Job::save(
                     solution.current_solution.clone(),
+                    skeleton.save(),
+                    input.source.clone(),
                     path.with_extension("dc"),
                 ));
             }
@@ -475,7 +490,8 @@ fn menu_bar(
             }
         }
         sep(ui);
-        // Figures for papers (see `io::figure`): the model, its loops, its segmentation and its polycube, as seen.
+        // Figures for papers (see `io::figure`): the model, its loops, its segmentation and its polycube, as seen; with a
+        // save and a text to make them again.
         label(ui, "Figures", TEXT_COLOR2);
         ui.horizontal(|ui| {
             for format in FigureFormat::ALL {
@@ -485,16 +501,17 @@ fn menu_bar(
         ui.checkbox(&mut conf.figure_label, text("label"));
         lock_checkbox(ui, conf, automatic_rotation);
         if sleek_button(ui, "Export figures")
-            && let Some((view, up)) = camera
+            && let Some(view) = view
             && let Some(dir) = rfd::FileDialog::new().pick_folder()
         {
             jobs.write(Job::export_figures(
                 solution.current_solution.clone(),
                 conf.clone(),
                 dir,
-                name.to_owned(),
+                input.name.clone(),
                 view,
-                up,
+                skeleton.save(),
+                input.source.clone(),
             ));
         }
         sep(ui);
@@ -741,6 +758,64 @@ pub fn apply_pending_view(
     if let Some(name) = view.pending.take() {
         view.show(name, &mut settings);
     }
+}
+
+/// The camera as numbers (eye, target, up), and a view line (see `ViewSettings`) to copy or paste. Explicit, so they
+/// also work while the camera is locked.
+fn view_fields(ui: &mut Ui, view: ViewSettings, apply_view: &mut MessageWriter<'_, ApplyView>) {
+    let mut edited = view;
+    egui::Grid::new("camera position")
+        .num_columns(4)
+        .show(ui, |ui| {
+            for (name, vector) in [
+                ("eye", &mut edited.eye),
+                ("target", &mut edited.target),
+                ("up", &mut edited.up),
+            ] {
+                label(ui, name, TEXT_COLOR2);
+                for component in [&mut vector.x, &mut vector.y, &mut vector.z] {
+                    ui.add(egui::DragValue::new(component).speed(0.05).max_decimals(4));
+                }
+                ui.end_row();
+            }
+        });
+    if edited != view
+        && (edited.target - edited.eye).length_squared() > 0.
+        && edited.up != Vec3::ZERO
+    {
+        apply_view.write(ApplyView(edited));
+    }
+
+    let id = ui.make_persistent_id("pasted view");
+    let (mut pasted, mut error) =
+        ui.data_mut(|d| d.get_temp::<(String, String)>(id).unwrap_or_default());
+    ui.horizontal(|ui| {
+        if sleek_button(ui, "copy view") {
+            ui.ctx().copy_text(view.line());
+        }
+        if sleek_button(ui, "apply pasted") {
+            match ViewSettings::parse(&pasted, view) {
+                Ok(parsed) => {
+                    apply_view.write(ApplyView(parsed));
+                    error.clear();
+                }
+                Err(message) => {
+                    warn!("Cannot read the pasted view: {message}");
+                    error = message;
+                }
+            }
+        }
+    });
+    ui.add(
+        egui::TextEdit::multiline(&mut pasted)
+            .desired_rows(2)
+            .desired_width(f32::INFINITY)
+            .hint_text("paste a view line or a _view.txt"),
+    );
+    if !error.is_empty() {
+        ui.colored_label(egui::Color32::from_rgb(191, 97, 106), &error);
+    }
+    ui.data_mut(|d| d.insert_temp(id, (pasted, error)));
 }
 
 /// Locks the camera so it cannot move between stills; locking also stops automatic rotation.

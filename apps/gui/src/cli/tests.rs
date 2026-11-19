@@ -293,3 +293,10 @@ fn optimized_view_needs_complete_initialization() {
     assert_eq!(launch.view, Some(ModelViewKind::Optimized));
     assert!(parse(&["--load=a.obj", "--stop-after=placement", "--view=optimized"]).is_err());
 }
+
+#[test]
+fn saves_may_open_in_any_skeleton_view() {
+    let launch = parse(&["--load=a.dc", "--view=cubes"]).unwrap();
+    assert_eq!(launch.view, Some(ModelViewKind::Cubes));
+    assert!(parse(&["--load=a.obj", "--view=cubes"]).is_err());
+}

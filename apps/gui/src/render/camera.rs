@@ -155,6 +155,40 @@ pub fn update_camera_settings(
     main_camera.mouse_wheel_zoom_sensitivity = active * configuration.camera_zoom_sensitivity;
 }
 
+/// Moves the main camera to a requested view and adopts its figure settings; redraws the bands if their look changed.
+pub fn apply_view(
+    mut requests: MessageReader<'_, '_, crate::view_settings::ApplyView>,
+    mut commands: Commands<'_, '_>,
+    mut configuration: ResMut<'_, Configuration>,
+    main_camera: Query<'_, '_, Entity, With<Controller>>,
+    solution: Res<'_, crate::resources::SolutionResource>,
+    mut jobs: MessageWriter<'_, crate::jobs::Job>,
+) {
+    let Some(crate::view_settings::ApplyView(view)) = requests.read().last().copied() else {
+        return;
+    };
+    let Ok(camera) = main_camera.single() else {
+        return;
+    };
+    look_at(
+        &mut commands.entity(camera),
+        LookTransform::new(view.eye, view.target, view.up),
+    );
+    let redraw = view.loop_width != configuration.loop_width
+        || view.smooth_paths != configuration.smooth_paths;
+    configuration.camera_up = view.up;
+    configuration.loop_width = view.loop_width;
+    configuration.figure_format = view.format;
+    configuration.figure_label = view.label;
+    configuration.smooth_paths = view.smooth_paths;
+    if redraw {
+        jobs.write(crate::jobs::Job::refresh(
+            solution.current_solution.clone(),
+            configuration.clone(),
+        ));
+    }
+}
+
 pub fn update(
     configuration: Res<'_, Configuration>,
     view: Res<'_, ViewResource>,
