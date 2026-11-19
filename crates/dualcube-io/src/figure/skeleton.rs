@@ -2,7 +2,7 @@
 
 use super::{
     AxisFace, Camera, Face, Item, Look, Model, Rgb, SurfaceLine, axis, boxes, mesh_faces,
-    region_color, surface,
+    region_colors, surface,
 };
 use crate::SkeletonExtraction;
 use dualcube::prelude::*;
@@ -54,15 +54,6 @@ fn current<'a>(model: &Model<'a>) -> Option<&'a Skeleton> {
         })
 }
 
-fn palette(skeleton: &Skeleton) -> HashMap<SkeletonNodeID, Rgb> {
-    skeleton
-        .nodes
-        .keys()
-        .enumerate()
-        .map(|(i, id)| (id, region_color(i)))
-        .collect()
-}
-
 pub(super) fn deflated(model: &Model<'_>) -> Option<Vec<Item>> {
     let mesh = match model.skeleton.extraction.as_ref()? {
         SkeletonExtraction::Deflated(mesh) => mesh,
@@ -108,13 +99,13 @@ pub(super) fn patches(model: &Model<'_>, optimized: bool) -> Option<Vec<Item>> {
         current
     };
     // Patches keep their color after optimization; absorbed ones take their neighbor's (as in the GUI).
-    let (faces, lines) = patch_surface(model, skeleton, &palette(current))?;
+    let (faces, lines) = patch_surface(model, skeleton, &region_colors(current))?;
     Some(surface(faces, &model.camera, Look::default(), &[], &lines))
 }
 
 pub(super) fn combined(model: &Model<'_>) -> Option<Vec<Item>> {
     let current = current(model)?;
-    let (faces, _) = patch_surface(model, current, &palette(current))?;
+    let (faces, _) = patch_surface(model, current, &region_colors(current))?;
     let look = Look {
         two_sided: false,
         lighten: LIGHT_PATCHES,
@@ -130,7 +121,11 @@ pub(super) fn cubes(model: &Model<'_>) -> Option<Vec<Item>> {
     let save = model.skeleton;
     let realized = save.optimized.as_ref().or(save.realized.as_ref())?;
     let layout = &realized.cuboids;
-    let palette = palette(&realized.labeled.skeleton);
+    // Node cuboids take their patch's color.
+    let mut palette = region_colors(&realized.labeled.skeleton);
+    if let Some(current) = current(model) {
+        palette.extend(region_colors(current));
+    }
     let beveled = |owner| matches!(owner, CuboidOwner::Edge(_));
     let mut hidden = HashSet::new();
     for &[a, b] in &layout.connections {
@@ -265,7 +260,7 @@ fn patch_surface(
 
 // A graph without labels: gray edges, nodes in their region colors.
 fn plain_graph(model: &Model<'_>, skeleton: &Skeleton) -> Vec<Item> {
-    let palette = palette(skeleton);
+    let palette = region_colors(skeleton);
     nodes_and_edges(
         model,
         skeleton,

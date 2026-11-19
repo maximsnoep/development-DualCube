@@ -170,16 +170,11 @@ fn build(mesh: &mehsh::prelude::Mesh<INPUT>, state: &SkeletonResource) -> Render
             RenderAsset::Mesh(graph(&labeled.skeleton, Some(labeled), scale, translation)),
         );
     }
+    // Patches (and node cuboids) keep their color after optimization; absorbed ones take their neighbor's.
+    let colors = io::figure::region_colors(current);
     if let Some(realized) = state.optimized.as_ref().or(state.realized.as_ref()) {
-        cubes::add(&mut object, realized);
+        cubes::add(&mut object, realized, &colors);
     }
-    // Patches keep their color after optimization; absorbed ones take their neighbor's.
-    let colors: HashMap<_, _> = current
-        .nodes
-        .keys()
-        .enumerate()
-        .map(|(i, id)| (id, region_color(i)))
-        .collect();
     let surfaces = [
         (
             Some(current),
@@ -296,12 +291,9 @@ fn graph_with_labels(
             edge_color(id),
         );
     }
-    for (region, id) in skeleton.nodes.keys().enumerate() {
-        let color = if labeled {
-            colors::LIGHT_GRAY
-        } else {
-            region_color(region)
-        };
+    let palette = (!labeled).then(|| io::figure::region_colors(skeleton));
+    for id in skeleton.nodes.keys() {
+        let color = palette.as_ref().map_or(colors::LIGHT_GRAY, |p| p[&id]);
         sphere(&mut builder, position(id), 0.2, color);
     }
     builder.build()
@@ -366,11 +358,6 @@ fn tube(builder: &mut MeshBuilder, a: Vector3D, b: Vector3D, radius: f64, color:
             color,
         );
     }
-}
-
-/// Spread successive regions around the hue wheel without fading larger patch sets (shared with the figures).
-fn region_color(region: usize) -> [f32; 3] {
-    io::figure::region_color(region)
 }
 
 #[cfg(test)]

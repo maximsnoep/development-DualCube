@@ -2,7 +2,11 @@ use super::*;
 use dualcube::skeleton::{CuboidOwner, RealizedSkeleton};
 use std::collections::HashSet;
 
-pub(super) fn add(object: &mut RenderObject, realized: &RealizedSkeleton) {
+pub(super) fn add(
+    object: &mut RenderObject,
+    realized: &RealizedSkeleton,
+    colors: &HashMap<dualcube::skeleton::SkeletonNodeID, colors::Kolor>,
+) {
     let layout = &realized.cuboids;
     if layout.cuboids.is_empty() {
         return;
@@ -15,14 +19,9 @@ pub(super) fn add(object: &mut RenderObject, realized: &RealizedSkeleton) {
     }
     let scale = 32. / (upper - lower).amax();
     let translation = -(lower + upper) * (scale / 2.);
-    let palette: HashMap<_, _> = realized
-        .labeled
-        .skeleton
-        .nodes
-        .keys()
-        .enumerate()
-        .map(|(i, id)| (id, region_color(i)))
-        .collect();
+    // Nodes missing from the patch colors (none in practice) get their own.
+    let mut palette = io::figure::region_colors(&realized.labeled.skeleton);
+    palette.extend(colors);
     let mut hidden = HashSet::new();
     for &[a, b] in &layout.connections {
         let delta = layout.cuboids[b].center - layout.cuboids[a].center;
