@@ -78,6 +78,60 @@ fn cut(polygon: &[Point2], a: Point2, b: Point2, sign: f64) -> Vec<Point2> {
     }
     result
 }
+
+// Whether the segment from `a` to `b` passes through the interior of a convex polygon (over a
+// positive length), clipped to the polygon's half-planes.
+fn passes_through(polygon: &[Point2], a: Point2, b: Point2) -> bool {
+    let (mut lo, mut hi) = (0f64, 1f64);
+    let n = polygon.len();
+    for i in 0..n {
+        let (p, q) = (polygon[i], polygon[(i + 1) % n]);
+        let length = (q[0] - p[0]).hypot(q[1] - p[1]);
+        // Inside is to the left of every edge (counterclockwise).
+        let (fa, fb) = (orient(p, q, a) / length, orient(p, q, b) / length);
+        if fa < TOL && fb < TOL {
+            return false;
+        }
+        if fa < TOL || fb < TOL {
+            let t = fa / (fa - fb);
+            if fa < fb {
+                lo = lo.max(t);
+            } else {
+                hi = hi.min(t);
+            }
+        }
+    }
+    hi - lo > TOL
+}
+
+// The polygons with every vertex of another polygon that lies inside one of their edges added to
+// it, so that neighbouring cells share their edges exactly.
+fn conforming(polygons: Vec<Vec<Point2>>) -> Vec<Vec<Point2>> {
+    let mut points: Vec<Point2> = polygons.iter().flatten().copied().collect();
+    points.sort_by(|a, b| a[0].total_cmp(&b[0]).then(a[1].total_cmp(&b[1])));
+    points.dedup_by(|a, b| close(*a, *b));
+    polygons
+        .into_iter()
+        .map(|polygon| {
+            let n = polygon.len();
+            let mut result = vec![];
+            for i in 0..n {
+                let (p, q) = (polygon[i], polygon[(i + 1) % n]);
+                result.push(p);
+                let mut inside: Vec<Point2> = points
+                    .iter()
+                    .copied()
+                    .filter(|&x| on(p, q, x) && !close(x, p) && !close(x, q))
+                    .collect();
+                let d = |x: Point2| (x[0] - p[0]).powi(2) + (x[1] - p[1]).powi(2);
+                inside.sort_by(|a, b| d(*a).total_cmp(&d(*b)));
+                result.extend(inside);
+            }
+            result
+        })
+        .collect()
+}
+
 pub(crate) fn side_at(p: Point2) -> Option<(usize, f64)> {
     if p[1].abs() < TOL {
         Some((0, p[0]))
@@ -229,7 +283,7 @@ pub(crate) fn build(
         })
         .collect();
     // Supporting lines give convex cells. Their extensions are traversable, never loop barriers.
-    // TODO: Use a finite-segment tessellation to avoid quadratic growth from many interior bends.
+    // A segment cuts only the cells it passes through, along its whole line inside them.
     for arr in faces.values_mut() {
         let mut polygons = vec![CORNERS.to_vec()];
         for a in &arr.chords {
@@ -240,7 +294,10 @@ pub(crate) fn build(
                     .iter()
                     .map(|&p| orient(a.from, a.to, p) / length)
                     .collect();
-                if !signs.iter().any(|&v| v > TOL) || !signs.iter().any(|&v| v < -TOL) {
+                if !signs.iter().any(|&v| v > TOL)
+                    || !signs.iter().any(|&v| v < -TOL)
+                    || !passes_through(&polygon, a.from, a.to)
+                {
                     parts.push(polygon);
                     continue;
                 }
@@ -253,7 +310,10 @@ pub(crate) fn build(
             }
             polygons = parts;
         }
-        arr.cells = polygons.into_iter().map(|p| (vec![], p)).collect();
+        arr.cells = conforming(polygons)
+            .into_iter()
+            .map(|p| (vec![], p))
+            .collect();
     }
     // Include cuts from both incident faces so derived tessellations remain conforming.
     let mut edge_cuts = HashMap::<EdgeID, Vec<f64>>::new();

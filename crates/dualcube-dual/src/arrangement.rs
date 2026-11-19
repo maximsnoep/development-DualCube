@@ -228,6 +228,34 @@ pub(crate) struct Arrangement {
     pub(crate) general: Option<general::Cells>,
 }
 
+// The loops as legacy straight chords, if every curve is one: one segment per triangle visit, and
+// no mesh edge crossed twice by the same loop (as legacy loops need).
+fn as_chords(mesh: &Mesh<INPUT>, loops: &SlotMap<LoopID, Loop>) -> Option<SlotMap<LoopID, Loop>> {
+    let mut result = loops.clone();
+    for l in result.values_mut() {
+        if l.surface.is_empty() {
+            continue;
+        }
+        let exits = l.exits(mesh)?;
+        let m = exits.len();
+        if m < 2
+            || l.surface.len() != m
+            || !exits.iter().map(|&(e, _)| canonical(mesh, e)).all_unique()
+        {
+            return None;
+        }
+        let mut chord = Loop::new(Vec::with_capacity(2 * m), l.direction);
+        for k in 0..m {
+            let (previous, s) = exits[(k + m - 1) % m];
+            let (exit, t) = exits[k];
+            chord.edges.extend([mesh.twin(previous), exit]);
+            chord.offsets.extend([1. - s, t]);
+        }
+        *l = chord;
+    }
+    Some(result)
+}
+
 fn canonical(mesh: &Mesh<INPUT>, edge: EdgeID) -> EdgeID {
     let twin = mesh.twin(edge);
     if edge.raw() < twin.raw() { edge } else { twin }
@@ -369,7 +397,11 @@ impl Arrangement {
         loops: &SlotMap<LoopID, Loop>,
     ) -> Result<Self, PropertyViolationError> {
         if loops.values().any(|l| !l.surface.is_empty()) {
-            return general::build(mesh, loops);
+            // Curves that are straight chords take the (much faster) legacy path, with the same topology.
+            return match as_chords(mesh, loops) {
+                Some(chords) => Self::new(mesh, &chords),
+                None => general::build(mesh, loops),
+            };
         }
         // The crossings of every loop with the mesh edges: (index of the exiting half-edge in the loop).
         let mut loop_exits: HashMap<LoopID, Vec<usize>> = HashMap::new();
