@@ -265,6 +265,27 @@ impl Job {
         }
     }
 
+    /// The kept skeleton output as the current solution, with the current one's flow fields and graphs; replaces a
+    /// running evolution.
+    pub fn restore_output(
+        output: Solution,
+        current: &Solution,
+        configuration: Configuration,
+    ) -> Self {
+        let (fields, flow_graphs) = (current.fields.clone(), current.flow_graphs.clone());
+        Self::new("restoring the skeleton output", move || {
+            let mut solution = output.clone();
+            solution.fields = fields.clone();
+            solution.flow_graphs = flow_graphs.clone();
+            solution.quality = configuration.quality;
+            Some(JobResult::Restored {
+                solution,
+                configuration: configuration.clone(),
+            })
+        })
+        .preempting()
+    }
+
     pub fn refresh(solution: Solution, configuration: Configuration) -> Self {
         Self::new("refreshing", move || {
             Some(JobResult::Refreshed(render::refresh(

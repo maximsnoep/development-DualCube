@@ -19,7 +19,7 @@ pub trait Import {
 
 pub use crate::formats::{
     apg::APG,
-    dc::{Dc, Save, SkeletonExtraction, SkeletonSave},
+    dc::{Dc, Save, SkeletonExtraction, SkeletonSave, SolutionParts},
     flag::Flag,
     hex::HEX,
     loops::Loops,

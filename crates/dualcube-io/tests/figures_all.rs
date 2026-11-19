@@ -31,6 +31,7 @@ fn every_view_preset_has_a_figure() {
         drawing: progress.drawing,
         loops: progress.loops,
         failure: None,
+        output: None,
     };
     let dir = Path::new(env!("CARGO_TARGET_TMPDIR")).join("figures_all");
     let _ = std::fs::remove_dir_all(&dir);

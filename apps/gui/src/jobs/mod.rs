@@ -67,6 +67,7 @@ pub struct JobState {
     pub request: Option<&'static str>,
     current: Option<Task<Option<JobResult>>>,
     startup: bool,
+    initial: bool,
     updates: Option<Mutex<mpsc::Receiver<skeleton::Update>>>,
 }
 
@@ -80,6 +81,8 @@ pub struct Job {
     description: &'static str,
     preempt: bool,
     startup: bool,
+    /// Part of the reconstruction that follows an initialization: its stages update the kept skeleton output.
+    initial: bool,
     run: Arc<dyn Fn(&mpsc::Sender<skeleton::Update>) -> Option<JobResult> + Send + Sync>,
 }
 
@@ -99,6 +102,7 @@ impl Job {
             description,
             preempt: false,
             startup: false,
+            initial: false,
             run: Arc::new(run),
         }
     }
@@ -143,6 +147,11 @@ enum JobResult {
     },
     /// New render objects are ready to be displayed.
     Refreshed(RenderObjectStore),
+    /// The kept skeleton output becomes the current solution again.
+    Restored {
+        solution: Solution,
+        configuration: Configuration,
+    },
     /// A loop was added.
     AddedLoop {
         solution: Solution,
@@ -175,6 +184,7 @@ fn submit_jobs(
         info!("Starting job: {}", job.description);
         job_state.request = Some(job.description);
         job_state.startup = job.startup;
+        job_state.initial = job.initial;
         let job = job.clone();
         // A fresh channel also discards updates from a preempted worker.
         let (sender, receiver) = mpsc::channel();
@@ -270,7 +280,11 @@ pub(crate) fn poll_jobs(
                 )
             };
             refresh.startup = job_state.startup;
+            // The reconstruction of drawn loops is the skeleton's output, kept apart from what evolves later.
+            let drawn = !solution_resource.current_solution.loops.is_empty();
+            refresh.initial = drawn;
             jobs.write(refresh);
+            skeleton.output = drawn.then(|| output(&solution_resource.current_solution));
             skeleton.state = Some(state);
             skeleton.labeled = progress.labeled;
             skeleton.labeling = progress.labeling;
@@ -291,9 +305,30 @@ pub(crate) fn poll_jobs(
             solution,
             configuration,
         } => {
+            if job_state.initial {
+                skeleton.output = Some(output(&solution));
+            }
             solution_resource.current_solution = solution.clone();
             let mut next = stage.next_job(solution, configuration);
             next.startup = job_state.startup;
+            next.initial = job_state.initial;
+            jobs.write(next);
+        }
+
+        JobResult::Restored {
+            solution,
+            configuration: settings,
+        } => {
+            // The quad mesh is not saved: a restored save computes it again.
+            let next = if solution.quad.is_none() && solution.polycube.is_some() {
+                Job::compute_quad(solution.clone(), settings)
+            } else {
+                Job::refresh(solution.clone(), settings)
+            };
+            solution_resource.current_solution = solution;
+            solution_resource.selected_corner = None;
+            configuration.loop_anchors.clear();
+            evolution_live.reset();
             jobs.write(next);
         }
 
@@ -314,7 +349,7 @@ pub(crate) fn poll_jobs(
             configuration.loop_anchors.clear();
             *skeleton = Default::default();
             if let Some(save) = saved_skeleton {
-                skeleton.restore(save);
+                skeleton.restore(save, &solution_resource.current_solution.mesh_ref);
             }
             if crate::resources::genus(&input_resource.mesh) != Some(0) {
                 configuration.initialization = crate::resources::Initialization::Skeleton;
@@ -380,4 +415,11 @@ pub(crate) fn poll_jobs(
             }
         }
     }
+}
+
+// A solution to keep as the skeleton output: without the flow fields (the current solution has them).
+fn output(solution: &Solution) -> Solution {
+    let mut output = solution.clone();
+    output.fields = None;
+    output
 }

@@ -77,6 +77,42 @@ pub struct SkeletonSave {
     pub drawing: Option<draw_loops::Attempt>,
     pub loops: Option<DualLoops>,
     pub failure: Option<(pipeline::Stage, String)>,
+    /// The solution the initialization reconstructed, before any evolution.
+    #[serde(default)]
+    pub output: Option<SolutionParts>,
+}
+
+/// A solution without its mesh (it shares the mesh of the solution it is saved with).
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct SolutionParts {
+    pub loops: SlotMap<LoopID, Loop>,
+    pub dual: Result<Dual, PropertyViolationError>,
+    pub polycube: Option<Polycube>,
+    pub layout: Option<Layout>,
+}
+
+impl SolutionParts {
+    #[must_use]
+    pub fn of(solution: &Solution) -> Self {
+        let persistence = solution.to_persistence();
+        Self {
+            loops: persistence.loops,
+            dual: persistence.dual,
+            polycube: persistence.polycube,
+            layout: persistence.layout,
+        }
+    }
+
+    #[must_use]
+    pub fn with_mesh(self, mesh_ref: Arc<Mesh<INPUT>>) -> Solution {
+        Solution::from_persistence(SolutionPersistence {
+            mesh_ref,
+            loops: self.loops,
+            dual: self.dual,
+            polycube: self.polycube,
+            layout: self.layout,
+        })
+    }
 }
 
 impl From<DcSolutionV1> for SolutionPersistence {

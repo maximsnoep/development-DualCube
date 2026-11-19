@@ -514,6 +514,7 @@ static NO_SKELETON: SkeletonSave = SkeletonSave {
     drawing: None,
     loops: None,
     failure: None,
+    output: None,
 };
 
 // A face of a surface; one without a color hides what is behind it but is not drawn.
