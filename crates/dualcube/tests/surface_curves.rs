@@ -33,8 +33,12 @@ fn explicit_skeleton_curves_reconstruct_without_zero_length_edges() {
     }
     solution.place_paths().unwrap();
     assert!(solution.layout.as_ref().unwrap().is_complete());
-    assert!(matches!(
-        solution.evolve(&EvolutionParams::default()),
-        Err(SolutionError::SurfaceCurveEvolution)
-    ));
+    // Explicit curves evolve (by adding and removing loops).
+    let params = EvolutionParams {
+        population: 4,
+        offspring: 4,
+        max_generations: 2,
+        ..EvolutionParams::default()
+    };
+    assert!(solution.evolve(&params).is_ok());
 }

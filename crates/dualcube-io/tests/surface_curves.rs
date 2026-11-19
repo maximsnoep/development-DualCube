@@ -70,7 +70,7 @@ fn loops_preserves_surface_curves() {
 }
 
 #[test]
-fn explicit_curves_render_and_reject_legacy_evolution() {
+fn explicit_curves_render() {
     let solution = solution();
     let id = solution.loops.keys().next().unwrap();
     let frames = solution.loop_frames(id);
@@ -82,10 +82,6 @@ fn explicit_curves_render_and_reject_legacy_evolution() {
             .chain(f.negative.iter())
             .all(|v| v.is_finite())
     }));
-    assert!(matches!(
-        solution.evolve(&EvolutionParams::default()),
-        Err(SolutionError::SurfaceCurveEvolution)
-    ));
 }
 
 #[test]

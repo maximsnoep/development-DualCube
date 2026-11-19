@@ -48,6 +48,40 @@ impl Solution {
         self.loop_state_mut().add_loop_in_gaps(loop_, gaps)
     }
 
+    /// Every legacy loop as the explicit curve of its straight chords (the same geometry).
+    pub fn convert_to_curves(&mut self) {
+        if self.loops.values().all(|l| !l.surface.is_empty()) {
+            return;
+        }
+        let mesh = self.mesh_ref.clone();
+        let loops = self
+            .loops
+            .iter()
+            .map(|(id, l)| match l.surface_arcs(&mesh) {
+                Ok(arcs) if l.surface.is_empty() => (id, Loop::from_surface(l.direction, arcs)),
+                _ => (id, l.clone()),
+            })
+            .collect_vec();
+        for (id, l) in loops {
+            self.loops[id] = l;
+        }
+        let state = LoopState::from_loops(&mesh, std::mem::take(&mut self.loops));
+        self.loops = state.loops;
+        self.occupied = state.occupied;
+    }
+
+    /// Add a loop of the given axis along `edges` through `gaps` (as `sample_valid_loop` returns them) as an explicit
+    /// curve (see `LoopSampler::curve_in_gaps`). `None` if it cannot be drawn.
+    pub fn add_curve_in_gaps(
+        &mut self,
+        edges: &[EdgeID],
+        gaps: Vec<(usize, usize)>,
+        axis: Direction,
+    ) -> Option<LoopID> {
+        let curve = self.loop_sampler().curve_in_gaps(edges, axis, gaps)?;
+        Some(self.add_loop(curve))
+    }
+
     /// The dual structure of the current loops (with its region locator): the stored one if it is up to date,
     /// otherwise a new one. `None` if the loops do not form a valid loop structure.
     pub fn current_dual(&self) -> Option<std::borrow::Cow<'_, Dual>> {
