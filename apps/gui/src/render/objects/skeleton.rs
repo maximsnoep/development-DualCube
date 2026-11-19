@@ -7,7 +7,7 @@ use crate::resources::{InputResource, SkeletonResource};
 use bevy::mesh::{Mesh as BevyMesh, VertexAttributeValues};
 use bevy::prelude::*;
 use dualcube::prelude::*;
-use dualcube::skeleton::{LabeledSkeleton, Skeleton, SkeletonEdgeID};
+use dualcube::skeleton::{LabeledSkeleton, Skeleton, SkeletonEdgeID, SkeletonNodeID};
 use mehsh_bevy::MeshBuilder;
 use std::f64::consts::{PI, TAU};
 
@@ -144,13 +144,20 @@ fn build(mesh: &mehsh::prelude::Mesh<INPUT>, state: &SkeletonResource) -> Render
         .map(|attempt| &attempt.skeleton)
         .or_else(|| state.labeled.as_ref().map(|labeled| &labeled.skeleton))
         .unwrap_or(&extraction.skeleton);
+    // One color per node for every stage, the optimized skeleton first (shared with the figures).
+    let optimized = state.optimized.as_ref().map(|o| &o.labeled.skeleton);
+    let stages: Vec<_> = [optimized, Some(current), Some(&extraction.raw)]
+        .into_iter()
+        .flatten()
+        .collect();
+    let colors = io::figure::region_colors(&stages);
     object.add(
         SkeletonLayer::Skeleton.label(),
-        RenderAsset::Mesh(graph(current, None, scale, translation)),
+        RenderAsset::Mesh(graph(current, None, &colors, scale, translation)),
     );
     object.add(
         SkeletonLayer::Raw.label(),
-        RenderAsset::Mesh(graph(&extraction.raw, None, scale, translation)),
+        RenderAsset::Mesh(graph(&extraction.raw, None, &colors, scale, translation)),
     );
     if let Some(attempt) = &state.labeling {
         object.add(
@@ -159,7 +166,7 @@ fn build(mesh: &mehsh::prelude::Mesh<INPUT>, state: &SkeletonResource) -> Render
                 &attempt.skeleton,
                 |e| attempt.labels.get(e).copied(),
                 |e| !attempt.tree_edges.is_empty() && !attempt.tree_labels.contains_key(e),
-                true,
+                |_| colors::LIGHT_GRAY,
                 scale,
                 translation,
             )),
@@ -167,11 +174,15 @@ fn build(mesh: &mehsh::prelude::Mesh<INPUT>, state: &SkeletonResource) -> Render
     } else if let Some(labeled) = &state.labeled {
         object.add(
             SkeletonLayer::Labeled.label(),
-            RenderAsset::Mesh(graph(&labeled.skeleton, Some(labeled), scale, translation)),
+            RenderAsset::Mesh(graph(
+                &labeled.skeleton,
+                Some(labeled),
+                &colors,
+                scale,
+                translation,
+            )),
         );
     }
-    // Patches (and node cuboids) keep their color after optimization; absorbed ones take their neighbor's.
-    let colors = io::figure::region_colors(current);
     if let Some(realized) = state.optimized.as_ref().or(state.realized.as_ref()) {
         cubes::add(&mut object, realized, &colors);
     }
@@ -182,7 +193,7 @@ fn build(mesh: &mehsh::prelude::Mesh<INPUT>, state: &SkeletonResource) -> Render
             SkeletonLayer::Boundaries,
         ),
         (
-            state.optimized.as_ref().map(|o| &o.labeled.skeleton),
+            optimized,
             SkeletonLayer::OptimizedPatches,
             SkeletonLayer::OptimizedBoundaries,
         ),
@@ -204,7 +215,7 @@ fn build(mesh: &mehsh::prelude::Mesh<INPUT>, state: &SkeletonResource) -> Render
 
 fn add_surface(
     object: &mut RenderObject,
-    colors: &HashMap<dualcube::skeleton::SkeletonNodeID, [f32; 3]>,
+    colors: &HashMap<SkeletonNodeID, [f32; 3]>,
     geometry: &dualcube::skeleton::geometry::SurfaceGeometry,
     (patch_layer, boundary_layer): (SkeletonLayer, SkeletonLayer),
     scale: f64,
@@ -250,9 +261,11 @@ fn add_surface(
     object.gizmo(boundaries, 1.5, -0.001, boundary_layer.label());
 }
 
+/// Labeled: edges in axis colors and gray nodes; else gray edges and nodes in their colors.
 fn graph(
     skeleton: &Skeleton,
     labeled: Option<&LabeledSkeleton>,
+    node_colors: &HashMap<SkeletonNodeID, colors::Kolor>,
     scale: f64,
     translation: Vector3D,
 ) -> BevyMesh {
@@ -260,7 +273,10 @@ fn graph(
         skeleton,
         |e| labeled.and_then(|s| s.labels.get(e)).copied(),
         |_| false,
-        labeled.is_some(),
+        |id| match labeled {
+            Some(_) => colors::LIGHT_GRAY,
+            None => node_colors.get(&id).copied().unwrap_or(colors::LIGHT_GRAY),
+        },
         scale,
         translation,
     )
@@ -270,7 +286,7 @@ fn graph_with_labels(
     skeleton: &Skeleton,
     label: impl Fn(SkeletonEdgeID) -> Option<dualcube::skeleton::EdgeLabel>,
     non_tree: impl Fn(SkeletonEdgeID) -> bool,
-    labeled: bool,
+    node_color: impl Fn(SkeletonNodeID) -> colors::Kolor,
     scale: f64,
     translation: Vector3D,
 ) -> BevyMesh {
@@ -291,10 +307,8 @@ fn graph_with_labels(
             edge_color(id),
         );
     }
-    let palette = (!labeled).then(|| io::figure::region_colors(skeleton));
     for id in skeleton.nodes.keys() {
-        let color = palette.as_ref().map_or(colors::LIGHT_GRAY, |p| p[&id]);
-        sphere(&mut builder, position(id), 0.2, color);
+        sphere(&mut builder, position(id), 0.2, node_color(id));
     }
     builder.build()
 }

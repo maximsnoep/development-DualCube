@@ -100,8 +100,20 @@ fn labeled_graph_uses_labels_and_accepts_coincident_nodes() {
             sign: Sign::Positive,
         },
     );
-    let gray = graph(&labeled.skeleton, None, 1., Vector3D::zeros());
-    let colored = graph(&labeled.skeleton, Some(&labeled), 1., Vector3D::zeros());
+    let gray = graph(
+        &labeled.skeleton,
+        None,
+        &HashMap::new(),
+        1.,
+        Vector3D::zeros(),
+    );
+    let colored = graph(
+        &labeled.skeleton,
+        Some(&labeled),
+        &HashMap::new(),
+        1.,
+        Vector3D::zeros(),
+    );
     let Some(VertexAttributeValues::Float32x4(gray_colors)) =
         gray.attribute(BevyMesh::ATTRIBUTE_COLOR)
     else {
@@ -114,7 +126,13 @@ fn labeled_graph_uses_labels_and_accepts_coincident_nodes() {
     };
     assert_ne!(gray_colors[0], axis_colors[0]);
     labeled.skeleton.nodes[b].position = Vector3D::zeros();
-    let coincident = graph(&labeled.skeleton, Some(&labeled), 1., Vector3D::zeros());
+    let coincident = graph(
+        &labeled.skeleton,
+        Some(&labeled),
+        &HashMap::new(),
+        1.,
+        Vector3D::zeros(),
+    );
     assert!(coincident.count_vertices() > 0);
 }
 

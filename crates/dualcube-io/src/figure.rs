@@ -568,14 +568,16 @@ pub const PASTEL: [Rgb; 10] = [
     [0.839, 0.706, 0.784], // mauve
 ];
 
-/// A color per node (as in the GUI), greedily in node order: none of its already colored neighbors' colors (the
-/// fewest of them if all are taken), then the least used, then the next in the cycle after the previous pick.
+/// A color per node of the skeleton stages, shared by all views (as in the GUI). Node IDs carry over between stages,
+/// so the stages are colored together, the first (the optimized skeleton, else the labeled one) before the nodes only
+/// the later ones have. Greedily: none of the colors of its already colored neighbors in any stage (the fewest of them
+/// if all are taken), then the least used, then the next in the cycle after the previous pick.
 #[must_use]
 pub fn region_colors(
-    skeleton: &dualcube::skeleton::Skeleton,
+    stages: &[&dualcube::skeleton::Skeleton],
 ) -> HashMap<dualcube::skeleton::SkeletonNodeID, Rgb> {
     let mut neighbors: HashMap<_, Vec<_>> = HashMap::new();
-    for edge in skeleton.edges.values() {
+    for edge in stages.iter().flat_map(|s| s.edges.values()) {
         let [a, b] = edge.nodes;
         if a != b {
             neighbors.entry(a).or_default().push(b);
@@ -585,7 +587,10 @@ pub fn region_colors(
     let mut chosen = HashMap::new();
     let mut used = [0usize; PASTEL.len()];
     let mut next = 0;
-    for id in skeleton.nodes.keys() {
+    for id in stages.iter().flat_map(|s| s.nodes.keys()) {
+        if chosen.contains_key(&id) {
+            continue;
+        }
         let mut clashes = [0usize; PASTEL.len()];
         for n in neighbors.get(&id).into_iter().flatten() {
             if let Some(&c) = chosen.get(n) {

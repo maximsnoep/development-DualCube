@@ -1,22 +1,33 @@
+use dualcube::skeleton::Skeleton;
+use dualcube::skeleton::pipeline::Progress;
 use dualcube::skeleton::skeletonize::{self, Options};
 use io::figure::{PASTEL, region_colors};
 use std::path::Path;
 
 #[test]
-fn neighboring_regions_differ_and_colors_are_balanced() {
+fn neighbors_differ_in_every_stage_and_colors_are_balanced() {
     let path = Path::new(env!("CARGO_MANIFEST_DIR")).join("../mehsh/assets/blub001k.obj");
     let mesh = io::import_mesh(&path).unwrap().0;
-    let skeleton = skeletonize::extract(&mesh, Options::default())
-        .unwrap()
-        .skeleton;
-    let colors = region_colors(&skeleton);
-    assert_eq!(colors.len(), skeleton.nodes.len());
-    for edge in skeleton.edges.values() {
-        let [a, b] = edge.nodes;
-        assert!(a == b || colors[&a] != colors[&b]);
+    let extraction = skeletonize::extract(&mesh, Options::default()).unwrap();
+    let mut progress = Progress::from_skeleton(extraction.skeleton.clone());
+    progress.optimize(&mesh).unwrap();
+    let current = &progress.labeled.as_ref().unwrap().skeleton;
+    let optimized = &progress.optimized.as_ref().unwrap().labeled.skeleton;
+    assert!(optimized.nodes.len() < current.nodes.len());
+
+    let stages = [optimized, current, &extraction.raw];
+    let colors = region_colors(&stages);
+    for stage in stages {
+        assert!(stage.nodes.keys().all(|id| colors.contains_key(&id)));
+        for edge in stage.edges.values() {
+            let [a, b] = edge.nodes;
+            assert!(a == b || colors[&a] != colors[&b]);
+        }
     }
-    let counts = PASTEL.map(|p| colors.values().filter(|&&c| c == p).count());
-    assert_eq!(counts.iter().sum::<usize>(), skeleton.nodes.len());
-    let (min, max) = (counts.iter().min().unwrap(), counts.iter().max().unwrap());
-    assert!(max - min <= 2, "{counts:?}");
+    // The optimized skeleton is colored first, so it alone is balanced.
+    let balanced = |stage: &Skeleton| {
+        let counts = PASTEL.map(|p| stage.nodes.keys().filter(|id| colors[id] == p).count());
+        counts.iter().max().unwrap() - counts.iter().min().unwrap() <= 2
+    };
+    assert!(balanced(optimized));
 }
