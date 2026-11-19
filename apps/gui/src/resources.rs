@@ -208,6 +208,9 @@ pub struct SkeletonResource {
     pub drawing: Option<dualcube::skeleton::draw_loops::Attempt>,
     pub loops: Option<dualcube::skeleton::DualLoops>,
     pub initialization_failure: Option<dualcube::skeleton::pipeline::Failure>,
+    /// The solution the initialization reconstructed (loops, segmentation, polycube), kept as it was while the current
+    /// one evolves; without flow fields.
+    pub output: Option<Solution>,
 }
 
 /// Deflated only, or extracted.
@@ -228,11 +231,13 @@ impl SkeletonResource {
                 .initialization_failure
                 .as_ref()
                 .map(|failure| (failure.stage, failure.error.to_string())),
+            output: self.output.as_ref().map(io::SolutionParts::of),
         })
     }
 
-    /// Takes the stages of a save; the contraction cache and the shown contraction stage stay.
-    pub fn restore(&mut self, save: io::SkeletonSave) {
+    /// Takes the stages of a save (its output on `mesh`, the mesh it was saved with); the contraction cache and the
+    /// shown contraction stage stay.
+    pub fn restore(&mut self, save: io::SkeletonSave, mesh: &Arc<mehsh::prelude::Mesh<INPUT>>) {
         *self = Self {
             contraction_cache: self.contraction_cache.clone(),
             contraction_stage: self.contraction_stage,
@@ -249,6 +254,7 @@ impl SkeletonResource {
                     error: message.into(),
                 }
             }),
+            output: save.output.map(|parts| parts.with_mesh(mesh.clone())),
         };
     }
 

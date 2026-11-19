@@ -8,6 +8,7 @@ fn exported_figures_come_with_a_save_and_a_view_text_that_restore_them() {
     let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
     let model = root.join("crates/mehsh/assets/tetrahedron.obj");
     let solution = io::import_solution(&model).unwrap();
+    let output = solution.clone();
     let dir = root.join("target/ui-smoke/export_figures");
     let _ = std::fs::remove_dir_all(&dir);
     std::fs::create_dir_all(&dir).unwrap();
@@ -34,6 +35,7 @@ fn exported_figures_come_with_a_save_and_a_view_text_that_restore_them() {
         "tet".to_owned(),
         view,
         Some(skeleton),
+        Some(output),
         Some(model.clone()),
     );
     let (sender, _) = mpsc::channel();
@@ -50,6 +52,8 @@ fn exported_figures_come_with_a_save_and_a_view_text_that_restore_them() {
     let folder = dir.file_name().unwrap().to_string_lossy();
     assert!(folder.starts_with("tet_20") && folder.len() == "tet_YYYY-MM-DD_HHMMSS".len());
     assert!(dir.join("tet_mesh.svg").exists());
+    // The output has the same input mesh, so no figure of its own without loops.
+    assert!(!dir.join("tet_output_mesh.svg").exists());
     let text = std::fs::read_to_string(dir.join("tet_view.txt")).unwrap();
     assert!(text.contains("figures: tet_mesh.svg"), "{text}");
     assert!(

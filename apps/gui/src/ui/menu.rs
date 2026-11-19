@@ -238,7 +238,7 @@ pub fn show(
                     &mut evolution_live,
                     &mut view_preview,
                     &mut render_setting_store,
-                    &skeleton.contraction_cache,
+                    &skeleton,
                 );
                 ui.separator();
                 // The view that the running optimization works on (see `ModelView`).
@@ -500,6 +500,7 @@ fn menu_bar(
                 input.name.clone(),
                 view,
                 skeleton.save(),
+                skeleton.output.clone(),
                 input.source.clone(),
             ));
         }
@@ -645,7 +646,7 @@ fn pipeline_bar(
     evolution_live: &mut EvolutionLive,
     view: &mut ModelView,
     render_setting_store: &mut RenderObjectSettingStore,
-    cache: &crate::jobs::ContractionCache,
+    skeleton: &SkeletonResource,
 ) {
     let current = &solution.current_solution;
     let button = |ui: &mut Ui, name: &str, enabled: bool| {
@@ -723,12 +724,18 @@ fn pipeline_bar(
         jobs.write(Job::initialize_loops(
             current.clone(),
             conf.clone(),
-            cache.clone(),
+            skeleton.contraction_cache.clone(),
         ));
     }
     // The optimization (its settings, start, and progress) is in its window.
     if button(ui, "Evolve", current.mesh_ref.nr_verts() > 0) {
         evolution_live.open = true;
+    }
+    // Back to what the skeleton initialization produced, to evolve from it anew.
+    if button(ui, "Restore output", skeleton.output.is_some())
+        && let Some(output) = &skeleton.output
+    {
+        jobs.write(Job::restore_output(output.clone(), current, conf.clone()));
     }
     // Visual post-processing (smoothing the paths), only on request.
     if button(ui, "Postprocess", current.layout.is_some()) {

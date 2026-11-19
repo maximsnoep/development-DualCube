@@ -1,7 +1,7 @@
 use dualcube::prelude::*;
 use dualcube::skeleton::pipeline::{Progress, Stage};
 use dualcube::skeleton::skeletonize::{self, Options};
-use io::{SkeletonExtraction, SkeletonSave};
+use io::{SkeletonExtraction, SkeletonSave, SolutionParts};
 use serde::Serialize;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -40,6 +40,7 @@ fn v2_keeps_skeleton_stages_layout_and_source() {
         drawing: progress.drawing.clone(),
         loops: progress.loops.clone(),
         failure: Some((Stage::LoopDrawing, "kept as text".to_owned())),
+        output: Some(SolutionParts::of(&solution)),
     };
     let path = scratch("blub.dc");
     let source = Path::new("/models/blub001k.obj");
@@ -95,6 +96,18 @@ fn v2_keeps_skeleton_stages_layout_and_source() {
     assert_eq!(
         skeleton.failure,
         Some((Stage::LoopDrawing, "kept as text".to_owned()))
+    );
+    // The output shares the mesh it is saved with.
+    let output = skeleton
+        .output
+        .unwrap()
+        .with_mesh(read.solution.mesh_ref.clone());
+    assert_eq!(output.loops.len(), solution.loops.len());
+    let original = solution.layout.as_ref().unwrap();
+    let output_layout = output.layout.expect("the output keeps its layout");
+    assert_eq!(
+        output_layout.face_to_patch.len(),
+        original.face_to_patch.len()
     );
 }
 

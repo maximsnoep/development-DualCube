@@ -233,6 +233,15 @@ fn auto_start_reaches_loop_drawing_and_explicit_stops_still_win() {
                 .current_solution;
             assert_eq!(solution.loops.len(), state.loops.as_ref().unwrap().len());
             assert!(solution.dual.is_ok());
+            // The reconstruction is kept as the skeleton output, up to its last stage.
+            let output = state.output.as_ref().expect("the skeleton output is kept");
+            assert_eq!(
+                output.loops.keys().collect::<Vec<_>>(),
+                solution.loops.keys().collect::<Vec<_>>()
+            );
+            assert_eq!(output.layout.is_some(), solution.layout.is_some());
+            assert_eq!(output.quad.is_some(), solution.quad.is_some());
+            assert!(output.fields.is_none());
             assert!(state.extraction().is_some());
             assert!(state.labeling.is_some());
             state

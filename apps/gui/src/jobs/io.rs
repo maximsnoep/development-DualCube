@@ -6,7 +6,7 @@ use crate::render;
 use crate::resources::Configuration;
 use crate::view_settings::{Report, ViewSettings};
 use dualcube::prelude::*;
-use io::figure::{Annotation, FigureParams, FigureStyle};
+use io::figure::{Annotation, Figure, FigureParams, FigureStyle};
 use std::path::{Path, PathBuf};
 
 impl Job {
@@ -34,9 +34,10 @@ impl Job {
     }
 
     /// The figures of the solution (see `io::figure`) in a new folder `<name>_<timestamp>` of a directory, as
-    /// `<name>_<figure>.<format>`, seen as `view`; with smoothed paths if it says so. Next to them `<name>.dc` (the
-    /// solution and the skeleton stages) and `<name>_view.txt` (the model, the camera, and the settings, to make the
-    /// figures again).
+    /// `<name>_<figure>.<format>`, seen as `view`; with smoothed paths if it says so. Those of the skeleton output
+    /// (the solution the initialization reconstructed, see `SkeletonResource::output`) as `<name>_output_<figure>`.
+    /// Next to them `<name>.dc` (the solution and the skeleton stages) and `<name>_view.txt` (the model, the camera,
+    /// and the settings, to make the figures again).
     pub fn export_figures(
         solution: Solution,
         configuration: Configuration,
@@ -44,6 +45,7 @@ impl Job {
         name: String,
         view: ViewSettings,
         skeleton: Option<io::SkeletonSave>,
+        output: Option<Solution>,
         source: Option<PathBuf>,
     ) -> Self {
         Self::new("exporting figures", move || {
@@ -60,7 +62,26 @@ impl Job {
                 return None;
             }
             info!("Exporting figures to {}", dir.display());
-            let figures = figures(&solution, skeleton.as_ref(), &dir, &name, &view, &date);
+            let mut paths = figures(
+                &solution,
+                skeleton.as_ref(),
+                &Figure::ALL,
+                (&dir, &name),
+                &name,
+                &view,
+                &date,
+            );
+            if let Some(output) = &output {
+                paths.extend(figures(
+                    output,
+                    None,
+                    &OUTPUT_FIGURES,
+                    (&dir, &format!("{name}_output")),
+                    &format!("{name} (skeleton output)"),
+                    &view,
+                    &date,
+                ));
+            }
             let save = dir.join(format!("{name}.dc"));
             let save = match io::formats::dc::write(
                 &solution,
@@ -81,7 +102,7 @@ impl Job {
                 name: &name,
                 source: source.as_deref(),
                 save: save.as_deref(),
-                figures: &figures,
+                figures: &paths,
                 vertices: solution.mesh_ref.nr_verts(),
                 faces: solution.mesh_ref.nr_faces(),
                 date: &timestamp,
@@ -132,12 +153,22 @@ impl Job {
     }
 }
 
-// The figures as seen in `view`; returns the paths saved.
+// The figures of the skeleton output: those of the solution it reconstructed (the input mesh is the same).
+const OUTPUT_FIGURES: [Figure; 4] = [
+    Figure::LoopStructure,
+    Figure::Segmentation,
+    Figure::Quad,
+    Figure::Polycube,
+];
+
+// The figures it has of `which`, seen in `view`, as `<dir>/<stem>_<figure>.<format>`, labeled with `input`; returns the
+// paths saved.
 fn figures(
     solution: &Solution,
     skeleton: Option<&io::SkeletonSave>,
-    dir: &Path,
-    name: &str,
+    which: &[Figure],
+    (dir, stem): (&Path, &str),
+    input: &str,
     view: &ViewSettings,
     date: &str,
 ) -> Vec<PathBuf> {
@@ -155,7 +186,7 @@ fn figures(
         // As on the model (see `render::objects::input_mesh::path_bands`).
         path_width: 0.6 * view.loop_width,
         annotation: view.label.then(|| Annotation {
-            input: name.to_owned(),
+            input: input.to_owned(),
             score: solution.get_quality(),
             date: date.to_owned(),
         }),
@@ -168,26 +199,25 @@ fn figures(
         dual: axes.map(|d| colors::from_direction(d, Some(Perspective::Dual), None)),
         ..FigureStyle::default()
     };
-    match io::figure::export_figures(
-        solution,
-        skeleton,
-        dir,
-        name,
-        view.format.extension(),
-        &params,
-        &style,
-    ) {
-        Ok(saved) => {
-            for path in &saved {
+    let mut saved = vec![];
+    for &figure in which {
+        let Some(svg) = io::figure::figure_svg(solution, skeleton, figure, &params, &style) else {
+            continue;
+        };
+        let path = dir.join(format!(
+            "{stem}_{}.{}",
+            figure.slug(),
+            view.format.extension()
+        ));
+        match io::figure::save_figure(&svg, &path) {
+            Ok(()) => {
                 info!("Saved {}", path.display());
+                saved.push(path);
             }
-            saved
-        }
-        Err(err) => {
-            warn!("Failed to export the figures: {err:#}");
-            vec![]
+            Err(err) => warn!("Failed to save {}: {err:#}", path.display()),
         }
     }
+    saved
 }
 
 #[cfg(test)]
