@@ -104,6 +104,8 @@ pub struct Row {
     pub loops_drawn: Option<usize>,
     pub loops_planned: Option<usize>,
     pub quality: Option<f64>,
+    /// Peak resident memory of the process after the last stage run, in MB (Linux only).
+    pub peak_mb: Option<u64>,
 }
 
 impl Row {
@@ -158,6 +160,10 @@ impl Row {
             (
                 "quality",
                 self.quality.map(|q| format!("{q:.6}")).unwrap_or_default(),
+            ),
+            (
+                "peak_mb",
+                self.peak_mb.map(|m| m.to_string()).unwrap_or_default(),
             ),
         ]);
         fields
@@ -229,11 +235,14 @@ pub fn run_mesh(input: &Path, last: Stage) -> Row {
     row.genus = validate::input_genus(&mesh).ok();
     let mut progress = Progress::default();
     for stage in Stage::ALL.into_iter().filter(|&s| s <= last) {
+        // Names the running stage in the log, for runs killed from outside (timeout, out of memory).
+        tracing::info!("Stage {} started", stage.name());
         let start = Instant::now();
         let result = catch_unwind(AssertUnwindSafe(|| {
             step(stage, &mesh, &mut progress, &mut solution)
         }));
         row.seconds[stage as usize] = Some(start.elapsed().as_secs_f64());
+        row.peak_mb = peak_memory_mb();
         row.record(stage, &progress, &solution);
         let error = match result {
             Ok(Ok(())) => continue,
@@ -279,6 +288,14 @@ fn step(
         }
     }
     Ok(())
+}
+
+/// Peak resident memory of this process (`VmHWM`), in MB; `None` where `/proc` is unavailable.
+fn peak_memory_mb() -> Option<u64> {
+    let status = std::fs::read_to_string("/proc/self/status").ok()?;
+    let line = status.lines().find(|l| l.starts_with("VmHWM:"))?;
+    let kb: u64 = line.split_whitespace().nth(1)?.parse().ok()?;
+    Some(kb / 1024)
 }
 
 fn panic_message(panic: &(dyn std::any::Any + Send)) -> String {
