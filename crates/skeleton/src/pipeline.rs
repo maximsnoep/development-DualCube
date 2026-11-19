@@ -6,7 +6,7 @@ use crate::{
 };
 use dualcube_types::prelude::{INPUT, Mesh};
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub enum Stage {
     Extraction,
     Certification,

@@ -16,7 +16,7 @@ use std::collections::{BTreeSet, BinaryHeap, VecDeque};
 
 /// Why an arc could not be drawn, with its index along the loop. The construction always
 /// succeeds on a drawing equivalent to the template, so each of these reports a bug.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub enum DrawError {
     /// No piece of the drawing matches the template's first crossing.
     NoStart,

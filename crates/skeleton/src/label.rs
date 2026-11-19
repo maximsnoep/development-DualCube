@@ -10,6 +10,7 @@ mod tree;
 
 use crate::{EdgeLabel, LabeledSkeleton, Skeleton, SkeletonEdgeID, SkeletonNodeID, SkeletonResult};
 use dualcube_types::prelude::{Direction, HasPosition, INPUT, Mesh, Sign, Vector3D};
+use serde::{Deserialize, Serialize};
 use slotmap::SecondaryMap;
 use std::collections::HashMap;
 
@@ -81,21 +82,21 @@ pub fn angle_costs(vector: Vector3D) -> [f64; 6] {
     })
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct JunctionSplit {
     pub original_node: SkeletonNodeID,
     pub added_node: SkeletonNodeID,
     pub boundary: SkeletonEdgeID,
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct Repair {
     pub original_edge: SkeletonEdgeID,
     pub path: Vec<SkeletonEdgeID>,
 }
 
 /// Retained junction splits, tree solution, and cycle repairs.
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct Attempt {
     pub skeleton: Skeleton,
     pub labels: SecondaryMap<SkeletonEdgeID, EdgeLabel>,

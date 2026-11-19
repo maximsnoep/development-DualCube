@@ -22,7 +22,7 @@ mod template;
 pub use chords::chords;
 
 /// Each of these reports a bug: valid input always has a drawing.
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
 pub enum Failure {
     BoundaryTopology,
     Arc { loop_id: LoopID, error: DrawError },
@@ -47,7 +47,7 @@ impl std::fmt::Display for Failure {
 }
 impl std::error::Error for Failure {}
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
 pub struct Attempt {
     pub loops: DualLoops,
     /// The dual structure of a complete drawing, read from its loop map.

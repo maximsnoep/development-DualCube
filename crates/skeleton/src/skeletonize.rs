@@ -9,6 +9,7 @@ pub mod surgery;
 
 use crate::{Skeleton, SkeletonResult};
 use dualcube_types::prelude::*;
+use serde::{Deserialize, Serialize};
 
 #[derive(Clone, Copy, Debug)]
 pub struct Options {
@@ -31,7 +32,7 @@ impl Default for Options {
 }
 
 /// Extraction states, retained for inspection without running later stages.
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct Extraction {
     pub contracted_mesh: Mesh<deflate::CONTRACTION>,
     pub raw: Skeleton,
