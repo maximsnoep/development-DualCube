@@ -30,7 +30,7 @@ impl OrbitCameraBundle {
         let look_transform = transform::LookTransform::new(eye, target, up);
         Self {
             controller,
-            controller_state: orbit_state(look_transform),
+            controller_state: default(),
             look_transform,
             transform: look_transform.into(),
         }
@@ -39,13 +39,12 @@ impl OrbitCameraBundle {
 
 /// Moves an orbit camera to `look`; its orbit restarts from there.
 pub fn look_at(camera: &mut EntityCommands<'_>, look: LookTransform) {
-    camera.insert((look, Transform::from(look), orbit_state(look)));
+    camera.insert((
+        look,
+        Transform::from(look),
+        control::OrbitControllerState::default(),
+    ));
 }
 
-fn orbit_state(look: LookTransform) -> control::OrbitControllerState {
-    let up = look.up.try_normalize().unwrap_or(Vec3::Y);
-    let forward = (look.target - look.eye)
-        .try_normalize()
-        .unwrap_or(Vec3::NEG_Z);
-    control::OrbitControllerState::from_forward(forward, up)
-}
+#[cfg(test)]
+mod tests;

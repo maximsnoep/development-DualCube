@@ -1,5 +1,3 @@
-use std::f32;
-
 use crate::transform::LookTransform;
 use bevy::input::mouse::{MouseScrollUnit, MouseWheel};
 use bevy::prelude::*;
@@ -11,13 +9,12 @@ const TRANSLATION_UNITS_PER_PIXEL: f32 = 0.01;
 // Prevents huge jumps from RDP, focus changes, cursor teleporting, etc.
 const MAX_CURSOR_DELTA: f32 = 100.0;
 
-#[derive(Clone, Component, Copy, Debug, Reflect)]
+#[derive(Clone, Component, Copy, Debug, Default, Reflect)]
 #[reflect(Component, Debug)]
 pub(crate) struct OrbitControllerState {
-    pub(crate) yaw: f32,
-    pitch: f32,
-    yaw_zero_forward: Vec3,
     last_cursor_position: Option<Vec2>,
+    /// Whether a rotation drag is going on, and the sign of its horizontal turn (fixed for the drag).
+    drag_yaw_sign: Option<f32>,
 }
 
 /// A 3rd person camera that orbits around the target.
@@ -28,6 +25,8 @@ pub struct Controller {
     pub mouse_translate_sensitivity: Vec2,
     pub mouse_wheel_zoom_sensitivity: f32,
     pub pixels_per_line: f32,
+    /// Horizontal drags orbit about this axis (the world up); vertical drags tilt over it freely.
+    pub orbit_axis: Vec3,
 }
 
 impl Default for Controller {
@@ -37,6 +36,7 @@ impl Default for Controller {
             mouse_translate_sensitivity: Vec2::splat(2.0),
             mouse_wheel_zoom_sensitivity: 0.2,
             pixels_per_line: 53.0,
+            orbit_axis: Vec3::Y,
         }
     }
 }
@@ -62,7 +62,7 @@ pub fn system(
             mouse_translate_sensitivity,
             mouse_wheel_zoom_sensitivity,
             pixels_per_line,
-            ..
+            orbit_axis,
         },
         controller_state,
         mut transform,
@@ -83,17 +83,11 @@ pub fn system(
         acc * (1.0 - scroll_amount * mouse_wheel_zoom_sensitivity)
     });
 
-    // World up vector.
-    let up = transform.up.try_normalize().unwrap_or(Vec3::Y);
-
-    let Some(initial_forward) = (transform.target - transform.eye).try_normalize() else {
+    if transform.forward().is_none() {
         return;
-    };
+    }
 
-    let mut state = controller_state
-        .as_deref()
-        .copied()
-        .unwrap_or_else(|| OrbitControllerState::from_forward(initial_forward, up));
+    let mut state = controller_state.as_deref().copied().unwrap_or_default();
 
     let rotating =
         keyboard.pressed(KeyCode::ControlLeft) || mouse_buttons.pressed(MouseButton::Middle);
@@ -129,30 +123,29 @@ pub fn system(
     };
 
     // ROTATE / ORBIT
-    // Changes the forward vector.
+    // Turns the eye and up about the target.
     if rotating {
+        let yaw_sign = *state
+            .drag_yaw_sign
+            .get_or_insert_with(|| yaw_sign(&transform, *orbit_axis));
         let delta = mouse_rotate_sensitivity * cursor_delta * ROTATION_RADIANS_PER_PIXEL;
-
-        state.yaw -= delta.x;
-        state.pitch = (state.pitch - delta.y).clamp(
-            -f32::consts::FRAC_PI_2 * 0.99,
-            f32::consts::FRAC_PI_2 * 0.99,
-        );
+        if delta != Vec2::ZERO {
+            turn(&mut transform, *orbit_axis, -delta.x * yaw_sign, -delta.y);
+        }
+    } else {
+        state.drag_yaw_sign = None;
     }
-
-    let forward = state.forward(up);
 
     // TRANSLATE
     // Changes the target vector.
-    let mut target = transform.target;
-
-    if translating {
+    if translating && cursor_delta != Vec2::ZERO {
         let delta = mouse_translate_sensitivity * cursor_delta * TRANSLATION_UNITS_PER_PIXEL;
-
-        if let Some(right) = up.cross(forward).try_normalize() {
-            let upish = forward.cross(right).normalize();
-            target += delta.x * right + delta.y * upish;
-        }
+        let forward = transform.forward().unwrap_or(Vec3::NEG_Z);
+        let up = transform.screen_up();
+        let right = up.cross(forward);
+        let shift = delta.x * right + delta.y * up;
+        transform.target += shift;
+        transform.eye += shift;
     }
 
     match controller_state {
@@ -164,33 +157,35 @@ pub fn system(
 
     // ZOOM
     // Changes the radius.
-    let radius = transform.radius() * scroll_delta;
-
-    transform.target = target;
-    transform.eye = target - forward * radius;
+    if scroll_delta != 1.0 {
+        let forward = transform.forward().unwrap_or(Vec3::NEG_Z);
+        let radius = transform.radius() * scroll_delta;
+        transform.eye = transform.target - forward * radius;
+    }
 }
 
-impl OrbitControllerState {
-    pub(crate) fn from_forward(forward: Vec3, up: Vec3) -> Self {
-        let pitch = forward.dot(up).clamp(-1.0, 1.0).asin();
-
-        let yaw_zero_forward = (forward - up * forward.dot(up))
-            .try_normalize()
-            .unwrap_or_else(|| up.any_orthonormal_vector());
-
-        Self {
-            yaw: 0.0,
-            pitch: pitch.clamp(
-                -f32::consts::FRAC_PI_2 * 0.99,
-                f32::consts::FRAC_PI_2 * 0.99,
-            ),
-            yaw_zero_forward,
-            last_cursor_position: None,
-        }
+/// Orbits `look` by `yaw` about `axis`, then by `pitch` toward its screen up; there is no limit to either.
+pub(crate) fn turn(look: &mut LookTransform, axis: Vec3, yaw: f32, pitch: f32) {
+    let axis = axis.try_normalize().unwrap_or(Vec3::Y);
+    if yaw != 0.0 {
+        look.orbit(Quat::from_axis_angle(axis, yaw));
     }
+    if pitch != 0.0
+        && let Some(forward) = look.forward()
+    {
+        look.orbit(Quat::from_axis_angle(
+            forward.cross(look.screen_up()),
+            pitch,
+        ));
+    }
+    look.level(axis);
+}
 
-    fn forward(&self, up: Vec3) -> Vec3 {
-        let horizontal = Quat::from_axis_angle(up, self.yaw) * self.yaw_zero_forward;
-        (horizontal * self.pitch.cos() + up * self.pitch.sin()).normalize()
+/// -1 while the camera is upside down about `axis`, so horizontal drags still move the model along with the mouse.
+pub(crate) fn yaw_sign(look: &LookTransform, axis: Vec3) -> f32 {
+    if look.screen_up().dot(axis) < 0.0 {
+        -1.0
+    } else {
+        1.0
     }
 }
