@@ -5,6 +5,7 @@ mod jobs;
 mod render;
 mod resources;
 mod ui;
+mod view_settings;
 
 use bevy::diagnostic::{FrameTimeDiagnosticsPlugin, SystemInformationDiagnosticsPlugin};
 use bevy::log::{Level, LogPlugin};

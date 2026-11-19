@@ -25,6 +25,7 @@ impl Plugin for RenderPlugin {
             .init_resource::<store::RenderObjectSettingStore>()
             .init_resource::<camera::CameraHandles>()
             .init_gizmo_group::<gizmos::PerpetualGizmos>()
+            .add_message::<crate::view_settings::ApplyView>()
             .add_systems(Startup, (camera::setup, gizmos::setup))
             .add_systems(
                 PreUpdate,
@@ -33,7 +34,7 @@ impl Plugin for RenderPlugin {
             .add_systems(
                 Update,
                 (
-                    camera::update,
+                    (camera::apply_view, camera::update).chain(),
                     // Settings must be derived from the store before (re)spawning from them.
                     (
                         objects::skeleton::sync,

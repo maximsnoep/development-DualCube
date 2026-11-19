@@ -211,7 +211,13 @@ impl Launch {
                     )
                 ),
             };
-            if !available {
+            // A save may hold every skeleton stage.
+            let saved = launch
+                .path
+                .as_ref()
+                .and_then(|path| path.extension())
+                .is_some_and(|extension| extension.eq_ignore_ascii_case("dc"));
+            if !available && !saved {
                 return Err("The requested view is not available at the chosen stop stage".into());
             }
         }

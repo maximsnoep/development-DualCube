@@ -135,6 +135,8 @@ impl std::fmt::Display for FigureFormat {
 pub struct InputResource {
     /// The name of the model (its file name, without the extension).
     pub name: String,
+    /// The file the model was first read from (a save remembers it).
+    pub source: Option<std::path::PathBuf>,
     pub mesh: Arc<mehsh::prelude::Mesh<INPUT>>,
     pub properties: MeshProperties,
     pub triangle_lookup: FaceLocation<INPUT>,
@@ -152,6 +154,7 @@ impl InputResource {
 
         Self {
             name: String::new(),
+            source: None,
             mesh,
             properties,
             triangle_lookup,
@@ -207,12 +210,48 @@ pub struct SkeletonResource {
     pub initialization_failure: Option<dualcube::skeleton::pipeline::Failure>,
 }
 
-pub enum SkeletonState {
-    Deflated(mehsh::prelude::Mesh<dualcube::skeleton::skeletonize::deflate::CONTRACTION>),
-    Extracted(dualcube::skeleton::skeletonize::Extraction),
-}
+/// Deflated only, or extracted.
+pub type SkeletonState = io::SkeletonExtraction;
 
 impl SkeletonResource {
+    /// The retained stages, or `None` before any extraction.
+    pub fn save(&self) -> Option<io::SkeletonSave> {
+        Some(io::SkeletonSave {
+            extraction: Some(self.state.clone()?),
+            labeling: self.labeling.clone(),
+            labeled: self.labeled.clone(),
+            realized: self.realized.clone(),
+            optimized: self.optimized.clone(),
+            drawing: self.drawing.clone(),
+            loops: self.loops.clone(),
+            failure: self
+                .initialization_failure
+                .as_ref()
+                .map(|failure| (failure.stage, failure.error.to_string())),
+        })
+    }
+
+    /// Takes the stages of a save; the contraction cache and the shown contraction stage stay.
+    pub fn restore(&mut self, save: io::SkeletonSave) {
+        *self = Self {
+            contraction_cache: self.contraction_cache.clone(),
+            contraction_stage: self.contraction_stage,
+            state: save.extraction,
+            labeled: save.labeled,
+            labeling: save.labeling,
+            realized: save.realized,
+            optimized: save.optimized,
+            drawing: save.drawing,
+            loops: save.loops,
+            initialization_failure: save.failure.map(|(stage, message)| {
+                dualcube::skeleton::pipeline::Failure {
+                    stage,
+                    error: message.into(),
+                }
+            }),
+        };
+    }
+
     pub fn extraction(&self) -> Option<&dualcube::skeleton::skeletonize::Extraction> {
         match &self.state {
             Some(SkeletonState::Extracted(extraction)) => Some(extraction),

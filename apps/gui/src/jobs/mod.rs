@@ -128,6 +128,10 @@ enum JobResult {
     Imported {
         solution: Solution,
         store: RenderObjectStore,
+        /// The skeleton stages of a save.
+        skeleton: Option<::io::SkeletonSave>,
+        /// The file the model was first read from.
+        source: std::path::PathBuf,
         /// The name of the model.
         name: Option<String>,
     },
@@ -296,16 +300,22 @@ pub(crate) fn poll_jobs(
         JobResult::Imported {
             solution,
             store,
+            skeleton: saved_skeleton,
+            source,
             name,
         } => {
             let name = name.unwrap_or_else(|| input_resource.name.clone());
             *input_resource = InputResource::new(solution.mesh_ref.clone());
             input_resource.name = name;
+            input_resource.source = Some(source);
             solution_resource.current_solution = solution;
             // The selections and anchors refer to elements of the old model.
             solution_resource.selected_corner = None;
             configuration.loop_anchors.clear();
             *skeleton = Default::default();
+            if let Some(save) = saved_skeleton {
+                skeleton.restore(save);
+            }
             if crate::resources::genus(&input_resource.mesh) != Some(0) {
                 configuration.initialization = crate::resources::Initialization::Skeleton;
             }
