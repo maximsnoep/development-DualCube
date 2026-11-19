@@ -33,9 +33,10 @@ impl Job {
         .preempting()
     }
 
-    /// The figures of the solution (see `io::figure`) in a directory, as `<name>_<figure>.<format>`, seen as `view`;
-    /// with smoothed paths if it says so. Next to them `<name>.dc` (the solution and the skeleton stages) and
-    /// `<name>_view.txt` (the model, the camera, and the settings, to make the figures again).
+    /// The figures of the solution (see `io::figure`) in a new folder `<name>_<timestamp>` of a directory, as
+    /// `<name>_<figure>.<format>`, seen as `view`; with smoothed paths if it says so. Next to them `<name>.dc` (the
+    /// solution and the skeleton stages) and `<name>_view.txt` (the model, the camera, and the settings, to make the
+    /// figures again).
     pub fn export_figures(
         solution: Solution,
         configuration: Configuration,
@@ -52,6 +53,13 @@ impl Job {
                 name.clone()
             };
             let date = io::figure::today();
+            let timestamp = io::figure::timestamp();
+            let dir = dir.join(format!("{name}_{timestamp}"));
+            if let Err(err) = std::fs::create_dir_all(&dir) {
+                warn!("Failed to create {}: {err:#}", dir.display());
+                return None;
+            }
+            info!("Exporting figures to {}", dir.display());
             let figures = figures(&solution, &dir, &name, &view, &date);
             let save = dir.join(format!("{name}.dc"));
             let save = match io::formats::dc::write(
@@ -76,7 +84,7 @@ impl Job {
                 figures: &figures,
                 vertices: solution.mesh_ref.nr_verts(),
                 faces: solution.mesh_ref.nr_faces(),
-                date: &date,
+                date: &timestamp,
                 configuration: &configuration,
             });
             let path = dir.join(format!("{name}_view.txt"));
