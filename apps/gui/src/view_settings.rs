@@ -139,7 +139,7 @@ impl ViewSettings {
                 "figures: {}",
                 report.figures.iter().map(|p| file_name(p)).collect::<Vec<_>>().join(", ")
             ),
-            format!("date: {}", report.date),
+            format!("date: {} (UTC)", report.date),
             String::new(),
             format!("camera eye: {}", spaced(self.eye)),
             format!("camera target: {}", spaced(self.target)),

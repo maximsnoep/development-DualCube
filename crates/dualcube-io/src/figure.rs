@@ -241,9 +241,31 @@ pub fn export_figures(
 /// Today's date (UTC), as YYYY-MM-DD.
 #[must_use]
 pub fn today() -> String {
-    let days = std::time::SystemTime::now()
+    date(seconds_now() / 86_400)
+}
+
+/// The current time (UTC), as YYYY-MM-DD_HHMMSS (sorts chronologically, valid in file names).
+#[must_use]
+pub fn timestamp() -> String {
+    let seconds = seconds_now();
+    let time = seconds % 86_400;
+    format!(
+        "{}_{:02}{:02}{:02}",
+        date(seconds / 86_400),
+        time / 3600,
+        time / 60 % 60,
+        time % 60
+    )
+}
+
+fn seconds_now() -> i64 {
+    std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
-        .map_or(0, |d| d.as_secs() / 86_400) as i64;
+        .map_or(0, |d| d.as_secs()) as i64
+}
+
+// The date of a day since the Unix epoch, as YYYY-MM-DD.
+fn date(days: i64) -> String {
     // Civil from days (Howard Hinnant's algorithm).
     let z = days + 719_468;
     let era = z.div_euclid(146_097);

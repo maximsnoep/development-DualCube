@@ -39,6 +39,16 @@ fn exported_figures_come_with_a_save_and_a_view_text_that_restore_them() {
     let (sender, _) = mpsc::channel();
     assert!((job.run)(&sender).is_none());
 
+    // Everything goes in one new folder, `tet_<timestamp>`.
+    let folders = std::fs::read_dir(&dir)
+        .unwrap()
+        .map(|entry| entry.unwrap().path())
+        .collect::<Vec<_>>();
+    let [dir] = &folders[..] else {
+        panic!("expected one folder, found {folders:?}");
+    };
+    let folder = dir.file_name().unwrap().to_string_lossy();
+    assert!(folder.starts_with("tet_20") && folder.len() == "tet_YYYY-MM-DD_HHMMSS".len());
     assert!(dir.join("tet_mesh.svg").exists());
     let text = std::fs::read_to_string(dir.join("tet_view.txt")).unwrap();
     assert!(text.contains("figures: tet_mesh.svg"), "{text}");
