@@ -554,29 +554,58 @@ fn mix(color: Rgb, toward: Rgb, t: f32) -> Rgb {
     [0, 1, 2].map(|k| color[k] + (toward[k] - color[k]) * t)
 }
 
-/// A color per region (patch, node), spread around the hue wheel (as in the GUI).
+/// Muted colors for the regions (patches, nodes).
+pub const PASTEL: [Rgb; 10] = [
+    [0.561, 0.725, 0.788], // dusty blue
+    [0.890, 0.710, 0.561], // sand
+    [0.663, 0.780, 0.608], // sage
+    [0.831, 0.604, 0.604], // dusty rose
+    [0.718, 0.651, 0.820], // lavender
+    [0.902, 0.835, 0.549], // straw
+    [0.561, 0.776, 0.706], // seafoam
+    [0.780, 0.635, 0.486], // tan
+    [0.616, 0.663, 0.788], // slate
+    [0.839, 0.706, 0.784], // mauve
+];
+
+/// A color per node (as in the GUI), greedily in node order: none of its already colored neighbors' colors (the
+/// fewest of them if all are taken), then the least used, then the next in the cycle after the previous pick.
 #[must_use]
-pub fn region_color(region: usize) -> Rgb {
-    let hue = (0.58 + region as f64 * 0.618_033_988_749_895).fract() * 6.;
-    let (saturation, value) = match region % 3 {
-        0 => (0.78, 0.90),
-        1 => (0.65, 0.76),
-        _ => (0.85, 0.98),
-    };
-    let f = (hue - hue.floor()) as f32;
-    let (p, q, t) = (
-        value * (1. - saturation),
-        value * (1. - saturation * f),
-        value * (1. - saturation * (1. - f)),
-    );
-    match hue as usize % 6 {
-        0 => [value, t, p],
-        1 => [q, value, p],
-        2 => [p, value, t],
-        3 => [p, q, value],
-        4 => [t, p, value],
-        _ => [value, p, q],
+pub fn region_colors(
+    skeleton: &dualcube::skeleton::Skeleton,
+) -> HashMap<dualcube::skeleton::SkeletonNodeID, Rgb> {
+    let mut neighbors: HashMap<_, Vec<_>> = HashMap::new();
+    for edge in skeleton.edges.values() {
+        let [a, b] = edge.nodes;
+        if a != b {
+            neighbors.entry(a).or_default().push(b);
+            neighbors.entry(b).or_default().push(a);
+        }
     }
+    let mut chosen = HashMap::new();
+    let mut used = [0usize; PASTEL.len()];
+    let mut next = 0;
+    for id in skeleton.nodes.keys() {
+        let mut clashes = [0usize; PASTEL.len()];
+        for n in neighbors.get(&id).into_iter().flatten() {
+            if let Some(&c) = chosen.get(n) {
+                clashes[c] += 1;
+            }
+        }
+        let color = (0..PASTEL.len())
+            .min_by_key(|&c| {
+                (
+                    clashes[c],
+                    used[c],
+                    (c + PASTEL.len() - next) % PASTEL.len(),
+                )
+            })
+            .unwrap();
+        chosen.insert(id, color);
+        used[color] += 1;
+        next = (color + 1) % PASTEL.len();
+    }
+    chosen.into_iter().map(|(id, c)| (id, PASTEL[c])).collect()
 }
 
 // A band on a surface (flat colored): a polyline (closed: a loop) and the offsets of its other side. Drawn as one
