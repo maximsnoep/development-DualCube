@@ -6,10 +6,9 @@
 //! cocycles vanish on it (H₁(V) has no torsion for V in ℝ³). Mod 2 this would miss loops
 //! that wind twice around a handle, which flips readily produce.
 //!
-//! The handle cycles of K = ker(H₁(S) → H₁(V)) bias the merge order only.
-
-use super::handle_subspace::compute_handle_subspace;
-use super::tet_boundary::build_tet_boundary;
+//! The cocycles also bias the merge order. Cocycle i counts crossings of a disk cut across
+//! handle i (H¹(V) ≅ H₂(V, ∂V)), so the surface edges where it is nonzero are crossed by
+//! the disk's rim, a loop that bounds in V. Merging across them first cuts every handle.
 use super::tetrahedralize::tetrahedralize;
 use crate::SkeletonResult;
 use dualcube_types::prelude::*;
@@ -63,7 +62,7 @@ impl std::ops::Neg for &Class {
     }
 }
 
-/// Bit set over handle cycles.
+/// Bit set over cocycles.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub(super) struct Bits(Vec<u64>);
 
@@ -93,8 +92,6 @@ impl std::ops::BitOrAssign<&Bits> for Bits {
 pub(super) struct Homology {
     /// Cocycle values of each surface edge from its smaller to its larger vertex index.
     cocycles: HashMap<[usize; 2], Class>,
-    /// Handle cycles through each edge (bit per basis cycle of K).
-    handles: HashMap<[usize; 2], Bits>,
 }
 
 impl Homology {
@@ -105,7 +102,6 @@ impl Homology {
     ) -> SkeletonResult<Self> {
         let mut homology = Self {
             cocycles: HashMap::new(),
-            handles: HashMap::new(),
         };
         if genus == 0 {
             return Ok(homology);
@@ -113,19 +109,6 @@ impl Homology {
         let tets = tetrahedralize(mesh)?;
         if tets.n_tets() == 0 || tets.n_vertices < mesh.nr_verts() {
             return Err("TetGen volume does not match the input surface topology".into());
-        }
-        let subspace = compute_handle_subspace(mesh, &build_tet_boundary(&tets), genus);
-        if subspace.genus() != genus {
-            return Err("TetGen volume does not match the input surface topology".into());
-        }
-        for (i, cycle) in subspace.cycles.iter().enumerate() {
-            for &e in cycle {
-                let [a, b] = subspace.surface_edges[e as usize];
-                *homology
-                    .handles
-                    .entry(key(a as usize, b as usize))
-                    .or_default() |= &Bits::bit(i);
-            }
         }
         let (rank, values) = volume_cocycles(tets.n_vertices, &tets.tets)?;
         if rank != genus {
@@ -153,8 +136,17 @@ impl Homology {
         }
     }
 
+    /// Cocycles that are nonzero on the edge.
     pub fn handles(&self, [a, b]: [usize; 2]) -> Bits {
-        self.handles.get(&key(a, b)).cloned().unwrap_or_default()
+        let mut bits = Bits::default();
+        if let Some(value) = self.cocycles.get(&key(a, b)) {
+            for (i, &v) in value.0.iter().enumerate() {
+                if v != 0 {
+                    bits |= &Bits::bit(i);
+                }
+            }
+        }
+        bits
     }
 }
 
