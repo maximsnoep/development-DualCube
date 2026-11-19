@@ -157,6 +157,10 @@ fn legacy_and_explicit_arrangements_have_identical_topology() {
     loops[id] = Loop::from_surface(Direction::X, loops[id].surface_arcs(&mesh).unwrap());
     let after = crate::partial::PartialTopology::new(&mesh, &loops).unwrap();
     assert!(before.equivalent(&after));
+    // Straight-chord curves take the legacy path; the general arrangement agrees with it.
+    let general = crate::arrangement::general::build(&mesh, &loops).unwrap();
+    let general = crate::partial::PartialTopology::from_arrangement(&mesh, &general).unwrap();
+    assert!(before.equivalent(&general));
 }
 
 #[test]
