@@ -18,7 +18,13 @@ pub trait Import {
 }
 
 pub use crate::formats::{
-    apg::APG, dc::Dc, flag::Flag, hex::HEX, loops::Loops, nlr::NLR, obj::OBJ,
+    apg::APG,
+    dc::{Dc, Save, SkeletonExtraction, SkeletonSave},
+    flag::Flag,
+    hex::HEX,
+    loops::Loops,
+    nlr::NLR,
+    obj::OBJ,
 };
 use dualcube::prelude::*;
 use std::{path::Path, sync::Arc};
@@ -36,6 +42,18 @@ pub fn import_solution(path: &Path) -> anyhow::Result<Solution> {
         "dc" | "dsol" => Dc::import(path),
         "loops" => Loops::import(path),
         ext => anyhow::bail!("unsupported file extension `{ext}` for {}", path.display()),
+    }
+}
+
+/// Like [`import_solution`], with the skeleton state and source a Dc file keeps.
+pub fn import_save(path: &Path) -> anyhow::Result<Save> {
+    match extension_of(path)?.as_str() {
+        "dc" | "dsol" => formats::dc::read(path),
+        _ => Ok(Save {
+            solution: import_solution(path)?,
+            skeleton: None,
+            source: None,
+        }),
     }
 }
 

@@ -106,7 +106,7 @@ pub struct EdgeLabel {
 }
 
 /// Correspondence between target solids and skeleton elements.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub enum CuboidOwner {
     /// A node cube, entirely owned by that node's patch.
     Node(SkeletonNodeID),
@@ -116,7 +116,7 @@ pub enum CuboidOwner {
 }
 
 /// An axis-aligned box in target space: a node cube or an edge cuboid.
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct Cuboid {
     /// Finite target-space coordinates.
     pub center: Vector3D,
@@ -133,7 +133,7 @@ pub struct Cuboid {
 /// Global intersections and coincident solids are allowed. Every node has exactly one
 /// cube; every edge has exactly one cuboid joining its endpoint cubes. Cuboids are not
 /// divided into endpoint-owned pieces. Only explicit connections imply adjacency.
-#[derive(Clone, Debug, Default)]
+#[derive(Clone, Debug, Default, Serialize, Deserialize)]
 pub struct CuboidLayout {
     pub cuboids: SlotMap<CuboidID, Cuboid>,
     pub connections: Vec<[CuboidID; 2]>,
@@ -150,7 +150,7 @@ pub struct LabeledSkeleton {
 
 /// Labeled skeleton with target geometry, used by optimization and loop drawing.
 /// Topology edits must keep labels, patch boundaries, and cube ownership consistent.
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct RealizedSkeleton {
     pub labeled: LabeledSkeleton,
     /// Target-space node centers; the input-space embedding stays in `labeled`.
