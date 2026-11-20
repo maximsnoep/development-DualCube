@@ -1,5 +1,5 @@
 use dualcube::prelude::*;
-use dualcube::skeleton::pipeline::Progress;
+use dualcube::skeleton::pipeline::{Progress, Stage};
 use dualcube::skeleton::skeletonize::{self, Options};
 use io::figure::{Figure, FigureParams, FigureStyle, export_figures};
 use io::{SkeletonExtraction, SkeletonSave};
@@ -12,7 +12,7 @@ fn every_view_preset_has_a_figure() {
     let mesh = io::import_mesh(&path).unwrap().0;
     let extraction = skeletonize::extract(&mesh, Options::default()).unwrap();
     let mut progress = Progress::from_skeleton(extraction.skeleton.clone());
-    progress.finish(&mesh).unwrap();
+    progress.run_through(&mesh, Stage::LoopDrawing).unwrap();
 
     let mut solution = Solution::new(Arc::new(mesh));
     solution.replace_loops(progress.loops.clone().unwrap());

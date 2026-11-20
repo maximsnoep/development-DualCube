@@ -22,7 +22,7 @@ fn v2_keeps_skeleton_stages_layout_and_source() {
     let mesh = blub();
     let extraction = skeletonize::extract(&mesh, Options::default()).unwrap();
     let mut progress = Progress::from_skeleton(extraction.skeleton.clone());
-    progress.finish(&mesh).unwrap();
+    progress.run_through(&mesh, Stage::LoopDrawing).unwrap();
 
     let mut solution = Solution::new(Arc::new(mesh));
     solution.replace_loops(progress.loops.clone().unwrap());

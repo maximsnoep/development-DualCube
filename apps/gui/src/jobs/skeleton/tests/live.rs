@@ -177,14 +177,19 @@ fn complete_initialization_publishes_each_completed_stage() {
         updates.next(),
         Some(Update::State(SkeletonState::Extracted(_)))
     ));
-    for stage in 0..3 {
+    let stages = [
+        Stage::Certification,
+        Stage::Labeling,
+        Stage::CubePlacement,
+        Stage::Optimization,
+        Stage::LoopDrawing,
+    ];
+    for (i, &stage) in stages.iter().enumerate() {
         let Some(Update::Progress(progress)) = updates.next() else {
             panic!("Missing stage snapshot");
         };
-        assert!(progress.labeled.is_some());
-        assert_eq!(progress.realized.is_some(), stage >= 1);
-        assert_eq!(progress.optimized.is_some(), stage >= 2);
-        assert!(progress.loops.is_none());
+        assert!(progress.done(stage));
+        assert_eq!(progress.next(), stages.get(i + 1).copied());
     }
     assert!(updates.next().is_none());
 }

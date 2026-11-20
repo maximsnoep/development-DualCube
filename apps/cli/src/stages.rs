@@ -1,56 +1,20 @@
 //! `stages`: run the skeleton pipeline on many meshes up to one stage, one report row per mesh.
 
 use dualcube::prelude::*;
-use dualcube::skeleton::{pipeline::Progress, skeletonize, validate};
+use dualcube::skeleton::pipeline::{Progress, Stage};
+use dualcube::skeleton::skeletonize::{self, deflate};
+use dualcube::skeleton::validate;
 use std::collections::BTreeMap;
 use std::panic::{AssertUnwindSafe, catch_unwind};
 use std::path::{Path, PathBuf};
 use std::time::Instant;
 
-/// Pipeline stages in order. A run includes every stage up to and including its last one.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
-pub enum Stage {
-    Extraction,
-    Certification,
-    Labeling,
-    Placement,
-    Optimization,
-    Drawing,
-    Reconstruction,
-}
-
-impl Stage {
-    pub const ALL: [Self; 7] = [
-        Self::Extraction,
-        Self::Certification,
-        Self::Labeling,
-        Self::Placement,
-        Self::Optimization,
-        Self::Drawing,
-        Self::Reconstruction,
-    ];
-
-    pub fn name(self) -> &'static str {
-        match self {
-            Self::Extraction => "extraction",
-            Self::Certification => "certification",
-            Self::Labeling => "labeling",
-            Self::Placement => "placement",
-            Self::Optimization => "optimization",
-            Self::Drawing => "drawing",
-            Self::Reconstruction => "reconstruction",
-        }
-    }
-
-    pub fn parse(name: &str) -> anyhow::Result<Self> {
-        Self::ALL
-            .into_iter()
-            .find(|s| s.name() == name)
-            .ok_or_else(|| {
-                let names: Vec<_> = Self::ALL.iter().map(|s| s.name()).collect();
-                anyhow::anyhow!("unknown stage `{name}` (one of {})", names.join(", "))
-            })
-    }
+/// A stage by its name in [`Stage::name`].
+pub fn parse_stage(name: &str) -> anyhow::Result<Stage> {
+    Stage::parse(name).ok_or_else(|| {
+        let names: Vec<_> = Stage::ALL.iter().map(|s| s.name()).collect();
+        anyhow::anyhow!("unknown stage `{name}` (one of {})", names.join(", "))
+    })
 }
 
 /// The meshes named by an input: a mesh file, a folder of meshes, or a `.txt` set listing
@@ -91,7 +55,7 @@ pub struct Row {
     pub steiner: usize,
     /// The failing stage and its error or panic message.
     pub failure: Option<(Stage, String)>,
-    pub seconds: [Option<f64>; 7],
+    pub seconds: [Option<f64>; Stage::ALL.len()],
     pub patches: Option<usize>,
     pub boundaries: Option<usize>,
     pub max_degree: Option<usize>,
@@ -133,7 +97,8 @@ impl Row {
                     .unwrap_or_default(),
             ),
         ];
-        const SECONDS: [&str; 7] = [
+        const SECONDS: [&str; Stage::ALL.len()] = [
+            "s_deflation",
             "s_extraction",
             "s_certification",
             "s_labeling",
@@ -171,6 +136,7 @@ impl Row {
 
     fn record(&mut self, stage: Stage, progress: &Progress, solution: &Solution) {
         match stage {
+            Stage::Deflation | Stage::CubePlacement => {}
             Stage::Extraction => {
                 if let Some(skeleton) = &progress.skeleton {
                     let mut degree = HashMap::new();
@@ -196,14 +162,13 @@ impl Row {
                     self.cycle_repairs = Some(labeling.repairs.len());
                 }
             }
-            Stage::Placement => {}
             Stage::Optimization => {
                 if let Some(optimized) = &progress.optimized {
                     self.optimized_patches = Some(optimized.labeled.skeleton.nodes.len());
                     self.optimized_boundaries = Some(optimized.labeled.skeleton.edges.len());
                 }
             }
-            Stage::Drawing => {
+            Stage::LoopDrawing => {
                 if let Some(drawing) = &progress.drawing {
                     self.loops_drawn = Some(drawing.loops.len());
                     self.loops_planned = Some(drawing.planned);
@@ -226,7 +191,7 @@ pub fn run_mesh(input: &Path, last: Stage, certify_each_step: bool) -> Row {
             Solution::new(std::sync::Arc::new(mesh))
         }
         Err(error) => {
-            row.failure = Some((Stage::Extraction, format!("import: {error}")));
+            row.failure = Some((Stage::Deflation, format!("import: {error}")));
             return row;
         }
     };
@@ -234,6 +199,7 @@ pub fn run_mesh(input: &Path, last: Stage, certify_each_step: bool) -> Row {
     row.faces = mesh.nr_faces();
     row.genus = validate::input_genus(&mesh).ok();
     let mut progress = Progress::default();
+    let mut contracted = None;
     let skipped = |s: Stage| certify_each_step && s == Stage::Certification;
     for stage in Stage::ALL.into_iter().filter(|&s| s <= last && !skipped(s)) {
         // Names the running stage in the log, for runs killed from outside (timeout, out of memory).
@@ -243,6 +209,7 @@ pub fn run_mesh(input: &Path, last: Stage, certify_each_step: bool) -> Row {
             step(
                 stage,
                 &mesh,
+                &mut contracted,
                 &mut progress,
                 &mut solution,
                 certify_each_step,
@@ -265,15 +232,23 @@ pub fn run_mesh(input: &Path, last: Stage, certify_each_step: bool) -> Row {
 fn step(
     stage: Stage,
     mesh: &Mesh<INPUT>,
+    contracted: &mut Option<Mesh<deflate::CONTRACTION>>,
     progress: &mut Progress,
     solution: &mut Solution,
     certify_each_step: bool,
 ) -> anyhow::Result<()> {
+    let mut options = skeletonize::Options::default();
+    options.surgery.certify_each_step = certify_each_step;
     match stage {
+        Stage::Deflation => {
+            *contracted = Some(
+                deflate::run(mesh, options.max_iterations, options.contraction_step)
+                    .map_err(|e| anyhow::anyhow!("{e}"))?,
+            );
+        }
         Stage::Extraction => {
-            let mut options = skeletonize::Options::default();
-            options.surgery.certify_each_step = certify_each_step;
-            let skeleton = skeletonize::extract(mesh, options)
+            let deflated = contracted.take().expect("deflation runs first");
+            let skeleton = skeletonize::extract_from_contracted(mesh, deflated, options)
                 .map_err(|e| anyhow::anyhow!("{e}"))?
                 .skeleton;
             *progress = Progress::from_skeleton(skeleton);
@@ -282,11 +257,6 @@ fn step(
                 progress.certificate = Some(Default::default());
             }
         }
-        Stage::Certification => progress.certify(mesh)?,
-        Stage::Labeling => progress.label(mesh)?,
-        Stage::Placement => progress.place(mesh)?,
-        Stage::Optimization => progress.optimize(mesh)?,
-        Stage::Drawing => progress.finish(mesh)?,
         Stage::Reconstruction => {
             let drawing = progress
                 .drawing
@@ -302,6 +272,7 @@ fn step(
                 anyhow::bail!("reconstruction left an incomplete layout");
             }
         }
+        stage => progress.run_through(mesh, stage)?,
     }
     Ok(())
 }

@@ -201,12 +201,8 @@ pub struct SkeletonResource {
     /// Contraction stage shown in the deflated layer; `None` shows the result.
     pub contraction_stage: Option<usize>,
     pub state: Option<SkeletonState>,
-    pub labeled: Option<dualcube::skeleton::LabeledSkeleton>,
-    pub labeling: Option<dualcube::skeleton::label::Attempt>,
-    pub realized: Option<dualcube::skeleton::RealizedSkeleton>,
-    pub optimized: Option<dualcube::skeleton::RealizedSkeleton>,
-    pub drawing: Option<dualcube::skeleton::draw_loops::Attempt>,
-    pub loops: Option<dualcube::skeleton::DualLoops>,
+    /// The stages after extraction.
+    pub progress: dualcube::skeleton::pipeline::Progress,
     pub initialization_failure: Option<dualcube::skeleton::pipeline::Failure>,
     /// The solution the initialization reconstructed (loops, segmentation, polycube), kept as it was while the current
     /// one evolves; without flow fields.
@@ -221,12 +217,12 @@ impl SkeletonResource {
     pub fn save(&self) -> Option<io::SkeletonSave> {
         Some(io::SkeletonSave {
             extraction: Some(self.state.clone()?),
-            labeling: self.labeling.clone(),
-            labeled: self.labeled.clone(),
-            realized: self.realized.clone(),
-            optimized: self.optimized.clone(),
-            drawing: self.drawing.clone(),
-            loops: self.loops.clone(),
+            labeling: self.progress.labeling.clone(),
+            labeled: self.progress.labeled.clone(),
+            realized: self.progress.realized.clone(),
+            optimized: self.progress.optimized.clone(),
+            drawing: self.progress.drawing.clone(),
+            loops: self.progress.loops.clone(),
             failure: self
                 .initialization_failure
                 .as_ref()
@@ -238,16 +234,24 @@ impl SkeletonResource {
     /// Takes the stages of a save (its output on `mesh`, the mesh it was saved with); the contraction cache and the
     /// shown contraction stage stay.
     pub fn restore(&mut self, save: io::SkeletonSave, mesh: &Arc<mehsh::prelude::Mesh<INPUT>>) {
+        let skeleton = match &save.extraction {
+            Some(SkeletonState::Extracted(extraction)) => Some(extraction.skeleton.clone()),
+            _ => None,
+        };
         *self = Self {
             contraction_cache: self.contraction_cache.clone(),
             contraction_stage: self.contraction_stage,
             state: save.extraction,
-            labeled: save.labeled,
-            labeling: save.labeling,
-            realized: save.realized,
-            optimized: save.optimized,
-            drawing: save.drawing,
-            loops: save.loops,
+            progress: dualcube::skeleton::pipeline::Progress {
+                skeleton,
+                certificate: None,
+                labeling: save.labeling,
+                labeled: save.labeled,
+                realized: save.realized,
+                optimized: save.optimized,
+                drawing: save.drawing,
+                loops: save.loops,
+            },
             initialization_failure: save.failure.map(|(stage, message)| {
                 dualcube::skeleton::pipeline::Failure {
                     stage,

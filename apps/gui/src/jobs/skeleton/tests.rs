@@ -10,7 +10,7 @@ fn stop_stages_retain_only_computed_states() {
         extract_until(
             mesh,
             Options::default(),
-            SkeletonStage::Deflation,
+            Stage::Deflation,
             &ContractionCache::default()
         )
         .unwrap(),
@@ -19,7 +19,7 @@ fn stop_stages_retain_only_computed_states() {
     let SkeletonState::Extracted(raw) = extract_until(
         mesh,
         Options::default(),
-        SkeletonStage::Surgery,
+        Stage::Extraction,
         &ContractionCache::default(),
     )
     .unwrap() else {
@@ -30,8 +30,11 @@ fn stop_stages_retain_only_computed_states() {
     }
     let SkeletonState::Extracted(refined) = extract_until(
         mesh,
-        Options::default(),
-        SkeletonStage::Refinement,
+        Options {
+            refine_embedding: true,
+            ..Options::default()
+        },
+        Stage::Extraction,
         &ContractionCache::default(),
     )
     .unwrap() else {
@@ -60,8 +63,9 @@ fn cache_reuses_contraction_for_downstream_settings_and_invalidates_on_inputs() 
     options.surgery.shape_weight = 2.;
     options.surgery.sampling_weight = 0.2;
     options.surgery.handle_bonus = 0.;
-    for stop in [SkeletonStage::Surgery, SkeletonStage::Refinement] {
-        extract_until(&mesh, options, stop, &cache).unwrap();
+    for refine in [false, true] {
+        options.refine_embedding = refine;
+        extract_until(&mesh, options, Stage::Extraction, &cache).unwrap();
         assert!(Arc::ptr_eq(
             &first,
             &cache
@@ -70,7 +74,7 @@ fn cache_reuses_contraction_for_downstream_settings_and_invalidates_on_inputs() 
         ));
     }
     options.surgery.shape_weight = f64::NAN;
-    assert!(extract_until(&mesh, options, SkeletonStage::Surgery, &cache).is_err());
+    assert!(extract_until(&mesh, options, Stage::Extraction, &cache).is_err());
     assert!(Arc::ptr_eq(
         &first,
         &cache

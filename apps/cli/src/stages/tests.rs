@@ -12,11 +12,11 @@ fn scratch(name: &str) -> PathBuf {
 #[test]
 fn stages_parse_by_name_in_pipeline_order() {
     for (i, stage) in Stage::ALL.into_iter().enumerate() {
-        assert_eq!(Stage::parse(stage.name()).unwrap(), stage);
+        assert_eq!(parse_stage(stage.name()).unwrap(), stage);
         assert_eq!(stage as usize, i);
     }
-    assert!(Stage::Extraction < Stage::Reconstruction);
-    assert!(Stage::parse("cubes").is_err());
+    assert!(Stage::Deflation < Stage::Reconstruction);
+    assert!(parse_stage("cubes").is_err());
 }
 
 #[test]
@@ -47,13 +47,13 @@ fn csv_fields_quote_separators_quotes_and_line_breaks() {
 }
 
 #[test]
-fn unreadable_mesh_fails_at_extraction_with_full_row() {
+fn unreadable_mesh_fails_at_the_first_stage_with_full_row() {
     let row = run_mesh(
         Path::new("does/not/exist.obj"),
         Stage::Reconstruction,
         false,
     );
-    assert_eq!(row.status(), "failed at extraction");
+    assert_eq!(row.status(), "failed at deflation");
     assert!(row.seconds.iter().all(Option::is_none));
     assert_eq!(row.fields().len(), Row::default().fields().len());
 }
@@ -64,7 +64,7 @@ fn report_has_a_header_and_one_line_per_row() {
     let rows = [
         Row {
             input: "a.obj".into(),
-            failure: Some((Stage::Drawing, "x, \"y\"".to_owned())),
+            failure: Some((Stage::LoopDrawing, "x, \"y\"".to_owned())),
             peak_mb: Some(42),
             ..Row::default()
         },

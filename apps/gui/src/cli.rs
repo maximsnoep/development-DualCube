@@ -1,9 +1,10 @@
 //! Startup commands for visual iteration. Computation stays in the background jobs.
 
-use crate::jobs::{Job, SkeletonStage};
+use crate::jobs::Job;
 use crate::resources::Configuration;
 use crate::ui::{ModelView, ModelViewKind};
 use bevy::prelude::*;
+use dualcube::skeleton::pipeline::Stage;
 use dualcube::skeleton::skeletonize::Options;
 use std::ffi::OsString;
 use std::path::PathBuf;
@@ -16,7 +17,8 @@ Run from the repository root:
 
   --load <path>              Import a mesh or saved solution
   --auto-start skeleton      Run skeleton initialization after loading
-  --stop-after <stage>       Run through input, deflation, surgery, refinement, labeling, or placement
+  --stop-after <stage>       Run through input, deflation, surgery, refinement, certification,
+                             labeling, placement, optimization, or drawing
   --view <view>              input, deflated, raw, skeleton, tree, labeled, patches,
                              optimized, combined, cubes, lifted
   --refinement               Enable embedding refinement (default off)
@@ -37,7 +39,7 @@ Both --flag value and --flag=value are accepted.
 #[derive(Resource, Default)]
 pub struct Launch {
     path: Option<PathBuf>,
-    pub stop: Option<SkeletonStage>,
+    pub stop: Option<Stage>,
     view: Option<ModelViewKind>,
     options: Options,
     quit: bool,
@@ -156,26 +158,28 @@ impl Launch {
                 _ => unreachable!(),
             }
         }
-        let requests_refinement = stop == Some(Some(SkeletonStage::Refinement))
-            || quit_after == Some(Some(SkeletonStage::Refinement));
+        let requests_refinement = [stop, quit_after]
+            .iter()
+            .any(|s| matches!(s, Some(Some((_, Some(true))))));
         if requests_refinement && refinement == Some(false) {
             return Err("--no-refinement conflicts with stopping after refinement".into());
         }
         launch.options.refine_embedding = refinement.unwrap_or(requests_refinement);
         if quit_skeleton {
-            quit_after = Some(Some(SkeletonStage::Complete));
+            quit_after = Some(Some((Stage::LoopDrawing, None)));
         }
         if let (Some(stop), Some(quit)) = (stop, quit_after) {
             if stop != quit {
                 return Err("--stop-after and --quit-after must name the same stage".into());
             }
         }
-        launch.stop = stop
+        let chosen = stop
             .or(quit_after)
-            .unwrap_or_else(|| auto_start.then_some(SkeletonStage::Complete));
-        if launch.stop == Some(SkeletonStage::Surgery) {
-            launch.options.refine_embedding = false;
+            .unwrap_or_else(|| auto_start.then_some((Stage::LoopDrawing, None)));
+        if let Some((_, Some(refine))) = chosen {
+            launch.options.refine_embedding = refine;
         }
+        launch.stop = chosen.map(|(stage, _)| stage);
         if (auto_start
             || stop.is_some()
             || quit_after.is_some()
@@ -186,35 +190,16 @@ impl Launch {
             return Err("Startup actions require --load <path>".into());
         }
         if let Some(view) = launch.view {
-            let available = match view {
-                ModelViewKind::Input => true,
-                ModelViewKind::Deflated => launch.stop.is_some(),
-                ModelViewKind::Optimized | ModelViewKind::Lifted => {
-                    launch.stop == Some(SkeletonStage::Complete)
-                }
-                ModelViewKind::Cubes => matches!(
-                    launch.stop,
-                    Some(SkeletonStage::Placement | SkeletonStage::Complete)
-                ),
-                ModelViewKind::Tree | ModelViewKind::Labeled => matches!(
-                    launch.stop,
-                    Some(
-                        SkeletonStage::Labeling
-                            | SkeletonStage::Placement
-                            | SkeletonStage::Complete
-                    )
-                ),
-                _ => matches!(
-                    launch.stop,
-                    Some(
-                        SkeletonStage::Surgery
-                            | SkeletonStage::Refinement
-                            | SkeletonStage::Labeling
-                            | SkeletonStage::Placement
-                            | SkeletonStage::Complete
-                    )
-                ),
+            let needs = match view {
+                ModelViewKind::Input => None,
+                ModelViewKind::Deflated => Some(Stage::Deflation),
+                ModelViewKind::Optimized => Some(Stage::Optimization),
+                ModelViewKind::Lifted => Some(Stage::LoopDrawing),
+                ModelViewKind::Cubes => Some(Stage::CubePlacement),
+                ModelViewKind::Tree | ModelViewKind::Labeled => Some(Stage::Labeling),
+                _ => Some(Stage::Extraction),
             };
+            let available = needs.is_none_or(|needs| launch.stop.is_some_and(|s| s >= needs));
             // A save may hold every skeleton stage.
             let saved = launch
                 .path
@@ -259,15 +244,18 @@ impl Launch {
     }
 }
 
-fn parse_stage(value: &str) -> Result<Option<SkeletonStage>, String> {
+/// A stop: `None` for the input alone, else a stage and whether extraction must refine
+/// (`surgery` and `refinement` name extraction without or with it).
+fn parse_stage(value: &str) -> Result<Option<(Stage, Option<bool>)>, String> {
     match value {
         "input" => Ok(None),
-        "deflation" => Ok(Some(SkeletonStage::Deflation)),
-        "surgery" => Ok(Some(SkeletonStage::Surgery)),
-        "refinement" => Ok(Some(SkeletonStage::Refinement)),
-        "labeling" => Ok(Some(SkeletonStage::Labeling)),
-        "placement" | "cubes" => Ok(Some(SkeletonStage::Placement)),
-        _ => Err(format!("Unknown stage: {value}")),
+        "surgery" => Ok(Some((Stage::Extraction, Some(false)))),
+        "refinement" => Ok(Some((Stage::Extraction, Some(true)))),
+        "cubes" => Ok(Some((Stage::CubePlacement, None))),
+        _ => Stage::parse(value)
+            .filter(|&s| s < Stage::Reconstruction)
+            .map(|s| Some((s, None)))
+            .ok_or_else(|| format!("Unknown stage: {value}")),
     }
 }
 
