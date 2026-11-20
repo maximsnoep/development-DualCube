@@ -367,3 +367,166 @@ fn turns_back_across_a_mesh_edge_are_removed() {
     );
     skeleton.validate(&mesh).unwrap();
 }
+
+/// The loop of a self-arc: a simple vertex cycle in its patch whose only crossed edge, from
+/// the last vertex back to the first, is crossed once by the arc, in the arc's class.
+fn assert_loop_through(surgery: &Surgery<'_>, arc: ArcID) {
+    let mesh = surgery.mesh;
+    let walk = surgery
+        .walk(arc)
+        .expect("a vertex loop through the self-arc");
+    assert!(walk.len() >= 3);
+    assert_eq!(walk.iter().collect::<HashSet<_>>().len(), walk.len());
+    let patch = surgery.arcs[arc].sides[0];
+    assert!(
+        walk.iter()
+            .all(|v| surgery.owner[surgery.index[v]] == patch)
+    );
+    for (i, &u) in walk.iter().enumerate() {
+        let w = walk[(i + 1) % walk.len()];
+        let (e, _) = mesh
+            .edge_between_verts(u, w)
+            .expect("adjacent loop vertices");
+        let order = surgery.surface.edge_order.get(&canonical(mesh, e));
+        if i + 1 < walk.len() {
+            assert!(order.is_none(), "loop crosses another boundary");
+        } else {
+            let order = order.expect("the closing edge crosses the arc");
+            assert_eq!(order.len(), 1);
+            assert!(surgery.arcs[arc].crossings.contains(&order[0]));
+        }
+    }
+    let class = surgery.arcs[arc].class.as_ref().unwrap();
+    assert!((&surgery.walk_class(&walk) - class).is_zero());
+}
+
+/// Surgery as in `run` without flips, checking the loop of every self-arc it tests.
+fn check_self_arc_loops(contracted: &Mesh<CONTRACTION>, mesh: &Mesh<INPUT>, genus: usize) {
+    let mut surgery = Surgery::new(contracted, mesh, genus, Options::default()).unwrap();
+    let mut checked = 0;
+    loop {
+        while let Some(arc) = surgery.pending.pop() {
+            if !surgery.arcs.contains_key(arc) {
+                continue;
+            }
+            let bounds = surgery.bounds(arc);
+            assert_loop_through(&surgery, arc);
+            checked += 1;
+            if bounds {
+                surgery.remove(arc);
+            }
+        }
+        let Some(candidate) = surgery.heap.pop() else {
+            break;
+        };
+        let Some(arc) = surgery.arcs.get(candidate.arc) else {
+            continue;
+        };
+        let mut sides = arc.sides;
+        sides.sort();
+        let mut expected = [candidate.removed, candidate.kept];
+        expected.sort();
+        if arc.ends.is_none() || sides != expected || sides[0] == sides[1] {
+            continue;
+        }
+        surgery.merge(candidate.arc, candidate.removed, candidate.kept);
+    }
+    assert!(surgery.junctions.is_empty());
+    assert!(checked > 0);
+}
+
+#[test]
+fn every_self_arc_has_a_simple_loop_through_it() {
+    // Genus 0 claimed, so no TetGen: every self-arc bounds and is dissolved.
+    let mesh = torus();
+    check_self_arc_loops(&Mesh::<CONTRACTION>::convert(&mesh), &mesh, 0);
+}
+
+#[test]
+#[ignore = "requires TetGen; set TETGEN_EXECUTABLE and run with --include-ignored"]
+fn self_arc_loops_carry_the_arc_class_on_a_torus() {
+    let mesh = torus();
+    let contracted = super::super::deflate::run(&mesh, 50).unwrap();
+    check_self_arc_loops(&contracted, &mesh, 1);
+}
+
+/// A stand-in DiskScissors that always or never reports a disk.
+#[cfg(unix)]
+fn fake_disks(mesh: &Mesh<INPUT>, disk: bool) -> crate::certify::LoopCheck {
+    let directory = std::env::temp_dir().join(format!("dualcube-fake-step-diskscissors-{disk}"));
+    std::fs::create_dir_all(&directory).unwrap();
+    let path = directory.join("diskscissors");
+    let output = if disk { "Snip" } else { "No disk" };
+    std::fs::write(&path, format!("#!/bin/sh\necho {output}\n")).unwrap();
+    use std::os::unix::fs::PermissionsExt;
+    std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755)).unwrap();
+    let options = crate::certify::Options {
+        executable: path,
+        ..Default::default()
+    };
+    crate::certify::LoopCheck::new(mesh, options).unwrap()
+}
+
+#[cfg(unix)]
+fn certified_torus_surgery<'a>(
+    mesh: &'a Mesh<INPUT>,
+    contracted: &Mesh<CONTRACTION>,
+    disk: bool,
+) -> Surgery<'a> {
+    let options = Options {
+        certify_each_step: true,
+        ..Options::default()
+    };
+    let mut surgery = Surgery::new(contracted, mesh, 1, options).unwrap();
+    surgery.disks = Some(fake_disks(mesh, disk));
+    surgery
+}
+
+#[test]
+#[cfg(unix)]
+#[ignore = "requires TetGen; set TETGEN_EXECUTABLE and run with --include-ignored"]
+fn certified_steps_with_disks_match_homology_alone() {
+    let mesh = torus();
+    let contracted = super::super::deflate::run(&mesh, 50).unwrap();
+    let mut plain = Surgery::new(&contracted, &mesh, 1, Options::default()).unwrap();
+    plain.run().unwrap();
+    let mut surgery = certified_torus_surgery(&mesh, &contracted, true);
+    surgery.run().unwrap();
+    assert_consistent(&surgery);
+    assert!(surgery.disks.as_ref().unwrap().checked() > 0);
+    assert_eq!(surgery.arcs.len(), plain.arcs.len());
+    assert_eq!(
+        surgery.patches.iter().flatten().count(),
+        plain.patches.iter().flatten().count()
+    );
+}
+
+#[test]
+#[cfg(unix)]
+#[ignore = "requires TetGen; set TETGEN_EXECUTABLE and run with --include-ignored"]
+fn certified_steps_without_disks_stop_surgery() {
+    let mesh = torus();
+    let contracted = super::super::deflate::run(&mesh, 50).unwrap();
+    let mut surgery = certified_torus_surgery(&mesh, &contracted, false);
+    let error = surgery.run().unwrap_err();
+    assert!(error.reason.contains("stuck"), "{}", error.reason);
+    assert!(surgery.disks.as_ref().unwrap().checked() > 0);
+    // Kept self-arcs remember their missing disk.
+    assert!(surgery.arcs.values().any(|a| a.disk == Some(false)));
+}
+
+#[test]
+#[ignore = "requires TetGen and DiskScissors"]
+fn diskscissors_certifies_each_torus_step() {
+    let mesh = torus();
+    let contracted = super::super::deflate::run(&mesh, 50).unwrap();
+    let options = Options {
+        certify_each_step: true,
+        ..Options::default()
+    };
+    let mut surgery = Surgery::new(&contracted, &mesh, 1, options).unwrap();
+    surgery.run().unwrap();
+    assert_consistent(&surgery);
+    assert!(surgery.disks.as_ref().unwrap().checked() > 0);
+    assert_eq!(surgery.arcs.len(), surgery.patches.iter().flatten().count());
+}

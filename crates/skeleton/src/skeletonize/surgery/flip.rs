@@ -98,11 +98,11 @@ impl Surgery<'_> {
             .filter(|(_, a)| a.ends.is_some())
             .map(|(id, _)| id)
             .collect();
-        for &arc in &arcs {
-            if self.bounds(arc) {
-                return Ok(Vec::new());
-            }
-        }
+        // Pending arcs were all tested, so none of these is dissolvable.
+        debug_assert!(
+            arcs.iter()
+                .all(|&a| !self.bounds(a) || self.arcs[a].disk == Some(false))
+        );
         let arc_index: HashMap<_, _> = arcs.iter().enumerate().map(|(i, &a)| (a, i)).collect();
         let junctions: Vec<_> = self.junctions.keys().collect();
         let junction_index: HashMap<_, _> =
@@ -201,6 +201,7 @@ impl Surgery<'_> {
         let arc = &mut self.arcs[e];
         arc.crossings = inner.into();
         arc.class = Some(class);
+        arc.disk = None;
         for (junction, old, new) in [(j1, b, d), (j2, d, b)] {
             for spoke in &mut self.junctions[junction].spokes {
                 if *spoke == old {
@@ -210,6 +211,37 @@ impl Surgery<'_> {
         }
         debug_assert_eq!(rotate(self.ccw_array(j1), (e, 0)), [(e, 0), d, a]);
         debug_assert_eq!(rotate(self.ccw_array(j2), (e, 1)), [(e, 1), b, c]);
+    }
+
+    /// A vertex cycle for the loop through `e` once flipped, found before the flip. A stuck
+    /// surgery has one patch around every junction. With spokes (e, a, b) and (e, c, d), the
+    /// loop runs from between a and b across b, along the side of e that b and c face, and
+    /// across c to between c and d. Each crossing goes counterclockwise around its junction:
+    /// from right to left of an arc starting there. Other paths in the patch differ by its
+    /// loops, which bound.
+    pub(super) fn flip_walk(&self, e: ArcID) -> Option<Vec<VertID>> {
+        const TRIES: usize = 8;
+        let [j1, j2] = self.arcs[e].ends?;
+        let [_, _, b] = rotate(self.ccw_array(j1), (e, 0));
+        let [_, c, _] = rotate(self.ccw_array(j2), (e, 1));
+        let patch = self.arcs[e].sides[0];
+        let first = self.crossing_edges(b.0, patch, b.1 == 0);
+        let second = self.crossing_edges(c.0, patch, c.1 == 0);
+        first.iter().take(TRIES).find_map(|&x| {
+            second
+                .iter()
+                .take(TRIES)
+                .filter_map(|&y| self.cycle(patch, &[x, y]))
+                .find(|walk| self.walk_class(walk).is_zero())
+        })
+    }
+
+    /// Class of a closed vertex walk.
+    pub(super) fn walk_class(&self, walk: &[VertID]) -> Class {
+        (0..walk.len()).fold(Class::default(), |sum, i| {
+            let [x, y] = [walk[i], walk[(i + 1) % walk.len()]].map(|v| self.index[&v]);
+            &sum + &self.homology.edge(x, y)
+        })
     }
 
     /// Continue an arc end along crossings oriented away from it, to a new junction.

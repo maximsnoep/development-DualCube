@@ -49,6 +49,7 @@ pub enum Command {
         inputs: Vec<PathBuf>,
         last: crate::stages::Stage,
         report: Option<PathBuf>,
+        certify_each_step: bool,
     },
     Optimize(crate::optimize::Options),
 }
@@ -247,12 +248,14 @@ impl Args {
                 let mut inputs = Vec::new();
                 let mut last = crate::stages::Stage::Reconstruction;
                 let mut report = None;
+                let mut certify_each_step = false;
 
                 parse_kv_flags(it.collect(), |flag, value| {
                     match flag {
                         "--input" | "-i" => {
                             inputs.push(PathBuf::from(require_value(flag, value)?));
                         }
+                        "--certify-each-step" => certify_each_step = true,
                         "--stop-after" => {
                             last = crate::stages::Stage::parse(require_value(flag, value)?)?;
                         }
@@ -269,6 +272,7 @@ impl Args {
                     inputs,
                     last,
                     report,
+                    certify_each_step,
                 }
             }
             "optimize" => {

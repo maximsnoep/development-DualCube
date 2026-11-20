@@ -245,6 +245,84 @@ fn check(
         .collect()
 }
 
+/// Disks for single vertex cycles, as surgery needs them before each self-arc it dissolves.
+pub(crate) struct LoopCheck {
+    volume: Volume,
+    options: Options,
+    checked: usize,
+}
+
+impl LoopCheck {
+    pub(crate) fn new(mesh: &Mesh<INPUT>, options: Options) -> SkeletonResult<Self> {
+        Ok(Self {
+            volume: Volume::new(mesh)?,
+            options,
+            checked: 0,
+        })
+    }
+
+    /// Loops checked so far.
+    pub(crate) fn checked(&self) -> usize {
+        self.checked
+    }
+
+    /// Whether a simple vertex cycle on the surface bounds a disk. Each round runs one attempt
+    /// per job from different seed tets; a round that only ran out of time is retried with the
+    /// next timeout, and the last one counts as a miss.
+    pub(crate) fn disk(&mut self, walk: &[VertID]) -> SkeletonResult<Result<(), Miss>> {
+        use std::sync::atomic::AtomicBool;
+        self.checked += 1;
+        let this = &*self;
+        let walk: Vec<_> = walk.iter().map(|v| this.volume.index[v]).collect();
+        let cells = this.volume.tets.len();
+        let jobs = this.options.jobs.max(1);
+        let mut miss = Miss::NoDisk;
+        for (round, &timeout) in this.options.timeouts.iter().enumerate() {
+            let found = AtomicBool::new(false);
+            let outcomes: Vec<_> = std::thread::scope(|scope| {
+                let handles: Vec<_> = (0..jobs)
+                    .map(|i| {
+                        let (walk, found) = (&walk, &found);
+                        scope.spawn(move || {
+                            let attempt = Attempt {
+                                task: i,
+                                seed: round * jobs + i,
+                                cancel: found,
+                            };
+                            let outcome = this.volume.disk(
+                                &this.volume.mesh,
+                                cells,
+                                &this.options,
+                                timeout,
+                                walk,
+                                attempt,
+                            );
+                            if matches!(outcome, Ok(Ok(()))) {
+                                found.store(true, std::sync::atomic::Ordering::Relaxed);
+                            }
+                            outcome
+                        })
+                    })
+                    .collect();
+                handles.into_iter().map(|h| h.join().unwrap()).collect()
+            });
+            if outcomes.iter().any(|o| matches!(o, Ok(Ok(())))) {
+                return Ok(Ok(()));
+            }
+            miss = Miss::NoDisk;
+            for outcome in outcomes {
+                if outcome? == Err(Miss::Timeout) {
+                    miss = Miss::Timeout;
+                }
+            }
+            if miss == Miss::NoDisk {
+                break;
+            }
+        }
+        Ok(Err(miss))
+    }
+}
+
 /// One DiskScissors run of a loop: its file names, its seed number, and whether another run
 /// already found a disk.
 #[derive(Clone, Copy)]

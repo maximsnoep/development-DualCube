@@ -123,7 +123,8 @@ pub fn run(args: anyhow::Result<Args>) -> anyhow::Result<()> {
             inputs,
             last,
             report,
-        } => crate::stages::run(&inputs, last, report.as_deref())?,
+            certify_each_step,
+        } => crate::stages::run(&inputs, last, report.as_deref(), certify_each_step)?,
         Command::Optimize(options) => crate::optimize::run(&options)?,
     }
 
@@ -287,6 +288,7 @@ Commands:
       Export a solution in the requested format.
 
   stages --input <path> [--input <path> ...] [--stop-after <stage>] [--report <csv>]
+         [--certify-each-step]
       Run the skeleton pipeline on every mesh up to a stage and report one row per mesh: status,
       typed error (or panic), seconds per stage, and stage statistics.
       --input: a mesh, a folder of meshes (.obj/.stl), or a .txt set of mesh paths relative to it
@@ -294,6 +296,8 @@ Commands:
       --stop-after: extraction, certification, labeling, placement, optimization, drawing, or
       reconstruction (default).
       --report: CSV file, rewritten after every mesh.
+      --certify-each-step: surgery dissolves a self-arc only when DiskScissors finds a disk for
+      its loop, not on homology alone. This certifies every patch, so certification is skipped.
       Positive genus needs TETGEN_EXECUTABLE and DiskScissors (DISKSCISSORS_EXECUTABLE).
 
   optimize --input <path> [--input <path> ...] [--mode run|sample] [--report <csv>] [--cache <dir>]
