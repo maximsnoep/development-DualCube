@@ -18,13 +18,9 @@ pub fn coordinates(
         return Err("Cannot place an empty skeleton".into());
     }
     labeled.validate_labels()?;
-    let levels = crate::label::constraints::coordinate_levels(
-        &labeled.skeleton,
-        &labeled.labels,
-        &[],
-        true,
-    )
-    .ok_or("Labels imply contradictory coordinate orders")?;
+    let levels =
+        crate::label::constraints::coordinate_levels(&labeled.skeleton, &labeled.labels, &[], true)
+            .ok_or("Labels imply contradictory coordinate orders")?;
     // TODO: Optimize lengths for geometric fidelity beyond the two-pass level compaction.
     Ok(levels
         .iter()
