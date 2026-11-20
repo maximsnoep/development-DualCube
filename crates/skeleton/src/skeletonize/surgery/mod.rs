@@ -6,7 +6,9 @@
 //! - An arc between distinct patches merges them. Two patches glued along an arc are
 //!   contractible in the volume when both are, so this needs no check.
 //! - An arc with one patch on both sides adds a loop crossing it once. It is dissolved only
-//!   when that loop bounds in the volume (integer homology, see [`homology`]).
+//!   when that loop bounds in the volume (integer homology, see [`homology`]). With
+//!   `certify_each_step`, DiskScissors must also find a disk for it (homology is blind to
+//!   commutators); a loop that is not null-homologous has none, so homology still rejects.
 //!
 //! A junction of degree two joins its two arcs. Surgery ends when no junctions remain; the
 //! closed arcs then become the skeleton edges.
@@ -39,6 +41,8 @@ pub struct Options {
     pub handle_bonus: f64,
     /// Flip sequences tried when surgery is stuck, before it fails.
     pub flip_budget: usize,
+    /// Require a DiskScissors disk for every self-arc loop before dissolving it.
+    pub certify_each_step: bool,
 }
 
 impl Default for Options {
@@ -48,6 +52,7 @@ impl Default for Options {
             sampling_weight: 0.1,
             handle_bonus: 1.0e6,
             flip_budget: 100_000,
+            certify_each_step: false,
         }
     }
 }
@@ -165,6 +170,8 @@ struct Arc {
     class: Option<Class>,
     /// Volume cocycles nonzero on its crossings.
     handles: Bits,
+    /// Whether DiskScissors found a disk for its loop, once checked.
+    disk: Option<bool>,
 }
 
 /// A point inside a triangle where three arc ends meet.
@@ -234,6 +241,10 @@ struct Surgery<'a> {
     arcs: SlotMap<ArcID, Arc>,
     junctions: SlotMap<JunctionID, Junction>,
     homology: Homology,
+    /// DiskScissors for `certify_each_step`, made on the first check.
+    disks: Option<crate::certify::LoopCheck>,
+    vertices: Vec<VertID>,
+    genus: usize,
     heap: BinaryHeap<Candidate>,
     /// Arcs with one patch on both sides, to dissolve if their loop bounds.
     pending: Vec<ArcID>,
@@ -300,6 +311,9 @@ impl<'a> Surgery<'a> {
             arcs: SlotMap::with_key(),
             junctions: SlotMap::with_key(),
             homology,
+            disks: None,
+            vertices: vertices.clone(),
+            genus,
             heap: BinaryHeap::new(),
             pending: Vec::new(),
         };
@@ -333,6 +347,7 @@ impl<'a> Surgery<'a> {
                 sides: surgery.ends(e),
                 class: None,
                 handles: surgery.homology.handles(surgery.ends(e)),
+                disk: None,
             });
             for (end, j) in ends.into_iter().enumerate() {
                 surgery.junctions[j].spokes.push((arc, end));
@@ -351,9 +366,19 @@ impl<'a> Surgery<'a> {
     fn run(&mut self) -> Result<(), SurgeryFailure> {
         let start = std::time::Instant::now();
         let (mut merges, mut dissolved, mut flips) = (0, 0, 0);
+        let unavailable = |reason: String| SurgeryFailure {
+            reason: format!("Connectivity surgery cannot certify a step: {reason}"),
+            graph: DiagnosticGraph {
+                positions: slotmap::SecondaryMap::new(),
+                edges: Vec::new(),
+            },
+            remaining_face_positions: Vec::new(),
+        };
         loop {
             while let Some(arc) = self.pending.pop() {
-                if self.arcs.contains_key(arc) && self.bounds(arc) {
+                if self.arcs.contains_key(arc)
+                    && self.dissolvable(arc, None).map_err(&unavailable)?
+                {
                     self.remove(arc);
                     dissolved += 1;
                 }
@@ -367,10 +392,23 @@ impl<'a> Surgery<'a> {
                 let stuck = match self.search() {
                     Ok(sequence) => {
                         flips += sequence.len();
-                        for &arc in &sequence {
+                        let (&last, earlier) = sequence.split_last().unwrap();
+                        for &arc in earlier {
                             self.flip(arc);
                         }
-                        self.pending.push(*sequence.last().unwrap());
+                        // The flipped arc runs beside others, so its loop is found before.
+                        let walk = self.flip_walk(last);
+                        self.flip(last);
+                        // Searching again could undo these flips forever.
+                        if !self.dissolvable(last, walk).map_err(&unavailable)? {
+                            let (graph, remaining) = self.diagnostic();
+                            return Err(SurgeryFailure {
+                                reason: "Connectivity surgery stuck: flips freed a null-homologous loop without a disk".into(),
+                                graph,
+                                remaining_face_positions: remaining,
+                            });
+                        }
+                        self.pending.push(last);
                         continue;
                     }
                     Err(stuck) => stuck,
@@ -410,9 +448,10 @@ impl<'a> Surgery<'a> {
             merges += 1;
         }
         info!(
-            "Connectivity surgery complete in {:.2}s: {merges} merges, {dissolved} self-arcs dissolved, {flips} flips, {} loops",
+            "Connectivity surgery complete in {:.2}s: {merges} merges, {dissolved} self-arcs dissolved, {flips} flips, {} loops, {} disks checked",
             start.elapsed().as_secs_f64(),
-            self.arcs.len()
+            self.arcs.len(),
+            self.disks.as_ref().map_or(0, |d| d.checked())
         );
         Ok(())
     }
@@ -451,6 +490,127 @@ impl<'a> Surgery<'a> {
             self.arcs[arc].class = Some(class);
         }
         self.arcs[arc].class.as_ref().unwrap().is_zero()
+    }
+
+    /// Whether a self-arc may be dissolved: its loop bounds, and with `certify_each_step` also
+    /// has a disk. Spur loops bound on the surface and need none.
+    /// `walk` replaces [`Self::walk`] for the loop, as after a flip.
+    fn dissolvable(&mut self, arc: ArcID, walk: Option<Vec<VertID>>) -> Result<bool, String> {
+        if !self.bounds(arc) {
+            return Ok(false);
+        }
+        let spur = self.arcs[arc].ends.is_some_and(|ends| {
+            ends.iter()
+                .any(|&j| self.junctions.get(j).is_some_and(|j| j.spokes.len() == 1))
+        });
+        if !self.options.certify_each_step || self.genus == 0 || spur {
+            return Ok(true);
+        }
+        if let Some(disk) = self.arcs[arc].disk {
+            return Ok(disk);
+        }
+        let Some(walk) = walk.or_else(|| self.walk(arc)) else {
+            warn!("Connectivity surgery: no vertex loop through a self-arc; kept");
+            self.arcs[arc].disk = Some(false);
+            return Ok(false);
+        };
+        if self.disks.is_none() {
+            let check = crate::certify::LoopCheck::new(self.mesh, Default::default())
+                .map_err(|e| e.to_string())?;
+            self.disks = Some(check);
+        }
+        let disk = self
+            .disks
+            .as_mut()
+            .unwrap()
+            .disk(&walk)
+            .map_err(|e| e.to_string())?;
+        if let Err(miss) = disk {
+            info!(
+                "Connectivity surgery: self-arc loop bounds in homology but has no disk ({miss:?}); kept"
+            );
+        }
+        self.arcs[arc].disk = Some(disk.is_ok());
+        Ok(disk.is_ok())
+    }
+
+    /// A simple vertex cycle crossing the arc once and otherwise inside its patch: a mesh edge
+    /// crossed only by the arc, closed by a shortest path over uncrossed edges of the patch.
+    fn walk(&self, arc: ArcID) -> Option<Vec<VertID>> {
+        let patch = self.arcs[arc].sides[0];
+        self.crossing_edges(arc, patch, false)
+            .into_iter()
+            .find_map(|edge| self.cycle(patch, &[edge]))
+    }
+
+    /// Mesh edges crossed only by the arc with both ends in `patch`, left vertex first (right
+    /// first when `reversed`).
+    fn crossing_edges(&self, arc: ArcID, patch: usize, reversed: bool) -> Vec<[usize; 2]> {
+        self.arcs[arc]
+            .crossings
+            .iter()
+            .map(|&c| self.exit(c))
+            .filter(|&exit| self.surface.edge_order[&canonical(self.mesh, exit)].len() == 1)
+            .map(|exit| self.ends(exit))
+            .filter(|ends| ends.iter().all(|&v| self.owner[v] == patch))
+            .map(|[x, y]| if reversed { [y, x] } else { [x, y] })
+            .collect()
+    }
+
+    /// A simple vertex cycle in `patch` that crosses the given mesh edges in order, each from
+    /// its first vertex to its second, joined by shortest paths over uncrossed edges. It ends
+    /// with the first vertex of the first edge.
+    fn cycle(&self, patch: usize, edges: &[[usize; 2]]) -> Option<Vec<VertID>> {
+        let mut used: HashSet<usize> = edges.iter().flatten().copied().collect();
+        if used.len() != 2 * edges.len() {
+            return None;
+        }
+        let mut walk = Vec::new();
+        for (i, edge) in edges.iter().enumerate() {
+            let next = edges[(i + 1) % edges.len()][0];
+            let path = self.path(edge[1], next, patch, &used)?;
+            used.extend(&path);
+            walk.extend(path.into_iter().map(|v| self.vertices[v]));
+        }
+        Some(walk)
+    }
+
+    /// Shortest path from `from` to `to` over uncrossed edges of the patch, avoiding the other
+    /// vertices of `avoid`.
+    fn path(
+        &self,
+        from: usize,
+        to: usize,
+        patch: usize,
+        avoid: &HashSet<usize>,
+    ) -> Option<Vec<usize>> {
+        let uncrossed = |e: EdgeID| {
+            !self
+                .surface
+                .edge_order
+                .contains_key(&canonical(self.mesh, e))
+        };
+        let mut parent = HashMap::from([(from, from)]);
+        let mut queue = VecDeque::from([from]);
+        while let Some(u) = queue.pop_front() {
+            if u == to {
+                let mut path = vec![to];
+                while *path.last().unwrap() != from {
+                    path.push(parent[path.last().unwrap()]);
+                }
+                path.reverse();
+                return Some(path);
+            }
+            for e in self.mesh.edges(self.vertices[u]) {
+                let w = self.index[&self.mesh.toor(e)];
+                let free = w == to || !avoid.contains(&w);
+                if free && self.owner[w] == patch && uncrossed(e) && !parent.contains_key(&w) {
+                    parent.insert(w, u);
+                    queue.push_back(w);
+                }
+            }
+        }
+        None
     }
 
     /// Class of a loop through the mesh edge from x to y, closed inside one patch.
@@ -616,6 +776,9 @@ impl<'a> Surgery<'a> {
         self.arcs[kept].handles |= &gone.handles;
         if self.arcs[kept].class.is_none() {
             self.arcs[kept].class = gone.class;
+        }
+        if self.arcs[kept].disk.is_none() {
+            self.arcs[kept].disk = gone.disk;
         }
         for patch in gone.sides {
             self.patch_mut(patch).arcs.remove(&killed);

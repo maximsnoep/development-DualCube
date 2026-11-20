@@ -215,7 +215,7 @@ impl Row {
 }
 
 /// Run one mesh through every stage up to `last`, stopping at the first failure or panic.
-pub fn run_mesh(input: &Path, last: Stage) -> Row {
+pub fn run_mesh(input: &Path, last: Stage, certify_each_step: bool) -> Row {
     let mut row = Row {
         input: input.to_owned(),
         ..Row::default()
@@ -234,12 +234,19 @@ pub fn run_mesh(input: &Path, last: Stage) -> Row {
     row.faces = mesh.nr_faces();
     row.genus = validate::input_genus(&mesh).ok();
     let mut progress = Progress::default();
-    for stage in Stage::ALL.into_iter().filter(|&s| s <= last) {
+    let skipped = |s: Stage| certify_each_step && s == Stage::Certification;
+    for stage in Stage::ALL.into_iter().filter(|&s| s <= last && !skipped(s)) {
         // Names the running stage in the log, for runs killed from outside (timeout, out of memory).
         tracing::info!("Stage {} started", stage.name());
         let start = Instant::now();
         let result = catch_unwind(AssertUnwindSafe(|| {
-            step(stage, &mesh, &mut progress, &mut solution)
+            step(
+                stage,
+                &mesh,
+                &mut progress,
+                &mut solution,
+                certify_each_step,
+            )
         }));
         row.seconds[stage as usize] = Some(start.elapsed().as_secs_f64());
         row.peak_mb = peak_memory_mb();
@@ -260,11 +267,20 @@ fn step(
     mesh: &Mesh<INPUT>,
     progress: &mut Progress,
     solution: &mut Solution,
+    certify_each_step: bool,
 ) -> anyhow::Result<()> {
     match stage {
         Stage::Extraction => {
-            let skeleton = skeletonize::run(mesh).map_err(|e| anyhow::anyhow!("{e}"))?;
+            let mut options = skeletonize::Options::default();
+            options.surgery.certify_each_step = certify_each_step;
+            let skeleton = skeletonize::extract(mesh, options)
+                .map_err(|e| anyhow::anyhow!("{e}"))?
+                .skeleton;
             *progress = Progress::from_skeleton(skeleton);
+            if certify_each_step {
+                // Every patch is contractible by construction; nothing left to certify.
+                progress.certificate = Some(Default::default());
+            }
         }
         Stage::Certification => progress.certify(mesh)?,
         Stage::Labeling => progress.label(mesh)?,
@@ -330,7 +346,12 @@ pub fn write_report(path: &Path, rows: &[Row]) -> anyhow::Result<()> {
 }
 
 /// Run all meshes of all inputs, printing one line per mesh and a summary per outcome.
-pub fn run(inputs: &[PathBuf], last: Stage, report: Option<&Path>) -> anyhow::Result<()> {
+pub fn run(
+    inputs: &[PathBuf],
+    last: Stage,
+    report: Option<&Path>,
+    certify_each_step: bool,
+) -> anyhow::Result<()> {
     let mut paths = Vec::new();
     for input in inputs {
         paths.extend(meshes(input)?);
@@ -340,7 +361,7 @@ pub fn run(inputs: &[PathBuf], last: Stage, report: Option<&Path>) -> anyhow::Re
     }
     let mut rows = Vec::new();
     for (i, path) in paths.iter().enumerate() {
-        let row = run_mesh(path, last);
+        let row = run_mesh(path, last, certify_each_step);
         let seconds: f64 = row.seconds.iter().flatten().sum();
         println!(
             "[{}/{}] {}: {} ({seconds:.1}s){}",

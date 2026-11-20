@@ -48,7 +48,11 @@ fn csv_fields_quote_separators_quotes_and_line_breaks() {
 
 #[test]
 fn unreadable_mesh_fails_at_extraction_with_full_row() {
-    let row = run_mesh(Path::new("does/not/exist.obj"), Stage::Reconstruction);
+    let row = run_mesh(
+        Path::new("does/not/exist.obj"),
+        Stage::Reconstruction,
+        false,
+    );
     assert_eq!(row.status(), "failed at extraction");
     assert!(row.seconds.iter().all(Option::is_none));
     assert_eq!(row.fields().len(), Row::default().fields().len());
