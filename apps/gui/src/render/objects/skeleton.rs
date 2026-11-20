@@ -197,7 +197,7 @@ fn build(
             RenderAsset::Mesh(graph_with_labels(
                 &attempt.skeleton,
                 |e| attempt.labels.get(e).copied(),
-                |e| !attempt.tree_edges.is_empty() && !attempt.tree_labels.contains_key(e),
+                |e| attempt.outside_tree(e),
                 |_| colors::LIGHT_GRAY,
                 scale,
                 translation,

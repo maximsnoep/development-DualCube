@@ -126,13 +126,11 @@ pub struct Cuboid {
     pub owner: CuboidOwner,
 }
 
-/// Node cubes, stretched edge cuboids, and their intended face adjacencies.
+/// Node cubes, stretched edge cuboids, and their face adjacencies, derived from a
+/// [`RealizedSkeleton`] for drawing.
 ///
-/// Connections join existing, distinct cuboids sharing a complete face, without
-/// duplicate pairs. Incidental geometric contact does not create a connection.
-/// Global intersections and coincident solids are allowed. Every node has exactly one
-/// cube; every edge has exactly one cuboid joining its endpoint cubes. Cuboids are not
-/// divided into endpoint-owned pieces. Only explicit connections imply adjacency.
+/// Every node has one unit cube; every edge has one cuboid joining its endpoint cubes.
+/// Global intersections and coincident solids are allowed; only connections imply adjacency.
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]
 pub struct CuboidLayout {
     pub cuboids: SlotMap<CuboidID, Cuboid>,
@@ -149,13 +147,12 @@ pub struct LabeledSkeleton {
 }
 
 /// Labeled skeleton with target geometry, used by optimization and loop drawing.
-/// Topology edits must keep labels, patch boundaries, and cube ownership consistent.
+/// Its cuboids follow from the positions and labels ([`RealizedSkeleton::cuboids`]).
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct RealizedSkeleton {
     pub labeled: LabeledSkeleton,
     /// Target-space node centers; the input-space embedding stays in `labeled`.
     pub node_positions: SecondaryMap<SkeletonNodeID, Vector3D>,
-    pub cuboids: CuboidLayout,
 }
 
 /// Dual loops drawn on the surface, able to be primalized into a polycube segmentation.

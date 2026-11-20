@@ -1,13 +1,12 @@
 use super::*;
 use dualcube::skeleton::{CuboidOwner, RealizedSkeleton};
-use std::collections::HashSet;
 
 pub(super) fn add(
     object: &mut RenderObject,
     realized: &RealizedSkeleton,
     palette: &HashMap<SkeletonNodeID, colors::Kolor>,
 ) {
-    let layout = &realized.cuboids;
+    let layout = realized.cuboids();
     if layout.cuboids.is_empty() {
         return;
     }
@@ -19,19 +18,7 @@ pub(super) fn add(
     }
     let scale = 32. / (upper - lower).amax();
     let translation = -(lower + upper) * (scale / 2.);
-    let mut hidden = HashSet::new();
-    for &[a, b] in &layout.connections {
-        let delta = layout.cuboids[b].center - layout.cuboids[a].center;
-        let axis = (0..3).find(|&i| delta[i] != 0.).unwrap();
-        let positive = delta[axis] > 0.;
-        // A square node face supplies the shoulder around a beveled neighbor.
-        if beveled(layout.cuboids[a].owner) || !beveled(layout.cuboids[b].owner) {
-            hidden.insert((a, axis, positive));
-        }
-        if beveled(layout.cuboids[b].owner) || !beveled(layout.cuboids[a].owner) {
-            hidden.insert((b, axis, !positive));
-        }
-    }
+    let hidden = layout.hidden_faces();
     let mut builder = MeshBuilder::new();
     let mut lines = GizmoAsset::new();
     for (id, cube) in &layout.cuboids {
@@ -146,8 +133,4 @@ pub(super) fn add(
         RenderAsset::Mesh(builder.build()),
     );
     object.gizmo(lines, 1., -0.00001, SkeletonLayer::CubeEdges.label());
-}
-
-fn beveled(owner: CuboidOwner) -> bool {
-    matches!(owner, CuboidOwner::Edge(_))
 }

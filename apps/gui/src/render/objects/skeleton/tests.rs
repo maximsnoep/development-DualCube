@@ -149,17 +149,6 @@ fn cube_view_distinguishes_stretched_edges_and_keeps_finite_geometry() {
     for (_, position) in &mut realized.node_positions {
         *position *= 3.;
     }
-    for (_, cuboid) in &mut realized.cuboids.cuboids {
-        cuboid.center *= 3.;
-        if let dualcube::skeleton::CuboidOwner::Edge(edge) = cuboid.owner {
-            let axis = match realized.labeled.labels[edge].direction {
-                Direction::X => 0,
-                Direction::Y => 1,
-                Direction::Z => 2,
-            };
-            cuboid.size[axis] = 3. * cuboid.size[axis] + 2.;
-        }
-    }
     realized.validate(&solution.mesh_ref).unwrap();
     let mut object = RenderObject::default();
     cubes::add(&mut object, &realized, &HashMap::new());

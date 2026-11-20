@@ -13,7 +13,7 @@ pub(super) struct Surface {
 
 impl Surface {
     pub fn build(realized: &RealizedSkeleton) -> SkeletonResult<Self> {
-        let layout = &realized.cuboids;
+        let layout = realized.cuboids();
         let ids: Vec<_> = layout.cuboids.keys().collect();
         let indices: HashMap<CuboidID, usize> =
             ids.iter().enumerate().map(|(i, &id)| (id, i)).collect();

@@ -87,24 +87,10 @@ fn star(costs: &[[f64; 6]], reserved: usize) -> f64 {
             })
             .sum();
     }
-    let mut dp = [f64::INFINITY; 64];
-    dp[1 << reserved] = 0.;
-    for row in costs {
-        let mut next = [f64::INFINITY; 64];
-        for mask in 0..64 {
-            if !dp[mask].is_finite() {
-                continue;
-            }
-            for d in 0..6 {
-                if mask & (1 << d) == 0 {
-                    let target = mask | (1 << d);
-                    next[target] = next[target].min(dp[mask] + row[d]);
-                }
-            }
-        }
-        dp = next;
-    }
-    dp.into_iter().fold(f64::INFINITY, f64::min)
+    assign_ports(costs.len(), 1 << reserved, |i, p, value| {
+        value + costs[i][p as usize]
+    })
+    .0
 }
 
 fn score(skeleton: &Skeleton, connector: SkeletonEdgeID) -> f64 {

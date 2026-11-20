@@ -81,6 +81,55 @@ pub fn angle_costs(vector: Vector3D) -> [f64; 6] {
     })
 }
 
+/// Distinct ports for `items` items at a node, none in `occupied`, with the least value:
+/// `step(i, port, value)` adds item `i` on `port` to the value of the items before it. The
+/// value and the ports in item order; no ports when no assignment is finite.
+fn assign_ports(
+    items: usize,
+    occupied: u8,
+    step: impl Fn(usize, Port, f64) -> f64,
+) -> (f64, Vec<Port>) {
+    let mut dp = [f64::INFINITY; 64];
+    dp[occupied as usize] = 0.;
+    let mut back = vec![[None; 64]; items];
+    for (i, back) in back.iter_mut().enumerate() {
+        let mut next = [f64::INFINITY; 64];
+        for mask in 0..64 {
+            if !dp[mask].is_finite() {
+                continue;
+            }
+            for p in Port::ALL {
+                if mask & p.bit() as usize != 0 {
+                    continue;
+                }
+                let value = step(i, p, dp[mask]);
+                let target = mask | p.bit() as usize;
+                if value < next[target] {
+                    next[target] = value;
+                    back[target] = Some((mask, p));
+                }
+            }
+        }
+        dp = next;
+    }
+    let (mut mask, &best) = dp
+        .iter()
+        .enumerate()
+        .min_by(|a, b| a.1.total_cmp(b.1))
+        .unwrap();
+    if !best.is_finite() {
+        return (best, Vec::new());
+    }
+    let mut ports = Vec::with_capacity(items);
+    for i in (0..items).rev() {
+        let (previous, p) = back[i][mask].unwrap();
+        ports.push(p);
+        mask = previous;
+    }
+    ports.reverse();
+    (best, ports)
+}
+
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct JunctionSplit {
     pub original_node: SkeletonNodeID,
@@ -109,6 +158,11 @@ pub struct Attempt {
 }
 
 impl Attempt {
+    /// Whether an edge lies outside the spanning tree: a cycle edge or one of its repairs.
+    pub fn outside_tree(&self, edge: SkeletonEdgeID) -> bool {
+        !self.tree_edges.is_empty() && !self.tree_labels.contains_key(edge)
+    }
+
     pub fn labeled(&self) -> LabeledSkeleton {
         LabeledSkeleton {
             skeleton: self.skeleton.clone(),

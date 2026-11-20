@@ -65,51 +65,17 @@ pub(super) fn solve(
     for &n in order.iter().rev() {
         for incoming in 0..7 {
             let occupied = if incoming < 6 { 1 << incoming } else { 0 };
-            let mut dp = [f64::INFINITY; 64];
-            dp[occupied] = 0.;
-            let mut back = vec![[None; 64]; children[n].len()];
-            for (i, &(child, edge)) in children[n].iter().enumerate() {
-                let mut next = [f64::INFINITY; 64];
-                for mask in 0..64 {
-                    if !dp[mask].is_finite() {
-                        continue;
-                    }
-                    for p in Port::ALL {
-                        let d = p as usize;
-                        if mask & (1 << d) != 0 {
-                            continue;
-                        }
-                        let label = if skeleton.edges[edge].nodes[0] == nodes[n] {
-                            p
-                        } else {
-                            p.opposite()
-                        };
-                        let value = dp[mask] + costs[edge][label as usize] + values[child][d ^ 1];
-                        let target = mask | (1 << d);
-                        if value < next[target] {
-                            next[target] = value;
-                            back[i][target] = Some((mask, p));
-                        }
-                    }
-                }
-                dp = next;
-            }
-            let (mut mask, &best) = dp
-                .iter()
-                .enumerate()
-                .min_by(|a, b| a.1.total_cmp(b.1))
-                .unwrap();
+            let (best, selected) = assign_ports(children[n].len(), occupied, |i, p, value| {
+                let (child, edge) = children[n][i];
+                let label = if skeleton.edges[edge].nodes[0] == nodes[n] {
+                    p
+                } else {
+                    p.opposite()
+                };
+                value + costs[edge][label as usize] + values[child][p.opposite() as usize]
+            });
             values[n][incoming] = best;
-            if best.is_finite() {
-                let mut selected = Vec::new();
-                for i in (0..children[n].len()).rev() {
-                    let (previous, p) = back[i][mask].unwrap();
-                    selected.push(p);
-                    mask = previous;
-                }
-                selected.reverse();
-                choices[n][incoming] = selected;
-            }
+            choices[n][incoming] = selected;
         }
     }
     if !values[0][6].is_finite() {
