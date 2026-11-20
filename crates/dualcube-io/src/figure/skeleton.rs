@@ -136,24 +136,9 @@ pub(super) fn combined(model: &Model<'_>) -> Option<Vec<Item>> {
 pub(super) fn cubes(model: &Model<'_>) -> Option<Vec<Item>> {
     let save = model.skeleton;
     let realized = save.optimized.as_ref().or(save.realized.as_ref())?;
-    let layout = &realized.cuboids;
+    let layout = realized.cuboids();
     let palette = palette(model);
-    let beveled = |owner| matches!(owner, CuboidOwner::Edge(_));
-    let mut hidden = HashSet::new();
-    for &[a, b] in &layout.connections {
-        let delta = layout.cuboids[b].center - layout.cuboids[a].center;
-        let Some(axis) = (0..3).find(|&i| delta[i] != 0.) else {
-            continue;
-        };
-        let positive = delta[axis] > 0.;
-        // A square node face supplies the shoulder around an edge cuboid.
-        if beveled(layout.cuboids[a].owner) || !beveled(layout.cuboids[b].owner) {
-            hidden.insert((a, axis, positive));
-        }
-        if beveled(layout.cuboids[b].owner) || !beveled(layout.cuboids[a].owner) {
-            hidden.insert((b, axis, !positive));
-        }
-    }
+    let hidden = layout.hidden_faces();
     let camera = Camera::new(model.params, None);
     let mut faces = vec![];
     for (id, cube) in &layout.cuboids {
@@ -291,13 +276,10 @@ fn labeled_graph(model: &Model<'_>) -> Option<Vec<Item>> {
         )
     };
     if let Some(attempt) = &save.labeling {
-        let non_tree = |id: SkeletonEdgeID| {
-            !attempt.tree_edges.is_empty() && !attempt.tree_labels.contains_key(id)
-        };
         return Some(nodes_and_edges(
             model,
             &attempt.skeleton,
-            |id| edge(attempt.labels.get(id), non_tree(id)),
+            |id| edge(attempt.labels.get(id), attempt.outside_tree(id)),
             |_| GRAY,
         ));
     }

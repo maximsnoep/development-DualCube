@@ -86,7 +86,6 @@ fn v2_keeps_skeleton_stages_layout_and_source() {
     );
     let (optimized, original) = (skeleton.optimized.unwrap(), progress.optimized.unwrap());
     assert_eq!(optimized.node_positions, original.node_positions);
-    assert_eq!(optimized.cuboids.connections, original.cuboids.connections);
     assert!(skeleton.realized.is_some() && skeleton.labeling.is_some());
     assert_eq!(
         skeleton.drawing.unwrap().planned,

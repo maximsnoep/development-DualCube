@@ -86,36 +86,10 @@ fn graph_realized(
     }
     let labeled = crate::LabeledSkeleton { skeleton, labels };
     // Placement only needs valid labels; template tests need no input boundary realization.
-    let positions = crate::place_cubes::coordinates(&labeled).unwrap();
-    let mut layout = crate::CuboidLayout::default();
-    let node_ids: HashMap<_, _> = nodes
-        .iter()
-        .map(|&id| {
-            (
-                id,
-                layout.cuboids.insert(crate::Cuboid {
-                    center: positions[id],
-                    size: Vector3D::repeat(1.),
-                    owner: crate::CuboidOwner::Node(id),
-                }),
-            )
-        })
-        .collect();
-    for (edge, data) in &labeled.skeleton.edges {
-        let [a, b] = data.nodes;
-        let id = layout.cuboids.insert(crate::Cuboid {
-            center: (positions[a] + positions[b]) / 2.,
-            size: Vector3D::repeat(1.),
-            owner: crate::CuboidOwner::Edge(edge),
-        });
-        layout
-            .connections
-            .extend([[node_ids[&a], id], [id, node_ids[&b]]]);
-    }
+    let node_positions = crate::place_cubes::coordinates(&labeled).unwrap();
     RealizedSkeleton {
         labeled,
-        node_positions: positions,
-        cuboids: layout,
+        node_positions,
     }
 }
 

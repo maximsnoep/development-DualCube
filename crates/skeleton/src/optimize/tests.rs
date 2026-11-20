@@ -22,7 +22,7 @@ fn dissolves_straight_patch_and_its_occurrences_without_mutating_source() {
     assert_eq!(result.labeled.skeleton.nodes.len(), 2);
     assert_eq!(result.labeled.skeleton.edges.len(), 1);
     assert_eq!(result.labeled.skeleton.surface.crossings.len(), 2);
-    assert_eq!(result.cuboids.cuboids.len(), 3);
+    assert_eq!(result.cuboids().cuboids.len(), 3);
     assert_eq!(source.labeled.skeleton.surface.edge_order, order);
     assert_eq!(source.labeled.skeleton.nodes.len(), 3);
     let again = dissolved(&mesh, &result);
