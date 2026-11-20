@@ -383,7 +383,11 @@ fn repair(
     labels: &SecondaryMap<SkeletonEdgeID, EdgeLabel>,
     edge: SkeletonEdgeID,
     cache: &mut HashMap<[u64; 3], [f64; 6]>,
-) -> SkeletonResult<(Skeleton, Vec<SkeletonEdgeID>, Vec<(SkeletonEdgeID, EdgeLabel)>)> {
+) -> SkeletonResult<(
+    Skeleton,
+    Vec<SkeletonEdgeID>,
+    Vec<(SkeletonEdgeID, EdgeLabel)>,
+)> {
     let (chain, [start, end]) = chain(skeleton, edge);
     let solve = chain_solver(skeleton, labels, &chain, [start, end])?;
     // The cycle: the chain, then back along labelled edges outside it.
@@ -410,16 +414,16 @@ fn repair(
     let mut slot_costs = Vec::new();
     for (i, &(e, _)) in cycle.iter().enumerate() {
         for (k, node) in [nodes[i], nodes[i + 1]].into_iter().enumerate() {
-            slot_costs.push(
-                match subdivide::middle(mesh, skeleton, &ground, e, node) {
-                    // Along the path the normal points into the patch after the step, and out
-                    // of the patch before it.
-                    Some(middle) => {
-                        angle_costs(if k == 1 { middle.normal } else { -middle.normal })
-                    }
-                    None => costs[i],
-                },
-            );
+            slot_costs.push(match subdivide::middle(mesh, skeleton, &ground, e, node) {
+                // Along the path the normal points into the patch after the step, and out
+                // of the patch before it.
+                Some(middle) => angle_costs(if k == 1 {
+                    middle.normal
+                } else {
+                    -middle.normal
+                }),
+                None => costs[i],
+            });
         }
     }
     // Costs and ports in use along the first `steps` steps with the slots filled; nothing is
@@ -461,7 +465,9 @@ fn repair(
         let mut at = 0;
         for (i, [before, after]) in additions(cycle.len(), slots).into_iter().enumerate() {
             let count = before + 1 + after;
-            let mask = best.ports[at..at + count].iter().fold(0, |m, p| m | p.bit());
+            let mask = best.ports[at..at + count]
+                .iter()
+                .fold(0, |m, p| m | p.bit());
             runs.push(([nodes[i], nodes[i + 1]], mask));
             at += count;
         }
@@ -475,7 +481,14 @@ fn repair(
                     && best.as_ref().is_none_or(|(old, _)| cost < *old)
                 {
                     let steps = cycle.clone();
-                    best = Some((cost, Closing { steps, slots, ports }));
+                    best = Some((
+                        cost,
+                        Closing {
+                            steps,
+                            slots,
+                            ports,
+                        },
+                    ));
                 }
             }
         }
@@ -485,7 +498,14 @@ fn repair(
                     && best.as_ref().is_none_or(|(old, _)| solution.cost < *old)
                 {
                     let (steps, ports) = (chain.clone(), solution.ports);
-                    best = Some((solution.cost, Closing { steps, slots, ports }));
+                    best = Some((
+                        solution.cost,
+                        Closing {
+                            steps,
+                            slots,
+                            ports,
+                        },
+                    ));
                 }
             }
         }
@@ -544,9 +564,7 @@ fn repair(
         let labels = path
             .iter()
             .zip(closing.ports)
-            .map(|(&(e, forward), port)| {
-                (e, if forward { port } else { port.opposite() }.label())
-            })
+            .map(|(&(e, forward), port)| (e, if forward { port } else { port.opposite() }.label()))
             .collect();
         return Ok((split, added, labels));
     }
@@ -565,11 +583,14 @@ fn copies(steps: usize, count: usize) -> Vec<Vec<usize>> {
                 .into_iter()
                 .flat_map(|set: Vec<usize>| {
                     let least = set.last().copied().unwrap_or(0);
-                    positions.iter().filter(move |&&p| p >= least).map(move |&p| {
-                        let mut next = set.clone();
-                        next.push(p);
-                        next
-                    })
+                    positions
+                        .iter()
+                        .filter(move |&&p| p >= least)
+                        .map(move |&p| {
+                            let mut next = set.clone();
+                            next.push(p);
+                            next
+                        })
                 })
                 .collect();
             if sets.len() > LIMIT {
@@ -579,7 +600,8 @@ fn copies(steps: usize, count: usize) -> Vec<Vec<usize>> {
         Some(sets)
     };
     let all: Vec<usize> = (0..steps).collect();
-    grow(&all).unwrap_or_else(|| grow(&[0, steps - 1]).expect("two positions stay within the limit"))
+    grow(&all)
+        .unwrap_or_else(|| grow(&[0, steps - 1]).expect("two positions stay within the limit"))
 }
 
 #[cfg(test)]
