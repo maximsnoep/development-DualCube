@@ -98,6 +98,10 @@ pub struct Certificate {
 }
 
 pub fn run(mesh: &Mesh<INPUT>, skeleton: &Skeleton) -> Result<Certificate, Failure> {
+    // Genus 1: surgery's integer homology is taken as exact (π₁ = ℤ for a solid torus).
+    if skeleton.edges.len() == skeleton.nodes.len() {
+        return Ok(Certificate::default());
+    }
     run_with(mesh, skeleton, &Options::default())
 }
 

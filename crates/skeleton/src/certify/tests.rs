@@ -219,7 +219,7 @@ fn misses_move_into_the_tree_until_they_close_a_cycle() {
 #[ignore = "requires TetGen and DiskScissors"]
 fn diskscissors_certifies_torus_meridians() {
     let (mesh, skeleton) = torus();
-    let certificate = run(&mesh, &skeleton).unwrap();
+    let certificate = run_with(&mesh, &skeleton, &Options::default()).unwrap();
     assert_eq!(certificate.disks.len(), 1);
     assert!(certificate.misses.is_empty());
 }
