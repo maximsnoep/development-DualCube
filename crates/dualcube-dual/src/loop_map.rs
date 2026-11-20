@@ -11,6 +11,7 @@
 use crate::arrangement::{general, sides};
 use crate::{Loop, LoopID, PropertyViolationError};
 use dualcube_types::prelude::*;
+use petgraph::unionfind::UnionFind;
 use slotmap::SlotMap;
 
 /// What a map edge lies on, seen from one of its half-edges.
@@ -71,19 +72,6 @@ pub struct LoopMap {
     leaving: Vec<usize>,
     // The half-edge starting at the root of every input half-edge, when built from the mesh.
     roots: HashMap<EdgeID, usize>,
-}
-
-fn root(parent: &mut [usize], mut i: usize) -> usize {
-    while parent[i] != i {
-        parent[i] = parent[parent[i]];
-        i = parent[i];
-    }
-    i
-}
-
-fn join(parent: &mut [usize], a: usize, b: usize) {
-    let (a, b) = (root(parent, a), root(parent, b));
-    parent[a] = b;
 }
 
 impl LoopMap {
@@ -541,16 +529,16 @@ impl LoopMap {
 
     /// The region of every face (faces joined across non-loop edges), and their number.
     pub fn regions(&self) -> (Vec<usize>, usize) {
-        let mut parent: Vec<usize> = (0..self.faces.len()).collect();
+        let mut faces = UnionFind::new(self.faces.len());
         for h in &self.halves {
             if h.piece.wall().is_none() {
-                join(&mut parent, h.face, self.halves[h.twin].face);
+                faces.union(h.face, self.halves[h.twin].face);
             }
         }
         let mut ids = HashMap::new();
         let regions = (0..self.faces.len())
             .map(|f| {
-                let r = root(&mut parent, f);
+                let r = faces.find_mut(f);
                 let next = ids.len();
                 *ids.entry(r).or_insert(next)
             })
@@ -565,7 +553,7 @@ impl LoopMap {
             chi[r] += 1;
         }
         // Corners are identified by the half-edge leaving them in their face.
-        let mut parent: Vec<usize> = (0..self.halves.len()).collect();
+        let mut corners = UnionFind::new(self.halves.len());
         for (i, h) in self.halves.iter().enumerate() {
             let r = regions[h.face];
             if h.piece.wall().is_some() {
@@ -573,12 +561,12 @@ impl LoopMap {
             } else if i < h.twin {
                 chi[r] -= 1;
                 let t = &self.halves[h.twin];
-                join(&mut parent, i, t.next);
-                join(&mut parent, h.next, h.twin);
+                corners.union(i, t.next);
+                corners.union(h.next, h.twin);
             }
         }
         for i in 0..self.halves.len() {
-            if root(&mut parent, i) == i {
+            if corners.find_mut(i) == i {
                 chi[regions[self.halves[i].face]] += 1;
             }
         }

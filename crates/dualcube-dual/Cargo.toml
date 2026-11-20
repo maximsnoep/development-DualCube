@@ -10,6 +10,7 @@ name = "dualcube_dual"
 [dependencies]
 dualcube-types = { path = "../dualcube-types" }
 grapff = { path = "../grapff" }
+petgraph.workspace = true
 orx-parallel = "3.4.0"
 rand = "0.10.1"
 serde = { workspace = true, features = ["rc", "derive"] }
