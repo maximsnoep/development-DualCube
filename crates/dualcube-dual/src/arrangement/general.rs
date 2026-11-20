@@ -2,6 +2,7 @@
 
 use super::*;
 use crate::{SurfaceArc, surface_curve::SurfaceCurveError};
+use petgraph::unionfind::UnionFind;
 
 const TOL: f64 = 1e-12;
 
@@ -30,18 +31,6 @@ pub(crate) struct Cells {
     on_loop: Vec<bool>,
 }
 
-fn root(parent: &mut [usize], mut i: usize) -> usize {
-    while parent[i] != i {
-        parent[i] = parent[parent[i]];
-        i = parent[i];
-    }
-    i
-}
-fn join(parent: &mut [usize], a: usize, b: usize) {
-    let a = root(parent, a);
-    let b = root(parent, b);
-    parent[a] = b;
-}
 fn close(a: Point2, b: Point2) -> bool {
     (a[0] - b[0]).abs().max((a[1] - b[1]).abs()) < TOL
 }
@@ -490,16 +479,16 @@ pub(crate) fn build(
 
 impl Cells {
     pub fn components(&self) -> Result<Components, PropertyViolationError> {
-        let mut parent: Vec<usize> = (0..self.cells.len()).collect();
+        let mut cells = UnionFind::new(self.cells.len());
         for link in &self.links {
             if link.wall.is_none() {
-                join(&mut parent, link.cells[0], link.cells[1]);
+                cells.union(link.cells[0], link.cells[1]);
             }
         }
         let mut ids = HashMap::new();
         let mut components = vec![];
         for i in 0..self.cells.len() {
-            let r = root(&mut parent, i);
+            let r = cells.find_mut(i);
             let next = ids.len();
             components.push(*ids.entry(r).or_insert(next));
         }
@@ -519,37 +508,34 @@ impl Cells {
         count: usize,
     ) -> Result<Vec<i64>, PropertyViolationError> {
         let mut base = vec![];
-        let mut parent = vec![];
         let mut owners = vec![];
         let mut chi = vec![0; count];
         for (i, cell) in self.cells.iter().enumerate() {
-            base.push(parent.len());
+            base.push(owners.len());
             chi[components[i]] += 1 - cell.vertices.len() as i64;
             for _ in &cell.vertices {
-                parent.push(parent.len());
                 owners.push(components[i]);
             }
         }
+        let mut corners = UnionFind::new(owners.len());
         for link in &self.links {
             if link.wall.is_some() {
                 continue;
             }
             let [a, b] = link.cells;
             let [u, v] = link.sides;
-            join(
-                &mut parent,
+            corners.union(
                 base[a] + u,
                 base[b] + (v + 1) % self.cells[b].vertices.len(),
             );
-            join(
-                &mut parent,
+            corners.union(
                 base[a] + (u + 1) % self.cells[a].vertices.len(),
                 base[b] + v,
             );
             chi[components[a]] += 1;
         }
         for (i, &owner) in owners.iter().enumerate() {
-            if root(&mut parent, i) == i {
+            if corners.find_mut(i) == i {
                 chi[owner] += 1;
             }
         }

@@ -12,6 +12,7 @@
 use crate::LoopID;
 use crate::loop_map::{LoopMap, Piece, Point};
 use dualcube_types::prelude::*;
+use petgraph::unionfind::UnionFind;
 use std::collections::{BTreeSet, BinaryHeap, VecDeque};
 
 /// Why an arc could not be drawn, with its index along the loop. The construction always
@@ -36,19 +37,6 @@ impl std::fmt::Display for DrawError {
             Self::Unplaced(arc) => write!(f, "arc {arc} could not be placed as routed"),
         }
     }
-}
-
-fn root(parent: &mut [usize], mut i: usize) -> usize {
-    while parent[i] != i {
-        parent[i] = parent[parent[i]];
-        i = parent[i];
-    }
-    i
-}
-
-fn join(parent: &mut [usize], a: usize, b: usize) {
-    let (a, b) = (root(parent, a), root(parent, b));
-    parent[a] = b;
 }
 
 // Where a wall interval starts along its loop.
@@ -234,16 +222,16 @@ impl Labels {
         window: &Window,
     ) -> Partition {
         let marks = self.marks(map, chains, window);
-        let mut parent: Vec<usize> = (0..map.faces.len()).collect();
+        let mut faces = UnionFind::new(map.faces.len());
         for (i, h) in map.halves.iter().enumerate() {
             if marks[i].is_none() {
-                join(&mut parent, h.face, map.halves[h.twin].face);
+                faces.union(h.face, map.halves[h.twin].face);
             }
         }
         let mut regions = HashMap::<usize, BTreeSet<Mark>>::new();
         for (i, h) in map.halves.iter().enumerate() {
             if let Some(mark) = marks[i] {
-                let r = root(&mut parent, h.face);
+                let r = faces.find_mut(h.face);
                 regions.entry(r).or_default().insert(mark);
             }
         }
