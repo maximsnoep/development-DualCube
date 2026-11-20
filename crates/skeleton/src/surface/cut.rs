@@ -1,20 +1,14 @@
-//! New loops cut from vertex sides: redraw a boundary with the same partition (redraw lemma).
+//! New loops from vertex sides: a minimum cut gives every input vertex of a region a side, and
+//! the intervals where the side changes are traced into one loop.
 //!
-//! Every input vertex of a region gets a side; crossings of the region's other loops are pinned.
-//! Each interval whose ends get different sides receives one crossing, and inside every cell
-//! the changes are paired so that runs of the `false` side are cut off. Validation of the
-//! resulting skeleton is the only acceptance test.
+//! Crossings of the region's other loops are pinned. Each interval whose ends get different
+//! sides receives one crossing, and inside every cell the changes are paired so that runs of the
+//! `false` side are cut off.
 
-use super::cut::Network;
-use super::fidelity::{self, Element, Measure, Star};
-use super::moves::gain;
-use crate::label::Port;
 use crate::surface::{Gap, Regions, Side, Vertex};
-use crate::{
-    BoundaryCrossing, BoundaryCrossingID, LabeledSkeleton, Skeleton, SkeletonEdgeID, SkeletonNodeID,
-};
+use crate::{BoundaryCrossing, BoundaryCrossingID, Skeleton, SkeletonEdgeID, SkeletonNodeID};
 use dualcube_types::prelude::*;
-use std::collections::{HashMap, HashSet};
+use std::collections::{HashMap, HashSet, VecDeque};
 
 /// The loop separating the sides within `owner`'s region, as (interval, exit) in traversal
 /// order; `None` unless the side changes form exactly one loop.
@@ -141,157 +135,20 @@ pub(crate) fn replace(
         return Some(result);
     }
     let mut boundary = result.edges[edge].boundary.clone();
-    crate::surface::edit::reverse(mesh, &mut result, &mut boundary);
+    super::edit::reverse(mesh, &mut result, &mut boundary);
     result.edges[edge].boundary = boundary;
     result.validate(mesh).ok().map(|()| result)
 }
 
-#[derive(Clone, Copy, Debug)]
-pub struct RedrawParams {
-    /// Cost of cutting an interval, per unit of interval length times edge length, relative
-    /// to the area-weighted gain.
-    pub smoothness: f64,
-    pub measure: Measure,
-    pub rounds: usize,
-}
-
-/// Gain of a cell placed in a star with the given labels and free ports.
-pub(crate) fn cell_gain(
-    star: &Star,
-    free: u8,
-    labeled: &LabeledSkeleton,
-    cell: &fidelity::CellGeometry,
-    measure: Measure,
-) -> f64 {
-    let c = match star.element(cell.centroid) {
-        Element::Cube => fidelity::best_per_mask(cell.normal)[free as usize],
-        Element::Arm(e) => fidelity::wall(cell.normal, Port::from_label(labeled.labels[e]).axis()),
-    };
-    gain(measure, [c, fidelity::distortion(c)])
-}
-
-/// Redraw one boundary by a minimum cut on the union of its two patches; repeated with
-/// updated stars for `rounds`. Returns `None` when nothing valid and different was found.
-pub(crate) fn redraw(
-    mesh: &Mesh<INPUT>,
-    labeled: &LabeledSkeleton,
-    edge: SkeletonEdgeID,
-    params: &RedrawParams,
-) -> Option<LabeledSkeleton> {
-    let mut current = labeled.clone();
-    let mut changed = false;
-    for _ in 0..params.rounds.max(1) {
-        let Some(next) = redraw_once(mesh, &current, edge, params) else {
-            break;
-        };
-        let same = {
-            let old: HashSet<_> = current.skeleton.edges[edge]
-                .boundary
-                .crossings
-                .iter()
-                .map(|&c| current.skeleton.surface.crossings[c].exit)
-                .collect();
-            let new: HashSet<_> = next.skeleton.edges[edge]
-                .boundary
-                .crossings
-                .iter()
-                .map(|&c| next.skeleton.surface.crossings[c].exit)
-                .collect();
-            old == new
-        };
-        current = next;
-        if same {
-            break;
-        }
-        changed = true;
-    }
-    changed.then_some(current)
-}
-
-fn redraw_once(
-    mesh: &Mesh<INPUT>,
-    labeled: &LabeledSkeleton,
-    edge: SkeletonEdgeID,
-    params: &RedrawParams,
-) -> Option<LabeledSkeleton> {
-    let skeleton = &labeled.skeleton;
-    let [a, b] = skeleton.edges[edge].nodes;
-    // Stars from the current geometry.
-    let regions = Regions::build(mesh, skeleton).ok()?;
-    let positions = fidelity::crossing_positions(mesh, skeleton);
-    let cells = fidelity::cells(mesh, &regions, &positions);
-    let stars = fidelity::stars(skeleton, &cells, &fidelity::loops(skeleton, &positions));
-    let used = crate::label::constraints::used_ports(skeleton, &labeled.labels).ok()?;
-
-    // The union of both patches as one region, with the boundary removed.
-    let mut merged = skeleton.clone();
-    let old = merged.edges.remove(edge).unwrap();
-    erase(mesh, &mut merged, &old.boundary.crossings);
-    let mut pinned = HashMap::<BoundaryCrossingID, bool>::new();
-    for data in merged.edges.values_mut() {
-        let side = data.nodes.contains(&a);
-        if side || data.nodes.contains(&b) {
-            for &c in &data.boundary.crossings {
-                pinned.insert(c, side);
-            }
-        }
-        for n in &mut data.nodes {
-            if *n == b {
-                *n = a;
-            }
-        }
-    }
-    merged.nodes.remove(b);
-    let union = Regions::build(mesh, &merged).ok()?;
-    let union_positions = fidelity::crossing_positions(mesh, &merged);
-    let union_cells = fidelity::cells(mesh, &union, &union_positions);
-
-    let gains = |i: usize| {
-        [a, b].map(|node| {
-            cell_gain(
-                &stars[node],
-                63 & !used[node],
-                labeled,
-                &union_cells[i],
-                params.measure,
-            )
-        })
-    };
-    let (index, sides) = cut_sides(
-        mesh,
-        &union,
-        &union_cells,
-        &union_positions,
-        a,
-        &pinned,
-        &gains,
-        &|_, area| params.smoothness * area,
-    )?;
-    let side = |v: Vertex| match v {
-        Vertex::Input(v) => sides[index[&v]],
-        Vertex::Crossing(c) => pinned.get(&c).copied().unwrap_or(true),
-    };
-    let path = trace(mesh, &union, a, &side)?;
-    let skeleton = replace(mesh, skeleton, edge, &path)?;
-    Some(LabeledSkeleton {
-        skeleton,
-        labels: labeled.labels.clone(),
-    })
-}
-
-/// Vertex sides within `owner`'s region by a minimum cut: `gains(cell)` is the cell's gain on
-/// the `true` and `false` side, `pinned` fixes crossings, and cutting an interval costs
-/// `cutting(its ends, its length × its edge length)`. Islands not touching their side's loops are
-/// flipped (a side without loops keeps its largest component).
-#[allow(clippy::too_many_arguments)]
+/// Vertex sides within `owner`'s region by a minimum cut: `pinned` fixes crossings, and cutting
+/// an interval costs `cutting(its ends, its length × its edge length)`. Islands not touching
+/// their side's loops are flipped (a side without loops keeps its largest component).
 pub(crate) fn cut_sides(
     mesh: &Mesh<INPUT>,
     union: &Regions,
-    union_cells: &[fidelity::CellGeometry],
     union_positions: &HashMap<BoundaryCrossingID, Vector3D>,
     owner: SkeletonNodeID,
     pinned: &HashMap<BoundaryCrossingID, bool>,
-    gains: &dyn Fn(usize) -> [f64; 2],
     cutting: &dyn Fn([Vertex; 2], f64) -> f64,
 ) -> Option<(HashMap<VertID, usize>, Vec<bool>)> {
     let mut index = HashMap::<VertID, usize>::new();
@@ -320,13 +177,7 @@ pub(crate) fn cut_sides(
         if union.owners[i] != owner {
             continue;
         }
-        let share = union_cells[i].area / cell.vertices.len() as f64;
-        let gains = gains(i);
         for (j, v) in cell.vertices.iter().enumerate() {
-            if let Vertex::Input(v) = *v {
-                cost[index[&v]][0] -= share * gains[0];
-                cost[index[&v]][1] -= share * gains[1];
-            }
             let Side::Gap(gap) = cell.sides[j] else {
                 continue;
             };
@@ -416,86 +267,91 @@ pub(crate) fn cut_sides(
     Some((index, sides))
 }
 
-/// Split a disk off a node's patch as a new leaf at a free port (split lemma): vertices go to
-/// the leaf where a cube with every port but the one back to the node fits better than the
-/// node's star. `None` if the port is taken or no valid disk results.
-pub(crate) fn add_leaf(
-    mesh: &Mesh<INPUT>,
-    labeled: &LabeledSkeleton,
-    node: SkeletonNodeID,
-    port: Port,
-    params: &RedrawParams,
-) -> Option<LabeledSkeleton> {
-    let skeleton = &labeled.skeleton;
-    let used = crate::label::constraints::used_ports(skeleton, &labeled.labels).ok()?;
-    if used[node] & port.bit() != 0 {
-        return None;
+/// Minimum s-t cut by Dinic's algorithm on nonnegative real capacities.
+pub(crate) struct Network {
+    /// Per arc: head, residual capacity. Arc `i ^ 1` is the reverse of arc `i`.
+    arcs: Vec<(usize, f64)>,
+    out: Vec<Vec<usize>>,
+}
+
+impl Network {
+    pub fn new(nodes: usize) -> Self {
+        Self {
+            arcs: Vec::new(),
+            out: vec![Vec::new(); nodes],
+        }
     }
-    let regions = Regions::build(mesh, skeleton).ok()?;
-    let positions = fidelity::crossing_positions(mesh, skeleton);
-    let cells = fidelity::cells(mesh, &regions, &positions);
-    let stars = fidelity::stars(skeleton, &cells, &fidelity::loops(skeleton, &positions));
-    let pinned: HashMap<_, _> = skeleton
-        .incident(node)
-        .flat_map(|(_, e)| e.boundary.crossings.iter().map(|&c| (c, false)))
-        .collect();
-    let free = 63 & !used[node];
-    let leaf_free = 63 & !port.opposite().bit();
-    let gains = |i: usize| {
-        let cell = &cells[i];
-        let leaf = fidelity::best_per_mask(cell.normal)[leaf_free as usize];
-        [
-            gain(params.measure, [leaf, fidelity::distortion(leaf)]),
-            cell_gain(
-                &stars[node],
-                free & !port.bit(),
-                labeled,
-                cell,
-                params.measure,
-            ),
-        ]
-    };
-    let (index, sides) = cut_sides(
-        mesh,
-        &regions,
-        &cells,
-        &positions,
-        node,
-        &pinned,
-        &gains,
-        // A disk pays its whole perimeter; the score decides whether it is worth it.
-        &|_, area| params.smoothness / 8. * area,
-    )?;
-    if !sides.iter().any(|&s| s) {
-        return None;
+
+    /// Capacity `forward` from a to b and `backward` from b to a.
+    pub fn add(&mut self, a: usize, b: usize, forward: f64, backward: f64) {
+        self.out[a].push(self.arcs.len());
+        self.arcs.push((b, forward.max(0.)));
+        self.out[b].push(self.arcs.len());
+        self.arcs.push((a, backward.max(0.)));
     }
-    let side = |v: Vertex| match v {
-        Vertex::Input(v) => sides[index[&v]],
-        Vertex::Crossing(c) => pinned.get(&c).copied().unwrap_or(false),
-    };
-    let path = trace(mesh, &regions, node, &side)?;
-    let centre = index
-        .iter()
-        .filter(|&(_, &i)| sides[i])
-        .map(|(&v, _)| mesh.position(v))
-        .sum::<Vector3D>()
-        / sides.iter().filter(|&&s| s).count() as f64;
-    let mut result = labeled.clone();
-    let leaf = result
-        .skeleton
-        .nodes
-        .insert(crate::SkeletonNode { position: centre });
-    let crossings = insert(&mut result.skeleton, &path);
-    let edge = result.skeleton.edges.insert(crate::SkeletonEdge {
-        nodes: [node, leaf],
-        boundary: crate::PatchBoundary { crossings },
-    });
-    result.labels.insert(edge, port.label());
-    if result.skeleton.validate(mesh).is_err() {
-        let mut boundary = result.skeleton.edges[edge].boundary.clone();
-        crate::surface::edit::reverse(mesh, &mut result.skeleton, &mut boundary);
-        result.skeleton.edges[edge].boundary = boundary;
-        result.skeleton.validate(mesh).ok()?;
+
+    /// Nodes on the source side of a minimum cut.
+    pub fn source_side(&mut self, source: usize, sink: usize) -> Vec<bool> {
+        const EPS: f64 = 1e-12;
+        let n = self.out.len();
+        loop {
+            let mut level = vec![usize::MAX; n];
+            level[source] = 0;
+            let mut queue = VecDeque::from([source]);
+            while let Some(a) = queue.pop_front() {
+                for &arc in &self.out[a] {
+                    let (b, capacity) = self.arcs[arc];
+                    if capacity > EPS && level[b] == usize::MAX {
+                        level[b] = level[a] + 1;
+                        queue.push_back(b);
+                    }
+                }
+            }
+            if level[sink] == usize::MAX {
+                return level.iter().map(|&l| l != usize::MAX).collect();
+            }
+            let mut next = vec![0; n];
+            while self.augment(source, sink, &level, &mut next) > EPS {}
+        }
     }
-    Some(result)
+
+    /// One blocking-flow path by iterative depth-first search.
+    fn augment(&mut self, source: usize, sink: usize, level: &[usize], next: &mut [usize]) -> f64 {
+        const EPS: f64 = 1e-12;
+        let mut path: Vec<usize> = Vec::new();
+        let mut node = source;
+        loop {
+            if node == sink {
+                let flow = path
+                    .iter()
+                    .map(|&a| self.arcs[a].1)
+                    .fold(f64::INFINITY, f64::min);
+                for &a in &path {
+                    self.arcs[a].1 -= flow;
+                    self.arcs[a ^ 1].1 += flow;
+                }
+                return flow;
+            }
+            let mut advanced = false;
+            while next[node] < self.out[node].len() {
+                let arc = self.out[node][next[node]];
+                let (b, capacity) = self.arcs[arc];
+                if capacity > EPS && level[b] == level[node] + 1 {
+                    path.push(arc);
+                    node = b;
+                    advanced = true;
+                    break;
+                }
+                next[node] += 1;
+            }
+            if !advanced {
+                if node == source {
+                    return 0.;
+                }
+                let arc = path.pop().unwrap();
+                node = self.arcs[arc ^ 1].0;
+                next[node] += 1;
+            }
+        }
+    }
 }

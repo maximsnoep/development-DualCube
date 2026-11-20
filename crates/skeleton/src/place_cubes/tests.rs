@@ -208,10 +208,10 @@ fn contradictions_and_corrupt_geometry_are_rejected() {
 #[test]
 fn placement_handles_actual_surface_splits_and_repaired_cycles() {
     let (mesh, skeleton) = crate::surface::tests::lenses(8);
-    let labeled = crate::label::run(&mesh, &skeleton).unwrap();
+    let labeled = crate::label::attempt(&mesh, &skeleton).unwrap().labeled();
     run(&mesh, &labeled).unwrap().validate(&mesh).unwrap();
     let (mesh, skeleton) =
         crate::surface::tests::bands(&[[0., 0., 0.], [1., 0., 0.], [0., 1., 0.]]);
-    let labeled = crate::label::run(&mesh, &skeleton).unwrap();
+    let labeled = crate::label::attempt(&mesh, &skeleton).unwrap().labeled();
     run(&mesh, &labeled).unwrap().validate(&mesh).unwrap();
 }

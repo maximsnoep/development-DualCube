@@ -120,7 +120,7 @@ fn rejects_invalid_input_before_contraction() {
     let mut mesh = tetrahedron();
     let v = mesh.vert_ids()[0];
     mesh.set_position(v, Vector3D::new(f64::NAN, 0., 0.));
-    assert!(deflate::run(&mesh, 1).is_err());
+    assert!(deflate::run(&mesh, 1, deflate::DEFAULT_STEP).is_err());
 }
 
 #[test]
@@ -136,7 +136,7 @@ fn torus_extraction_preserves_one_cycle() {
 #[test]
 fn deflation_preserves_vertex_ids_and_surgery_rejects_other_topologies() {
     let mesh = tetrahedron();
-    let mut contracted = deflate::run(&mesh, 2).unwrap();
+    let mut contracted = deflate::run(&mesh, 2, deflate::DEFAULT_STEP).unwrap();
     assert_eq!(
         mesh.vert_ids(),
         contracted
@@ -148,7 +148,7 @@ fn deflation_preserves_vertex_ids_and_surgery_rejects_other_topologies() {
     let e = contracted.edge_ids()[0];
     contracted.edge_root.insert(e, contracted.toor(e));
     assert!(
-        skeletonize::surgery::run(&contracted, &mesh)
+        skeletonize::surgery::run(&contracted, &mesh, Default::default())
             .unwrap_err()
             .to_string()
             .contains("topology")
@@ -221,7 +221,7 @@ fn extraction_can_resume_from_a_contracted_mesh() {
         max_iterations: 3,
         ..Options::default()
     };
-    let contracted = deflate::run(&mesh, options.max_iterations).unwrap();
+    let contracted = deflate::run(&mesh, options.max_iterations, deflate::DEFAULT_STEP).unwrap();
     let resumed = skeletonize::extract_from_contracted(&mesh, contracted.clone(), options).unwrap();
     let fresh = skeletonize::extract(&mesh, options).unwrap();
     assert_eq!(resumed.skeleton.nodes.len(), fresh.skeleton.nodes.len());

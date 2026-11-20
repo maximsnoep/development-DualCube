@@ -125,7 +125,6 @@ pub fn run(args: anyhow::Result<Args>) -> anyhow::Result<()> {
             report,
             certify_each_step,
         } => crate::stages::run(&inputs, last, report.as_deref(), certify_each_step)?,
-        Command::Optimize(options) => crate::optimize::run(&options)?,
     }
 
     Ok(())
@@ -299,19 +298,6 @@ Commands:
       --certify-each-step: surgery dissolves a self-arc only when DiskScissors finds a disk for
       its loop, not on homology alone. This certifies every patch, so certification is skipped.
       Positive genus needs TETGEN_EXECUTABLE and DiskScissors (DISKSCISSORS_EXECUTABLE).
-
-  optimize --input <path> [--input <path> ...] [--mode run|sample] [--report <csv>] [--cache <dir>]
-           [--samples <n>] [--steps <n>] [--node-cost <f>] [--measure alignment|distortion]
-           [--smoothness <f>] [--iterations <n>] [--patience <n>] [--seconds <f>] [--seed <n>]
-           [--initial none|redraw|relax] [--relax-smoothness <f>] [--thinness <f>]
-           [--relax-rounds <n>] [--operators redraw,relabel,shorten,lengthen,removeleaf,addleaf]
-           [--objective primal|restricted] [--parallel <n>]
-      Skeleton optimization experiments on certified skeletons (cached in --cache, default
-      target/optimize-cache). run: optimize each mesh and compare restricted-label fidelity and
-      the reconstructed quality (as drawn) before and after; candidates are scored by the
-      quality as drawn (--objective primal, default) or restricted-label fidelity (restricted),
-      --parallel at a time (default 6). --initial runs once before the search: redraw every
-      boundary in turn, or relax all boundaries at once (default; patch graph and labels kept). sample: random valid labelings around the start (--samples, each --steps moves) with both measures, for rank correlation.
 
 QUALITY (the criterion used to compare solutions):
   score = -(distortion + 0.1 boundary + 0.05 curvature + 0.5 features) - beta * loops

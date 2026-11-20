@@ -1,6 +1,7 @@
 //! Insert a parallel boundary and the annular patch between the two loops.
 
 use super::*;
+use crate::surface::cut;
 use crate::{SkeletonEdge, SkeletonNode};
 
 pub(crate) fn collar(
@@ -47,18 +48,13 @@ pub(crate) struct Middle {
 pub(crate) struct Ground {
     regions: crate::surface::Regions,
     positions: HashMap<crate::BoundaryCrossingID, Vector3D>,
-    cells: Vec<crate::optimize::fidelity::CellGeometry>,
 }
 
 impl Ground {
     pub fn build(mesh: &Mesh<INPUT>, skeleton: &Skeleton) -> SkeletonResult<Self> {
-        let regions = crate::surface::Regions::build(mesh, skeleton)?;
-        let positions = crate::optimize::fidelity::crossing_positions(mesh, skeleton);
-        let cells = crate::optimize::fidelity::cells(mesh, &regions, &positions);
         Ok(Self {
-            regions,
-            positions,
-            cells,
+            regions: crate::surface::Regions::build(mesh, skeleton)?,
+            positions: skeleton.surface.positions(mesh),
         })
     }
 }
@@ -138,16 +134,7 @@ fn clearance_cut(
         let distance = (clear(ends[0]) + clear(ends[1])) / 2. + 0.01 * widest;
         area / (distance * distance)
     };
-    crate::optimize::redraw::cut_sides(
-        mesh,
-        &ground.regions,
-        &ground.cells,
-        &ground.positions,
-        node,
-        pinned,
-        &|_| [0.; 2],
-        &cutting,
-    )
+    cut::cut_sides(mesh, &ground.regions, &ground.positions, node, pinned, &cutting)
 }
 
 /// `None` when the patch has no other boundary, or no vertices to put the loop between.
@@ -177,7 +164,7 @@ pub(crate) fn middle(
         Vertex::Input(v) => sides[index[&v]],
         Vertex::Crossing(c) => pinned.get(&c).copied().unwrap_or(false),
     };
-    let path = crate::optimize::redraw::trace(mesh, &ground.regions, node, &side)?;
+    let path = cut::trace(mesh, &ground.regions, node, &side)?;
     // The loop's plane, with its normal along the steps from the edge's side to the other.
     let points: Vec<Vector3D> = path
         .iter()
@@ -235,7 +222,7 @@ pub(crate) fn split(
             * 0.5,
     });
     result.edges[edge].nodes[end] = between;
-    let crossings = crate::optimize::redraw::insert(&mut result, &middle.path);
+    let crossings = cut::insert(&mut result, &middle.path);
     let added = result.edges.insert(SkeletonEdge {
         nodes: if end == 1 {
             [between, node]
@@ -260,7 +247,6 @@ pub(crate) fn recentre(
     skeleton: &Skeleton,
     edge: SkeletonEdgeID,
 ) -> Option<Skeleton> {
-    use crate::optimize::redraw;
     use crate::surface::Vertex;
     let [a, b] = skeleton.edges[edge].nodes;
     if a == b {
@@ -269,7 +255,7 @@ pub(crate) fn recentre(
     // The union of both patches as one region, with the boundary removed.
     let mut merged = skeleton.clone();
     let old = merged.edges.remove(edge)?;
-    redraw::erase(mesh, &mut merged, &old.boundary.crossings);
+    cut::erase(mesh, &mut merged, &old.boundary.crossings);
     let mut pinned = HashMap::new();
     for data in merged.edges.values_mut() {
         let first = data.nodes.contains(&a);
@@ -294,6 +280,6 @@ pub(crate) fn recentre(
         Vertex::Input(v) => sides[index[&v]],
         Vertex::Crossing(c) => pinned.get(&c).copied().unwrap_or(true),
     };
-    let path = redraw::trace(mesh, &ground.regions, a, &side)?;
-    redraw::replace(mesh, skeleton, edge, &path)
+    let path = cut::trace(mesh, &ground.regions, a, &side)?;
+    cut::replace(mesh, skeleton, edge, &path)
 }

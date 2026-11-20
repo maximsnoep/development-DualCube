@@ -147,7 +147,7 @@ fn surgery_ends_with_closed_loops_between_genus_zero_patches() {
     assert!(surgery.junctions.is_empty());
     assert!(surgery.arcs.values().all(|a| a.ends.is_none()));
     assert_consistent(&surgery);
-    let skeleton = run(&contracted, &mesh).unwrap();
+    let skeleton = run(&contracted, &mesh, Options::default()).unwrap();
     assert_eq!(skeleton.edges.len() + 1, skeleton.nodes.len());
 }
 
@@ -286,13 +286,14 @@ fn self_loops_and_parallel_edges_are_subdivided() {
 #[ignore = "requires TetGen; set TETGEN_EXECUTABLE and run with --include-ignored"]
 fn torus_surgery_keeps_one_loop_beyond_a_tree() {
     let mesh = torus();
-    let contracted = super::super::deflate::run(&mesh, 50).unwrap();
+    let contracted =
+        super::super::deflate::run(&mesh, 50, super::super::deflate::DEFAULT_STEP).unwrap();
     let mut surgery = Surgery::new(&contracted, &mesh, 1, Options::default()).unwrap();
     surgery.run().unwrap();
     assert_consistent(&surgery);
     let patches = surgery.patches.iter().flatten().count();
     assert_eq!(surgery.arcs.len(), patches);
-    let skeleton = run(&contracted, &mesh).unwrap();
+    let skeleton = run(&contracted, &mesh, Options::default()).unwrap();
     assert_eq!(skeleton.edges.len(), skeleton.nodes.len());
 }
 
@@ -446,7 +447,8 @@ fn every_self_arc_has_a_simple_loop_through_it() {
 #[ignore = "requires TetGen; set TETGEN_EXECUTABLE and run with --include-ignored"]
 fn self_arc_loops_carry_the_arc_class_on_a_torus() {
     let mesh = torus();
-    let contracted = super::super::deflate::run(&mesh, 50).unwrap();
+    let contracted =
+        super::super::deflate::run(&mesh, 50, super::super::deflate::DEFAULT_STEP).unwrap();
     check_self_arc_loops(&contracted, &mesh, 1);
 }
 
@@ -487,7 +489,8 @@ fn certified_torus_surgery<'a>(
 #[ignore = "requires TetGen; set TETGEN_EXECUTABLE and run with --include-ignored"]
 fn certified_steps_with_disks_match_homology_alone() {
     let mesh = torus();
-    let contracted = super::super::deflate::run(&mesh, 50).unwrap();
+    let contracted =
+        super::super::deflate::run(&mesh, 50, super::super::deflate::DEFAULT_STEP).unwrap();
     let mut plain = Surgery::new(&contracted, &mesh, 1, Options::default()).unwrap();
     plain.run().unwrap();
     let mut surgery = certified_torus_surgery(&mesh, &contracted, true);
@@ -506,7 +509,8 @@ fn certified_steps_with_disks_match_homology_alone() {
 #[ignore = "requires TetGen; set TETGEN_EXECUTABLE and run with --include-ignored"]
 fn certified_steps_without_disks_stop_surgery() {
     let mesh = torus();
-    let contracted = super::super::deflate::run(&mesh, 50).unwrap();
+    let contracted =
+        super::super::deflate::run(&mesh, 50, super::super::deflate::DEFAULT_STEP).unwrap();
     let mut surgery = certified_torus_surgery(&mesh, &contracted, false);
     let error = surgery.run().unwrap_err();
     assert!(error.reason.contains("stuck"), "{}", error.reason);
@@ -519,7 +523,8 @@ fn certified_steps_without_disks_stop_surgery() {
 #[ignore = "requires TetGen and DiskScissors"]
 fn diskscissors_certifies_each_torus_step() {
     let mesh = torus();
-    let contracted = super::super::deflate::run(&mesh, 50).unwrap();
+    let contracted =
+        super::super::deflate::run(&mesh, 50, super::super::deflate::DEFAULT_STEP).unwrap();
     let options = Options {
         certify_each_step: true,
         ..Options::default()

@@ -51,7 +51,6 @@ pub enum Command {
         report: Option<PathBuf>,
         certify_each_step: bool,
     },
-    Optimize(crate::optimize::Options),
 }
 
 impl Args {
@@ -275,79 +274,6 @@ impl Args {
                     certify_each_step,
                 }
             }
-            "optimize" => {
-                use crate::optimize::{Mode, Options, parse_measure};
-                use dualcube::skeleton::optimize::{InitialPass, Operator};
-                let mut options = Options::default();
-                parse_kv_flags(it.collect(), |flag, value| {
-                    let value = require_value(flag, value)?;
-                    let params = &mut options.params;
-                    match flag {
-                        "--input" | "-i" => options.inputs.push(PathBuf::from(value)),
-                        "--report" => options.report = Some(PathBuf::from(value)),
-                        "--cache" => options.cache = PathBuf::from(value),
-                        "--mode" => {
-                            options.mode = match value {
-                                "run" => Mode::Run,
-                                "sample" => Mode::Sample,
-                                other => anyhow::bail!("unknown mode `{other}` (run or sample)"),
-                            }
-                        }
-                        "--samples" | "-s" => options.samples = value.parse()?,
-                        "--steps" => options.steps = value.parse()?,
-                        "--objective" => {
-                            options.primal = match value {
-                                "primal" => true,
-                                "restricted" => false,
-                                other => anyhow::bail!(
-                                    "unknown objective `{other}` (primal or restricted)"
-                                ),
-                            }
-                        }
-                        "--parallel" => params.parallel = value.parse()?,
-                        "--node-cost" => params.node_cost = value.parse()?,
-                        "--measure" => {
-                            params.measure = parse_measure(value)?;
-                            params.redraw.measure = params.measure;
-                        }
-                        "--smoothness" => params.redraw.smoothness = value.parse()?,
-                        "--iterations" => params.iterations = value.parse()?,
-                        "--patience" => params.patience = value.parse()?,
-                        "--seconds" => params.seconds = value.parse()?,
-                        "--seed" => params.seed = value.parse()?,
-                        "--initial" => {
-                            params.initial = match value {
-                                "none" => InitialPass::None,
-                                "redraw" => InitialPass::Redraw,
-                                "relax" => InitialPass::Relax,
-                                other => anyhow::bail!(
-                                    "unknown initial pass `{other}` (none, redraw or relax)"
-                                ),
-                            }
-                        }
-                        "--relax-smoothness" => params.relax.smoothness = value.parse()?,
-                        "--thinness" => params.relax.thinness = value.parse()?,
-                        "--relax-rounds" => params.relax.rounds = value.parse()?,
-                        "--operators" => {
-                            params.operators = value
-                                .split(',')
-                                .map(|name| {
-                                    Operator::ALL
-                                        .into_iter()
-                                        .find(|o| format!("{o:?}").eq_ignore_ascii_case(name))
-                                        .ok_or_else(|| anyhow::anyhow!("unknown operator `{name}`"))
-                                })
-                                .collect::<anyhow::Result<_>>()?;
-                        }
-                        other => anyhow::bail!("unknown flag for optimize: {other}"),
-                    }
-                    Ok(())
-                })?;
-                if options.inputs.is_empty() {
-                    anyhow::bail!("missing required --input");
-                }
-                Command::Optimize(options)
-            }
             other => anyhow::bail!("unknown command: {other}"),
         };
 
@@ -400,8 +326,6 @@ where
                 | "-i"
                 | "--output"
                 | "-o"
-                | "--samples"
-                | "-s"
                 | "--method"
                 | "--iterations"
                 | "--pool1"
@@ -413,21 +337,6 @@ where
                 | "--csv"
                 | "--stop-after"
                 | "--report"
-                | "--cache"
-                | "--mode"
-                | "--steps"
-                | "--node-cost"
-                | "--measure"
-                | "--smoothness"
-                | "--seconds"
-                | "--seed"
-                | "--initial"
-                | "--relax-smoothness"
-                | "--thinness"
-                | "--relax-rounds"
-                | "--operators"
-                | "--objective"
-                | "--parallel"
         );
 
         let value = if takes_value {

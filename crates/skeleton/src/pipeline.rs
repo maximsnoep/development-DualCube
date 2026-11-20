@@ -2,7 +2,7 @@
 
 use crate::{
     DualLoops, LabeledSkeleton, RealizedSkeleton, Skeleton, certify, draw_loops, label, optimize,
-    place_cubes, skeletonize,
+    place_cubes,
 };
 use dualcube_types::prelude::{INPUT, Mesh};
 
@@ -167,56 +167,4 @@ impl Progress {
         }
         Ok(())
     }
-}
-
-/// Intermediate states and final loops from a completed initialization run.
-#[derive(Clone, Debug)]
-pub struct SkeletonRun {
-    pub skeleton: Skeleton,
-    pub labeled: LabeledSkeleton,
-    pub realized: RealizedSkeleton,
-    pub optimized: RealizedSkeleton,
-    pub loops: DualLoops,
-    /// The dual structure of the loops, read from the drawing's loop map.
-    pub dual: Option<dualcube_dual::Dual>,
-}
-
-/// The original stage error plus all results obtained before it.
-#[derive(Debug)]
-pub struct RunError {
-    pub progress: Progress,
-    pub failure: Failure,
-}
-impl std::fmt::Display for RunError {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        self.failure.fmt(f)
-    }
-}
-impl std::error::Error for RunError {
-    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
-        Some(&self.failure)
-    }
-}
-
-/// Run every stage. The error owns the completed and partial results for inspection.
-pub fn run(mesh: &Mesh<INPUT>) -> Result<SkeletonRun, RunError> {
-    let skeleton = skeletonize::run(mesh).map_err(|error| RunError {
-        progress: Progress::default(),
-        failure: Failure {
-            stage: Stage::Extraction,
-            error,
-        },
-    })?;
-    let mut progress = Progress::from_skeleton(skeleton);
-    if let Err(failure) = progress.finish(mesh) {
-        return Err(RunError { progress, failure });
-    }
-    Ok(SkeletonRun {
-        skeleton: progress.skeleton.unwrap(),
-        labeled: progress.labeled.unwrap(),
-        realized: progress.realized.unwrap(),
-        optimized: progress.optimized.unwrap(),
-        loops: progress.loops.unwrap(),
-        dual: progress.drawing.and_then(|a| a.dual),
-    })
 }

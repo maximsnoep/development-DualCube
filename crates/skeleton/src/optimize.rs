@@ -1,54 +1,17 @@
-//! Improve a placed skeleton by valid moves against restricted-label fidelity, then recompute
-//! target placement.
+//! Simplify a placed skeleton by valid moves, then recompute target placement.
+//!
+//! The search over moves (ALNS against the primalized quality) lives on the branch
+//! `skeleton-experiments`.
 
-mod cut;
-pub mod fidelity;
-pub(crate) mod moves;
-pub(crate) mod redraw;
-pub mod reduce;
-pub(crate) mod relax;
-pub mod search;
-
-pub use fidelity::{Fidelity, Measure, Tables};
-pub use redraw::RedrawParams;
-pub use reduce::{LabelMeasure, ReduceParams};
-pub use relax::RelaxParams;
-pub use search::{InitialPass, Objective, Operator, Params, Stats};
-
-use crate::{LabeledSkeleton, RealizedSkeleton, SkeletonResult, place_cubes};
+use crate::{
+    LabeledSkeleton, RealizedSkeleton, SkeletonEdgeID, SkeletonNodeID, SkeletonResult, place_cubes,
+};
 use dualcube_types::prelude::*;
 
-/// Dissolve straight degree-two patches only. Searching on restricted-label fidelity alone
-/// lowers the reconstructed quality; the search needs an objective such as the primalized
-/// quality (`run_with`).
+/// Dissolve straight degree-two patches only.
 pub fn run(mesh: &Mesh<INPUT>, placed: &RealizedSkeleton) -> SkeletonResult<RealizedSkeleton> {
     placed.validate(mesh)?;
     place_cubes::run(mesh, &dissolve_straight(mesh, &placed.labeled)?)
-}
-
-/// Dissolve straight degree-two patches, then search; the result is placed again.
-pub fn run_with(
-    mesh: &Mesh<INPUT>,
-    placed: &RealizedSkeleton,
-    params: &Params,
-    objective: Option<Objective<'_>>,
-) -> SkeletonResult<(RealizedSkeleton, Stats)> {
-    placed.validate(mesh)?;
-    let start = dissolve_straight(mesh, &placed.labeled)?;
-    let (labeled, stats) = search::search(mesh, &start, params, objective)?;
-    labeled.validate(mesh)?;
-    let result = place_cubes::run(mesh, &labeled)?;
-    tracing::info!(
-        "Optimization: {} → {} patches, alignment {:.4} → {:.4} (naive {:.4}), {} steps, {:.1}s",
-        stats.nodes[0],
-        stats.nodes[1],
-        stats.initial.alignment,
-        stats.result.alignment,
-        stats.naive.alignment,
-        stats.steps,
-        stats.seconds
-    );
-    Ok((result, stats))
 }
 
 /// Absorb straight annular patches into a neighbour, deleting their shared boundary.
@@ -72,10 +35,50 @@ pub fn dissolve_straight(
             break;
         };
         // TODO: Choose which boundary to retain using surface/label costs.
-        moves::dissolve(mesh, &mut labeled, edge, keep)?;
+        dissolve(mesh, &mut labeled, edge, keep)?;
     }
     labeled.validate_labels()?;
     Ok(labeled)
+}
+
+/// Delete a boundary and merge its other patch into `keep` (merge lemma). Fails when the
+/// graph would get parallel edges; labels may need repair afterwards.
+fn dissolve(
+    mesh: &Mesh<INPUT>,
+    labeled: &mut LabeledSkeleton,
+    edge: SkeletonEdgeID,
+    keep: SkeletonNodeID,
+) -> SkeletonResult<()> {
+    let skeleton = &mut labeled.skeleton;
+    let removed = skeleton.edges.remove(edge).ok_or("Missing edge")?;
+    let other = removed
+        .nodes
+        .into_iter()
+        .find(|&n| n != keep)
+        .ok_or("Edge does not join `keep` to another node")?;
+    let mut neighbors = HashSet::new();
+    for data in skeleton.edges.values_mut() {
+        for n in &mut data.nodes {
+            if *n == other {
+                *n = keep;
+            }
+        }
+        if data.nodes[0] == data.nodes[1] {
+            return Err("Merging would create a self-loop".into());
+        }
+        if data.nodes.contains(&keep) {
+            let neighbor = data.other(keep);
+            if !neighbors.insert(neighbor) {
+                return Err("Merging would create parallel edges".into());
+            }
+        }
+    }
+    for crossing in removed.boundary.crossings {
+        skeleton.surface.remove(mesh, crossing);
+    }
+    skeleton.nodes.remove(other);
+    labeled.labels.remove(edge);
+    Ok(())
 }
 
 #[cfg(test)]

@@ -130,29 +130,6 @@ impl PartialTopology {
         }
     }
 
-    /// Reverse one loop's traversal without changing its geometry or rebuilding the arrangement.
-    pub fn reverse_loop(&mut self, id: LoopID) {
-        let along = self
-            .along
-            .get_mut(&id)
-            .expect("loop belongs to this topology");
-        if along.is_empty() {
-            self.sides.get_mut(&(id, 0)).unwrap().swap(0, 1);
-            return;
-        }
-        let count = along.len();
-        let sides: Vec<_> = (0..count).map(|i| self.sides[&(id, i)]).collect();
-        for &crossing in along.iter() {
-            self.positive[crossing] = !self.positive[crossing];
-        }
-        along.reverse();
-        for i in 0..count {
-            // After a reversed crossing is the interval before its original occurrence.
-            let [left, right] = sides[(2 * count - 2 - i) % count];
-            self.sides.insert((id, i), [right, left]);
-        }
-    }
-
     /// Exact correspondence preserving loop IDs, orientation, boundary cycles, and region genus.
     /// Cyclic starting points along loops and unmarked crossing IDs may differ.
     pub fn equivalent(&self, other: &Self) -> bool {
@@ -180,35 +157,6 @@ impl PartialTopology {
             }
         }
         self.match_crossings(other, vec![None; self.crossings.len()], regions)
-    }
-
-    /// Region at every mesh-edge gap, for constraining incremental routing.
-    pub fn gap_regions(
-        mesh: &Mesh<INPUT>,
-        loops: &SlotMap<LoopID, Loop>,
-    ) -> Result<HashMap<crate::GapNode, usize>, PropertyViolationError> {
-        let arrangement = Arrangement::new(mesh, loops)?;
-        let (components, _, _) = arrangement.components(mesh)?;
-        let mut offsets = HashMap::<EdgeID, Vec<f64>>::new();
-        for l in loops.values() {
-            for (&edge, &offset) in l.edges.iter().zip(&l.offsets) {
-                offsets.entry(edge).or_default().push(offset);
-            }
-        }
-        let mut result = HashMap::new();
-        for edge in mesh.edge_ids() {
-            let mut bounds = offsets.remove(&edge).unwrap_or_default();
-            bounds.sort_by(f64::total_cmp);
-            bounds.insert(0, 0.);
-            bounds.push(1.);
-            for (gap, pair) in bounds.windows(2).enumerate() {
-                let cell = arrangement
-                    .locate_on_edge(mesh, edge, (pair[0] + pair[1]) / 2.)
-                    .ok_or(PropertyViolationError::UnknownError)?;
-                result.insert((edge, gap), components[cell]);
-            }
-        }
-        Ok(result)
     }
 
     fn match_sides(
@@ -314,6 +262,3 @@ impl PartialTopology {
         false
     }
 }
-
-#[cfg(test)]
-mod tests;
