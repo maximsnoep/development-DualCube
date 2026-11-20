@@ -57,7 +57,8 @@ pub struct Attempt {
 
 pub fn attempt(mesh: &Mesh<INPUT>, realized: &RealizedSkeleton) -> SkeletonResult<Attempt> {
     let timer = std::time::Instant::now();
-    realized.validate(mesh)?;
+    realized.validate_geometry()?;
+    realized.labeled.skeleton.debug_validate(mesh);
     let template = template::Template::build(&realized.labeled)?;
     let target = &template.target;
     let mut drawn: HashSet<_> = template.boundaries.values().copied().collect();

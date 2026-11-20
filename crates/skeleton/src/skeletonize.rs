@@ -57,14 +57,14 @@ pub fn extract_from_contracted(
     contracted_mesh: Mesh<deflate::CONTRACTION>,
     options: Options,
 ) -> SkeletonResult<Extraction> {
-    options.surgery.validate()?;
-    let genus = crate::validate::input_genus(mesh)?;
+    // Surgery checks the input and its result, whose cycle rank is the genus.
     let raw = surgery::run(&contracted_mesh, mesh, options.surgery)?;
+    let genus = raw.edges.len() + 1 - raw.nodes.len();
     let mut skeleton = raw.clone();
     if options.refine_embedding {
         refinement::run(mesh, &mut skeleton)?;
+        skeleton.validate(mesh)?;
     }
-    skeleton.validate(mesh)?;
     Ok(Extraction {
         contracted_mesh,
         raw,

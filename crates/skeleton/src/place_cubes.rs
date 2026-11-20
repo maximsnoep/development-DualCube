@@ -34,10 +34,10 @@ pub fn coordinates(
         .collect())
 }
 
-/// Connect unit node cubes with one cuboid per edge, preserving identities at overlaps.
-/// Rebuilds all placement data, so this can be called again after relabeling.
+/// Place the nodes of a labeled skeleton whose surface is valid (as labeling leaves it); the
+/// labels are checked. Can be called again after relabeling.
 pub fn run(mesh: &Mesh<INPUT>, labeled: &LabeledSkeleton) -> SkeletonResult<RealizedSkeleton> {
-    labeled.skeleton.validate(mesh)?;
+    labeled.skeleton.debug_validate(mesh);
     realize(labeled)
 }
 

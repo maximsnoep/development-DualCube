@@ -146,7 +146,6 @@ impl PatchBoundary {
 
 impl Regions {
     pub fn build(mesh: &Mesh<INPUT>, skeleton: &Skeleton) -> SkeletonResult<Self> {
-        crate::validate::input_genus(mesh)?;
         if skeleton.nodes.is_empty()
             || skeleton
                 .nodes

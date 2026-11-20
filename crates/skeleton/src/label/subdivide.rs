@@ -32,7 +32,7 @@ pub(crate) fn collar(
         boundary,
     });
     // TODO: Compare alternative surface routes jointly with path labeling costs.
-    split.validate(mesh)?;
+    split.debug_validate(mesh);
     Ok((split, added))
 }
 
