@@ -28,7 +28,7 @@ mod tetrahedralize;
 
 use super::deflate::CONTRACTION;
 use crate::surface::canonical;
-use crate::{BoundaryCrossing, BoundaryCrossingID, BoundarySurface, Skeleton, SkeletonNodeID};
+use crate::{BoundaryCrossing, BoundaryCrossingID, BoundarySurface, Skeleton};
 use dualcube_types::prelude::*;
 use homology::{Bits, Class, Homology};
 
@@ -69,21 +69,10 @@ impl Options {
     }
 }
 
-/// Patches and arcs left when surgery cannot continue.
-#[derive(Clone, Debug)]
-pub struct DiagnosticGraph {
-    pub positions: slotmap::SecondaryMap<SkeletonNodeID, Vector3D>,
-    pub edges: Vec<[SkeletonNodeID; 2]>,
-}
-
-/// Failed surgery, with the available partial state.
+/// Failed surgery.
 #[derive(Debug)]
 pub struct SurgeryFailure {
     pub reason: String,
-    /// Inspection only: not a validated surface partition.
-    pub graph: DiagnosticGraph,
-    /// Triangles holding the remaining junctions.
-    pub remaining_face_positions: Vec<[Vector3D; 3]>,
 }
 
 impl std::fmt::Display for SurgeryFailure {
@@ -96,13 +85,6 @@ impl std::error::Error for SurgeryFailure {}
 
 /// Reduce the deflated mesh to a skeleton whose patches lie on the original surface.
 pub fn run(
-    contracted: &Mesh<CONTRACTION>,
-    original: &Mesh<INPUT>,
-) -> crate::SkeletonResult<Skeleton> {
-    run_with_options(contracted, original, Options::default())
-}
-
-pub fn run_with_options(
     contracted: &Mesh<CONTRACTION>,
     original: &Mesh<INPUT>,
     options: Options,
@@ -149,8 +131,6 @@ pub fn run_with_options(
     if let Err(error) = result {
         return Err(Box::new(SurgeryFailure {
             reason: error.to_string(),
-            graph: surgery.diagnostic().0,
-            remaining_face_positions: Vec::new(),
         }));
     }
     Ok(skeleton)
@@ -373,11 +353,6 @@ impl<'a> Surgery<'a> {
         let (mut merges, mut dissolved, mut flips) = (0, 0, 0);
         let unavailable = |reason: String| SurgeryFailure {
             reason: format!("Connectivity surgery cannot certify a step: {reason}"),
-            graph: DiagnosticGraph {
-                positions: slotmap::SecondaryMap::new(),
-                edges: Vec::new(),
-            },
-            remaining_face_positions: Vec::new(),
         };
         loop {
             while let Some(arc) = self.pending.pop() {
@@ -406,11 +381,8 @@ impl<'a> Surgery<'a> {
                         self.flip(last);
                         // Searching again could undo these flips forever.
                         if !self.dissolvable(last, walk).map_err(&unavailable)? {
-                            let (graph, remaining) = self.diagnostic();
                             return Err(SurgeryFailure {
                                 reason: "Connectivity surgery stuck: flips freed a null-homologous loop without a disk".into(),
-                                graph,
-                                remaining_face_positions: remaining,
                             });
                         }
                         self.pending.push(last);
@@ -418,7 +390,6 @@ impl<'a> Surgery<'a> {
                     }
                     Err(stuck) => stuck,
                 };
-                let (graph, remaining) = self.diagnostic();
                 warn!(
                     "Connectivity surgery stuck: {stuck}; {} junctions remain ({} arcs, {} patches, after {merges} merges)",
                     self.junctions.len(),
@@ -429,8 +400,6 @@ impl<'a> Surgery<'a> {
                     reason: format!(
                         "Connectivity surgery stopped with remaining junctions: {stuck}"
                     ),
-                    graph,
-                    remaining_face_positions: remaining,
                 });
             };
             let Some(arc) = self.arcs.get(candidate.arc) else {
@@ -819,37 +788,6 @@ impl<'a> Surgery<'a> {
 
     fn input_position(&self, patch: usize) -> Vector3D {
         self.patch(patch).position / self.scale + self.center
-    }
-
-    /// Remaining patches and arcs, and the junction triangles.
-    fn diagnostic(&self) -> (DiagnosticGraph, Vec<[Vector3D; 3]>) {
-        let mut ids = SlotMap::<SkeletonNodeID, ()>::with_key();
-        let mut nodes = HashMap::new();
-        let mut positions = slotmap::SecondaryMap::new();
-        for (patch, p) in self.patches.iter().enumerate() {
-            if p.is_some() {
-                let id = ids.insert(());
-                nodes.insert(patch, id);
-                positions.insert(id, self.input_position(patch));
-            }
-        }
-        let edges = self
-            .arcs
-            .values()
-            .map(|a| a.sides.map(|p| nodes[&p]))
-            .collect();
-        let triangles = self
-            .junctions
-            .values()
-            .map(|j| {
-                let mut corners = self
-                    .mesh
-                    .edges(j.face)
-                    .map(|e| self.mesh.position(self.mesh.root(e)));
-                [(); 3].map(|()| corners.next().unwrap())
-            })
-            .collect();
-        (DiagnosticGraph { positions, edges }, triangles)
     }
 }
 

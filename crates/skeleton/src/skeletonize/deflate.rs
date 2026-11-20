@@ -135,19 +135,11 @@ impl ContractionState {
 /// # Parameters
 /// - `mesh`: The input mesh to be contracted.
 /// - `max_iterations`: Maximum number of contraction iterations to perform, in case convergence is not reached.
+/// - `step`: growth factor of the contraction weight per iteration (see [`DEFAULT_STEP`]).
 ///
 /// # Returns
 /// - The last finite contracted mesh; numerical stalls stop contraction.
 pub fn run<M: Tag>(
-    mesh: &Mesh<M>,
-    max_iterations: usize,
-) -> crate::SkeletonResult<Mesh<CONTRACTION>> {
-    contract(mesh, max_iterations, DEFAULT_STEP, None)
-}
-
-/// [`run`] with the growth factor of the contraction weight per iteration (see
-/// [`DEFAULT_STEP`]).
-pub fn run_with_step<M: Tag>(
     mesh: &Mesh<M>,
     max_iterations: usize,
     step: f64,
@@ -155,7 +147,7 @@ pub fn run_with_step<M: Tag>(
     contract(mesh, max_iterations, step, None)
 }
 
-/// [`run_with_step`], also returning the positions (in `vert_ids` order) before the first
+/// [`run`], also returning the positions (in `vert_ids` order) before the first
 /// iteration and after every iteration, for inspecting how contraction proceeds.
 pub fn run_with_stages<M: Tag>(
     mesh: &Mesh<M>,

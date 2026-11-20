@@ -10,16 +10,12 @@ use dualcube_dual::{
     Loop, LoopID, LoopSampler, LoopState,
     insertion::{DrawError, Plan},
     loop_map::LoopMap,
-    partial::PartialTopology,
 };
 use dualcube_types::prelude::*;
 
-mod chords;
 mod lift;
 mod route;
 mod template;
-
-pub use chords::chords;
 
 /// Each of these reports a bug: valid input always has a drawing.
 #[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
@@ -57,14 +53,6 @@ pub struct Attempt {
     pub dual: Option<dualcube_dual::Dual>,
     pub planned: usize,
     pub failure: Option<Failure>,
-}
-
-pub fn run(mesh: &Mesh<INPUT>, skeleton: &RealizedSkeleton) -> SkeletonResult<DualLoops> {
-    let attempt = attempt(mesh, skeleton)?;
-    match attempt.failure {
-        Some(error) => Err(error.into()),
-        None => Ok(attempt.loops),
-    }
 }
 
 pub fn attempt(mesh: &Mesh<INPUT>, realized: &RealizedSkeleton) -> SkeletonResult<Attempt> {
@@ -153,12 +141,6 @@ pub fn attempt(mesh: &Mesh<INPUT>, realized: &RealizedSkeleton) -> SkeletonResul
     match dualcube_dual::Dual::from_map(std::sync::Arc::new(mesh.clone()), &map, &result.loops) {
         Ok(dual) => result.dual = Some(dual),
         Err(error) => result.failure = Some(Failure::InvalidDual(error.to_string())),
-    }
-    // Rebuilding the dual from the curves alone (e.g. after loading them) relies on geometry.
-    let reproduced = PartialTopology::new(mesh, &result.loops)
-        .is_ok_and(|t| t.equivalent(&PartialTopology::from_map(&map)));
-    if !reproduced {
-        tracing::warn!("Drawn curves do not reproduce the loop map's topology geometrically");
     }
     tracing::info!(
         "Loop drawing complete: {} loops (elapsed {:.2}s)",

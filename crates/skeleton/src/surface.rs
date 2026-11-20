@@ -7,6 +7,7 @@ use crate::{
 use dualcube_types::prelude::*;
 use std::collections::{HashMap, HashSet};
 
+pub(crate) mod cut;
 pub(crate) mod edit;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
@@ -94,6 +95,22 @@ impl BoundarySurface {
         let (edge, rank) = self.rank(mesh, id);
         let t = (rank + 1) as f64 / (self.edge_order[&edge].len() + 1) as f64;
         mesh.position(mesh.root(edge)) * (1. - t) + mesh.position(mesh.toor(edge)) * t
+    }
+
+    /// [`Self::position`] of every occurrence at once.
+    pub(crate) fn positions(&self, mesh: &Mesh<INPUT>) -> HashMap<BoundaryCrossingID, Vector3D> {
+        let mut positions = HashMap::new();
+        for (&edge, order) in &self.edge_order {
+            let (a, b) = (
+                mesh.position(mesh.root(edge)),
+                mesh.position(mesh.toor(edge)),
+            );
+            for (rank, &id) in order.iter().enumerate() {
+                let t = (rank + 1) as f64 / (order.len() + 1) as f64;
+                positions.insert(id, a * (1. - t) + b * t);
+            }
+        }
+        positions
     }
 
     /// Midpoint of the edge an occurrence crosses.

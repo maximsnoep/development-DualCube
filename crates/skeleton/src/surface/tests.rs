@@ -342,8 +342,62 @@ fn every_boundary_pair_can_be_connected_across_mixed_orientations() {
             }
         }
     }
-    crate::label::run(&mesh, &skeleton)
+    crate::label::attempt(&mesh, &skeleton)
         .unwrap()
+        .labeled()
         .validate(&mesh)
         .unwrap();
+}
+
+#[test]
+fn minimum_cut_separates_at_the_cheapest_arc() {
+    let mut network = cut::Network::new(4);
+    network.add(0, 1, 5., 0.);
+    network.add(1, 2, 1., 1.);
+    network.add(2, 3, 5., 0.);
+    assert_eq!(network.source_side(0, 3), vec![true, true, false, false]);
+}
+
+#[test]
+fn tracing_the_current_ownership_reproduces_a_valid_loop() {
+    let positions: Vec<_> = (0..4)
+        .map(|i| {
+            let angle = std::f64::consts::TAU * (2. * i as f64 + 0.5) / 8.;
+            [3. * angle.cos(), 3. * angle.sin(), 0.]
+        })
+        .collect();
+    let (mesh, skeleton) = bands(&positions);
+    let edge = skeleton.edges.keys().next().unwrap();
+    let [a, b] = skeleton.edges[edge].nodes;
+    let regions = Regions::build(&mesh, &skeleton).unwrap();
+    let mut owner = HashMap::new();
+    for (cell, &node) in regions.cells.iter().zip(&regions.owners) {
+        for v in &cell.vertices {
+            if let Vertex::Input(v) = *v {
+                owner.insert(v, node == a);
+            }
+        }
+    }
+    let mut merged = skeleton.clone();
+    let old = merged.edges.remove(edge).unwrap();
+    cut::erase(&mesh, &mut merged, &old.boundary.crossings);
+    let mut pinned = HashMap::new();
+    for data in merged.edges.values_mut() {
+        for &c in &data.boundary.crossings {
+            pinned.insert(c, data.nodes.contains(&a));
+        }
+        for n in &mut data.nodes {
+            if *n == b {
+                *n = a;
+            }
+        }
+    }
+    merged.nodes.remove(b);
+    let union = Regions::build(&mesh, &merged).unwrap();
+    let side = |v: Vertex| match v {
+        Vertex::Input(v) => owner[&v],
+        Vertex::Crossing(c) => pinned[&c],
+    };
+    let path = cut::trace(&mesh, &union, a, &side).unwrap();
+    assert_eq!(path.len(), old.boundary.crossings.len());
 }

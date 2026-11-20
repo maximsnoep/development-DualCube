@@ -98,7 +98,7 @@ fn parallel_collars_and_junction_bands_have_consistent_geometry() {
         .0;
     check(&mesh, &skeleton);
     // A full labeling also exercises repeated splits and all accepted surface edits.
-    let labeled = crate::label::run(&mesh, &skeleton).unwrap();
+    let labeled = crate::label::attempt(&mesh, &skeleton).unwrap().labeled();
     check(&mesh, &labeled.skeleton);
 }
 
@@ -110,7 +110,7 @@ fn repaired_cycles_and_refinement_preserve_input_and_boundaries() {
     ] {
         let (mesh, skeleton) = bands(&positions);
         let before: Vec<_> = mesh.vert_ids().iter().map(|&v| mesh.position(v)).collect();
-        let mut labeled = crate::label::run(&mesh, &skeleton).unwrap();
+        let mut labeled = crate::label::attempt(&mesh, &skeleton).unwrap().labeled();
         let geometry = check(&mesh, &labeled.skeleton);
         let expected = geometry.centroids().unwrap();
         let boundaries: Vec<_> = labeled

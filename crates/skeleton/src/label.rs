@@ -2,7 +2,6 @@
 
 pub(crate) mod constraints;
 pub(crate) mod exact;
-pub mod flow;
 mod junction;
 pub mod path;
 pub(crate) mod subdivide;
@@ -116,11 +115,6 @@ impl Attempt {
             labels: self.labels.clone(),
         }
     }
-}
-
-/// Label without placing cubes. Use `attempt` to retain the intermediate results.
-pub fn run(mesh: &Mesh<INPUT>, skeleton: &Skeleton) -> SkeletonResult<LabeledSkeleton> {
-    Ok(attempt(mesh, skeleton)?.labeled())
 }
 
 pub fn attempt(mesh: &Mesh<INPUT>, skeleton: &Skeleton) -> SkeletonResult<Attempt> {

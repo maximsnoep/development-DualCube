@@ -142,7 +142,9 @@ fn cube_view_distinguishes_stretched_edges_and_keeps_finite_geometry() {
         .join("../../crates/mehsh/assets/tetrahedron.obj");
     let solution = io::import_solution(&path).unwrap();
     let raw = dualcube::skeleton::skeletonize::run(&solution.mesh_ref).unwrap();
-    let labeled = dualcube::skeleton::label::run(&solution.mesh_ref, &raw).unwrap();
+    let labeled = dualcube::skeleton::label::attempt(&solution.mesh_ref, &raw)
+        .unwrap()
+        .labeled();
     let mut realized = dualcube::skeleton::place_cubes::run(&solution.mesh_ref, &labeled).unwrap();
     for (_, position) in &mut realized.node_positions {
         *position *= 3.;

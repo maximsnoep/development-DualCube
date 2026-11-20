@@ -1,11 +1,12 @@
 use super::*;
+use dualcube_dual::partial::PartialTopology;
 
 mod surface;
 
 #[test]
 fn isolated_cube_template_has_three_loops_and_eight_regions() {
     let (mesh, skeleton) = crate::surface::tests::lenses(0);
-    let labeled = crate::label::run(&mesh, &skeleton).unwrap();
+    let labeled = crate::label::attempt(&mesh, &skeleton).unwrap().labeled();
     let realized = crate::place_cubes::run(&mesh, &labeled).unwrap();
     let template = surface::Surface::build(&realized).unwrap();
     assert_eq!(template.loops.len(), 3);
@@ -19,7 +20,7 @@ fn draws_returning_boundary_arcs_without_refining_the_input() {
     let (mesh, skeleton) = crate::surface::tests::lenses(1);
     let vertices = mesh.nr_verts();
     let faces = mesh.nr_faces();
-    let labeled = crate::label::run(&mesh, &skeleton).unwrap();
+    let labeled = crate::label::attempt(&mesh, &skeleton).unwrap().labeled();
     let realized = crate::place_cubes::run(&mesh, &labeled).unwrap();
     let result = attempt(&mesh, &realized).unwrap();
     assert!(result.failure.is_none(), "{:?}", result.failure);
@@ -29,20 +30,9 @@ fn draws_returning_boundary_arcs_without_refining_the_input() {
 }
 
 #[test]
-fn chords_refuse_curves_that_revisit_triangles() {
-    // Lens triangles are coarse: the drawn loops revisit them, which chords cannot express.
-    let (mesh, skeleton) = crate::surface::tests::lenses(1);
-    let labeled = crate::label::run(&mesh, &skeleton).unwrap();
-    let realized = crate::place_cubes::run(&mesh, &labeled).unwrap();
-    let result = attempt(&mesh, &realized).unwrap();
-    assert!(result.failure.is_none(), "{:?}", result.failure);
-    assert!(chords(&mesh, &result.loops).is_none());
-}
-
-#[test]
 fn draws_single_node_on_a_cube_surface() {
     let (input, skeleton) = crate::surface::tests::lenses(0);
-    let labeled = crate::label::run(&input, &skeleton).unwrap();
+    let labeled = crate::label::attempt(&input, &skeleton).unwrap().labeled();
     let realized = crate::place_cubes::run(&input, &labeled).unwrap();
     let template = surface::Surface::build(&realized).unwrap();
     let result = attempt(&template.mesh, &realized).unwrap();
@@ -55,7 +45,7 @@ fn draws_single_node_on_a_cube_surface() {
 fn draws_extracted_tetrahedron() {
     let mesh = crate::surface::tests::tetrahedron();
     let skeleton = crate::skeletonize::run(&mesh).unwrap();
-    let labeled = crate::label::run(&mesh, &skeleton).unwrap();
+    let labeled = crate::label::attempt(&mesh, &skeleton).unwrap().labeled();
     let realized = crate::place_cubes::run(&mesh, &labeled).unwrap();
     let result = attempt(&mesh, &realized).unwrap();
     assert!(result.failure.is_none(), "{:?}", result.failure);
@@ -218,7 +208,7 @@ fn partial_topology_distinguishes_genus_before_any_crossings() {
 fn repaired_cycle_produces_a_valid_template() {
     let (mesh, skeleton) =
         crate::surface::tests::bands(&[[0., 0., 0.], [1., 0., 0.], [0., 1., 0.]]);
-    let labeled = crate::label::run(&mesh, &skeleton).unwrap();
+    let labeled = crate::label::attempt(&mesh, &skeleton).unwrap().labeled();
     let realized = crate::place_cubes::run(&mesh, &labeled).unwrap();
     let template = surface::Surface::build(&realized).unwrap();
     let source = PartialTopology::new(&mesh, &DualLoops::with_key()).unwrap();
@@ -397,7 +387,7 @@ fn summary(topology: &PartialTopology, loops: &DualLoops) -> (Vec<(usize, usize)
 #[test]
 fn the_template_of_a_cube_has_three_loops_and_eight_regions() {
     let (mesh, skeleton) = crate::surface::tests::lenses(0);
-    let labeled = crate::label::run(&mesh, &skeleton).unwrap();
+    let labeled = crate::label::attempt(&mesh, &skeleton).unwrap().labeled();
     let template = template::Template::build(&labeled).unwrap();
     assert_eq!(template.loops.len(), 3);
     assert!(template.boundaries.is_empty());

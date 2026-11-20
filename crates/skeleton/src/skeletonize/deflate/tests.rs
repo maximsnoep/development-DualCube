@@ -22,7 +22,7 @@ fn run_writes_contracted_positions_to_mesh() {
     let path =
         std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../mehsh/assets/blub001k.obj");
     let mesh = Mesh::<CONTRACTION>::from_obj(&path).unwrap().0;
-    let contracted = run(&mesh, 3).unwrap();
+    let contracted = run(&mesh, 3, DEFAULT_STEP).unwrap();
     let mut state = ContractionState::new(&mesh);
     for _ in 0..3 {
         contract_once(&mut state).unwrap();
@@ -53,11 +53,11 @@ fn contraction_benchmark() {
     let path =
         std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../mehsh/assets/blub001k.obj");
     let mesh = Mesh::<CONTRACTION>::from_obj(&path).unwrap().0;
-    run(&mesh, 50).unwrap();
+    run(&mesh, 50, DEFAULT_STEP).unwrap();
     let mut elapsed = Vec::new();
     for _ in 0..7 {
         let start = std::time::Instant::now();
-        run(&mesh, 50).unwrap();
+        run(&mesh, 50, DEFAULT_STEP).unwrap();
         elapsed.push(start.elapsed());
     }
     elapsed.sort();

@@ -1,5 +1,5 @@
 use dualcube_types::prelude::*;
-use skeleton::pipeline::{self, Progress, Stage};
+use skeleton::pipeline::{Progress, Stage};
 
 fn tetrahedron() -> Mesh<INPUT> {
     Mesh::from(
@@ -18,15 +18,15 @@ fn tetrahedron() -> Mesh<INPUT> {
 #[test]
 fn full_run_retains_placement_and_valid_optimized_loops() {
     let mesh = tetrahedron();
-    let run = pipeline::run(&mesh).unwrap();
-    assert!(!run.skeleton.nodes.is_empty());
-    run.labeled.validate(&mesh).unwrap();
-    run.realized.validate(&mesh).unwrap();
-    run.optimized.validate(&mesh).unwrap();
-    assert!(
-        run.optimized.labeled.skeleton.nodes.len() <= run.realized.labeled.skeleton.nodes.len()
-    );
-    dualcube_dual::Dual::from(std::sync::Arc::new(mesh), &run.loops).unwrap();
+    let mut run = Progress::from_skeleton(skeleton::skeletonize::run(&mesh).unwrap());
+    run.finish(&mesh).unwrap();
+    assert!(!run.skeleton.unwrap().nodes.is_empty());
+    run.labeled.unwrap().validate(&mesh).unwrap();
+    let (realized, optimized) = (run.realized.unwrap(), run.optimized.unwrap());
+    realized.validate(&mesh).unwrap();
+    optimized.validate(&mesh).unwrap();
+    assert!(optimized.labeled.skeleton.nodes.len() <= realized.labeled.skeleton.nodes.len());
+    dualcube_dual::Dual::from(std::sync::Arc::new(mesh), &run.loops.unwrap()).unwrap();
 }
 
 #[test]
@@ -44,15 +44,6 @@ fn explicit_labeling_stop_succeeds_and_continuation_keeps_it() {
     );
     assert!(progress.labeling.is_some());
     progress.labeled.as_ref().unwrap().validate(&mesh).unwrap();
-}
-
-#[test]
-fn extraction_failure_has_no_completed_downstream_stages() {
-    let error = pipeline::run(&Mesh::default()).unwrap_err();
-    assert_eq!(error.failure.stage, Stage::Extraction);
-    assert!(error.progress.skeleton.is_none());
-    assert!(error.progress.labeling.is_none());
-    assert!(error.progress.labeled.is_none());
 }
 
 #[test]
