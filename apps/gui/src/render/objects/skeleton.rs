@@ -3,18 +3,21 @@
 use super::super::store::{RenderAsset, RenderObject, RenderObjectStore};
 use crate::colors;
 use crate::render::Objects;
-use crate::resources::{InputResource, SkeletonResource};
+use crate::render::gizmos::{add_band, axis_index, band_colors, loop_half_width};
+use crate::resources::{Configuration, InputResource, SkeletonResource};
 use bevy::mesh::{Mesh as BevyMesh, VertexAttributeValues};
 use bevy::prelude::*;
 use dualcube::prelude::*;
-use dualcube::skeleton::{LabeledSkeleton, Skeleton, SkeletonEdgeID, SkeletonNodeID};
+use dualcube::skeleton::{DualLoops, LabeledSkeleton, Skeleton, SkeletonEdgeID, SkeletonNodeID};
 use mehsh_bevy::MeshBuilder;
 use std::f64::consts::{PI, TAU};
+use std::sync::Arc;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum SkeletonLayer {
     Skeleton,
     Raw,
+    TreeLabeled,
     Labeled,
     Patches,
     TranslucentPatches,
@@ -24,12 +27,14 @@ pub enum SkeletonLayer {
     Deflated,
     Cubes,
     CubeEdges,
+    LiftedLoops,
 }
 
 impl SkeletonLayer {
-    pub const ALL: [Self; 11] = [
+    pub const ALL: [Self; 13] = [
         Self::Skeleton,
         Self::Raw,
+        Self::TreeLabeled,
         Self::Labeled,
         Self::Patches,
         Self::TranslucentPatches,
@@ -39,12 +44,14 @@ impl SkeletonLayer {
         Self::Deflated,
         Self::Cubes,
         Self::CubeEdges,
+        Self::LiftedLoops,
     ];
 
     pub const fn label(self) -> &'static str {
         match self {
             Self::Skeleton => "skeleton",
             Self::Raw => "raw skeleton",
+            Self::TreeLabeled => "tree labeled skeleton",
             Self::Labeled => "labeled skeleton",
             Self::Patches => "patches",
             Self::TranslucentPatches => "translucent patches",
@@ -54,6 +61,7 @@ impl SkeletonLayer {
             Self::Deflated => "deflated",
             Self::Cubes => "placed cubes",
             Self::CubeEdges => "cube edges",
+            Self::LiftedLoops => "lifted loops",
         }
     }
 
@@ -69,6 +77,7 @@ impl SkeletonLayer {
                 | Self::Boundaries
                 | Self::OptimizedPatches
                 | Self::OptimizedBoundaries
+                | Self::LiftedLoops
         )
     }
 }
@@ -76,15 +85,19 @@ impl SkeletonLayer {
 pub fn sync(
     state: Res<'_, SkeletonResource>,
     input: Res<'_, InputResource>,
+    configuration: Option<Res<'_, Configuration>>,
     mut store: ResMut<'_, RenderObjectStore>,
     mut cached: Local<'_, RenderObject>,
+    mut cached_width: Local<'_, Option<f64>>,
 ) {
-    let changed = state.is_changed() || input.is_changed();
+    let loop_width = configuration.map_or(Configuration::default().loop_width, |c| c.loop_width);
+    let changed = state.is_changed() || input.is_changed() || *cached_width != Some(loop_width);
     if !changed && !store.is_changed() {
         return;
     }
     if changed {
-        *cached = build(&input.mesh, &state);
+        *cached = build(&input.mesh, &state, loop_width);
+        *cached_width = Some(loop_width);
     }
     if let Some(object) = store.objects.get_mut(&Objects::InputMesh) {
         object
@@ -99,7 +112,11 @@ pub fn sync(
     }
 }
 
-fn build(mesh: &mehsh::prelude::Mesh<INPUT>, state: &SkeletonResource) -> RenderObject {
+fn build(
+    mesh: &Arc<mehsh::prelude::Mesh<INPUT>>,
+    state: &SkeletonResource,
+    loop_width: f64,
+) -> RenderObject {
     let mut object = RenderObject::default();
     let Some(contracted) = state.contracted_mesh() else {
         return object;
@@ -159,6 +176,21 @@ fn build(mesh: &mehsh::prelude::Mesh<INPUT>, state: &SkeletonResource) -> Render
         SkeletonLayer::Raw.label(),
         RenderAsset::Mesh(graph(&extraction.raw, None, &colors, scale, translation)),
     );
+    if let Some(attempt) = &state.labeling
+        && let Some(skeleton) = &attempt.tree_skeleton
+    {
+        object.add(
+            SkeletonLayer::TreeLabeled.label(),
+            RenderAsset::Mesh(graph_with_labels(
+                skeleton,
+                |e| attempt.tree_labels.get(e).copied(),
+                |e| !attempt.tree_labels.contains_key(e),
+                |_| colors::LIGHT_GRAY,
+                scale,
+                translation,
+            )),
+        );
+    }
     if let Some(attempt) = &state.labeling {
         object.add(
             SkeletonLayer::Labeled.label(),
@@ -185,6 +217,18 @@ fn build(mesh: &mehsh::prelude::Mesh<INPUT>, state: &SkeletonResource) -> Render
     }
     if let Some(realized) = state.optimized.as_ref().or(state.realized.as_ref()) {
         cubes::add(&mut object, realized, &colors);
+    }
+    if let Some(drawing) = state.drawing.as_ref().filter(|d| !d.lifted.is_empty()) {
+        object.add(
+            SkeletonLayer::LiftedLoops.label(),
+            RenderAsset::Mesh(loop_bands(
+                mesh,
+                &drawing.lifted,
+                loop_width,
+                scale,
+                translation,
+            )),
+        );
     }
     let surfaces = [
         (
@@ -259,6 +303,37 @@ fn add_surface(
         }
     }
     object.gizmo(boundaries, 1.5, -0.001, boundary_layer.label());
+}
+
+/// All loops as bands on the surface, as in the Dual view (see `input_mesh::loop_bands`).
+fn loop_bands(
+    mesh: &Arc<mehsh::prelude::Mesh<INPUT>>,
+    loops: &DualLoops,
+    loop_width: f64,
+    scale: f64,
+    translation: Vector3D,
+) -> BevyMesh {
+    let mut solution = Solution::new(mesh.clone());
+    solution.loops = loops.clone();
+    let half = loop_half_width(mesh, loop_width);
+    let mut builder = MeshBuilder::new();
+    for (id, curve) in &solution.loops {
+        let frames = solution.loop_band(id, half);
+        let segments = frames
+            .iter()
+            .copied()
+            .zip(frames.iter().copied().cycle().skip(1));
+        let lift = (0.5 + 0.1 * axis_index(curve.direction) as f64) * half;
+        add_band(
+            &mut builder,
+            segments,
+            half,
+            lift,
+            band_colors(curve.direction),
+        );
+    }
+    builder.normalize(scale, translation);
+    builder.build()
 }
 
 /// Labeled: edges in axis colors and gray nodes; else gray edges and nodes in their colors.

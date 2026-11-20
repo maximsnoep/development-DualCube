@@ -17,8 +17,8 @@ Run from the repository root:
   --load <path>              Import a mesh or saved solution
   --auto-start skeleton      Run skeleton initialization after loading
   --stop-after <stage>       Run through input, deflation, surgery, refinement, labeling, or placement
-  --view <view>              input, deflated, raw, skeleton, labeled, patches, optimized,
-                             combined, cubes
+  --view <view>              input, deflated, raw, skeleton, tree, labeled, patches,
+                             optimized, combined, cubes, lifted
   --refinement               Enable embedding refinement (default off)
   --no-refinement            Skip embedding refinement
   --iterations <count>      Deflation iteration limit (default 50)
@@ -126,7 +126,9 @@ impl Launch {
                         "deflated" => ModelViewKind::Deflated,
                         "raw" => ModelViewKind::Raw,
                         "skeleton" => ModelViewKind::Skeleton,
+                        "tree" => ModelViewKind::Tree,
                         "labeled" => ModelViewKind::Labeled,
+                        "lifted" => ModelViewKind::Lifted,
                         "patches" => ModelViewKind::Patches,
                         "optimized" => ModelViewKind::Optimized,
                         "combined" => ModelViewKind::Combined,
@@ -187,12 +189,14 @@ impl Launch {
             let available = match view {
                 ModelViewKind::Input => true,
                 ModelViewKind::Deflated => launch.stop.is_some(),
-                ModelViewKind::Optimized => launch.stop == Some(SkeletonStage::Complete),
+                ModelViewKind::Optimized | ModelViewKind::Lifted => {
+                    launch.stop == Some(SkeletonStage::Complete)
+                }
                 ModelViewKind::Cubes => matches!(
                     launch.stop,
                     Some(SkeletonStage::Placement | SkeletonStage::Complete)
                 ),
-                ModelViewKind::Labeled => matches!(
+                ModelViewKind::Tree | ModelViewKind::Labeled => matches!(
                     launch.stop,
                     Some(
                         SkeletonStage::Labeling

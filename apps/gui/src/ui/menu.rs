@@ -48,15 +48,19 @@ pub enum ModelViewKind {
     Patches,
     Optimized,
     Combined,
+    /// The tree labeling, before cycle repairs.
+    Tree,
     Labeled,
     Cubes,
+    /// The labeled patch boundaries, before the template's other loops are drawn.
+    Lifted,
     Dual,
     Primal,
     Quad,
 }
 
 impl ModelViewKind {
-    const ALL: [Self; 12] = [
+    const ALL: [Self; 14] = [
         Self::Input,
         Self::Deflated,
         Self::Raw,
@@ -64,8 +68,10 @@ impl ModelViewKind {
         Self::Patches,
         Self::Optimized,
         Self::Combined,
+        Self::Tree,
         Self::Labeled,
         Self::Cubes,
+        Self::Lifted,
         Self::Dual,
         Self::Primal,
         Self::Quad,
@@ -80,8 +86,10 @@ impl ModelViewKind {
             Self::Patches => "Patches",
             Self::Optimized => "Optimized",
             Self::Combined => "Combined",
+            Self::Tree => "Tree",
             Self::Labeled => "Labeled",
             Self::Cubes => "Cubes",
+            Self::Lifted => "Lifted",
             Self::Dual => "Dual",
             Self::Primal => "Primal",
             Self::Quad => "Quad",
@@ -127,7 +135,9 @@ impl ModelViewKind {
                     ]
                 }
             }
+            Self::Tree => const { &[SkeletonLayer::TreeLabeled.label(), "wireframe"] },
             Self::Labeled => const { &[SkeletonLayer::Labeled.label(), "wireframe"] },
+            Self::Lifted => const { &["black", SkeletonLayer::LiftedLoops.label()] },
             Self::Dual => &[
                 "black",
                 "paths",
@@ -271,6 +281,14 @@ pub fn show(
                     ModelViewKind::Labeled => {
                         skeleton.labeled.is_some() || skeleton.labeling.is_some()
                     }
+                    ModelViewKind::Tree => skeleton
+                        .labeling
+                        .as_ref()
+                        .is_some_and(|a| a.tree_skeleton.is_some()),
+                    ModelViewKind::Lifted => skeleton
+                        .drawing
+                        .as_ref()
+                        .is_some_and(|d| !d.lifted.is_empty()),
                     _ => true,
                 };
                 view_bar(

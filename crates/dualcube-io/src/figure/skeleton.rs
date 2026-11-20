@@ -31,6 +31,7 @@ const LIGHT_PATCHES: f32 = 0.55;
 pub(super) enum Graph {
     Raw,
     Current,
+    Tree,
     Labeled,
 }
 
@@ -99,6 +100,7 @@ pub(super) fn graph(model: &Model<'_>, graph: Graph) -> Option<Vec<Item>> {
     let edges = match graph {
         Graph::Raw => plain_graph(model, &extraction(model)?.raw),
         Graph::Current => plain_graph(model, current(model)?),
+        Graph::Tree => tree_graph(model)?,
         Graph::Labeled => labeled_graph(model)?,
     };
     let mut items = ghost(model);
@@ -304,6 +306,21 @@ fn labeled_graph(model: &Model<'_>) -> Option<Vec<Item>> {
         model,
         &labeled.skeleton,
         |id| edge(labeled.labels.get(id), false),
+        |_| GRAY,
+    ))
+}
+
+// The tree labeling before cycle repairs: the edges it leaves unlabeled gray and thick.
+fn tree_graph(model: &Model<'_>) -> Option<Vec<Item>> {
+    let attempt = model.skeleton.labeling.as_ref()?;
+    let skeleton = attempt.tree_skeleton.as_ref()?;
+    Some(nodes_and_edges(
+        model,
+        skeleton,
+        |id| match attempt.tree_labels.get(id) {
+            Some(label) => (model.style.primal[axis(label.direction)], EDGE_WIDTH),
+            None => (GRAY, NON_TREE_WIDTH),
+        },
         |_| GRAY,
     ))
 }
