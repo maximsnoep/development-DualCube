@@ -16,7 +16,8 @@ fn explicit_skeleton_curves_reconstruct_without_zero_length_edges() {
     .0;
     let mut run =
         skeleton::pipeline::Progress::from_skeleton(skeleton::skeletonize::run(&mesh).unwrap());
-    run.finish(&mesh).unwrap();
+    run.run_through(&mesh, skeleton::pipeline::Stage::LoopDrawing)
+        .unwrap();
     let drawing = run.drawing.unwrap();
     let mut solution = Solution::new(Arc::new(mesh));
     solution.replace_loops(drawing.loops);

@@ -34,7 +34,7 @@ use pipeline::Stage;
 use std::sync::{Arc, Mutex, mpsc};
 
 pub use evolution::EvolutionLive;
-pub use skeleton::{ContractionCache, SkeletonStage};
+pub use skeleton::ContractionCache;
 
 pub struct JobPlugin;
 
@@ -286,12 +286,7 @@ pub(crate) fn poll_jobs(
             jobs.write(refresh);
             skeleton.output = drawn.then(|| output(&solution_resource.current_solution));
             skeleton.state = Some(state);
-            skeleton.labeled = progress.labeled;
-            skeleton.labeling = progress.labeling;
-            skeleton.realized = progress.realized;
-            skeleton.optimized = progress.optimized;
-            skeleton.drawing = progress.drawing;
-            skeleton.loops = progress.loops;
+            skeleton.progress = progress;
             skeleton.initialization_failure = failure;
             model_view.show_when_ready(if complete {
                 crate::ui::ModelViewKind::Dual

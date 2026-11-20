@@ -292,8 +292,8 @@ Commands:
       typed error (or panic), seconds per stage, and stage statistics.
       --input: a mesh, a folder of meshes (.obj/.stl), or a .txt set of mesh paths relative to it
       (e.g. testsets/validation.txt). Repeatable.
-      --stop-after: extraction, certification, labeling, placement, optimization, drawing, or
-      reconstruction (default).
+      --stop-after: deflation, extraction, certification, labeling, placement, optimization,
+      drawing, or reconstruction (default).
       --report: CSV file, rewritten after every mesh.
       --certify-each-step: surgery dissolves a self-arc only when DiskScissors finds a disk for
       its loop, not on homology alone. This certifies every patch, so certification is skipped.

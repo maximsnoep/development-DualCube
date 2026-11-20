@@ -156,13 +156,24 @@ fn build(
         return object;
     };
     let current = state
+        .progress
         .labeling
         .as_ref()
         .map(|attempt| &attempt.skeleton)
-        .or_else(|| state.labeled.as_ref().map(|labeled| &labeled.skeleton))
+        .or_else(|| {
+            state
+                .progress
+                .labeled
+                .as_ref()
+                .map(|labeled| &labeled.skeleton)
+        })
         .unwrap_or(&extraction.skeleton);
     // One color per node for every stage, the optimized skeleton first (shared with the figures).
-    let optimized = state.optimized.as_ref().map(|o| &o.labeled.skeleton);
+    let optimized = state
+        .progress
+        .optimized
+        .as_ref()
+        .map(|o| &o.labeled.skeleton);
     let stages: Vec<_> = [optimized, Some(current), Some(&extraction.raw)]
         .into_iter()
         .flatten()
@@ -176,7 +187,7 @@ fn build(
         SkeletonLayer::Raw.label(),
         RenderAsset::Mesh(graph(&extraction.raw, None, &colors, scale, translation)),
     );
-    if let Some(attempt) = &state.labeling
+    if let Some(attempt) = &state.progress.labeling
         && let Some(skeleton) = &attempt.tree_skeleton
     {
         object.add(
@@ -191,7 +202,7 @@ fn build(
             )),
         );
     }
-    if let Some(attempt) = &state.labeling {
+    if let Some(attempt) = &state.progress.labeling {
         object.add(
             SkeletonLayer::Labeled.label(),
             RenderAsset::Mesh(graph_with_labels(
@@ -203,7 +214,7 @@ fn build(
                 translation,
             )),
         );
-    } else if let Some(labeled) = &state.labeled {
+    } else if let Some(labeled) = &state.progress.labeled {
         object.add(
             SkeletonLayer::Labeled.label(),
             RenderAsset::Mesh(graph(
@@ -215,10 +226,20 @@ fn build(
             )),
         );
     }
-    if let Some(realized) = state.optimized.as_ref().or(state.realized.as_ref()) {
+    if let Some(realized) = state
+        .progress
+        .optimized
+        .as_ref()
+        .or(state.progress.realized.as_ref())
+    {
         cubes::add(&mut object, realized, &colors);
     }
-    if let Some(drawing) = state.drawing.as_ref().filter(|d| !d.lifted.is_empty()) {
+    if let Some(drawing) = state
+        .progress
+        .drawing
+        .as_ref()
+        .filter(|d| !d.lifted.is_empty())
+    {
         object.add(
             SkeletonLayer::LiftedLoops.label(),
             RenderAsset::Mesh(loop_bands(

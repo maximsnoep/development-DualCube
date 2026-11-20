@@ -20,7 +20,9 @@ fn main() {
     };
     let skeleton = skeleton::skeletonize::run(&mesh).unwrap();
     let mut progress = skeleton::pipeline::Progress::from_skeleton(skeleton);
-    progress.optimize(&mesh).unwrap();
+    progress
+        .run_through(&mesh, skeleton::pipeline::Stage::Optimization)
+        .unwrap();
     for run in 0..repetitions {
         let start = Instant::now();
         let attempt =

@@ -1,7 +1,7 @@
 """Per-mesh outcome of a run directory (argument, default: current directory): writes overview.csv, prints counts per folder."""
 import csv, os, re, collections, sys
 R = os.path.abspath(sys.argv[1]) if len(sys.argv) > 1 else os.getcwd()
-STAGES = ["extraction", "certification", "labeling", "placement", "optimization", "drawing", "reconstruction"]
+STAGES = ["deflation", "extraction", "certification", "labeling", "placement", "optimization", "drawing", "reconstruction"]
 MODULE = {"skeletonize": "extraction", "certify": "certification", "label": "labeling",
           "place_cubes": "placement", "optimize": "optimization", "draw_loops": "drawing",
           "reconstruct": "reconstruction"}

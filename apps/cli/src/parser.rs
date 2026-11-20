@@ -47,7 +47,7 @@ pub enum Command {
     },
     Stages {
         inputs: Vec<PathBuf>,
-        last: crate::stages::Stage,
+        last: dualcube::skeleton::pipeline::Stage,
         report: Option<PathBuf>,
         certify_each_step: bool,
     },
@@ -245,7 +245,7 @@ impl Args {
             }
             "stages" => {
                 let mut inputs = Vec::new();
-                let mut last = crate::stages::Stage::Reconstruction;
+                let mut last = dualcube::skeleton::pipeline::Stage::Reconstruction;
                 let mut report = None;
                 let mut certify_each_step = false;
 
@@ -256,7 +256,7 @@ impl Args {
                         }
                         "--certify-each-step" => certify_each_step = true,
                         "--stop-after" => {
-                            last = crate::stages::Stage::parse(require_value(flag, value)?)?;
+                            last = crate::stages::parse_stage(require_value(flag, value)?)?;
                         }
                         "--report" => report = Some(PathBuf::from(require_value(flag, value)?)),
                         other => anyhow::bail!("unknown flag for stages: {other}"),

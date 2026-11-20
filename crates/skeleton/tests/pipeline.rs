@@ -19,7 +19,7 @@ fn tetrahedron() -> Mesh<INPUT> {
 fn full_run_retains_placement_and_valid_optimized_loops() {
     let mesh = tetrahedron();
     let mut run = Progress::from_skeleton(skeleton::skeletonize::run(&mesh).unwrap());
-    run.finish(&mesh).unwrap();
+    run.run_through(&mesh, Stage::LoopDrawing).unwrap();
     assert!(!run.skeleton.unwrap().nodes.is_empty());
     run.labeled.unwrap().validate(&mesh).unwrap();
     let (realized, optimized) = (run.realized.unwrap(), run.optimized.unwrap());
@@ -35,8 +35,8 @@ fn explicit_labeling_stop_succeeds_and_continuation_keeps_it() {
     let skeleton = skeleton::skeletonize::run(&mesh).unwrap();
     let before = skeleton.surface.edge_order.clone();
     let mut progress = Progress::from_skeleton(skeleton);
-    progress.label(&mesh).unwrap();
-    progress.finish(&mesh).unwrap();
+    progress.rerun(&mesh, Stage::Labeling).unwrap();
+    progress.run_through(&mesh, Stage::LoopDrawing).unwrap();
     assert!(progress.loops.is_some());
     assert_eq!(
         progress.skeleton.as_ref().unwrap().surface.edge_order,
@@ -50,7 +50,7 @@ fn explicit_labeling_stop_succeeds_and_continuation_keeps_it() {
 fn replacing_labels_and_placing_again_discards_stale_downstream_state() {
     let mesh = tetrahedron();
     let mut progress = Progress::from_skeleton(skeleton::skeletonize::run(&mesh).unwrap());
-    progress.finish(&mesh).unwrap();
+    progress.run_through(&mesh, Stage::LoopDrawing).unwrap();
     let before = progress.realized.clone().unwrap();
     assert!(progress.drawing.is_some());
     progress.optimized = Some(before.clone());
@@ -62,7 +62,7 @@ fn replacing_labels_and_placing_again_discards_stale_downstream_state() {
             Sign::Positive
         };
     }
-    progress.place(&mesh).unwrap();
+    progress.rerun(&mesh, Stage::CubePlacement).unwrap();
     let after = progress.realized.as_ref().unwrap();
     after.validate(&mesh).unwrap();
     assert!(
@@ -76,7 +76,10 @@ fn replacing_labels_and_placing_again_discards_stale_downstream_state() {
     assert!(progress.drawing.is_none());
     progress.labeled.as_mut().unwrap().labels.clear();
     assert_eq!(
-        progress.place(&mesh).unwrap_err().stage,
+        progress
+            .rerun(&mesh, Stage::CubePlacement)
+            .unwrap_err()
+            .stage,
         Stage::CubePlacement
     );
     assert!(progress.realized.is_none());

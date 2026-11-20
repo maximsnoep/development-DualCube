@@ -276,16 +276,18 @@ pub fn show(
                     | ModelViewKind::Combined
                     | ModelViewKind::Patches => skeleton.extraction().is_some(),
                     ModelViewKind::Deflated => skeleton.contracted_mesh().is_some(),
-                    ModelViewKind::Cubes => skeleton.realized.is_some(),
-                    ModelViewKind::Optimized => skeleton.optimized.is_some(),
+                    ModelViewKind::Cubes => skeleton.progress.realized.is_some(),
+                    ModelViewKind::Optimized => skeleton.progress.optimized.is_some(),
                     ModelViewKind::Labeled => {
-                        skeleton.labeled.is_some() || skeleton.labeling.is_some()
+                        skeleton.progress.labeled.is_some() || skeleton.progress.labeling.is_some()
                     }
                     ModelViewKind::Tree => skeleton
+                        .progress
                         .labeling
                         .as_ref()
                         .is_some_and(|a| a.tree_skeleton.is_some()),
                     ModelViewKind::Lifted => skeleton
+                        .progress
                         .drawing
                         .as_ref()
                         .is_some_and(|d| !d.lifted.is_empty()),

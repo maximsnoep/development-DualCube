@@ -6,7 +6,7 @@ use crate::resources::{SkeletonResource, SkeletonState};
 use crate::ui::ModelViewKind;
 use bevy::prelude::*;
 use dualcube::prelude::*;
-use dualcube::skeleton::pipeline::Progress;
+use dualcube::skeleton::pipeline::{Progress, Stage};
 use dualcube::skeleton::skeletonize::{self, Options};
 use std::sync::Arc;
 
@@ -26,37 +26,21 @@ impl Update {
                     ..Default::default()
                 };
             }
-            Self::Progress(progress) => {
-                resource.labeling = progress.labeling;
-                resource.labeled = progress.labeled;
-                resource.realized = progress.realized;
-                resource.optimized = progress.optimized;
-                resource.drawing = progress.drawing;
-                resource.loops = progress.loops;
-            }
+            Self::Progress(progress) => resource.progress = progress,
         }
     }
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum SkeletonStage {
-    Deflation,
-    Surgery,
-    Refinement,
-    Labeling,
-    Placement,
-    Complete,
-}
-
-impl SkeletonStage {
-    pub fn view(self) -> ModelViewKind {
-        match self {
-            Self::Deflation => ModelViewKind::Deflated,
-            Self::Surgery => ModelViewKind::Raw,
-            Self::Refinement => ModelViewKind::Skeleton,
-            Self::Labeling => ModelViewKind::Labeled,
-            Self::Placement | Self::Complete => ModelViewKind::Cubes,
+/// The view after stopping at `stop`, with `reached` the last stage that has its result.
+fn view(stop: Stage, reached: Stage, refined: bool) -> ModelViewKind {
+    match reached.min(stop) {
+        Stage::Deflation => ModelViewKind::Deflated,
+        Stage::Extraction | Stage::Certification if stop == Stage::Extraction && !refined => {
+            ModelViewKind::Raw
         }
+        Stage::Extraction | Stage::Certification => ModelViewKind::Skeleton,
+        Stage::Labeling => ModelViewKind::Labeled,
+        _ => ModelViewKind::Cubes,
     }
 }
 
@@ -66,14 +50,13 @@ impl Job {
         options: Options,
         cache: ContractionCache,
     ) -> Self {
-        let stop = SkeletonStage::Complete;
-        Self::extract_skeleton_until(mesh, options, stop, cache)
+        Self::extract_skeleton_until(mesh, options, Stage::LoopDrawing, cache)
     }
 
     pub fn extract_skeleton_until(
         mesh: Arc<mehsh::prelude::Mesh<INPUT>>,
         options: Options,
-        stop: SkeletonStage,
+        stop: Stage,
         cache: ContractionCache,
     ) -> Self {
         Self::with_updates("extracting skeleton", move |updates| {
@@ -84,25 +67,12 @@ impl Job {
                 Ok(state) => {
                     let mut progress = Progress::default();
                     let mut failure = None;
-                    if matches!(
-                        stop,
-                        SkeletonStage::Labeling
-                            | SkeletonStage::Placement
-                            | SkeletonStage::Complete
-                    ) && let SkeletonState::Extracted(extraction) = &state
-                    {
+                    if let SkeletonState::Extracted(extraction) = &state {
                         progress = Progress::from_skeleton(extraction.skeleton.clone());
                         failure = (|| {
-                            progress.label(&mesh)?;
-                            publish(Update::Progress(progress.clone()));
-                            if matches!(stop, SkeletonStage::Placement | SkeletonStage::Complete) {
-                                progress.place(&mesh)?;
+                            while progress.next().is_some_and(|s| s <= stop) {
+                                progress.advance(&mesh)?;
                                 publish(Update::Progress(progress.clone()));
-                            }
-                            if stop == SkeletonStage::Complete {
-                                progress.optimize(&mesh)?;
-                                publish(Update::Progress(progress.clone()));
-                                progress.finish(&mesh)?;
                             }
                             Ok::<_, dualcube::skeleton::pipeline::Failure>(())
                         })()
@@ -111,21 +81,12 @@ impl Job {
                     if let Some(error) = &failure {
                         warn!("Initialization stopped at {error}");
                     }
-                    let view = if matches!(
-                        stop,
-                        SkeletonStage::Labeling
-                            | SkeletonStage::Placement
-                            | SkeletonStage::Complete
-                    ) && progress.labeling.is_none()
-                    {
-                        ModelViewKind::Skeleton
-                    } else if matches!(stop, SkeletonStage::Placement | SkeletonStage::Complete)
-                        && progress.realized.is_none()
-                    {
-                        ModelViewKind::Labeled
-                    } else {
-                        stop.view()
-                    };
+                    let reached = Stage::ALL
+                        .into_iter()
+                        .take_while(|&s| progress.done(s))
+                        .last()
+                        .unwrap_or(Stage::Deflation);
+                    let view = view(stop, reached, options.refine_embedding);
                     Some(JobResult::SkeletonReady {
                         state,
                         view,
@@ -147,7 +108,7 @@ impl Job {
 fn extract_until(
     mesh: &Arc<mehsh::prelude::Mesh<INPUT>>,
     options: Options,
-    stop: SkeletonStage,
+    stop: Stage,
     cache: &ContractionCache,
 ) -> dualcube::skeleton::SkeletonResult<SkeletonState> {
     extract_until_with_updates(mesh, options, stop, cache, &|_| {})
@@ -156,7 +117,7 @@ fn extract_until(
 fn extract_until_with_updates(
     mesh: &Arc<mehsh::prelude::Mesh<INPUT>>,
     mut options: Options,
-    stop: SkeletonStage,
+    stop: Stage,
     cache: &ContractionCache,
     publish: &impl Fn(Update),
 ) -> dualcube::skeleton::SkeletonResult<SkeletonState> {
@@ -169,14 +130,10 @@ fn extract_until_with_updates(
     publish(Update::State(SkeletonState::Deflated(
         (*contracted).clone(),
     )));
-    if stop == SkeletonStage::Deflation {
+    if stop == Stage::Deflation {
         return Ok(SkeletonState::Deflated((*contracted).clone()));
     }
-    let refine_embedding = stop == SkeletonStage::Refinement
-        || (matches!(
-            stop,
-            SkeletonStage::Labeling | SkeletonStage::Placement | SkeletonStage::Complete
-        ) && options.refine_embedding);
+    let refine_embedding = options.refine_embedding;
     options.refine_embedding = false;
     let mut extraction =
         skeletonize::extract_from_contracted(mesh, (*contracted).clone(), options)?;

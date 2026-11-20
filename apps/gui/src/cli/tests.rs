@@ -22,7 +22,7 @@ fn startup_defaults_and_options() {
     ])
     .unwrap();
     assert_eq!(launch.path.unwrap(), PathBuf::from("models/a model.obj"));
-    assert_eq!(launch.stop, Some(SkeletonStage::Complete));
+    assert_eq!(launch.stop, Some(Stage::LoopDrawing));
     assert!(!launch.options.refine_embedding);
     assert_eq!(launch.view, Some(ModelViewKind::Combined));
     assert!(!launch.quit);
@@ -38,7 +38,7 @@ fn startup_defaults_and_options() {
         "--contraction-step=2",
     ])
     .unwrap();
-    assert_eq!(launch.stop, Some(SkeletonStage::Complete));
+    assert_eq!(launch.stop, Some(Stage::LoopDrawing));
     assert_eq!(launch.options.max_iterations, 7);
     assert_eq!(launch.options.contraction_step, 2.);
     assert_eq!(launch.options.surgery.shape_weight, 2.);
@@ -50,14 +50,16 @@ fn startup_defaults_and_options() {
 fn stage_controls_and_invalid_combinations() {
     for (name, stage) in [
         ("input", None),
-        ("deflation", Some(SkeletonStage::Deflation)),
-        ("surgery", Some(SkeletonStage::Surgery)),
-        ("refinement", Some(SkeletonStage::Refinement)),
-        ("labeling", Some(SkeletonStage::Labeling)),
-        ("placement", Some(SkeletonStage::Placement)),
+        ("deflation", Some(Stage::Deflation)),
+        ("surgery", Some(Stage::Extraction)),
+        ("refinement", Some(Stage::Extraction)),
+        ("labeling", Some(Stage::Labeling)),
+        ("placement", Some(Stage::CubePlacement)),
+        ("optimization", Some(Stage::Optimization)),
     ] {
         let launch = parse(&["--load=a.obj", "--stop-after", name]).unwrap();
         assert_eq!(launch.stop, stage);
+        assert_eq!(launch.options.refine_embedding, name == "refinement");
         assert!(!launch.quit);
         let launch = parse(&["--load=a.obj", "--quit-after", name]).unwrap();
         assert_eq!(launch.stop, stage);
@@ -133,32 +135,30 @@ fn startup_jobs_load_extract_select_view_and_report_failure() {
     use crate::resources::{SkeletonResource, SolutionResource};
     let path =
         PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../crates/mehsh/assets/tetrahedron.obj");
-    for stage in [
-        SkeletonStage::Deflation,
-        SkeletonStage::Surgery,
-        SkeletonStage::Refinement,
-        SkeletonStage::Labeling,
-        SkeletonStage::Placement,
+    for (stage, refine) in [
+        (Stage::Deflation, false),
+        (Stage::Extraction, false),
+        (Stage::Extraction, true),
+        (Stage::Labeling, false),
+        (Stage::CubePlacement, false),
     ] {
         let (app, exit) = run_startup(Launch {
             path: Some(path.clone()),
             stop: Some(stage),
-            view: (stage != SkeletonStage::Deflation).then_some(ModelViewKind::Combined),
+            view: (stage != Stage::Deflation).then_some(ModelViewKind::Combined),
+            options: Options {
+                refine_embedding: refine,
+                ..default()
+            },
             quit: true,
             ..default()
         });
         assert_eq!(exit, AppExit::Success);
         let state = app.world().resource::<SkeletonResource>();
         assert!(state.contracted_mesh().is_some());
-        assert_eq!(
-            state.labeled.is_some(),
-            matches!(stage, SkeletonStage::Labeling | SkeletonStage::Placement)
-        );
+        assert_eq!(state.progress.labeled.is_some(), stage >= Stage::Labeling);
         assert!(state.initialization_failure.is_none());
-        assert_eq!(
-            state.extraction().is_some(),
-            stage != SkeletonStage::Deflation
-        );
+        assert_eq!(state.extraction().is_some(), stage != Stage::Deflation);
         assert!(
             app.world()
                 .resource::<SolutionResource>()
@@ -168,16 +168,16 @@ fn startup_jobs_load_extract_select_view_and_report_failure() {
         );
         let settings =
             &app.world().resource::<RenderObjectSettingStore>().objects[&Objects::InputMesh];
-        let layer = if stage == SkeletonStage::Deflation {
+        let layer = if stage == Stage::Deflation {
             "deflated"
-        } else if matches!(stage, SkeletonStage::Labeling | SkeletonStage::Placement) {
+        } else if stage >= Stage::Labeling {
             "labeled skeleton"
         } else {
             "skeleton"
         };
         assert!(settings.settings[layer].visible);
         assert!(!settings.settings["lambert"].visible);
-        if stage != SkeletonStage::Deflation {
+        if stage != Stage::Deflation {
             assert!(settings.settings["translucent patches"].visible);
             assert!(!settings.settings["patch boundaries"].visible);
         }
@@ -195,9 +195,9 @@ fn startup_jobs_load_extract_select_view_and_report_failure() {
 fn automatic_initialization_requests_the_full_pipeline_with_optional_refinement() {
     for action in ["--auto-start=skeleton", "--quit-after=skeleton"] {
         let launch = parse(&["--load=a.obj", action]).unwrap();
-        assert_eq!(launch.stop, Some(SkeletonStage::Complete));
+        assert_eq!(launch.stop, Some(Stage::LoopDrawing));
         let launch = parse(&["--load=a.obj", action, "--refinement"]).unwrap();
-        assert_eq!(launch.stop, Some(SkeletonStage::Complete));
+        assert_eq!(launch.stop, Some(Stage::LoopDrawing));
         assert!(launch.options.refine_embedding);
     }
 }
@@ -226,12 +226,15 @@ fn auto_start_reaches_loop_drawing_and_explicit_stops_still_win() {
         let state = app.world().resource::<SkeletonResource>();
         if stop.is_none() {
             assert!(state.initialization_failure.is_none());
-            assert!(state.loops.is_some());
+            assert!(state.progress.loops.is_some());
             let solution = &app
                 .world()
                 .resource::<crate::resources::SolutionResource>()
                 .current_solution;
-            assert_eq!(solution.loops.len(), state.loops.as_ref().unwrap().len());
+            assert_eq!(
+                solution.loops.len(),
+                state.progress.loops.as_ref().unwrap().len()
+            );
             assert!(solution.dual.is_ok());
             // The reconstruction is kept as the skeleton output, up to its last stage.
             let output = state.output.as_ref().expect("the skeleton output is kept");
@@ -243,8 +246,9 @@ fn auto_start_reaches_loop_drawing_and_explicit_stops_still_win() {
             assert_eq!(output.quad.is_some(), solution.quad.is_some());
             assert!(output.fields.is_none());
             assert!(state.extraction().is_some());
-            assert!(state.labeling.is_some());
+            assert!(state.progress.labeling.is_some());
             state
+                .progress
                 .realized
                 .as_ref()
                 .unwrap()
@@ -257,7 +261,7 @@ fn auto_start_reaches_loop_drawing_and_explicit_stops_still_win() {
         } else {
             assert!(state.initialization_failure.is_none());
         }
-        assert_eq!(state.labeled.is_some(), stop != Some("surgery"));
+        assert_eq!(state.progress.labeled.is_some(), stop != Some("surgery"));
         let settings = &app.world().resource::<RenderObjectSettingStore>().objects
             [&Objects::InputMesh]
             .settings;
@@ -283,7 +287,7 @@ fn placement_stop_and_cube_view_succeed_without_running_optimization() {
     let (app, exit) = run_startup(launch);
     assert_eq!(exit, AppExit::Success);
     let state = app.world().resource::<crate::resources::SkeletonResource>();
-    assert!(state.realized.is_some());
+    assert!(state.progress.realized.is_some());
     assert!(state.initialization_failure.is_none());
     let settings = &app
         .world()

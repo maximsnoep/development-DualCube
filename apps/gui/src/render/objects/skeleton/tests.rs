@@ -14,7 +14,6 @@ fn extraction_layers_survive_refresh_and_clear_with_new_input() {
     app.insert_resource(InputResource::new(solution.mesh_ref))
         .insert_resource(SkeletonResource {
             state: Some(crate::resources::SkeletonState::Extracted(extraction)),
-            labeled: None,
             ..default()
         })
         .insert_resource(store)
@@ -212,13 +211,12 @@ fn optimized_patches_keep_original_colors() {
     let extraction = dualcube::skeleton::skeletonize::extract(mesh, Default::default()).unwrap();
     let mut progress =
         dualcube::skeleton::pipeline::Progress::from_skeleton(extraction.skeleton.clone());
-    progress.optimize(mesh).unwrap();
+    progress
+        .run_through(mesh, dualcube::skeleton::pipeline::Stage::Optimization)
+        .unwrap();
     let state = SkeletonResource {
         state: Some(crate::resources::SkeletonState::Extracted(extraction)),
-        labeled: progress.labeled,
-        labeling: progress.labeling,
-        realized: progress.realized,
-        optimized: progress.optimized,
+        progress,
         ..default()
     };
     let object = build(mesh, &state, 0.006);
