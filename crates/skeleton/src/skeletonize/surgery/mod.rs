@@ -129,6 +129,11 @@ pub fn run_with_options(
     {
         return Err("Deflated positions must be finite".into());
     }
+    // Genus 1: integer homology is taken as exact, as in `certify::run`.
+    let options = Options {
+        certify_each_step: options.certify_each_step && genus > 1,
+        ..options
+    };
     let mut surgery = Surgery::new(contracted, original, genus, options)?;
     surgery.run()?;
     let mut skeleton = surgery.skeleton();
