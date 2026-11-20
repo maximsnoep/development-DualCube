@@ -102,6 +102,9 @@ pub struct Attempt {
     pub labels: SecondaryMap<SkeletonEdgeID, EdgeLabel>,
     pub tree_edges: Vec<SkeletonEdgeID>,
     pub tree_labels: SecondaryMap<SkeletonEdgeID, EdgeLabel>,
+    /// The skeleton `tree_labels` belong to: after junction splits, before cycle repairs.
+    #[serde(default)]
+    pub tree_skeleton: Option<Skeleton>,
     pub repairs: Vec<Repair>,
     pub junction_splits: Vec<JunctionSplit>,
 }
@@ -128,6 +131,7 @@ pub fn attempt(mesh: &Mesh<INPUT>, skeleton: &Skeleton) -> SkeletonResult<Attemp
         labels: SecondaryMap::new(),
         tree_edges: Vec::new(),
         tree_labels: SecondaryMap::new(),
+        tree_skeleton: None,
         repairs: Vec::new(),
         junction_splits: Vec::new(),
     };
@@ -148,6 +152,7 @@ pub fn attempt(mesh: &Mesh<INPUT>, skeleton: &Skeleton) -> SkeletonResult<Attemp
         .collect();
     result.tree_edges = tree_edges;
     result.tree_labels = labels.clone();
+    result.tree_skeleton = Some(result.skeleton.clone());
     result.labels = labels;
     for edge in remaining {
         let (skeleton, added, labels) = repair(

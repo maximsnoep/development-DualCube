@@ -50,6 +50,9 @@ impl std::error::Error for Failure {}
 #[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
 pub struct Attempt {
     pub loops: DualLoops,
+    /// The lifted patch boundaries alone, before any template loop is routed.
+    #[serde(default)]
+    pub lifted: DualLoops,
     /// The dual structure of a complete drawing, read from its loop map.
     pub dual: Option<dualcube_dual::Dual>,
     pub planned: usize,
@@ -72,6 +75,7 @@ pub fn attempt(mesh: &Mesh<INPUT>, realized: &RealizedSkeleton) -> SkeletonResul
     let mut drawn: HashSet<_> = template.boundaries.values().copied().collect();
     let mut result = Attempt {
         loops: DualLoops::with_key(),
+        lifted: DualLoops::with_key(),
         dual: None,
         planned: template.loops.len(),
         failure: None,
@@ -85,10 +89,11 @@ pub fn attempt(mesh: &Mesh<INPUT>, realized: &RealizedSkeleton) -> SkeletonResul
         }
         Ok(loops)
     };
+    result.lifted = output(&map, &drawn)?;
     // The template vertex of every crossing vertex of the drawing.
     let mut known = HashMap::new();
     if !target.matches(&map, &drawn, &known) {
-        result.loops = output(&map, &drawn)?;
+        result.loops = result.lifted.clone();
         result.failure = Some(Failure::BoundaryTopology);
         return Ok(result);
     }

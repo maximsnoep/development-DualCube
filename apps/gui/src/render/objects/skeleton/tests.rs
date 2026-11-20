@@ -230,7 +230,7 @@ fn optimized_patches_keep_original_colors() {
         optimized: progress.optimized,
         ..default()
     };
-    let object = build(mesh, &state);
+    let object = build(mesh, &state, 0.006);
     let colors = |label: &str| {
         let RenderAsset::Mesh(mesh) = &object.features[label] else {
             panic!("Missing {label}");

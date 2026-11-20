@@ -41,10 +41,14 @@ pub enum Figure {
     OptimizedPatches,
     /// The patches (light) with the skeleton graph.
     Combined,
+    /// The tree labeling, before cycle repairs.
+    TreeLabeled,
     /// The skeleton graph with the axis labels of its edges.
     Labeled,
     /// The cube placement, in a parallel projection.
     Cubes,
+    /// The labeled patch boundaries on the input mesh, before the template's other loops are drawn.
+    LiftedLoops,
     /// The loops on the input mesh.
     LoopStructure,
     /// The input mesh colored by the patches of the layout, with their boundaries (the paths).
@@ -56,7 +60,7 @@ pub enum Figure {
 }
 
 impl Figure {
-    pub const ALL: [Self; 13] = [
+    pub const ALL: [Self; 15] = [
         Self::InputMesh,
         Self::Deflated,
         Self::RawSkeleton,
@@ -64,8 +68,10 @@ impl Figure {
         Self::Patches,
         Self::OptimizedPatches,
         Self::Combined,
+        Self::TreeLabeled,
         Self::Labeled,
         Self::Cubes,
+        Self::LiftedLoops,
         Self::LoopStructure,
         Self::Segmentation,
         Self::Quad,
@@ -83,8 +89,10 @@ impl Figure {
             Self::Patches => "skeleton patches",
             Self::OptimizedPatches => "optimized patches",
             Self::Combined => "patches and skeleton",
+            Self::TreeLabeled => "tree labeled skeleton",
             Self::Labeled => "labeled skeleton",
             Self::Cubes => "cube placement",
+            Self::LiftedLoops => "lifted loops",
             Self::LoopStructure => "loop structure",
             Self::Segmentation => "polycube segmentation",
             Self::Quad => "quad mesh",
@@ -103,8 +111,10 @@ impl Figure {
             Self::Patches => "patches",
             Self::OptimizedPatches => "optimized",
             Self::Combined => "combined",
+            Self::TreeLabeled => "tree",
             Self::Labeled => "labeled",
             Self::Cubes => "cubes",
+            Self::LiftedLoops => "lifted",
             Self::LoopStructure => "loops",
             Self::Segmentation => "segmentation",
             Self::Quad => "quad",
@@ -230,8 +240,10 @@ pub fn figure_svg(
         Figure::Patches => skeleton::patches(&model, false)?,
         Figure::OptimizedPatches => skeleton::patches(&model, true)?,
         Figure::Combined => skeleton::combined(&model)?,
+        Figure::TreeLabeled => skeleton::graph(&model, skeleton::Graph::Tree)?,
         Figure::Labeled => skeleton::graph(&model, skeleton::Graph::Labeled)?,
         Figure::Cubes => skeleton::cubes(&model)?,
+        Figure::LiftedLoops => lifted_loops(&model)?,
         Figure::LoopStructure => loop_structure(&model)?,
         Figure::Segmentation => segmentation(&model)?,
         Figure::Quad => skeleton::quad(&model)?,
@@ -888,7 +900,19 @@ fn axis(direction: Direction) -> usize {
 // The loops on the input mesh, as bands (see `Solution::loop_frames`): between consecutive crossings, a strip on either
 // side of the loop, its positive side in the loop's color and its negative side lighter (as in the GUI).
 fn loop_structure(model: &Model<'_>) -> Option<Vec<Item>> {
-    let (solution, params, style) = (model.solution, model.params, model.style);
+    loop_bands(model, model.solution)
+}
+
+// The lifted patch boundaries of the drawing, as the loop structure.
+fn lifted_loops(model: &Model<'_>) -> Option<Vec<Item>> {
+    let drawing = model.skeleton.drawing.as_ref()?;
+    let mut solution = Solution::new(model.solution.mesh_ref.clone());
+    solution.loops = drawing.lifted.clone();
+    loop_bands(model, &solution)
+}
+
+fn loop_bands(model: &Model<'_>, solution: &Solution) -> Option<Vec<Item>> {
+    let (params, style) = (model.params, model.style);
     if solution.loops.is_empty() {
         return None;
     }
