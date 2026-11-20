@@ -5,8 +5,19 @@ use dualcube_types::prelude::*;
 
 impl Skeleton {
     /// Validate boundary incidence, disjoint arcs, connected regions, and genus-zero patches.
+    /// The input must have passed [`input_genus`].
     pub fn validate(&self, mesh: &Mesh<INPUT>) -> SkeletonResult<()> {
         crate::surface::Regions::build(mesh, self).map(|_| ())
+    }
+
+    /// [`Self::validate`] in debug builds only, for skeletons validated by the previous stage
+    /// or valid by construction.
+    pub(crate) fn debug_validate(&self, mesh: &Mesh<INPUT>) {
+        if cfg!(debug_assertions)
+            && let Err(error) = self.validate(mesh)
+        {
+            panic!("Invalid skeleton: {error}");
+        }
     }
 }
 

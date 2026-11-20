@@ -58,11 +58,7 @@ pub(super) fn reduce(mesh: &Mesh<INPUT>, result: &mut Attempt) -> SkeletonResult
         let Some((_, _, skeleton, added_node, boundary)) = best else {
             panic!("Impossible: degree-{count} patch {node:?} has no connector between boundaries");
         };
-        if let Err(error) = skeleton.validate(mesh) {
-            panic!(
-                "Impossible: junction split of degree-{count} patch {node:?} is invalid: {error}"
-            );
-        }
+        skeleton.debug_validate(mesh);
         result.skeleton = skeleton;
         result.junction_splits.push(JunctionSplit {
             original_node: node,

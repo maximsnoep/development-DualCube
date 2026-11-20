@@ -8,10 +8,12 @@ use crate::{
 };
 use dualcube_types::prelude::*;
 
-/// Dissolve straight degree-two patches only.
+/// Dissolve straight degree-two patches only; the result is validated and placed.
 pub fn run(mesh: &Mesh<INPUT>, placed: &RealizedSkeleton) -> SkeletonResult<RealizedSkeleton> {
-    placed.validate(mesh)?;
-    place_cubes::run(mesh, &dissolve_straight(mesh, &placed.labeled)?)
+    placed.labeled.skeleton.debug_validate(mesh);
+    let dissolved = dissolve_straight(mesh, &placed.labeled)?;
+    dissolved.skeleton.validate(mesh)?;
+    place_cubes::run(mesh, &dissolved)
 }
 
 /// Absorb straight annular patches into a neighbour, deleting their shared boundary.

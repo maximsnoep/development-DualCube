@@ -171,8 +171,9 @@ impl Attempt {
     }
 }
 
+/// Label an extracted skeleton (validated by extraction); the result is validated.
 pub fn attempt(mesh: &Mesh<INPUT>, skeleton: &Skeleton) -> SkeletonResult<Attempt> {
-    skeleton.validate(mesh)?;
+    skeleton.debug_validate(mesh);
     let start = std::time::Instant::now();
     let mut result = Attempt {
         skeleton: skeleton.clone(),
