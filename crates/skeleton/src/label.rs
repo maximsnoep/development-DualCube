@@ -276,7 +276,7 @@ fn cached_cost(
 /// The chain through `edge`: the maximal path whose interior nodes have degree two, as steps
 /// (edge, whether it is traversed from its first node) from the chain's first node to its last.
 /// A component that is one ring is a chain from a node back to itself.
-fn chain(
+pub(crate) fn chain(
     skeleton: &Skeleton,
     edge: SkeletonEdgeID,
 ) -> (Vec<(SkeletonEdgeID, bool)>, [SkeletonNodeID; 2]) {

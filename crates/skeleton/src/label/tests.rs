@@ -465,3 +465,49 @@ fn boundaries_added_to_close_a_cycle_run_through_the_middle_of_a_patch() {
         assert!(!original.contains(&crossed(&result.skeleton, edge)));
     }
 }
+
+// Costs for +X, −X, +Y, −Y, +Z, −Z: cheap only on the given ports.
+fn cheap(ports: &[Port]) -> [f64; 6] {
+    std::array::from_fn(|p| {
+        if ports.iter().any(|&q| q as usize == p) {
+            0.
+        } else {
+            75.
+        }
+    })
+}
+
+// Items outside the kept boundaries count against the end ports.
+fn select_free(items: &[[f64; 6]]) -> path::Selection {
+    let n = items.len() / 2;
+    let first = |i: usize, q: usize| (1..=2 * i).map(|m| items[m][q]).sum();
+    let last = |i: usize, q: usize| (2 * i + 2..2 * n).map(|m| items[m][q]).sum();
+    let zero = |_: usize, _: usize| 0.;
+    let ends = path::Ends {
+        first: &first,
+        last: &last,
+        patch: &zero,
+    };
+    path::select(items, &path::Constraints::default(), 0.5, &ends, 1).unwrap()
+}
+
+#[test]
+fn select_keeps_a_genuine_staircase() {
+    // Boundaries alternately facing X and Y; one bend cannot explain them in order.
+    let (x, y) = (cheap(&[Port::PositiveX]), cheap(&[Port::PositiveY]));
+    let free = [0.; 6];
+    let items = [free, x, free, y, free, x, free, y, free];
+    let selection = select_free(&items);
+    assert_eq!(selection.kept, vec![0, 1, 2, 3]);
+    use Port::{PositiveX as X, PositiveY as Y};
+    assert_eq!(selection.ports, vec![X, Y, X, Y]);
+}
+
+#[test]
+fn select_merges_a_diagonal_into_one_patch() {
+    // Every boundary as good on X as on Y: one kept boundary explains all of them.
+    let both = cheap(&[Port::PositiveX, Port::PositiveY]);
+    let free = [0.; 6];
+    let items = [free, both, free, both, free, both, free, both, free];
+    assert_eq!(select_free(&items).kept.len(), 1);
+}

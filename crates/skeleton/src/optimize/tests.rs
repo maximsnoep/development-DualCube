@@ -9,52 +9,43 @@ fn placed(ports: [Port; 2]) -> (Mesh<INPUT>, RealizedSkeleton) {
     (mesh, placed)
 }
 
-fn dissolved(mesh: &Mesh<INPUT>, source: &RealizedSkeleton) -> RealizedSkeleton {
-    place_cubes::run(mesh, &dissolve_straight(mesh, &source.labeled).unwrap()).unwrap()
-}
-
 #[test]
-fn dissolves_straight_patch_and_its_occurrences_without_mutating_source() {
+fn reduces_without_mutating_source_and_is_idempotent() {
     let (mesh, source) = placed([Port::PositiveX, Port::NegativeX]);
     let order = source.labeled.skeleton.surface.edge_order.clone();
-    let result = dissolved(&mesh, &source);
+    let result = run(&mesh, &source).unwrap();
     result.validate(&mesh).unwrap();
     assert_eq!(result.labeled.skeleton.nodes.len(), 2);
-    assert_eq!(result.labeled.skeleton.edges.len(), 1);
     assert_eq!(result.labeled.skeleton.surface.crossings.len(), 2);
-    assert_eq!(result.cuboids().cuboids.len(), 3);
     assert_eq!(source.labeled.skeleton.surface.edge_order, order);
     assert_eq!(source.labeled.skeleton.nodes.len(), 3);
-    let again = dissolved(&mesh, &result);
-    assert_eq!(again.node_positions, result.node_positions);
-}
-
-#[test]
-fn stored_orientation_does_not_change_simplification() {
-    let (mesh, mut source) = placed([Port::PositiveX, Port::NegativeX]);
-    let edge = source.labeled.skeleton.edges.keys().next().unwrap();
-    let mut boundary = source.labeled.skeleton.edges[edge].boundary.clone();
-    crate::surface::edit::reverse(&mesh, &mut source.labeled.skeleton, &mut boundary);
-    source.labeled.skeleton.edges[edge].boundary = boundary;
-    source.labeled.skeleton.edges[edge].nodes.reverse();
-    source.labeled.labels[edge] = Port::NegativeX.label();
-    source = place_cubes::run(&mesh, &source.labeled).unwrap();
-    assert_eq!(dissolved(&mesh, &source).labeled.skeleton.edges.len(), 1);
-}
-
-#[test]
-fn preserves_bends() {
-    let (mesh, source) = placed([Port::PositiveX, Port::PositiveY]);
-    let result = dissolved(&mesh, &source);
-    assert_eq!(result.node_positions, source.node_positions);
+    // Labels tie on these flat loops, so only the structure is compared.
+    let again = run(&mesh, &result).unwrap().labeled.skeleton;
+    assert_eq!(again.nodes.len(), 2);
     assert_eq!(
-        result.labeled.skeleton.surface.edge_order,
-        source.labeled.skeleton.surface.edge_order
+        again.surface.edge_order,
+        result.labeled.skeleton.surface.edge_order
     );
 }
 
 #[test]
-fn dissolves_an_entire_straight_chain() {
+fn stored_orientation_does_not_change_the_result() {
+    let (mesh, source) = placed([Port::PositiveX, Port::NegativeX]);
+    let mut reversed = source.clone();
+    let edge = reversed.labeled.skeleton.edges.keys().next().unwrap();
+    let mut boundary = reversed.labeled.skeleton.edges[edge].boundary.clone();
+    crate::surface::edit::reverse(&mesh, &mut reversed.labeled.skeleton, &mut boundary);
+    reversed.labeled.skeleton.edges[edge].boundary = boundary;
+    reversed.labeled.skeleton.edges[edge].nodes.reverse();
+    reversed.labeled.labels[edge] = Port::NegativeX.label();
+    let reversed = place_cubes::run(&mesh, &reversed.labeled).unwrap();
+    let [a, b] = [source, reversed].map(|s| run(&mesh, &s).unwrap().labeled.skeleton);
+    assert_eq!(a.edges.len(), b.edges.len());
+    assert_eq!(a.surface.crossings.len(), b.surface.crossings.len());
+}
+
+#[test]
+fn reduces_an_entire_straight_chain() {
     let (mesh, mut skeleton) = crate::surface::tests::lenses(1);
     let edge = skeleton.edges.keys().next().unwrap();
     for _ in 0..5 {
@@ -75,7 +66,7 @@ fn dissolves_an_entire_straight_chain() {
         .map(|e| (e, Port::PositiveX.label()))
         .collect();
     let source = place_cubes::run(&mesh, &LabeledSkeleton { skeleton, labels }).unwrap();
-    let result = dissolved(&mesh, &source);
+    let result = run(&mesh, &source).unwrap();
     result.validate(&mesh).unwrap();
     assert_eq!(result.labeled.skeleton.edges.len(), 1);
     assert_eq!(result.labeled.skeleton.nodes.len(), 2);

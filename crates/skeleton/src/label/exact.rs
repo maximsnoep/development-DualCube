@@ -9,14 +9,19 @@ use std::collections::VecDeque;
 /// Search nodes of the labeling stage's exact labeling.
 pub(crate) const BUDGET: usize = 200_000;
 
-/// Angle of the boundary's plane normal to every label beyond the best label's, per 20°.
-pub(crate) fn plane_excess(mesh: &Mesh<INPUT>, skeleton: &Skeleton, edge: SkeletonEdgeID) -> [f64; 6] {
-    let angle = angle_costs(boundary_normal(mesh, skeleton, edge));
+/// Angle of `vector` to every label beyond the best label's, per 20°.
+pub(crate) fn excess(vector: Vector3D) -> [f64; 6] {
+    let angle = angle_costs(vector);
     let best = angle.iter().copied().fold(f64::INFINITY, f64::min);
     angle.map(|a| (a - best) / 20f64.to_radians())
 }
 
-/// Plane excess, growing twenty times as steeply beyond 20° (mislabelling).
+/// Excess, growing twenty times as steeply beyond 20° (mislabelling).
+pub(crate) fn penalty(excess: f64) -> f64 {
+    excess + 20. * (excess - 1.).max(0.)
+}
+
+/// [`penalty`] of the boundary's plane normal against every label.
 pub(crate) fn plane_penalties(
     mesh: &Mesh<INPUT>,
     skeleton: &Skeleton,
@@ -24,7 +29,7 @@ pub(crate) fn plane_penalties(
     skeleton
         .edges
         .keys()
-        .map(|e| (e, plane_excess(mesh, skeleton, e).map(|x| x + 20. * (x - 1.).max(0.))))
+        .map(|e| (e, excess(boundary_normal(mesh, skeleton, e)).map(penalty)))
         .collect()
 }
 
