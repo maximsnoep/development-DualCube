@@ -941,7 +941,11 @@ impl Layout {
                                     granulated_mesh.toor(edge),
                                 ))
                             });
-                    if !crosses_path && face_allowed(n_id) {
+                    let crosses_back = bounds.is_none()
+                        && matches!((regions.as_ref(), allowed_regions), (Some(tracking), Some([first, second]))
+                            if tracking.face_region.get(&f_id) == Some(&second)
+                                && tracking.face_region.get(&n_id) == Some(&first));
+                    if !crosses_path && !crosses_back && face_allowed(n_id) {
                         neighbors.push(NodeType::Face(n_id));
                     }
                 }
