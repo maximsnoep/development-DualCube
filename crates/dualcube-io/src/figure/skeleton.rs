@@ -24,7 +24,7 @@ const QUAD_PATH_WIDTH: f64 = 0.004;
 const GRAY: Rgb = [0.45, 0.45, 0.45];
 const QUAD_EDGE: Rgb = [0.35, 0.35, 0.35];
 // How far the input mesh under a graph, and the patches of the combined figure, are lightened.
-const GHOST: f32 = 0.6;
+const GHOST: f32 = 0.3;
 const LIGHT_PATCHES: f32 = 0.55;
 
 /// Which skeleton a graph figure shows.
@@ -255,13 +255,13 @@ fn patch_surface(
     Some((faces, lines))
 }
 
-// A graph without labels: gray edges, nodes in their region colors.
+// A graph without labels: dark edges, nodes in their region colors.
 fn plain_graph(model: &Model<'_>, skeleton: &Skeleton) -> Vec<Item> {
     let palette = palette(model);
     nodes_and_edges(
         model,
         skeleton,
-        |_| (GRAY, EDGE_WIDTH),
+        |_| (model.style.line, EDGE_WIDTH),
         |node| palette.get(&node).copied().unwrap_or(GRAY),
     )
 }
@@ -307,7 +307,7 @@ fn tree_graph(model: &Model<'_>) -> Option<Vec<Item>> {
     ))
 }
 
-// The edges as lines and the nodes as dots, back to front; a node in front of its edges.
+// The nodes as dots, then the edges as lines over them; each back to front.
 fn nodes_and_edges(
     model: &Model<'_>,
     skeleton: &Skeleton,
@@ -316,19 +316,7 @@ fn nodes_and_edges(
 ) -> Vec<Item> {
     let camera = &model.camera;
     let position = |id: SkeletonNodeID| skeleton.nodes[id].position;
-    let mut items = vec![];
-    for (id, e) in &skeleton.edges {
-        let (a, b) = (position(e.nodes[0]), position(e.nodes[1]));
-        let (color, width) = edge(id);
-        let depth = camera.depth((a + b) / 2.);
-        let line = Item::Line {
-            from: camera.project(a),
-            to: camera.project(b),
-            color,
-            width,
-        };
-        items.push((depth, 1, line));
-    }
+    let mut disks = vec![];
     for id in skeleton.nodes.keys() {
         let p = position(id);
         let disk = Item::Disk {
@@ -337,9 +325,25 @@ fn nodes_and_edges(
             fill: node(id),
             ring: model.style.line,
         };
-        items.push((camera.depth(p), 0, disk));
+        disks.push((camera.depth(p), disk));
     }
-    // Farthest first; at equal depth, edges before nodes.
-    items.sort_by(|a, b| b.0.total_cmp(&a.0).then(b.1.cmp(&a.1)));
-    items.into_iter().map(|(_, _, item)| item).collect()
+    let mut lines = vec![];
+    for (id, e) in &skeleton.edges {
+        let (a, b) = (position(e.nodes[0]), position(e.nodes[1]));
+        let (color, width) = edge(id);
+        let line = Item::Line {
+            from: camera.project(a),
+            to: camera.project(b),
+            color,
+            width,
+        };
+        lines.push((camera.depth((a + b) / 2.), line));
+    }
+    let mut items = vec![];
+    for mut group in [disks, lines] {
+        // Farthest first.
+        group.sort_by(|a, b| b.0.total_cmp(&a.0));
+        items.extend(group.into_iter().map(|(_, item)| item));
+    }
+    items
 }

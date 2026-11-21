@@ -156,7 +156,7 @@ impl Default for FigureStyle {
         Self {
             primal: nord,
             dual: nord,
-            surface: [0.86, 0.86, 0.86],
+            surface: [0.6, 0.6, 0.6],
             dark: [0.2, 0.2, 0.2],
             line: [0.145, 0.145, 0.145],
             light_mix: 0.4,
