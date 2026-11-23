@@ -8,7 +8,9 @@ use crate::SkeletonExtraction;
 use dualcube::prelude::*;
 use dualcube::skeleton::geometry::SurfaceGeometry;
 use dualcube::skeleton::skeletonize::Extraction;
-use dualcube::skeleton::{CuboidOwner, EdgeLabel, Skeleton, SkeletonEdgeID, SkeletonNodeID};
+use dualcube::skeleton::{
+    CuboidOwner, EdgeLabel, RealizedSkeleton, Skeleton, SkeletonEdgeID, SkeletonNodeID,
+};
 use std::collections::{HashMap, HashSet};
 
 // Sizes as fractions of the figure's size.
@@ -19,6 +21,8 @@ const NON_TREE_WIDTH: f64 = 0.02;
 const BOUNDARY_WIDTH: f64 = 0.004;
 const QUAD_EDGE_WIDTH: f64 = 0.0012;
 const QUAD_PATH_WIDTH: f64 = 0.004;
+// The width of the edges between the node cubes (in units of the cubes).
+const BAR_WIDTH: f64 = 0.2;
 
 // Unlabeled edges, and the nodes of a labeled graph.
 const GRAY: Rgb = [0.45, 0.45, 0.45];
@@ -104,6 +108,7 @@ pub(super) fn graph(model: &Model<'_>, graph: Graph) -> Option<Vec<Item>> {
         Graph::Current => plain_graph(model, current(model)?),
         Graph::Gray => nodes_and_edges(
             model,
+            &model.camera,
             current(model)?,
             |_| (model.style.line, EDGE_WIDTH),
             |_| GRAY,
@@ -148,11 +153,82 @@ pub(super) fn combined(model: &Model<'_>) -> Option<Vec<Item>> {
     Some(items)
 }
 
+// The (optimized) cube placement.
+fn placement<'a>(model: &Model<'a>) -> Option<&'a RealizedSkeleton> {
+    let save = model.skeleton;
+    save.optimized.as_ref().or(save.realized.as_ref())
+}
+
+// The corners of all cuboids of the placement, projected: the frame of its figures, so that they line up.
+pub(super) fn placement_frame(model: &Model<'_>) -> Vec<[f64; 2]> {
+    let Some(realized) = placement(model) else {
+        return vec![];
+    };
+    let camera = Camera::new(model.params, None);
+    let mut frame = vec![];
+    for cube in realized.cuboids().cuboids.values() {
+        let (lo, hi) = (cube.center - cube.size / 2., cube.center + cube.size / 2.);
+        for corner in 0..8 {
+            let p = Vector3D::from_fn(|k, _| if corner >> k & 1 == 0 { lo[k] } else { hi[k] });
+            frame.push(camera.project(p));
+        }
+    }
+    frame
+}
+
+// The labeled skeleton with its nodes at their placed positions (the centers of their cubes).
+pub(super) fn placed_skeleton(model: &Model<'_>) -> Option<Vec<Item>> {
+    let realized = placement(model)?;
+    let labeled = &realized.labeled;
+    let mut placed = labeled.skeleton.clone();
+    for (id, node) in &mut placed.nodes {
+        node.position = realized.node_positions[id];
+    }
+    let camera = Camera::new(model.params, None);
+    Some(nodes_and_edges(
+        model,
+        &camera,
+        &placed,
+        |id| {
+            let color = labeled
+                .labels
+                .get(id)
+                .map_or(GRAY, |label| model.style.primal[axis(label.direction)]);
+            (color, EDGE_WIDTH)
+        },
+        |_| GRAY,
+    ))
+}
+
+// The faces of an axis-aligned box that face the camera, but those `hidden` (axis, positive side) leaves out.
+fn box_faces(
+    faces: &mut Vec<AxisFace>,
+    camera: &Camera,
+    (lo, hi): (Vector3D, Vector3D),
+    fill: Rgb,
+    hidden: impl Fn(usize, bool) -> bool,
+) {
+    for n in 0..3 {
+        for positive in [false, true] {
+            let toward = if positive { 1. } else { -1. };
+            if hidden(n, positive) || toward * camera.forward[n] >= 0. {
+                continue;
+            }
+            let (ia, ib) = ((n + 1) % 3, (n + 2) % 3);
+            faces.push(AxisFace {
+                n,
+                c: if positive { hi[n] } else { lo[n] },
+                rect: [lo[ia], hi[ia], lo[ib], hi[ib]],
+                fill,
+            });
+        }
+    }
+}
+
 // The cuboids of the (optimized) placement as boxes, with the faces where they connect hidden as in the GUI; the
 // bevels of the edge cuboids are left out. Cuboids the coloring leaves out are gray.
 pub(super) fn cubes(model: &Model<'_>, coloring: CubeColoring) -> Option<Vec<Item>> {
-    let save = model.skeleton;
-    let realized = save.optimized.as_ref().or(save.realized.as_ref())?;
+    let realized = placement(model)?;
     let layout = realized.cuboids();
     let palette = palette(model);
     let hidden = layout.hidden_faces();
@@ -169,20 +245,39 @@ pub(super) fn cubes(model: &Model<'_>, coloring: CubeColoring) -> Option<Vec<Ite
                 .get(edge)
                 .map_or(GRAY, |label| model.style.primal[axis(label.direction)]),
         };
-        let (lo, hi) = (cube.center - cube.size / 2., cube.center + cube.size / 2.);
-        for n in 0..3 {
-            for positive in [false, true] {
-                let toward = if positive { 1. } else { -1. };
-                if hidden.contains(&(id, n, positive)) || toward * camera.forward[n] >= 0. {
+        let bounds = (cube.center - cube.size / 2., cube.center + cube.size / 2.);
+        box_faces(&mut faces, &camera, bounds, fill, |n, positive| {
+            hidden.contains(&(id, n, positive))
+        });
+    }
+    boxes(&faces, &camera, model.style)
+}
+
+// The node cubes of the placement (in their colors), with the labeled edges between them as thin bars.
+pub(super) fn node_cubes(model: &Model<'_>) -> Option<Vec<Item>> {
+    let realized = placement(model)?;
+    let palette = palette(model);
+    let camera = Camera::new(model.params, None);
+    let mut faces = vec![];
+    for cube in realized.cuboids().cuboids.values() {
+        let (mut lo, mut hi) = (cube.center - cube.size / 2., cube.center + cube.size / 2.);
+        match cube.owner {
+            CuboidOwner::Node(node) => {
+                let fill = palette.get(&node).copied().unwrap_or(GRAY);
+                box_faces(&mut faces, &camera, (lo, hi), fill, |_, _| false);
+            }
+            CuboidOwner::Edge(edge) => {
+                let Some(label) = realized.labeled.labels.get(edge) else {
                     continue;
+                };
+                let along = axis(label.direction);
+                for k in (0..3).filter(|&k| k != along) {
+                    lo[k] = cube.center[k] - BAR_WIDTH / 2.;
+                    hi[k] = cube.center[k] + BAR_WIDTH / 2.;
                 }
-                let (ia, ib) = ((n + 1) % 3, (n + 2) % 3);
-                faces.push(AxisFace {
-                    n,
-                    c: if positive { hi[n] } else { lo[n] },
-                    rect: [lo[ia], hi[ia], lo[ib], hi[ib]],
-                    fill,
-                });
+                // The ends lie on the node cubes.
+                let fill = model.style.primal[along];
+                box_faces(&mut faces, &camera, (lo, hi), fill, |n, _| n == along);
             }
         }
     }
@@ -279,6 +374,7 @@ fn plain_graph(model: &Model<'_>, skeleton: &Skeleton) -> Vec<Item> {
     let palette = palette(model);
     nodes_and_edges(
         model,
+        &model.camera,
         skeleton,
         |_| (model.style.line, EDGE_WIDTH),
         |node| palette.get(&node).copied().unwrap_or(GRAY),
@@ -297,6 +393,7 @@ fn labeled_graph(model: &Model<'_>) -> Option<Vec<Item>> {
     if let Some(attempt) = &save.labeling {
         return Some(nodes_and_edges(
             model,
+            &model.camera,
             &attempt.skeleton,
             |id| edge(attempt.labels.get(id), attempt.outside_tree(id)),
             |_| GRAY,
@@ -305,6 +402,7 @@ fn labeled_graph(model: &Model<'_>) -> Option<Vec<Item>> {
     let labeled = save.labeled.as_ref()?;
     Some(nodes_and_edges(
         model,
+        &model.camera,
         &labeled.skeleton,
         |id| edge(labeled.labels.get(id), false),
         |_| GRAY,
@@ -317,6 +415,7 @@ fn tree_graph(model: &Model<'_>) -> Option<Vec<Item>> {
     let skeleton = attempt.tree_skeleton.as_ref()?;
     Some(nodes_and_edges(
         model,
+        &model.camera,
         skeleton,
         |id| match attempt.tree_labels.get(id) {
             Some(label) => (model.style.primal[axis(label.direction)], EDGE_WIDTH),
@@ -329,11 +428,11 @@ fn tree_graph(model: &Model<'_>) -> Option<Vec<Item>> {
 // The nodes as dots, then the edges as lines over them; each back to front.
 fn nodes_and_edges(
     model: &Model<'_>,
+    camera: &Camera,
     skeleton: &Skeleton,
     edge: impl Fn(SkeletonEdgeID) -> (Rgb, f64),
     node: impl Fn(SkeletonNodeID) -> Rgb,
 ) -> Vec<Item> {
-    let camera = &model.camera;
     let position = |id: SkeletonNodeID| skeleton.nodes[id].position;
     let mut disks = vec![];
     for id in skeleton.nodes.keys() {

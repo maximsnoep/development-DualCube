@@ -341,8 +341,10 @@ fn skeleton_loops_need_extraction() {
 }
 
 #[test]
-fn cube_colorings_need_placement() {
+fn placement_views_need_placement() {
     for (name, view) in [
+        ("placed-skeleton", ModelViewKind::PlacedSkeleton),
+        ("node-cubes", ModelViewKind::NodeCubes),
         ("cubes-primal", ModelViewKind::CubesPrimal),
         ("cubes-dual", ModelViewKind::CubesDual),
     ] {

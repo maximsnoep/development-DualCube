@@ -20,8 +20,8 @@ Run from the repository root:
   --stop-after <stage>       Run through input, deflation, surgery, refinement, certification,
                              labeling, placement, optimization, or drawing
   --view <view>              input, deflated, raw, skeleton, skeleton-gray, tree, labeled,
-                             patches, skeleton-loops, optimized, combined, cubes,
-                             cubes-primal, cubes-dual, lifted
+                             patches, skeleton-loops, optimized, combined, placed-skeleton,
+                             node-cubes, cubes, cubes-primal, cubes-dual, lifted
   --refinement               Enable embedding refinement (default off)
   --no-refinement            Skip embedding refinement
   --iterations <count>      Deflation iteration limit (default 50)
@@ -137,6 +137,8 @@ impl Launch {
                         "skeleton-loops" => ModelViewKind::SkeletonLoops,
                         "optimized" => ModelViewKind::Optimized,
                         "combined" => ModelViewKind::Combined,
+                        "placed-skeleton" => ModelViewKind::PlacedSkeleton,
+                        "node-cubes" => ModelViewKind::NodeCubes,
                         "cubes" => ModelViewKind::Cubes,
                         "cubes-primal" => ModelViewKind::CubesPrimal,
                         "cubes-dual" => ModelViewKind::CubesDual,
@@ -200,9 +202,11 @@ impl Launch {
                 ModelViewKind::Deflated => Some(Stage::Deflation),
                 ModelViewKind::Optimized => Some(Stage::Optimization),
                 ModelViewKind::Lifted => Some(Stage::LoopDrawing),
-                ModelViewKind::Cubes | ModelViewKind::CubesPrimal | ModelViewKind::CubesDual => {
-                    Some(Stage::CubePlacement)
-                }
+                ModelViewKind::PlacedSkeleton
+                | ModelViewKind::NodeCubes
+                | ModelViewKind::Cubes
+                | ModelViewKind::CubesPrimal
+                | ModelViewKind::CubesDual => Some(Stage::CubePlacement),
                 ModelViewKind::Tree | ModelViewKind::Labeled => Some(Stage::Labeling),
                 _ => Some(Stage::Extraction),
             };

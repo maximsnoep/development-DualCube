@@ -28,8 +28,10 @@ impl Harness {
         }
         let mut store = RenderObjectSettingStore::default();
         store.objects.insert(Objects::InputMesh, setting);
+        let ctx = Context::default();
+        ctx.all_styles_mut(|style| spacing(&mut style.spacing));
         let mut harness = Self {
-            ctx: Context::default(),
+            ctx,
             store,
             preview: ModelView::default(),
             button: Rect::NOTHING,

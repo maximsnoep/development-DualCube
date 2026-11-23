@@ -49,6 +49,10 @@ pub enum Figure {
     TreeLabeled,
     /// The skeleton graph with the axis labels of its edges.
     Labeled,
+    /// The labeled skeleton at its placed node positions (the cube centers), in a parallel projection.
+    PlacedSkeleton,
+    /// The node cubes on their positions, with the labeled edges between them as thin bars.
+    NodeCubes,
     /// The cube placement, in a parallel projection.
     Cubes,
     /// The cube placement with only the node cubes colored (by patch).
@@ -68,7 +72,7 @@ pub enum Figure {
 }
 
 impl Figure {
-    pub const ALL: [Self; 19] = [
+    pub const ALL: [Self; 21] = [
         Self::InputMesh,
         Self::Deflated,
         Self::RawSkeleton,
@@ -80,6 +84,8 @@ impl Figure {
         Self::Combined,
         Self::TreeLabeled,
         Self::Labeled,
+        Self::PlacedSkeleton,
+        Self::NodeCubes,
         Self::Cubes,
         Self::CubesPrimal,
         Self::CubesDual,
@@ -105,6 +111,8 @@ impl Figure {
             Self::Combined => "patches and skeleton",
             Self::TreeLabeled => "tree labeled skeleton",
             Self::Labeled => "labeled skeleton",
+            Self::PlacedSkeleton => "placed skeleton",
+            Self::NodeCubes => "node cubes",
             Self::Cubes => "cube placement",
             Self::CubesPrimal => "cube placement (primal)",
             Self::CubesDual => "cube placement (dual)",
@@ -131,6 +139,8 @@ impl Figure {
             Self::Combined => "combined",
             Self::TreeLabeled => "tree",
             Self::Labeled => "labeled",
+            Self::PlacedSkeleton => "placed_skeleton",
+            Self::NodeCubes => "node_cubes",
             Self::Cubes => "cubes",
             Self::CubesPrimal => "cubes_primal",
             Self::CubesDual => "cubes_dual",
@@ -144,9 +154,18 @@ impl Figure {
 
     // Drawn in perspective, fitted to the input mesh.
     const fn on_model(self) -> bool {
-        !matches!(
+        !self.on_placement() && !matches!(self, Self::Polycube)
+    }
+
+    // Drawn in a parallel projection, fitted to the cubes (so that they line up).
+    const fn on_placement(self) -> bool {
+        matches!(
             self,
-            Self::Cubes | Self::CubesPrimal | Self::CubesDual | Self::Polycube
+            Self::PlacedSkeleton
+                | Self::NodeCubes
+                | Self::Cubes
+                | Self::CubesPrimal
+                | Self::CubesDual
         )
     }
 }
@@ -290,6 +309,8 @@ pub fn figure_svg(
         Figure::Combined => skeleton::combined(&model)?,
         Figure::TreeLabeled => skeleton::graph(&model, skeleton::Graph::Tree)?,
         Figure::Labeled => skeleton::graph(&model, skeleton::Graph::Labeled)?,
+        Figure::PlacedSkeleton => skeleton::placed_skeleton(&model)?,
+        Figure::NodeCubes => skeleton::node_cubes(&model)?,
         Figure::Cubes => skeleton::cubes(&model, CubeColoring::Combined)?,
         Figure::CubesPrimal => skeleton::cubes(&model, CubeColoring::Primal)?,
         Figure::CubesDual => skeleton::cubes(&model, CubeColoring::Dual)?,
@@ -308,6 +329,8 @@ pub fn figure_svg(
             .into_iter()
             .map(|v| model.camera.project(mesh.position(v)))
             .collect()
+    } else if figure.on_placement() {
+        skeleton::placement_frame(&model)
     } else {
         vec![]
     };

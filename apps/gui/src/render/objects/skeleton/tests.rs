@@ -202,6 +202,20 @@ fn cube_view_distinguishes_stretched_edges_and_keeps_finite_geometry() {
         assert_eq!(other.count_vertices(), mesh.count_vertices());
         assert!(!layer.is_surface());
     }
+    // The node cubes alone: six faces of two triangles each.
+    let RenderAsset::Mesh(nodes) = &object.features[SkeletonLayer::NodeCubes.label()] else {
+        panic!("Missing node cube mesh");
+    };
+    assert_eq!(nodes.count_vertices(), 36 * realized.node_positions.len());
+    let RenderAsset::Mesh(placed) = &object.features[SkeletonLayer::PlacedSkeleton.label()] else {
+        panic!("Missing placed skeleton mesh");
+    };
+    assert!(placed.count_vertices() > 0);
+    assert!(
+        object
+            .features
+            .contains_key(SkeletonLayer::NodeCubeEdges.label())
+    );
     assert!(
         object
             .features

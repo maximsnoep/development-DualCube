@@ -29,7 +29,11 @@ pub(super) fn add(
     let hidden = layout.hidden_faces();
     let mut builders = COLORINGS.map(|_| MeshBuilder::new());
     let mut lines = GizmoAsset::new();
+    // The node cubes alone (in their colors), with their edges.
+    let mut nodes = MeshBuilder::new();
+    let mut node_lines = GizmoAsset::new();
     for (id, cube) in &layout.cuboids {
+        let node = matches!(cube.owner, CuboidOwner::Node(_));
         let fills = COLORINGS.map(|(_, coloring)| match cube.owner {
             CuboidOwner::Node(_) if !coloring.colors_nodes() => colors::LIGHT_GRAY,
             CuboidOwner::Edge(_) if !coloring.colors_edges() => colors::LIGHT_GRAY,
@@ -69,7 +73,8 @@ pub(super) fn add(
             for p in &mut corners {
                 *p += cube.center;
             }
-            for (builder, color) in builders.iter_mut().zip(fills) {
+            let node_builder = node.then_some((&mut nodes, fills[0]));
+            for (builder, color) in builders.iter_mut().zip(fills).chain(node_builder) {
                 for i in 1..corners.len() - 1 {
                     builder.add_triangle(
                         [corners[0], corners[i], corners[i + 1]],
@@ -79,15 +84,13 @@ pub(super) fn add(
                 }
             }
             for i in 0..corners.len() {
-                lines.line(
-                    crate::render::gizmos::world_to_view(corners[i], translation, scale),
-                    crate::render::gizmos::world_to_view(
-                        corners[(i + 1) % corners.len()],
-                        translation,
-                        scale,
-                    ),
-                    colors::to_bevy(colors::DARK_GRAY),
-                );
+                let view = |p| crate::render::gizmos::world_to_view(p, translation, scale);
+                let (from, to) = (view(corners[i]), view(corners[(i + 1) % corners.len()]));
+                let color = colors::to_bevy(colors::DARK_GRAY);
+                lines.line(from, to, color);
+                if node {
+                    node_lines.line(from, to, color);
+                }
             }
         };
         for axis in 0..3 {
@@ -148,4 +151,30 @@ pub(super) fn add(
         object.add(layer.label(), RenderAsset::Mesh(builder.build()));
     }
     object.gizmo(lines, 1., -0.00001, SkeletonLayer::CubeEdges.label());
+    nodes.normalize(scale, translation);
+    object.add(
+        SkeletonLayer::NodeCubes.label(),
+        RenderAsset::Mesh(nodes.build()),
+    );
+    object.gizmo(
+        node_lines,
+        1.,
+        -0.00001,
+        SkeletonLayer::NodeCubeEdges.label(),
+    );
+    // The labeled skeleton at the centers of its node cubes.
+    let mut placed = realized.labeled.skeleton.clone();
+    for (id, node) in &mut placed.nodes {
+        node.position = realized.node_positions[id];
+    }
+    object.add(
+        SkeletonLayer::PlacedSkeleton.label(),
+        RenderAsset::Mesh(graph(
+            &placed,
+            Some(&realized.labeled),
+            &HashMap::new(),
+            scale,
+            translation,
+        )),
+    );
 }

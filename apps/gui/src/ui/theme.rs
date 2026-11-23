@@ -55,6 +55,16 @@ pub fn to_color32(color: colors::Kolor) -> Color32 {
     )
 }
 
+/// The spacing of the widgets.
+pub fn spacing(spacing: &mut bevy_egui::egui::style::Spacing) {
+    spacing.item_spacing = bevy_egui::egui::vec2(8., 4.);
+    spacing.button_padding = bevy_egui::egui::vec2(4., 1.);
+    spacing.interact_size.y = 16.;
+    spacing.slider_width = 120.;
+    // Popups (as the view list) are measured within this on their first frame, and scroll beyond it (default 400).
+    spacing.default_area_size.y = 1000.;
+}
+
 /// Sets the theme once the primary egui context is created.
 pub fn setup(ui: &mut bevy_egui::EguiContexts<'_, '_>) -> Result<(), BevyError> {
     ui.ctx_mut()?.all_styles_mut(|style| {
@@ -90,10 +100,7 @@ pub fn setup(ui: &mut bevy_egui::EguiContexts<'_, '_>) -> Result<(), BevyError> 
         ]
         .map(|text_style| (text_style, FontId::new(TEXT_SIZE, Proportional)))
         .into();
-        style.spacing.item_spacing = bevy_egui::egui::vec2(8., 4.);
-        style.spacing.button_padding = bevy_egui::egui::vec2(4., 1.);
-        style.spacing.interact_size.y = 16.;
-        style.spacing.slider_width = 120.;
+        spacing(&mut style.spacing);
 
         style.interaction.selectable_labels = false;
     });
