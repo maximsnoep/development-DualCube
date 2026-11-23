@@ -21,6 +21,7 @@ members = [
     "apps/cli",
     "apps/gui",
 ]
+exclude = ["vendor"]
 
 # The license of every crate (see LICENSE).
 [workspace.package]
@@ -36,6 +37,10 @@ petgraph = "0.8.2"
 serde = "1.0.219"
 slotmap = "1.0.7"
 tracing = "0.1.44"
+
+# Patched faer (supernodal QR solve fix); see README.
+[patch.crates-io]
+faer = { path = "vendor/faer" }
 
 # Optimized and quick to rebuild (incremental): for iterating (`cargo rel`).
 [profile.release]

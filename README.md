@@ -67,6 +67,8 @@ cargo run -p cli --release
 
 DualCube is an active research codebase intended for experimentation, visualization, and batch testing. Interfaces, workflows, and file formats may continue to evolve.
 
+`vendor/faer` is faer 0.24.4 with one fix: its supernodal sparse QR solve reads one block too far after a panel with fewer rows than columns, which panics in contraction on tower_stein and team2_gao (still unfixed upstream).
+
 ## License
 
 DualCube is licensed under the [MIT License](LICENSE). Versions before the switch to MIT were released under the GNU General Public License v3.0.
