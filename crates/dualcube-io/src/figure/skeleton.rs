@@ -116,6 +116,7 @@ pub(super) fn graph(model: &Model<'_>, graph: Graph) -> Option<Vec<Item>> {
             current(model)?,
             |_| (model.style.line, EDGE_WIDTH),
             |_| GRAY,
+            Layering::EdgesOnTop,
         ),
         Graph::Tree => tree_graph(model)?,
         Graph::Labeled => labeled_graph(model)?,
@@ -225,6 +226,7 @@ pub(super) fn placed_skeleton(model: &Model<'_>) -> Option<Vec<Item>> {
             (color, EDGE_WIDTH)
         },
         |_| GRAY,
+        Layering::NodesOnTop,
     ))
 }
 
@@ -408,6 +410,7 @@ fn plain_graph(model: &Model<'_>, skeleton: &Skeleton) -> Vec<Item> {
         skeleton,
         |_| (model.style.line, EDGE_WIDTH),
         |node| palette.get(&node).copied().unwrap_or(GRAY),
+        Layering::EdgesOnTop,
     )
 }
 
@@ -427,6 +430,7 @@ fn labeled_graph(model: &Model<'_>) -> Option<Vec<Item>> {
             &attempt.skeleton,
             |id| edge(attempt.labels.get(id), attempt.outside_tree(id)),
             |_| GRAY,
+            Layering::EdgesOnTop,
         ));
     }
     let labeled = save.labeled.as_ref()?;
@@ -436,6 +440,7 @@ fn labeled_graph(model: &Model<'_>) -> Option<Vec<Item>> {
         &labeled.skeleton,
         |id| edge(labeled.labels.get(id), false),
         |_| GRAY,
+        Layering::EdgesOnTop,
     ))
 }
 
@@ -452,16 +457,25 @@ fn tree_graph(model: &Model<'_>) -> Option<Vec<Item>> {
             None => (GRAY, NON_TREE_WIDTH),
         },
         |_| GRAY,
+        Layering::EdgesOnTop,
     ))
 }
 
-// The nodes as dots, then the edges as lines over them; each back to front.
+// Which of nodes and edges are drawn over the other.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Layering {
+    EdgesOnTop,
+    NodesOnTop,
+}
+
+// The nodes as dots and the edges as lines, one layer over the other; each back to front.
 fn nodes_and_edges(
     model: &Model<'_>,
     camera: &Camera,
     skeleton: &Skeleton,
     edge: impl Fn(SkeletonEdgeID) -> (Rgb, f64),
     node: impl Fn(SkeletonNodeID) -> Rgb,
+    layering: Layering,
 ) -> Vec<Item> {
     let position = |id: SkeletonNodeID| skeleton.nodes[id].position;
     let mut disks = vec![];
@@ -487,8 +501,12 @@ fn nodes_and_edges(
         };
         lines.push((camera.depth((a + b) / 2.), line));
     }
+    let groups = match layering {
+        Layering::EdgesOnTop => [disks, lines],
+        Layering::NodesOnTop => [lines, disks],
+    };
     let mut items = vec![];
-    for mut group in [disks, lines] {
+    for mut group in groups {
         // Farthest first.
         group.sort_by(|a, b| b.0.total_cmp(&a.0));
         items.extend(group.into_iter().map(|(_, item)| item));
