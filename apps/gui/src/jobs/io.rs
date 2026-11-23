@@ -117,6 +117,35 @@ impl Job {
         })
     }
 
+    /// The figure of the solution (see `io::figure`) seen as `view`, as `path` (with the extension of the figure
+    /// format); with smoothed paths if it says so.
+    pub fn export_figure(
+        solution: Solution,
+        skeleton: Option<io::SkeletonSave>,
+        figure: Figure,
+        path: PathBuf,
+        name: String,
+        view: ViewSettings,
+    ) -> Self {
+        Self::new("exporting figure", move || {
+            let path = path.with_extension(view.format.extension());
+            let date = io::figure::today();
+            let (smoothed, params, style) = drawing(&solution, &name, &view, &date);
+            let solution = smoothed.as_ref().unwrap_or(&solution);
+            let Some(svg) =
+                io::figure::figure_svg(solution, skeleton.as_ref(), figure, &params, &style)
+            else {
+                warn!("Nothing to export: no {} figure", figure.name());
+                return None;
+            };
+            match io::figure::save_figure(&svg, &path) {
+                Ok(()) => info!("Saved {}", path.display()),
+                Err(err) => warn!("Failed to save {}: {err:#}", path.display()),
+            }
+            None
+        })
+    }
+
     /// A Dc save of the solution with the skeleton stages and the source of the model.
     pub fn save(
         solution: Solution,
@@ -172,33 +201,8 @@ fn figures(
     view: &ViewSettings,
     date: &str,
 ) -> Vec<PathBuf> {
-    let smoothed = if view.smooth_paths {
-        render::smoothed(solution)
-    } else {
-        None
-    };
+    let (smoothed, params, style) = drawing(solution, input, view, date);
     let solution = smoothed.as_ref().unwrap_or(solution);
-    let (direction, up) = view.figure_camera();
-    let params = FigureParams {
-        view: direction,
-        up,
-        loop_width: view.loop_width,
-        // As on the model (see `render::objects::input_mesh::path_bands`).
-        path_width: 0.6 * view.loop_width,
-        annotation: view.label.then(|| Annotation {
-            input: input.to_owned(),
-            score: solution.get_quality(),
-            date: date.to_owned(),
-        }),
-        ..FigureParams::default()
-    };
-    let axes = DIRECTIONS;
-    let style = FigureStyle {
-        primal: axes.map(|d| colors::from_direction(d, Some(Perspective::Primal), None)),
-        light_mix: render::LIGHT_MIX,
-        dual: axes.map(|d| colors::from_direction(d, Some(Perspective::Dual), None)),
-        ..FigureStyle::default()
-    };
     let mut saved = vec![];
     for &figure in which {
         let Some(svg) = io::figure::figure_svg(solution, skeleton, figure, &params, &style) else {
@@ -218,6 +222,43 @@ fn figures(
         }
     }
     saved
+}
+
+// What the figures of the solution are drawn with, seen in `view` and labeled with `input`: the solution with smoothed
+// paths (if the view says so), the parameters and the style.
+fn drawing(
+    solution: &Solution,
+    input: &str,
+    view: &ViewSettings,
+    date: &str,
+) -> (Option<Solution>, FigureParams, FigureStyle) {
+    let smoothed = if view.smooth_paths {
+        render::smoothed(solution)
+    } else {
+        None
+    };
+    let (direction, up) = view.figure_camera();
+    let params = FigureParams {
+        view: direction,
+        up,
+        loop_width: view.loop_width,
+        // As on the model (see `render::objects::input_mesh::path_bands`).
+        path_width: 0.6 * view.loop_width,
+        annotation: view.label.then(|| Annotation {
+            input: input.to_owned(),
+            score: smoothed.as_ref().unwrap_or(solution).get_quality(),
+            date: date.to_owned(),
+        }),
+        ..FigureParams::default()
+    };
+    let axes = DIRECTIONS;
+    let style = FigureStyle {
+        primal: axes.map(|d| colors::from_direction(d, Some(Perspective::Primal), None)),
+        light_mix: render::LIGHT_MIX,
+        dual: axes.map(|d| colors::from_direction(d, Some(Perspective::Dual), None)),
+        ..FigureStyle::default()
+    };
+    (smoothed, params, style)
 }
 
 #[cfg(test)]

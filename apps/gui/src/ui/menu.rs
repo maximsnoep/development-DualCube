@@ -145,6 +145,35 @@ impl ModelViewKind {
         }
     }
 
+    // Its figure (see `io::figure`).
+    const fn figure(self) -> io::figure::Figure {
+        use io::figure::Figure;
+        match self {
+            Self::Input => Figure::InputMesh,
+            Self::Deflated => Figure::Deflated,
+            Self::Raw => Figure::RawSkeleton,
+            Self::Skeleton => Figure::Skeleton,
+            Self::GraySkeleton => Figure::GraySkeleton,
+            Self::Patches => Figure::Patches,
+            Self::SkeletonLoops => Figure::SkeletonLoops,
+            Self::Optimized => Figure::OptimizedPatches,
+            Self::CutSystem => Figure::CutSystem,
+            Self::Combined => Figure::Combined,
+            Self::OptimizedCombined => Figure::OptimizedCombined,
+            Self::Tree => Figure::TreeLabeled,
+            Self::Labeled => Figure::Labeled,
+            Self::PlacedSkeleton => Figure::PlacedSkeleton,
+            Self::NodeCubes => Figure::NodeCubes,
+            Self::Cubes => Figure::Cubes,
+            Self::CubesPrimal => Figure::CubesPrimal,
+            Self::CubesDual => Figure::CubesDual,
+            Self::Lifted => Figure::LiftedLoops,
+            Self::Dual => Figure::LoopStructure,
+            Self::Primal => Figure::Segmentation,
+            Self::Quad => Figure::Quad,
+        }
+    }
+
     fn layers(self) -> &'static [&'static str] {
         match self {
             Self::Input => &["lambert", "wireframe"],
@@ -325,7 +354,16 @@ pub fn show(
                 ui.spacing_mut().item_spacing.x += 6.;
                 ui.spacing_mut().button_padding.y += 2.;
                 ui.add_space(8.);
-                menu_bar(ui, &mut jobs, &mut conf, &solution, &input, &skeleton, view);
+                menu_bar(
+                    ui,
+                    &mut jobs,
+                    &mut conf,
+                    &solution,
+                    &input,
+                    &skeleton,
+                    view,
+                    view_preview.active,
+                );
                 ui.separator();
                 pipeline_bar(
                     ui,
@@ -552,6 +590,7 @@ fn menu_bar(
     input: &InputResource,
     skeleton: &SkeletonResource,
     view: Option<ViewSettings>,
+    selected: Option<ModelViewKind>,
 ) {
     menu_button(ui, "File", |ui| {
         if sleek_button(ui, "Load") {
@@ -604,6 +643,35 @@ fn menu_bar(
             }
         });
         ui.checkbox(&mut conf.figure_label, text("label"));
+        // The figure of the view chosen in the top bar only.
+        if let Some(selected) = selected
+            && sleek_button(ui, "Export view")
+            && let Some(view) = view
+        {
+            let figure = selected.figure();
+            let name = if input.name.is_empty() {
+                "model"
+            } else {
+                &input.name
+            };
+            if let Some(path) = rfd::FileDialog::new()
+                .set_file_name(format!(
+                    "{name}_{}.{}",
+                    figure.slug(),
+                    view.format.extension()
+                ))
+                .save_file()
+            {
+                jobs.write(Job::export_figure(
+                    solution.current_solution.clone(),
+                    skeleton.save(),
+                    figure,
+                    path,
+                    name.to_owned(),
+                    view,
+                ));
+            }
+        }
         if sleek_button(ui, "Export figures")
             && let Some(view) = view
             && let Some(dir) = rfd::FileDialog::new().pick_folder()

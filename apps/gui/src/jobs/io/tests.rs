@@ -82,3 +82,37 @@ fn exported_figures_come_with_a_save_and_a_view_text_that_restore_them() {
     let failure = skeleton.and_then(|s| s.failure).map(|(_, message)| message);
     assert_eq!(failure.as_deref(), Some("message"));
 }
+
+#[test]
+fn an_exported_view_is_one_figure_in_the_chosen_format() {
+    let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
+    let solution = io::import_solution(&root.join("crates/mehsh/assets/tetrahedron.obj")).unwrap();
+    let dir = root.join("target/ui-smoke/export_figure");
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    let view = ViewSettings {
+        eye: Vec3::new(3., 2., 1.5),
+        target: Vec3::ZERO,
+        up: Vec3::Z,
+        loop_width: 0.01,
+        format: FigureFormat::Png,
+        label: true,
+        smooth_paths: false,
+    };
+    // The extension follows the format.
+    let job = Job::export_figure(
+        solution,
+        None,
+        Figure::InputMesh,
+        dir.join("tet_mesh.svg"),
+        "tet".to_owned(),
+        view,
+    );
+    let (sender, _) = mpsc::channel();
+    assert!((job.run)(&sender).is_none());
+    let files = std::fs::read_dir(&dir)
+        .unwrap()
+        .map(|entry| entry.unwrap().file_name())
+        .collect::<Vec<_>>();
+    assert_eq!(files, ["tet_mesh.png"]);
+}
