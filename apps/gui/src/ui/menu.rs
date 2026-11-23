@@ -39,6 +39,14 @@ fn apply_render_preset(store: &mut RenderObjectSettingStore, layers: &[&str]) {
     }
 }
 
+// The groups of the views, separated in the view list.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum ViewGroup {
+    Input,
+    Skeleton,
+    Output,
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum ModelViewKind {
     Input,
@@ -82,6 +90,15 @@ impl ModelViewKind {
         Self::Primal,
         Self::Quad,
     ];
+
+    // The group it is listed in (see `view_bar`).
+    const fn group(self) -> ViewGroup {
+        match self {
+            Self::Input => ViewGroup::Input,
+            Self::Dual | Self::Primal | Self::Quad => ViewGroup::Output,
+            _ => ViewGroup::Skeleton,
+        }
+    }
 
     fn label(self) -> &'static str {
         match self {
@@ -621,14 +638,15 @@ impl ModelView {
     }
 }
 
-// The views of the model (see `ModelViewKind`): shown while hovered, kept when clicked.
+// The views of the model (see `ModelViewKind`) in a list, grouped: shown while hovered, kept when clicked. Returns the
+// list's button.
 fn view_bar(
     ui: &mut Ui,
     render_setting_store: &mut RenderObjectSettingStore,
     preview: &mut ModelView,
     followed: Option<ModelViewKind>,
     available: impl Fn(ModelViewKind) -> bool,
-) {
+) -> egui::Response {
     // Follow the optimization (not while a view is hovered; then once the mouse leaves it).
     if followed != preview.followed && preview.hovered.is_none() {
         preview.followed = followed;
@@ -637,50 +655,68 @@ fn view_bar(
             preview.active = Some(view);
         }
     }
+    let selected = preview.active.map_or_else(
+        || "View".to_owned(),
+        |view| format!("View: {}", view.label()),
+    );
     let mut hovered = None;
-    for name in ModelViewKind::ALL {
-        let layers = name.layers();
-        // Not computed yet: shown dimmed, and does nothing.
-        if !available(name) {
-            ui.add_enabled(
-                false,
-                egui::Button::new(RichText::new(name.label()).color(DIM_COLOR).size(TEXT_SIZE)),
-            );
-            continue;
-        }
-        let color = if preview.active == Some(name) {
-            TEXT_COLOR
-        } else {
-            TEXT_COLOR2
-        };
-        let response = ui.button(RichText::new(name.label()).color(color).size(TEXT_SIZE));
-        if response.clicked() {
-            apply_render_preset(render_setting_store, layers);
-            preview.active = Some(name);
-            preview.saved = None;
-            preview.hovered = Some(name);
-            return;
-        }
-        if response.hovered() {
-            hovered = Some((name, layers));
-        }
+    let mut clicked = None;
+    let combo = egui::ComboBox::from_id_salt("model view")
+        .selected_text(RichText::new(selected).color(TEXT_COLOR).size(TEXT_SIZE))
+        .width(120.)
+        // All views, without scrolling.
+        .height(f32::INFINITY)
+        .show_ui(ui, |ui| {
+            let mut group = None;
+            for name in ModelViewKind::ALL {
+                if group.is_some_and(|g| g != name.group()) {
+                    ui.separator();
+                }
+                group = Some(name.group());
+                let text = RichText::new(name.label()).size(TEXT_SIZE);
+                // Not computed yet: shown dimmed, and does nothing.
+                if !available(name) {
+                    ui.add_enabled(
+                        false,
+                        egui::Button::selectable(false, text.color(DIM_COLOR)),
+                    );
+                    continue;
+                }
+                let active = preview.active == Some(name);
+                let color = if active { TEXT_COLOR } else { TEXT_COLOR2 };
+                let response = ui.add(egui::Button::selectable(active, text.color(color)));
+                if response.clicked() {
+                    clicked = Some(name);
+                } else if response.hovered() {
+                    hovered = Some(name);
+                }
+            }
+        });
+    super::menus::track(&combo.response);
+    if let Some(name) = clicked {
+        apply_render_preset(render_setting_store, name.layers());
+        preview.active = Some(name);
+        preview.saved = None;
+        preview.hovered = Some(name);
+        return combo.response;
     }
-    if hovered.map(|(name, _)| name) != preview.hovered {
+    if hovered != preview.hovered {
         // Restore the layers from before the previous preview, then show the new one.
         if let Some(saved) = preview.saved.take()
             && let Some(settings) = render_setting_store.objects.get_mut(&Objects::InputMesh)
         {
             *settings = saved;
         }
-        if let Some((_, layers)) = hovered {
+        if let Some(name) = hovered {
             preview.saved = render_setting_store
                 .objects
                 .get(&Objects::InputMesh)
                 .cloned();
-            apply_render_preset(render_setting_store, layers);
+            apply_render_preset(render_setting_store, name.layers());
         }
-        preview.hovered = hovered.map(|(name, _)| name);
+        preview.hovered = hovered;
     }
+    combo.response
 }
 
 /// The bar: initialize (new loops), evolve (opens the optimization window), and postprocess (smooth the paths).
@@ -874,3 +910,6 @@ fn lock_checkbox(
         automatic_rotation.enabled = false;
     }
 }
+
+#[cfg(test)]
+mod tests;
