@@ -54,7 +54,7 @@ pub enum Figure {
     Labeled,
     /// The labeled skeleton at its placed node positions (the cube centers), in a parallel projection.
     PlacedSkeleton,
-    /// The node cubes on their positions, with the labeled edges between them as thin bars.
+    /// The node cubes on their positions, with the labeled edges between them, as in the placed skeleton.
     NodeCubes,
     /// The cube placement, in a parallel projection.
     Cubes,
@@ -1127,7 +1127,7 @@ fn polycube(solution: &Solution, params: &FigureParams, style: &FigureStyle) -> 
             fill: style.primal[axis(direction)],
         });
     }
-    boxes(&faces, &camera, style)
+    boxes(&faces, &[], &camera, style)
 }
 
 // An axis-aligned rectangle facing the camera: normal axis, plane coordinate, and extent on the two other axes (in
@@ -1139,9 +1139,24 @@ struct AxisFace {
     fill: Rgb,
 }
 
-// Axis-aligned faces in a parallel projection: cut on the lattice of all their coordinates, drawn back to front by
-// their position in the lattice; every cell with the sides of its face that it has.
-fn boxes(faces: &[AxisFace], camera: &Camera, style: &FigureStyle) -> Option<Vec<Item>> {
+// An axis-aligned line segment: its axis, its ends, and its color and width (as for `Item::Line`).
+struct AxisSegment {
+    axis: usize,
+    from: Vector3D,
+    to: Vector3D,
+    color: Rgb,
+    width: f64,
+}
+
+// Axis-aligned faces and segments in a parallel projection: cut on the lattice of all face coordinates, drawn back to
+// front by their position in the lattice; every face cell with the sides of its face that it has. A segment piece
+// is drawn over a face cell at the same depth.
+fn boxes(
+    faces: &[AxisFace],
+    segments: &[AxisSegment],
+    camera: &Camera,
+    style: &FigureStyle,
+) -> Option<Vec<Item>> {
     if faces.is_empty() {
         return None;
     }
@@ -1180,10 +1195,22 @@ fn boxes(faces: &[AxisFace], camera: &Camera, style: &FigureStyle) -> Option<Vec
     };
     let sign = view.map(|v| if v.abs() < 1e-9 { 0. } else { v.signum() });
 
+    let key = |d: [f64; 3]| (0..3).map(|k| sign[k] * d[k]).sum::<f64>();
+
+    enum Piece<'a> {
+        Face {
+            face: &'a AxisFace,
+            a: [f64; 2],
+            b: [f64; 2],
+        },
+        Segment {
+            segment: &'a AxisSegment,
+            from: Vector3D,
+            to: Vector3D,
+        },
+    }
     struct Cell<'a> {
-        face: &'a AxisFace,
-        a: [f64; 2],
-        b: [f64; 2],
+        piece: Piece<'a>,
         key: f64,
     }
     let mut cells = vec![];
@@ -1200,20 +1227,66 @@ fn boxes(faces: &[AxisFace], camera: &Camera, style: &FigureStyle) -> Option<Vec
                 d[ia] = 2. * i as f64 + 1.;
                 d[ib] = 2. * j as f64 + 1.;
                 cells.push(Cell {
-                    face: f,
-                    a: [levels[ia][i], levels[ia][i + 1]],
-                    b: [levels[ib][j], levels[ib][j + 1]],
-                    key: (0..3).map(|k| sign[k] * d[k]).sum(),
+                    piece: Piece::Face {
+                        face: f,
+                        a: [levels[ia][i], levels[ia][i + 1]],
+                        b: [levels[ib][j], levels[ib][j + 1]],
+                    },
+                    key: key(d),
                 });
             }
         }
     }
-    // Farthest first.
+    // The doubled lattice coordinate of a value: even on a level, odd between two.
+    let doubled = |k: usize, x: f64| {
+        let i = index(k, x);
+        let on = levels[k].get(i).is_some_and(|&l| (l - x).abs() <= eps);
+        2. * i as f64 + if on { 0. } else { 1. }
+    };
+    for segment in segments {
+        let k = segment.axis;
+        let (lo, hi) = {
+            let (a, b) = (segment.from[k], segment.to[k]);
+            (a.min(b), a.max(b))
+        };
+        // Cut where the segment crosses a level.
+        let mut cuts = vec![lo];
+        cuts.extend(
+            levels[k]
+                .iter()
+                .copied()
+                .filter(|&l| l > lo + eps && l < hi - eps),
+        );
+        cuts.push(hi);
+        for pair in cuts.windows(2) {
+            let (mut from, mut to) = (segment.from, segment.from);
+            from[k] = pair[0];
+            to[k] = pair[1];
+            let middle = (from + to) / 2.;
+            let d = [0, 1, 2].map(|j| doubled(j, middle[j]));
+            cells.push(Cell {
+                piece: Piece::Segment { segment, from, to },
+                key: key(d),
+            });
+        }
+    }
+    // Farthest first (stable: segments after the faces at the same depth).
     cells.sort_by(|x, y| y.key.total_cmp(&x.key));
 
     let mut items = vec![];
     for cell in &cells {
-        let f = cell.face;
+        let (f, [a0, a1], [b0, b1]) = match cell.piece {
+            Piece::Face { face, a, b } => (face, a, b),
+            Piece::Segment { segment, from, to } => {
+                items.push(Item::Line {
+                    from: camera.project(from),
+                    to: camera.project(to),
+                    color: segment.color,
+                    width: segment.width,
+                });
+                continue;
+            }
+        };
         let (ia, ib) = ((f.n + 1) % 3, (f.n + 2) % 3);
         let point = |a: f64, b: f64| {
             let mut p = Vector3D::zeros();
@@ -1222,8 +1295,6 @@ fn boxes(faces: &[AxisFace], camera: &Camera, style: &FigureStyle) -> Option<Vec
             p[ib] = b;
             camera.project(p)
         };
-        let [a0, a1] = cell.a;
-        let [b0, b1] = cell.b;
         items.push(Item::Polygon {
             points: vec![point(a0, b0), point(a1, b0), point(a1, b1), point(a0, b1)],
             fill: f.fill,

@@ -1,8 +1,8 @@
 //! The figures of the skeleton stages and of the quad mesh (see the view presets of the GUI).
 
 use super::{
-    AxisFace, Camera, CubeColoring, Face, Item, Look, Model, Rgb, SurfaceLine, axis, boxes,
-    mesh_faces, region_colors, surface,
+    AxisFace, AxisSegment, Camera, CubeColoring, Face, Item, Look, Model, Rgb, SurfaceLine, axis,
+    boxes, mesh_faces, region_colors, surface,
 };
 use crate::SkeletonExtraction;
 use dualcube::prelude::*;
@@ -25,8 +25,6 @@ const CUT_WIDTH: f64 = 0.012;
 const FLAT_SURFACE: f32 = 0.7;
 const QUAD_EDGE_WIDTH: f64 = 0.0012;
 const QUAD_PATH_WIDTH: f64 = 0.004;
-// The width of the edges between the node cubes (in units of the cubes).
-const BAR_WIDTH: f64 = 0.2;
 
 // Unlabeled edges, and the nodes of a labeled graph.
 const GRAY: Rgb = [0.45, 0.45, 0.45];
@@ -280,17 +278,17 @@ pub(super) fn cubes(model: &Model<'_>, coloring: CubeColoring) -> Option<Vec<Ite
             hidden.contains(&(id, n, positive))
         });
     }
-    boxes(&faces, &camera, model.style)
+    boxes(&faces, &[], &camera, model.style)
 }
 
-// The node cubes of the placement (in their colors), with the labeled edges between them as thin bars.
+// The node cubes of the placement (in their colors), with the labeled edges between them as in the placed skeleton.
 pub(super) fn node_cubes(model: &Model<'_>) -> Option<Vec<Item>> {
     let realized = placement(model)?;
     let palette = palette(model);
     let camera = Camera::new(model.params, None);
-    let mut faces = vec![];
+    let (mut faces, mut segments) = (vec![], vec![]);
     for cube in realized.cuboids().cuboids.values() {
-        let (mut lo, mut hi) = (cube.center - cube.size / 2., cube.center + cube.size / 2.);
+        let (lo, hi) = (cube.center - cube.size / 2., cube.center + cube.size / 2.);
         match cube.owner {
             CuboidOwner::Node(node) => {
                 let fill = palette.get(&node).copied().unwrap_or(GRAY);
@@ -300,18 +298,22 @@ pub(super) fn node_cubes(model: &Model<'_>) -> Option<Vec<Item>> {
                 let Some(label) = realized.labeled.labels.get(edge) else {
                     continue;
                 };
+                // Along the axis of the edge, its cuboid spans between the node cubes.
                 let along = axis(label.direction);
-                for k in (0..3).filter(|&k| k != along) {
-                    lo[k] = cube.center[k] - BAR_WIDTH / 2.;
-                    hi[k] = cube.center[k] + BAR_WIDTH / 2.;
-                }
-                // The ends lie on the node cubes.
-                let fill = model.style.primal[along];
-                box_faces(&mut faces, &camera, (lo, hi), fill, |n, _| n == along);
+                let (mut from, mut to) = (cube.center, cube.center);
+                from[along] = lo[along];
+                to[along] = hi[along];
+                segments.push(AxisSegment {
+                    axis: along,
+                    from,
+                    to,
+                    color: model.style.primal[along],
+                    width: EDGE_WIDTH,
+                });
             }
         }
     }
-    boxes(&faces, &camera, model.style)
+    boxes(&faces, &segments, &camera, model.style)
 }
 
 // The quad mesh colored by the axes of its polycube faces, with its edges, and the edge loops from its irregular
