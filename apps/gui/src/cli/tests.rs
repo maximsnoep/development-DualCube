@@ -320,6 +320,14 @@ fn optimized_view_needs_complete_initialization() {
     ])
     .unwrap();
     assert_eq!(launch.view, Some(ModelViewKind::OptimizedSkeleton));
+    for (name, view) in [
+        ("gray", ModelViewKind::OptimizedGraySkeleton),
+        ("loops", ModelViewKind::OptimizedSkeletonLoops),
+    ] {
+        let flag = format!("--view=optimized-skeleton-{name}");
+        let launch = parse(&["--load=a.obj", "--auto-start=skeleton", &flag]).unwrap();
+        assert_eq!(launch.view, Some(view));
+    }
     assert!(
         parse(&[
             "--load=a.obj",

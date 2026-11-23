@@ -66,6 +66,10 @@ pub enum ModelViewKind {
     OptimizedCombined,
     /// The labeled optimized skeleton on the mesh.
     OptimizedSkeleton,
+    /// The optimized skeleton with gray nodes.
+    OptimizedGraySkeleton,
+    /// The optimized patch boundaries on the plain input mesh.
+    OptimizedSkeletonLoops,
     /// The tree labeling, before cycle repairs.
     Tree,
     Labeled,
@@ -86,7 +90,7 @@ pub enum ModelViewKind {
 }
 
 impl ModelViewKind {
-    const ALL: [Self; 23] = [
+    const ALL: [Self; 25] = [
         Self::Input,
         Self::Deflated,
         Self::Raw,
@@ -99,6 +103,8 @@ impl ModelViewKind {
         Self::Combined,
         Self::OptimizedCombined,
         Self::OptimizedSkeleton,
+        Self::OptimizedGraySkeleton,
+        Self::OptimizedSkeletonLoops,
         Self::Tree,
         Self::Labeled,
         Self::PlacedSkeleton,
@@ -135,6 +141,8 @@ impl ModelViewKind {
             Self::Combined => "Combined",
             Self::OptimizedCombined => "Optimized combined",
             Self::OptimizedSkeleton => "Optimized skeleton",
+            Self::OptimizedGraySkeleton => "Optimized skeleton gray",
+            Self::OptimizedSkeletonLoops => "Optimized skeleton loops",
             Self::Tree => "Tree",
             Self::Labeled => "Labeled",
             Self::PlacedSkeleton => "Placed skeleton",
@@ -165,6 +173,8 @@ impl ModelViewKind {
             Self::Combined => Figure::Combined,
             Self::OptimizedCombined => Figure::OptimizedCombined,
             Self::OptimizedSkeleton => Figure::OptimizedSkeleton,
+            Self::OptimizedGraySkeleton => Figure::OptimizedGraySkeleton,
+            Self::OptimizedSkeletonLoops => Figure::OptimizedSkeletonLoops,
             Self::Tree => Figure::TreeLabeled,
             Self::Labeled => Figure::Labeled,
             Self::PlacedSkeleton => Figure::PlacedSkeleton,
@@ -260,6 +270,12 @@ impl ModelViewKind {
             Self::Labeled => const { &[SkeletonLayer::Labeled.label(), "wireframe"] },
             Self::OptimizedSkeleton => {
                 const { &[SkeletonLayer::OptimizedSkeleton.label(), "wireframe"] }
+            }
+            Self::OptimizedGraySkeleton => {
+                const { &[SkeletonLayer::OptimizedGraySkeleton.label(), "wireframe"] }
+            }
+            Self::OptimizedSkeletonLoops => {
+                const { &["lambert", SkeletonLayer::OptimizedBoundaries.label()] }
             }
             Self::Lifted => const { &["black", SkeletonLayer::LiftedLoops.label()] },
             Self::Dual => &[
@@ -419,7 +435,11 @@ pub fn show(
                     ModelViewKind::Optimized
                     | ModelViewKind::CutSystem
                     | ModelViewKind::OptimizedCombined
-                    | ModelViewKind::OptimizedSkeleton => skeleton.progress.optimized.is_some(),
+                    | ModelViewKind::OptimizedSkeleton
+                    | ModelViewKind::OptimizedGraySkeleton
+                    | ModelViewKind::OptimizedSkeletonLoops => {
+                        skeleton.progress.optimized.is_some()
+                    }
                     ModelViewKind::Labeled => {
                         skeleton.progress.labeled.is_some() || skeleton.progress.labeling.is_some()
                     }

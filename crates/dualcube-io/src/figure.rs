@@ -52,6 +52,10 @@ pub enum Figure {
     OptimizedCombined,
     /// The optimized skeleton graph with the axis labels of its edges.
     OptimizedSkeleton,
+    /// The optimized skeleton with gray nodes.
+    OptimizedGraySkeleton,
+    /// The boundaries of the optimized skeleton's patches on the plain input mesh.
+    OptimizedSkeletonLoops,
     /// The tree labeling, before cycle repairs.
     TreeLabeled,
     /// The skeleton graph with the axis labels of its edges.
@@ -79,7 +83,7 @@ pub enum Figure {
 }
 
 impl Figure {
-    pub const ALL: [Self; 24] = [
+    pub const ALL: [Self; 26] = [
         Self::InputMesh,
         Self::Deflated,
         Self::RawSkeleton,
@@ -92,6 +96,8 @@ impl Figure {
         Self::Combined,
         Self::OptimizedCombined,
         Self::OptimizedSkeleton,
+        Self::OptimizedGraySkeleton,
+        Self::OptimizedSkeletonLoops,
         Self::TreeLabeled,
         Self::Labeled,
         Self::PlacedSkeleton,
@@ -122,6 +128,8 @@ impl Figure {
             Self::Combined => "patches and skeleton",
             Self::OptimizedCombined => "optimized patches and skeleton",
             Self::OptimizedSkeleton => "optimized skeleton",
+            Self::OptimizedGraySkeleton => "optimized gray skeleton",
+            Self::OptimizedSkeletonLoops => "optimized skeleton loops",
             Self::TreeLabeled => "tree labeled skeleton",
             Self::Labeled => "labeled skeleton",
             Self::PlacedSkeleton => "placed skeleton",
@@ -153,6 +161,8 @@ impl Figure {
             Self::Combined => "combined",
             Self::OptimizedCombined => "optimized_combined",
             Self::OptimizedSkeleton => "optimized_skeleton",
+            Self::OptimizedGraySkeleton => "optimized_skeleton_gray",
+            Self::OptimizedSkeletonLoops => "optimized_skeleton_loops",
             Self::TreeLabeled => "tree",
             Self::Labeled => "labeled",
             Self::PlacedSkeleton => "placed_skeleton",
@@ -320,12 +330,14 @@ pub fn figure_svg(
         Figure::Skeleton => skeleton::graph(&model, skeleton::Graph::Current)?,
         Figure::GraySkeleton => skeleton::graph(&model, skeleton::Graph::Gray)?,
         Figure::Patches => skeleton::patches(&model, false)?,
-        Figure::SkeletonLoops => skeleton::patch_boundaries(&model)?,
+        Figure::SkeletonLoops => skeleton::patch_boundaries(&model, false)?,
         Figure::OptimizedPatches => skeleton::patches(&model, true)?,
         Figure::CutSystem => skeleton::cut_system(&model)?,
         Figure::Combined => skeleton::combined(&model, false)?,
         Figure::OptimizedCombined => skeleton::combined(&model, true)?,
         Figure::OptimizedSkeleton => skeleton::graph(&model, skeleton::Graph::Optimized)?,
+        Figure::OptimizedGraySkeleton => skeleton::graph(&model, skeleton::Graph::OptimizedGray)?,
+        Figure::OptimizedSkeletonLoops => skeleton::patch_boundaries(&model, true)?,
         Figure::TreeLabeled => skeleton::graph(&model, skeleton::Graph::Tree)?,
         Figure::Labeled => skeleton::graph(&model, skeleton::Graph::Labeled)?,
         Figure::PlacedSkeleton => skeleton::placed_skeleton(&model)?,

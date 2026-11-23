@@ -43,6 +43,8 @@ pub(super) enum Graph {
     Labeled,
     /// The labeled optimized skeleton.
     Optimized,
+    /// The optimized skeleton with gray nodes.
+    OptimizedGray,
 }
 
 fn extraction<'a>(model: &Model<'a>) -> Option<&'a Extraction> {
@@ -110,14 +112,10 @@ pub(super) fn graph(model: &Model<'_>, graph: Graph) -> Option<Vec<Item>> {
     let edges = match graph {
         Graph::Raw => plain_graph(model, &extraction(model)?.raw),
         Graph::Current => plain_graph(model, current(model)?),
-        Graph::Gray => nodes_and_edges(
-            model,
-            &model.camera,
-            current(model)?,
-            |_| (model.style.line, EDGE_WIDTH),
-            |_| GRAY,
-            Layering::EdgesOnTop,
-        ),
+        Graph::Gray => gray_graph(model, current(model)?),
+        Graph::OptimizedGray => {
+            gray_graph(model, &model.skeleton.optimized.as_ref()?.labeled.skeleton)
+        }
         Graph::Tree => tree_graph(model)?,
         Graph::Labeled => labeled_graph(model)?,
         Graph::Optimized => optimized_graph(model)?,
@@ -138,9 +136,14 @@ pub(super) fn patches(model: &Model<'_>, optimized: bool) -> Option<Vec<Item>> {
     Some(surface(faces, &model.camera, Look::default(), &[], &lines))
 }
 
-// The patch boundaries of the skeleton on the input mesh in its plain color.
-pub(super) fn patch_boundaries(model: &Model<'_>) -> Option<Vec<Item>> {
-    plain_boundaries(model, current(model)?, |_| true, BOUNDARY_WIDTH)
+// The patch boundaries of the (optimized) skeleton on the input mesh in its plain color.
+pub(super) fn patch_boundaries(model: &Model<'_>, optimized: bool) -> Option<Vec<Item>> {
+    let skeleton = if optimized {
+        &model.skeleton.optimized.as_ref()?.labeled.skeleton
+    } else {
+        current(model)?
+    };
+    plain_boundaries(model, skeleton, |_| true, BOUNDARY_WIDTH)
 }
 
 // A minimal cut system of the optimized skeleton, spread out (see `dualcube::skeleton::cut_system`).
@@ -452,6 +455,18 @@ fn labeled_graph(model: &Model<'_>) -> Option<Vec<Item>> {
         |_| GRAY,
         Layering::EdgesOnTop,
     ))
+}
+
+// The skeleton in the line color, with gray nodes.
+fn gray_graph(model: &Model<'_>, skeleton: &Skeleton) -> Vec<Item> {
+    nodes_and_edges(
+        model,
+        &model.camera,
+        skeleton,
+        |_| (model.style.line, EDGE_WIDTH),
+        |_| GRAY,
+        Layering::EdgesOnTop,
+    )
 }
 
 // The optimized skeleton, edges in their axis colors.

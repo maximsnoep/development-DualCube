@@ -21,8 +21,10 @@ Run from the repository root:
                              labeling, placement, optimization, or drawing
   --view <view>              input, deflated, raw, skeleton, skeleton-gray, tree, labeled,
                              patches, skeleton-loops, optimized, cut-system, combined,
-                             optimized-combined, optimized-skeleton, placed-skeleton,
-                             node-cubes, cubes, cubes-primal, cubes-dual, lifted
+                             optimized-combined, optimized-skeleton,
+                             optimized-skeleton-gray, optimized-skeleton-loops,
+                             placed-skeleton, node-cubes, cubes, cubes-primal, cubes-dual,
+                             lifted
   --refinement               Enable embedding refinement (default off)
   --no-refinement            Skip embedding refinement
   --iterations <count>      Deflation iteration limit (default 50)
@@ -141,6 +143,8 @@ impl Launch {
                         "combined" => ModelViewKind::Combined,
                         "optimized-combined" => ModelViewKind::OptimizedCombined,
                         "optimized-skeleton" => ModelViewKind::OptimizedSkeleton,
+                        "optimized-skeleton-gray" => ModelViewKind::OptimizedGraySkeleton,
+                        "optimized-skeleton-loops" => ModelViewKind::OptimizedSkeletonLoops,
                         "placed-skeleton" => ModelViewKind::PlacedSkeleton,
                         "node-cubes" => ModelViewKind::NodeCubes,
                         "cubes" => ModelViewKind::Cubes,
@@ -207,7 +211,9 @@ impl Launch {
                 ModelViewKind::Optimized
                 | ModelViewKind::CutSystem
                 | ModelViewKind::OptimizedCombined
-                | ModelViewKind::OptimizedSkeleton => Some(Stage::Optimization),
+                | ModelViewKind::OptimizedSkeleton
+                | ModelViewKind::OptimizedGraySkeleton
+                | ModelViewKind::OptimizedSkeletonLoops => Some(Stage::Optimization),
                 ModelViewKind::Lifted => Some(Stage::LoopDrawing),
                 ModelViewKind::PlacedSkeleton
                 | ModelViewKind::NodeCubes

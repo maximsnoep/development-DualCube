@@ -27,6 +27,7 @@ pub enum SkeletonLayer {
     TranslucentOptimizedPatches,
     OptimizedBoundaries,
     OptimizedSkeleton,
+    OptimizedGraySkeleton,
     CutSystem,
     Deflated,
     PlacedSkeleton,
@@ -40,7 +41,7 @@ pub enum SkeletonLayer {
 }
 
 impl SkeletonLayer {
-    pub const ALL: [Self; 22] = [
+    pub const ALL: [Self; 23] = [
         Self::Skeleton,
         Self::GraySkeleton,
         Self::Raw,
@@ -53,6 +54,7 @@ impl SkeletonLayer {
         Self::TranslucentOptimizedPatches,
         Self::OptimizedBoundaries,
         Self::OptimizedSkeleton,
+        Self::OptimizedGraySkeleton,
         Self::CutSystem,
         Self::Deflated,
         Self::PlacedSkeleton,
@@ -79,6 +81,7 @@ impl SkeletonLayer {
             Self::TranslucentOptimizedPatches => "translucent optimized patches",
             Self::OptimizedBoundaries => "optimized patch boundaries",
             Self::OptimizedSkeleton => "optimized skeleton",
+            Self::OptimizedGraySkeleton => "optimized gray skeleton",
             Self::CutSystem => "cut system",
             Self::Deflated => "deflated",
             Self::PlacedSkeleton => "placed skeleton",
@@ -255,6 +258,16 @@ fn build(
                 &labeled.skeleton,
                 Some(labeled),
                 &colors,
+                scale,
+                translation,
+            )),
+        );
+        object.add(
+            SkeletonLayer::OptimizedGraySkeleton.label(),
+            RenderAsset::Mesh(graph(
+                &labeled.skeleton,
+                None,
+                &HashMap::new(),
                 scale,
                 translation,
             )),
