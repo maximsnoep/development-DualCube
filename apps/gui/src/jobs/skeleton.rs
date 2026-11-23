@@ -6,8 +6,10 @@ use crate::resources::{SkeletonResource, SkeletonState};
 use crate::ui::ModelViewKind;
 use bevy::prelude::*;
 use dualcube::prelude::*;
-use dualcube::skeleton::pipeline::{Progress, Stage};
+use dualcube::skeleton::certify::Certificate;
+use dualcube::skeleton::pipeline::{Failure, Progress, Stage};
 use dualcube::skeleton::skeletonize::{self, Options};
+use dualcube::skeleton::{Skeleton, SkeletonEdgeID, edit};
 use std::sync::Arc;
 
 pub(super) enum Update {
@@ -69,14 +71,7 @@ impl Job {
                     let mut failure = None;
                     if let SkeletonState::Extracted(extraction) = &state {
                         progress = Progress::from_skeleton(extraction.skeleton.clone());
-                        failure = (|| {
-                            while progress.next().is_some_and(|s| s <= stop) {
-                                progress.advance(&mesh)?;
-                                publish(Update::Progress(progress.clone()));
-                            }
-                            Ok::<_, dualcube::skeleton::pipeline::Failure>(())
-                        })()
-                        .err();
+                        failure = advance_until(&mesh, &mut progress, stop, &publish);
                     }
                     if let Some(error) = &failure {
                         warn!("Initialization stopped at {error}");
@@ -89,7 +84,7 @@ impl Job {
                     let view = view(stop, reached, options.refine_embedding);
                     Some(JobResult::SkeletonReady {
                         state,
-                        view,
+                        view: Some(view),
                         progress,
                         failure,
                     })
@@ -102,6 +97,67 @@ impl Job {
         })
         .preempting()
     }
+
+    /// Dissolve a boundary of the shown skeleton (see `SkeletonResource::current_skeleton`) and run the stages after
+    /// extraction again through `stop`; the view stays. The certificate carries over: patches stay contractible in the
+    /// volume under the merge (see `edit::dissolve`), as under the labeling's splits.
+    pub fn dissolve_skeleton_loop(
+        mesh: Arc<mehsh::prelude::Mesh<INPUT>>,
+        extraction: skeletonize::Extraction,
+        skeleton: Skeleton,
+        certificate: Option<Certificate>,
+        edge: SkeletonEdgeID,
+        stop: Stage,
+    ) -> Self {
+        Self::with_updates("dissolving skeleton loop", move |updates| {
+            let publish = |update| {
+                let _ = updates.send(update);
+            };
+            let mut skeleton = skeleton.clone();
+            if let Err(error) = edit::dissolve(&mesh, &mut skeleton, edge) {
+                warn!("Skeleton loop not dissolved: {error}");
+                return None;
+            }
+            info!(
+                "Skeleton: {} nodes, {} edges",
+                skeleton.nodes.len(),
+                skeleton.edges.len()
+            );
+            let state = SkeletonState::Extracted(skeletonize::Extraction {
+                skeleton: skeleton.clone(),
+                ..extraction.clone()
+            });
+            publish(Update::State(state.clone()));
+            let mut progress = Progress::from_skeleton(skeleton);
+            progress.certificate = certificate.clone();
+            let failure = advance_until(&mesh, &mut progress, stop, &publish);
+            if let Some(error) = &failure {
+                warn!("Initialization stopped at {error}");
+            }
+            Some(JobResult::SkeletonReady {
+                state,
+                view: None,
+                progress,
+                failure,
+            })
+        })
+    }
+}
+
+/// Run the stages after extraction through `stop`, publishing each; the failure that stopped them.
+fn advance_until(
+    mesh: &mehsh::prelude::Mesh<INPUT>,
+    progress: &mut Progress,
+    stop: Stage,
+    publish: &impl Fn(Update),
+) -> Option<Failure> {
+    while progress.next().is_some_and(|s| s <= stop) {
+        if let Err(failure) = progress.advance(mesh) {
+            return Some(failure);
+        }
+        publish(Update::Progress(progress.clone()));
+    }
+    None
 }
 
 #[cfg(test)]

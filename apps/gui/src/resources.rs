@@ -269,6 +269,29 @@ impl SkeletonResource {
         }
     }
 
+    /// The skeleton the patch views show: the labeling's (with its junction splits and cycle repairs), else the
+    /// extracted one.
+    pub fn current_skeleton(&self) -> Option<&dualcube::skeleton::Skeleton> {
+        let extracted = &self.extraction()?.skeleton;
+        let labeling = self.progress.labeling.as_ref().map(|a| &a.skeleton);
+        let labeled = self.progress.labeled.as_ref().map(|l| &l.skeleton);
+        Some(labeling.or(labeled).unwrap_or(extracted))
+    }
+
+    /// The furthest stage the initialization ran (reached or failed at), from extraction up to loop drawing.
+    pub fn last_stage(&self) -> dualcube::skeleton::pipeline::Stage {
+        use dualcube::skeleton::pipeline::Stage;
+        let reached = Stage::ALL
+            .into_iter()
+            .filter(|&s| s <= Stage::LoopDrawing && self.progress.done(s))
+            .last()
+            .unwrap_or(Stage::Extraction);
+        self.initialization_failure
+            .as_ref()
+            .map_or(reached, |f| f.stage.max(reached))
+            .clamp(Stage::Extraction, Stage::LoopDrawing)
+    }
+
     pub fn contracted_mesh(
         &self,
     ) -> Option<&mehsh::prelude::Mesh<dualcube::skeleton::skeletonize::deflate::CONTRACTION>> {

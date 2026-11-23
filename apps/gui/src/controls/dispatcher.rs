@@ -1,11 +1,12 @@
 use super::loop_modification::loop_modification_system;
 use super::segmentation_modification::segmentation_modification_system;
 use super::shared::{CacheResource, InteractiveMode};
+use super::skeleton_modification::skeleton_modification_system;
 use crate::colors;
 use crate::jobs::Job;
 use crate::render::gizmos::{PerpetualGizmos, vector3d_to_vec3, view_to_world};
 use crate::render::store::MainMesh;
-use crate::resources::{Configuration, InputResource, SolutionResource};
+use crate::resources::{Configuration, InputResource, SkeletonResource, SolutionResource};
 use bevy::picking::backend::ray::RayMap;
 use bevy::prelude::*;
 use mehsh::prelude::*;
@@ -22,6 +23,7 @@ pub fn control_system(
     mut gizmos: Gizmos<'_, '_, PerpetualGizmos>,
     configuration: ResMut<'_, Configuration>,
     jobs: MessageWriter<'_, Job>,
+    skeleton: Res<'_, SkeletonResource>,
 ) -> Result<(), BevyError> {
     if keyboard.pressed(KeyCode::ControlLeft) || mouse.pressed(MouseButton::Right) {
         return Ok(());
@@ -90,5 +92,17 @@ pub fn control_system(
             position,
             nearest_face,
         ),
+        InteractiveMode::SkeletonModification => {
+            skeleton_modification_system(
+                &keyboard,
+                &mesh_resmut,
+                &skeleton,
+                cache,
+                gizmos,
+                jobs,
+                position,
+            );
+            Ok(())
+        }
     }
 }

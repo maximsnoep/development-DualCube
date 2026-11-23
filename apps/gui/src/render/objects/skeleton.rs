@@ -164,19 +164,7 @@ fn build(
     let Some(extraction) = state.extraction() else {
         return object;
     };
-    let current = state
-        .progress
-        .labeling
-        .as_ref()
-        .map(|attempt| &attempt.skeleton)
-        .or_else(|| {
-            state
-                .progress
-                .labeled
-                .as_ref()
-                .map(|labeled| &labeled.skeleton)
-        })
-        .unwrap_or(&extraction.skeleton);
+    let current = state.current_skeleton().unwrap_or(&extraction.skeleton);
     // One color per node for every stage, the optimized skeleton first (shared with the figures).
     let optimized = state
         .progress

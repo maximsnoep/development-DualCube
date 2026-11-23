@@ -98,7 +98,7 @@ impl BoundarySurface {
     }
 
     /// [`Self::position`] of every occurrence at once.
-    pub(crate) fn positions(&self, mesh: &Mesh<INPUT>) -> HashMap<BoundaryCrossingID, Vector3D> {
+    pub fn positions(&self, mesh: &Mesh<INPUT>) -> HashMap<BoundaryCrossingID, Vector3D> {
         let mut positions = HashMap::new();
         for (&edge, order) in &self.edge_order {
             let (a, b) = (

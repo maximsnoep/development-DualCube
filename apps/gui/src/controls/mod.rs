@@ -4,6 +4,7 @@ mod dispatcher;
 mod loop_modification;
 mod segmentation_modification;
 mod shared;
+mod skeleton_modification;
 
 use bevy::prelude::*;
 use dispatcher::control_system;

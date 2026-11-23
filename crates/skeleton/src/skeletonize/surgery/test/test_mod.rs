@@ -302,13 +302,13 @@ fn self_loops_and_parallel_edges_are_subdivided() {
     let edges: Vec<_> = skeleton.edges.keys().collect();
     contract(&mesh, &mut skeleton, edges[0]);
     let mut parallel = skeleton.clone();
-    output::simplify(&mesh, &mut parallel);
+    simplify(&mesh, &mut parallel);
     parallel.validate(&mesh).unwrap();
     assert_eq!((parallel.nodes.len(), parallel.edges.len()), (3, 3));
     contract(&mesh, &mut skeleton, edges[1]);
     let edge = skeleton.edges.values().next().unwrap();
     assert_eq!(edge.nodes[0], edge.nodes[1]);
-    output::simplify(&mesh, &mut skeleton);
+    simplify(&mesh, &mut skeleton);
     skeleton.validate(&mesh).unwrap();
     assert_eq!((skeleton.nodes.len(), skeleton.edges.len()), (3, 3));
 }

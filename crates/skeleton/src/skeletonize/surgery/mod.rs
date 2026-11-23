@@ -26,6 +26,8 @@ mod homology;
 mod output;
 mod tetrahedralize;
 
+pub(crate) use output::simplify;
+
 use super::deflate::CONTRACTION;
 use crate::surface::canonical;
 use crate::{BoundaryCrossing, BoundaryCrossingID, BoundarySurface, Skeleton};
@@ -120,7 +122,7 @@ pub fn run(
     surgery.run()?;
     let mut skeleton = surgery.skeleton();
     output::untangle(original, &mut skeleton);
-    output::simplify(original, &mut skeleton);
+    simplify(original, &mut skeleton);
     let result = skeleton.validate(original).and_then(|()| {
         if skeleton.edges.len() + 1 == skeleton.nodes.len() + genus {
             Ok(())

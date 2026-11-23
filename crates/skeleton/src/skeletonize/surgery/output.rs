@@ -36,7 +36,7 @@ impl Surgery<'_> {
 /// each further edge between the same two nodes gets one (a path of two). A copy says nothing
 /// about where a boundary belongs, so the boundaries of every such group are then spread: each
 /// in turn moves to the middle between its neighbours.
-pub(super) fn simplify(mesh: &Mesh<INPUT>, skeleton: &mut Skeleton) {
+pub(crate) fn simplify(mesh: &Mesh<INPUT>, skeleton: &mut Skeleton) {
     let mut groups: Vec<Vec<SkeletonEdgeID>> = Vec::new();
     let loops: Vec<_> = skeleton
         .edges

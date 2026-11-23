@@ -616,6 +616,19 @@ fn menu_bar(
                 InteractiveMode::None
             };
         }
+        sep(ui);
+        // Delete dissolves the hovered patch boundary (see `controls::skeleton_modification`).
+        let mut skeleton = conf.interactive_mode == InteractiveMode::SkeletonModification;
+        if ui
+            .checkbox(&mut skeleton, text("modify skeleton"))
+            .changed()
+        {
+            conf.interactive_mode = if skeleton {
+                InteractiveMode::SkeletonModification
+            } else {
+                InteractiveMode::None
+            };
+        }
     });
 }
 

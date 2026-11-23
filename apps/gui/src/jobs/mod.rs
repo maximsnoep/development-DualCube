@@ -124,7 +124,8 @@ impl Job {
 enum JobResult {
     SkeletonReady {
         state: crate::resources::SkeletonState,
-        view: crate::ui::ModelViewKind,
+        /// The view to show, `None` to keep the current one (after a manual edit).
+        view: Option<crate::ui::ModelViewKind>,
         progress: dualcube::skeleton::pipeline::Progress,
         failure: Option<dualcube::skeleton::pipeline::Failure>,
     },
@@ -288,11 +289,13 @@ pub(crate) fn poll_jobs(
             skeleton.state = Some(state);
             skeleton.progress = progress;
             skeleton.initialization_failure = failure;
-            model_view.show_when_ready(if complete {
-                crate::ui::ModelViewKind::Dual
-            } else {
-                view
-            });
+            if let Some(view) = view {
+                model_view.show_when_ready(if complete {
+                    crate::ui::ModelViewKind::Dual
+                } else {
+                    view
+                });
+            }
         }
 
         JobResult::StageCompleted {

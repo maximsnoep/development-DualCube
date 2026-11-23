@@ -2,6 +2,7 @@
 
 pub mod certify;
 pub mod draw_loops;
+pub mod edit;
 pub mod geometry;
 pub mod label;
 pub mod model;

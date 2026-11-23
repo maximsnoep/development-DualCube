@@ -176,7 +176,7 @@ fn boundary_measures(
         .collect()
 }
 
-fn patch_measures(mesh: &Mesh<INPUT>, skeleton: &Skeleton) -> SkeletonResult<Patches> {
+pub(crate) fn patch_measures(mesh: &Mesh<INPUT>, skeleton: &Skeleton) -> SkeletonResult<Patches> {
     let geometry = crate::geometry::SurfaceGeometry::build(mesh, skeleton)?;
     let mut areas: SecondaryMap<_, f64> = skeleton.nodes.keys().map(|n| (n, 0.)).collect();
     let mut moments: SecondaryMap<_, Vector3D> = skeleton
@@ -471,34 +471,25 @@ fn dissolve(
     edge: SkeletonEdgeID,
     keep: SkeletonNodeID,
 ) -> SkeletonResult<()> {
-    let skeleton = &mut labeled.skeleton;
-    let removed = skeleton.edges.remove(edge).ok_or("Missing edge")?;
-    let other = removed
-        .nodes
-        .into_iter()
-        .find(|&n| n != keep)
-        .ok_or("Edge does not join `keep` to another node")?;
+    let skeleton = &labeled.skeleton;
+    let other = skeleton.edges.get(edge).ok_or("Missing edge")?.other(keep);
+    if other == keep {
+        return Err("Edge does not join `keep` to another node".into());
+    }
     let mut neighbors = HashSet::new();
-    for data in skeleton.edges.values_mut() {
-        for n in &mut data.nodes {
-            if *n == other {
-                *n = keep;
-            }
+    for (e, data) in &skeleton.edges {
+        if e == edge || !data.nodes.iter().any(|&n| n == keep || n == other) {
+            continue;
         }
-        if data.nodes[0] == data.nodes[1] {
+        let nodes = data.nodes.map(|n| if n == other { keep } else { n });
+        if nodes[0] == nodes[1] {
             return Err("Merging would create a self-loop".into());
         }
-        if data.nodes.contains(&keep) {
-            let neighbor = data.other(keep);
-            if !neighbors.insert(neighbor) {
-                return Err("Merging would create parallel edges".into());
-            }
+        if !neighbors.insert(nodes[usize::from(nodes[0] == keep)]) {
+            return Err("Merging would create parallel edges".into());
         }
     }
-    for crossing in removed.boundary.crossings {
-        skeleton.surface.remove(mesh, crossing);
-    }
-    skeleton.nodes.remove(other);
+    crate::edit::merge(mesh, &mut labeled.skeleton, edge, keep);
     labeled.labels.remove(edge);
     Ok(())
 }

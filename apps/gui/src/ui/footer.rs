@@ -107,6 +107,7 @@ pub fn show(
                         InteractiveMode::None => "automatic",
                         InteractiveMode::LoopModification => "manual loops",
                         InteractiveMode::SegmentationModification => "manual seg",
+                        InteractiveMode::SkeletonModification => "manual skel",
                     };
                     let job_status = job_state.request.map_or_else(
                         || "idle".to_string(),

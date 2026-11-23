@@ -9,6 +9,7 @@ pub enum InteractiveMode {
     None,
     LoopModification,
     SegmentationModification,
+    SkeletonModification,
 }
 
 /// Cached interactive control previews.
@@ -26,7 +27,11 @@ pub struct CacheResource {
     // Vertex lookup of the layout's granulated mesh (rebuilding it every frame is expensive), with the layout it was
     // built for (number of vertices and faces, and alignment).
     pub granulated_lookup: Option<((usize, usize, u64), std::sync::Arc<VertLocation<INPUT>>)>,
+    // Crossing positions per boundary of the shown skeleton, with a hash of its boundaries.
+    pub skeleton_boundaries: Option<(u64, std::sync::Arc<SkeletonBoundaries>)>,
 }
+
+pub type SkeletonBoundaries = Vec<(dualcube::skeleton::SkeletonEdgeID, Vec<Vector3D>)>;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct LoopPreviewKey {
