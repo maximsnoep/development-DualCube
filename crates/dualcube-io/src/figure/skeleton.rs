@@ -21,7 +21,9 @@ const EDGE_WIDTH: f64 = 0.009;
 const NON_TREE_WIDTH: f64 = 0.02;
 const BOUNDARY_WIDTH: f64 = 0.004;
 // The loops of a cut system (few, so wider).
-const CUT_WIDTH: f64 = 0.008;
+const CUT_WIDTH: f64 = 0.012;
+// How far the shading of the plain input mesh under loops is flattened, so that its far side is not dark.
+const FLAT_SURFACE: f32 = 0.7;
 const QUAD_EDGE_WIDTH: f64 = 0.0012;
 const QUAD_PATH_WIDTH: f64 = 0.004;
 // The width of the edges between the node cubes (in units of the cubes).
@@ -88,7 +90,7 @@ pub(super) fn deflated(model: &Model<'_>) -> Option<Vec<Item>> {
     let mut items = ghost(model);
     let look = Look {
         two_sided: true,
-        lighten: 0.,
+        ..Look::default()
     };
     let faces = mesh_faces(mesh, |_| Some(GRAY));
     items.extend(surface(faces, &model.camera, look, &[], &[]));
@@ -99,8 +101,8 @@ pub(super) fn deflated(model: &Model<'_>) -> Option<Vec<Item>> {
 fn ghost(model: &Model<'_>) -> Vec<Item> {
     let faces = mesh_faces(&model.solution.mesh_ref, |_| Some(model.style.surface));
     let look = Look {
-        two_sided: false,
         lighten: GHOST,
+        ..Look::default()
     };
     surface(faces, &model.camera, look, &[], &[])
 }
@@ -162,15 +164,19 @@ fn plain_boundaries(
     for line in &mut lines {
         line.width = width;
     }
-    Some(surface(faces, &model.camera, Look::default(), &[], &lines))
+    let look = Look {
+        flatten: FLAT_SURFACE,
+        ..Look::default()
+    };
+    Some(surface(faces, &model.camera, look, &[], &lines))
 }
 
 pub(super) fn combined(model: &Model<'_>) -> Option<Vec<Item>> {
     let current = current(model)?;
     let (faces, _) = patch_surface(model, current, &palette(model), |_| true)?;
     let look = Look {
-        two_sided: false,
         lighten: LIGHT_PATCHES,
+        ..Look::default()
     };
     let mut items = surface(faces, &model.camera, look, &[], &[]);
     items.extend(labeled_graph(model).unwrap_or_else(|| plain_graph(model, current)));

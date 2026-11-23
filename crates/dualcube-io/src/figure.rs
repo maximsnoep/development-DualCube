@@ -628,11 +628,13 @@ fn mesh_faces<M: Tag>(mesh: &Mesh<M>, color: impl Fn(FaceKey<M>) -> Option<Rgb>)
 }
 
 // How the faces of a surface are drawn: also those facing away (for surfaces that are not closed and consistently
-// oriented), and how far their shaded colors are lightened toward white.
+// oriented), how far their shaded colors are lightened toward white, and how far their shading is flattened (1: one
+// uniform color).
 #[derive(Clone, Copy, Default)]
 struct Look {
     two_sided: bool,
     lighten: f32,
+    flatten: f32,
 }
 
 // A line on a surface (width as a fraction of the figure's size); drawn where the surface does not hide it.
@@ -643,7 +645,11 @@ struct SurfaceLine {
 }
 
 fn mix(color: Rgb, toward: Rgb, t: f32) -> Rgb {
-    [0, 1, 2].map(|k| color[k] + (toward[k] - color[k]) * t)
+    [0, 1, 2].map(|k| mix_scalar(color[k], toward[k], t))
+}
+
+fn mix_scalar(value: f32, toward: f32, t: f32) -> f32 {
+    value + (toward - value) * t
 }
 
 /// Muted colors for the regions (patches, nodes).
@@ -845,7 +851,11 @@ fn surface(
         if let Some(base) = color {
             items.push(Item::Polygon {
                 points: corners.iter().map(|&p| camera.project(p)).collect(),
-                fill: mix(scaled(*base, camera.shade(*normal)), [1.; 3], look.lighten),
+                fill: mix(
+                    scaled(*base, mix_scalar(camera.shade(*normal), 1., look.flatten)),
+                    [1.; 3],
+                    look.lighten,
+                ),
             });
         }
     }

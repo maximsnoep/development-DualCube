@@ -293,7 +293,7 @@ fn build(
                     let cuts =
                         boundary_lines(&geometry, |e| !tree.contains(&e), scale, translation);
                     // Few loops, so wider.
-                    object.gizmo(cuts, 3., -0.001, SkeletonLayer::CutSystem.label());
+                    object.gizmo(cuts, 4.5, -0.001, SkeletonLayer::CutSystem.label());
                 }
             }
             Err(error) => warn!("Could not build {} geometry: {error}", patches.label()),
