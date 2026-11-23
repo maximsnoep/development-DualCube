@@ -304,6 +304,16 @@ fn placement_stop_and_cube_view_succeed_without_running_optimization() {
 fn optimized_view_needs_complete_initialization() {
     let launch = parse(&["--load=a.obj", "--auto-start=skeleton", "--view=optimized"]).unwrap();
     assert_eq!(launch.view, Some(ModelViewKind::Optimized));
+    let launch = parse(&["--load=a.obj", "--auto-start=skeleton", "--view=cut-system"]).unwrap();
+    assert_eq!(launch.view, Some(ModelViewKind::CutSystem));
+    assert!(
+        parse(&[
+            "--load=a.obj",
+            "--stop-after=placement",
+            "--view=cut-system"
+        ])
+        .is_err()
+    );
     assert!(parse(&["--load=a.obj", "--stop-after=placement", "--view=optimized"]).is_err());
 }
 

@@ -25,6 +25,7 @@ pub enum SkeletonLayer {
     Boundaries,
     OptimizedPatches,
     OptimizedBoundaries,
+    CutSystem,
     Deflated,
     PlacedSkeleton,
     NodeCubes,
@@ -37,7 +38,7 @@ pub enum SkeletonLayer {
 }
 
 impl SkeletonLayer {
-    pub const ALL: [Self; 19] = [
+    pub const ALL: [Self; 20] = [
         Self::Skeleton,
         Self::GraySkeleton,
         Self::Raw,
@@ -48,6 +49,7 @@ impl SkeletonLayer {
         Self::Boundaries,
         Self::OptimizedPatches,
         Self::OptimizedBoundaries,
+        Self::CutSystem,
         Self::Deflated,
         Self::PlacedSkeleton,
         Self::NodeCubes,
@@ -71,6 +73,7 @@ impl SkeletonLayer {
             Self::Boundaries => "patch boundaries",
             Self::OptimizedPatches => "optimized patches",
             Self::OptimizedBoundaries => "optimized patch boundaries",
+            Self::CutSystem => "cut system",
             Self::Deflated => "deflated",
             Self::PlacedSkeleton => "placed skeleton",
             Self::NodeCubes => "node cubes",
@@ -95,6 +98,7 @@ impl SkeletonLayer {
                 | Self::Boundaries
                 | Self::OptimizedPatches
                 | Self::OptimizedBoundaries
+                | Self::CutSystem
                 | Self::LiftedLoops
         )
     }
@@ -281,6 +285,16 @@ fn build(
             Ok(geometry) => {
                 let layers = (patches, boundaries);
                 add_surface(&mut object, &colors, &geometry, layers, scale, translation);
+                // A minimal cut system: the loops off the spanning tree certification starts from.
+                if patches == SkeletonLayer::OptimizedPatches
+                    && let Some(tree) =
+                        dualcube::skeleton::certify::spanning_tree(mesh, skeleton, &[])
+                {
+                    let cuts =
+                        boundary_lines(&geometry, |e| !tree.contains(&e), scale, translation);
+                    // Few loops, so wider.
+                    object.gizmo(cuts, 3., -0.001, SkeletonLayer::CutSystem.label());
+                }
             }
             Err(error) => warn!("Could not build {} geometry: {error}", patches.label()),
         }
@@ -323,17 +337,28 @@ fn add_surface(
             RenderAsset::TranslucentMesh(patches),
         );
     }
-    let mut boundaries = GizmoAsset::new();
-    for boundary in &geometry.boundaries {
+    let boundaries = boundary_lines(geometry, |_| true, scale, translation);
+    object.gizmo(boundaries, 1.5, -0.001, boundary_layer.label());
+}
+
+// The patch boundaries it keeps, as lines.
+fn boundary_lines(
+    geometry: &dualcube::skeleton::geometry::SurfaceGeometry,
+    keep: impl Fn(SkeletonEdgeID) -> bool,
+    scale: f64,
+    translation: Vector3D,
+) -> GizmoAsset {
+    let mut lines = GizmoAsset::new();
+    for boundary in geometry.boundaries.iter().filter(|b| keep(b.edge)) {
         for pair in boundary.points.windows(2) {
-            boundaries.line(
+            lines.line(
                 crate::render::gizmos::world_to_view(pair[0], translation, scale),
                 crate::render::gizmos::world_to_view(pair[1], translation, scale),
                 colors::to_bevy(colors::DARK_GRAY),
             );
         }
     }
-    object.gizmo(boundaries, 1.5, -0.001, boundary_layer.label());
+    lines
 }
 
 /// All loops as bands on the surface, as in the Dual view (see `input_mesh::loop_bands`).

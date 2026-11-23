@@ -6,6 +6,7 @@ use super::{
 };
 use crate::SkeletonExtraction;
 use dualcube::prelude::*;
+use dualcube::skeleton::certify::spanning_tree;
 use dualcube::skeleton::geometry::SurfaceGeometry;
 use dualcube::skeleton::skeletonize::Extraction;
 use dualcube::skeleton::{
@@ -19,6 +20,8 @@ const EDGE_WIDTH: f64 = 0.009;
 // Edges outside the labeling's spanning tree (thicker, as in the GUI).
 const NON_TREE_WIDTH: f64 = 0.02;
 const BOUNDARY_WIDTH: f64 = 0.004;
+// The loops of a cut system (few, so wider).
+const CUT_WIDTH: f64 = 0.008;
 const QUAD_EDGE_WIDTH: f64 = 0.0012;
 const QUAD_PATH_WIDTH: f64 = 0.004;
 // The width of the edges between the node cubes (in units of the cubes).
@@ -128,22 +131,43 @@ pub(super) fn patches(model: &Model<'_>, optimized: bool) -> Option<Vec<Item>> {
     } else {
         current
     };
-    let (faces, lines) = patch_surface(model, skeleton, &palette(model))?;
+    let (faces, lines) = patch_surface(model, skeleton, &palette(model), |_| true)?;
     Some(surface(faces, &model.camera, Look::default(), &[], &lines))
 }
 
 // The patch boundaries of the skeleton on the input mesh in its plain color.
 pub(super) fn patch_boundaries(model: &Model<'_>) -> Option<Vec<Item>> {
-    let (mut faces, lines) = patch_surface(model, current(model)?, &HashMap::new())?;
+    plain_boundaries(model, current(model)?, |_| true, BOUNDARY_WIDTH)
+}
+
+// A minimal cut system of the optimized skeleton: the boundary loops off a spanning tree (the one certification
+// starts from, preferring long loops in the tree, so the g loops left are short).
+pub(super) fn cut_system(model: &Model<'_>) -> Option<Vec<Item>> {
+    let skeleton = &model.skeleton.optimized.as_ref()?.labeled.skeleton;
+    let tree = spanning_tree(&model.solution.mesh_ref, skeleton, &[])?;
+    plain_boundaries(model, skeleton, |edge| !tree.contains(&edge), CUT_WIDTH)
+}
+
+// The boundaries it keeps of the skeleton's patches (this wide), on the input mesh in its plain color.
+fn plain_boundaries(
+    model: &Model<'_>,
+    skeleton: &Skeleton,
+    keep: impl Fn(SkeletonEdgeID) -> bool,
+    width: f64,
+) -> Option<Vec<Item>> {
+    let (mut faces, mut lines) = patch_surface(model, skeleton, &HashMap::new(), keep)?;
     for face in &mut faces {
         face.color = Some(model.style.surface);
+    }
+    for line in &mut lines {
+        line.width = width;
     }
     Some(surface(faces, &model.camera, Look::default(), &[], &lines))
 }
 
 pub(super) fn combined(model: &Model<'_>) -> Option<Vec<Item>> {
     let current = current(model)?;
-    let (faces, _) = patch_surface(model, current, &palette(model))?;
+    let (faces, _) = patch_surface(model, current, &palette(model), |_| true)?;
     let look = Look {
         two_sided: false,
         lighten: LIGHT_PATCHES,
@@ -335,11 +359,12 @@ pub(super) fn quad(model: &Model<'_>) -> Option<Vec<Item>> {
     Some(surface(faces, &model.camera, Look::default(), &[], &lines))
 }
 
-// The input mesh cut into the skeleton's patches (colored by node), and their boundaries.
+// The input mesh cut into the skeleton's patches (colored by node), and the boundaries it keeps.
 fn patch_surface(
     model: &Model<'_>,
     skeleton: &Skeleton,
     colors: &HashMap<SkeletonNodeID, Rgb>,
+    keep: impl Fn(SkeletonEdgeID) -> bool,
 ) -> Option<(Vec<Face>, Vec<SurfaceLine>)> {
     let geometry = SurfaceGeometry::build(&model.solution.mesh_ref, skeleton).ok()?;
     let faces = geometry
@@ -360,6 +385,7 @@ fn patch_surface(
     let lines = geometry
         .boundaries
         .into_iter()
+        .filter(|boundary| keep(boundary.edge))
         .map(|boundary| SurfaceLine {
             points: boundary.points,
             color: model.style.line,

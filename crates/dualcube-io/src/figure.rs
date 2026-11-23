@@ -43,6 +43,9 @@ pub enum Figure {
     SkeletonLoops,
     /// The patches after optimization.
     OptimizedPatches,
+    /// A minimal cut system: the g boundary loops of the optimized skeleton off a spanning tree, on the plain input
+    /// mesh. Cutting along their disks leaves a ball.
+    CutSystem,
     /// The patches (light) with the skeleton graph.
     Combined,
     /// The tree labeling, before cycle repairs.
@@ -72,7 +75,7 @@ pub enum Figure {
 }
 
 impl Figure {
-    pub const ALL: [Self; 21] = [
+    pub const ALL: [Self; 22] = [
         Self::InputMesh,
         Self::Deflated,
         Self::RawSkeleton,
@@ -81,6 +84,7 @@ impl Figure {
         Self::Patches,
         Self::SkeletonLoops,
         Self::OptimizedPatches,
+        Self::CutSystem,
         Self::Combined,
         Self::TreeLabeled,
         Self::Labeled,
@@ -108,6 +112,7 @@ impl Figure {
             Self::Patches => "skeleton patches",
             Self::SkeletonLoops => "skeleton loops",
             Self::OptimizedPatches => "optimized patches",
+            Self::CutSystem => "minimal cut system",
             Self::Combined => "patches and skeleton",
             Self::TreeLabeled => "tree labeled skeleton",
             Self::Labeled => "labeled skeleton",
@@ -136,6 +141,7 @@ impl Figure {
             Self::Patches => "patches",
             Self::SkeletonLoops => "skeleton_loops",
             Self::OptimizedPatches => "optimized",
+            Self::CutSystem => "cut_system",
             Self::Combined => "combined",
             Self::TreeLabeled => "tree",
             Self::Labeled => "labeled",
@@ -306,6 +312,7 @@ pub fn figure_svg(
         Figure::Patches => skeleton::patches(&model, false)?,
         Figure::SkeletonLoops => skeleton::patch_boundaries(&model)?,
         Figure::OptimizedPatches => skeleton::patches(&model, true)?,
+        Figure::CutSystem => skeleton::cut_system(&model)?,
         Figure::Combined => skeleton::combined(&model)?,
         Figure::TreeLabeled => skeleton::graph(&model, skeleton::Graph::Tree)?,
         Figure::Labeled => skeleton::graph(&model, skeleton::Graph::Labeled)?,

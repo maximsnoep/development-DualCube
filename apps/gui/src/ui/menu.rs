@@ -59,6 +59,8 @@ pub enum ModelViewKind {
     /// The patch boundaries (the skeleton's loops) on the plain input mesh.
     SkeletonLoops,
     Optimized,
+    /// A minimal cut system of the optimized skeleton (a figure only; the pipeline does not use it).
+    CutSystem,
     Combined,
     /// The tree labeling, before cycle repairs.
     Tree,
@@ -80,7 +82,7 @@ pub enum ModelViewKind {
 }
 
 impl ModelViewKind {
-    const ALL: [Self; 20] = [
+    const ALL: [Self; 21] = [
         Self::Input,
         Self::Deflated,
         Self::Raw,
@@ -89,6 +91,7 @@ impl ModelViewKind {
         Self::Patches,
         Self::SkeletonLoops,
         Self::Optimized,
+        Self::CutSystem,
         Self::Combined,
         Self::Tree,
         Self::Labeled,
@@ -122,6 +125,7 @@ impl ModelViewKind {
             Self::Patches => "Patches",
             Self::SkeletonLoops => "Skeleton loops",
             Self::Optimized => "Optimized",
+            Self::CutSystem => "Cut system",
             Self::Combined => "Combined",
             Self::Tree => "Tree",
             Self::Labeled => "Labeled",
@@ -153,6 +157,7 @@ impl ModelViewKind {
                 }
             }
             Self::SkeletonLoops => const { &["lambert", SkeletonLayer::Boundaries.label()] },
+            Self::CutSystem => const { &["lambert", SkeletonLayer::CutSystem.label()] },
             Self::Optimized => {
                 const {
                     &[
@@ -352,7 +357,9 @@ pub fn show(
                     | ModelViewKind::Cubes
                     | ModelViewKind::CubesPrimal
                     | ModelViewKind::CubesDual => skeleton.progress.realized.is_some(),
-                    ModelViewKind::Optimized => skeleton.progress.optimized.is_some(),
+                    ModelViewKind::Optimized | ModelViewKind::CutSystem => {
+                        skeleton.progress.optimized.is_some()
+                    }
                     ModelViewKind::Labeled => {
                         skeleton.progress.labeled.is_some() || skeleton.progress.labeling.is_some()
                     }

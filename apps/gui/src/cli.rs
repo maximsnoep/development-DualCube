@@ -20,8 +20,9 @@ Run from the repository root:
   --stop-after <stage>       Run through input, deflation, surgery, refinement, certification,
                              labeling, placement, optimization, or drawing
   --view <view>              input, deflated, raw, skeleton, skeleton-gray, tree, labeled,
-                             patches, skeleton-loops, optimized, combined, placed-skeleton,
-                             node-cubes, cubes, cubes-primal, cubes-dual, lifted
+                             patches, skeleton-loops, optimized, cut-system, combined,
+                             placed-skeleton, node-cubes, cubes, cubes-primal, cubes-dual,
+                             lifted
   --refinement               Enable embedding refinement (default off)
   --no-refinement            Skip embedding refinement
   --iterations <count>      Deflation iteration limit (default 50)
@@ -136,6 +137,7 @@ impl Launch {
                         "patches" => ModelViewKind::Patches,
                         "skeleton-loops" => ModelViewKind::SkeletonLoops,
                         "optimized" => ModelViewKind::Optimized,
+                        "cut-system" => ModelViewKind::CutSystem,
                         "combined" => ModelViewKind::Combined,
                         "placed-skeleton" => ModelViewKind::PlacedSkeleton,
                         "node-cubes" => ModelViewKind::NodeCubes,
@@ -200,7 +202,7 @@ impl Launch {
             let needs = match view {
                 ModelViewKind::Input => None,
                 ModelViewKind::Deflated => Some(Stage::Deflation),
-                ModelViewKind::Optimized => Some(Stage::Optimization),
+                ModelViewKind::Optimized | ModelViewKind::CutSystem => Some(Stage::Optimization),
                 ModelViewKind::Lifted => Some(Stage::LoopDrawing),
                 ModelViewKind::PlacedSkeleton
                 | ModelViewKind::NodeCubes
