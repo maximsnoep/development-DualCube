@@ -323,6 +323,13 @@ fn skeleton_loops_need_extraction() {
     ])
     .unwrap();
     assert_eq!(launch.view, Some(ModelViewKind::SkeletonLoops));
+    let launch = parse(&[
+        "--load=a.obj",
+        "--stop-after=surgery",
+        "--view=skeleton-gray",
+    ])
+    .unwrap();
+    assert_eq!(launch.view, Some(ModelViewKind::GraySkeleton));
     assert!(
         parse(&[
             "--load=a.obj",

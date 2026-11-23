@@ -16,6 +16,7 @@ use std::sync::Arc;
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum SkeletonLayer {
     Skeleton,
+    GraySkeleton,
     Raw,
     TreeLabeled,
     Labeled,
@@ -33,8 +34,9 @@ pub enum SkeletonLayer {
 }
 
 impl SkeletonLayer {
-    pub const ALL: [Self; 15] = [
+    pub const ALL: [Self; 16] = [
         Self::Skeleton,
+        Self::GraySkeleton,
         Self::Raw,
         Self::TreeLabeled,
         Self::Labeled,
@@ -54,6 +56,7 @@ impl SkeletonLayer {
     pub const fn label(self) -> &'static str {
         match self {
             Self::Skeleton => "skeleton",
+            Self::GraySkeleton => "gray skeleton",
             Self::Raw => "raw skeleton",
             Self::TreeLabeled => "tree labeled skeleton",
             Self::Labeled => "labeled skeleton",
@@ -188,6 +191,10 @@ fn build(
     object.add(
         SkeletonLayer::Skeleton.label(),
         RenderAsset::Mesh(graph(current, None, &colors, scale, translation)),
+    );
+    object.add(
+        SkeletonLayer::GraySkeleton.label(),
+        RenderAsset::Mesh(graph(current, None, &HashMap::new(), scale, translation)),
     );
     object.add(
         SkeletonLayer::Raw.label(),

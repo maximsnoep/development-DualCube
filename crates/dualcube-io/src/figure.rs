@@ -35,6 +35,8 @@ pub enum Figure {
     RawSkeleton,
     /// The skeleton as labeled (with its junction splits and repairs).
     Skeleton,
+    /// The skeleton with gray nodes.
+    GraySkeleton,
     /// The input mesh colored by the skeleton's patches, with their boundaries.
     Patches,
     /// The boundaries of the skeleton's patches (its loops) on the plain input mesh.
@@ -66,11 +68,12 @@ pub enum Figure {
 }
 
 impl Figure {
-    pub const ALL: [Self; 18] = [
+    pub const ALL: [Self; 19] = [
         Self::InputMesh,
         Self::Deflated,
         Self::RawSkeleton,
         Self::Skeleton,
+        Self::GraySkeleton,
         Self::Patches,
         Self::SkeletonLoops,
         Self::OptimizedPatches,
@@ -95,6 +98,7 @@ impl Figure {
             Self::Deflated => "deflated mesh",
             Self::RawSkeleton => "raw skeleton",
             Self::Skeleton => "skeleton",
+            Self::GraySkeleton => "gray skeleton",
             Self::Patches => "skeleton patches",
             Self::SkeletonLoops => "skeleton loops",
             Self::OptimizedPatches => "optimized patches",
@@ -120,6 +124,7 @@ impl Figure {
             Self::Deflated => "deflated",
             Self::RawSkeleton => "raw",
             Self::Skeleton => "skeleton",
+            Self::GraySkeleton => "skeleton_gray",
             Self::Patches => "patches",
             Self::SkeletonLoops => "skeleton_loops",
             Self::OptimizedPatches => "optimized",
@@ -278,6 +283,7 @@ pub fn figure_svg(
         Figure::Deflated => skeleton::deflated(&model)?,
         Figure::RawSkeleton => skeleton::graph(&model, skeleton::Graph::Raw)?,
         Figure::Skeleton => skeleton::graph(&model, skeleton::Graph::Current)?,
+        Figure::GraySkeleton => skeleton::graph(&model, skeleton::Graph::Gray)?,
         Figure::Patches => skeleton::patches(&model, false)?,
         Figure::SkeletonLoops => skeleton::patch_boundaries(&model)?,
         Figure::OptimizedPatches => skeleton::patches(&model, true)?,

@@ -31,6 +31,8 @@ const LIGHT_PATCHES: f32 = 0.55;
 pub(super) enum Graph {
     Raw,
     Current,
+    /// The current skeleton with gray nodes.
+    Gray,
     Tree,
     Labeled,
 }
@@ -100,6 +102,12 @@ pub(super) fn graph(model: &Model<'_>, graph: Graph) -> Option<Vec<Item>> {
     let edges = match graph {
         Graph::Raw => plain_graph(model, &extraction(model)?.raw),
         Graph::Current => plain_graph(model, current(model)?),
+        Graph::Gray => nodes_and_edges(
+            model,
+            current(model)?,
+            |_| (model.style.line, EDGE_WIDTH),
+            |_| GRAY,
+        ),
         Graph::Tree => tree_graph(model)?,
         Graph::Labeled => labeled_graph(model)?,
     };

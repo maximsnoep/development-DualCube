@@ -53,6 +53,8 @@ pub enum ModelViewKind {
     Deflated,
     Raw,
     Skeleton,
+    /// The skeleton with gray nodes.
+    GraySkeleton,
     Patches,
     /// The patch boundaries (the skeleton's loops) on the plain input mesh.
     SkeletonLoops,
@@ -74,11 +76,12 @@ pub enum ModelViewKind {
 }
 
 impl ModelViewKind {
-    const ALL: [Self; 17] = [
+    const ALL: [Self; 18] = [
         Self::Input,
         Self::Deflated,
         Self::Raw,
         Self::Skeleton,
+        Self::GraySkeleton,
         Self::Patches,
         Self::SkeletonLoops,
         Self::Optimized,
@@ -109,6 +112,7 @@ impl ModelViewKind {
             Self::Deflated => "Deflated",
             Self::Raw => "Raw",
             Self::Skeleton => "Skeleton",
+            Self::GraySkeleton => "Skeleton gray",
             Self::Patches => "Patches",
             Self::SkeletonLoops => "Skeleton loops",
             Self::Optimized => "Optimized",
@@ -131,6 +135,7 @@ impl ModelViewKind {
             Self::Deflated => const { &[SkeletonLayer::Deflated.label()] },
             Self::Raw => const { &[SkeletonLayer::Raw.label(), "wireframe"] },
             Self::Skeleton => const { &[SkeletonLayer::Skeleton.label(), "wireframe"] },
+            Self::GraySkeleton => const { &[SkeletonLayer::GraySkeleton.label(), "wireframe"] },
             Self::Patches => {
                 const {
                     &[
@@ -318,6 +323,7 @@ pub fn show(
                     ModelViewKind::Primal => current.layout.is_some() || evolving,
                     ModelViewKind::Quad => current.quad.is_some(),
                     ModelViewKind::Skeleton
+                    | ModelViewKind::GraySkeleton
                     | ModelViewKind::Raw
                     | ModelViewKind::Combined
                     | ModelViewKind::Patches

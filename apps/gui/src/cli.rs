@@ -19,9 +19,9 @@ Run from the repository root:
   --auto-start skeleton      Run skeleton initialization after loading
   --stop-after <stage>       Run through input, deflation, surgery, refinement, certification,
                              labeling, placement, optimization, or drawing
-  --view <view>              input, deflated, raw, skeleton, tree, labeled, patches,
-                             skeleton-loops, optimized, combined, cubes, cubes-primal,
-                             cubes-dual, lifted
+  --view <view>              input, deflated, raw, skeleton, skeleton-gray, tree, labeled,
+                             patches, skeleton-loops, optimized, combined, cubes,
+                             cubes-primal, cubes-dual, lifted
   --refinement               Enable embedding refinement (default off)
   --no-refinement            Skip embedding refinement
   --iterations <count>      Deflation iteration limit (default 50)
@@ -129,6 +129,7 @@ impl Launch {
                         "deflated" => ModelViewKind::Deflated,
                         "raw" => ModelViewKind::Raw,
                         "skeleton" => ModelViewKind::Skeleton,
+                        "skeleton-gray" => ModelViewKind::GraySkeleton,
                         "tree" => ModelViewKind::Tree,
                         "labeled" => ModelViewKind::Labeled,
                         "lifted" => ModelViewKind::Lifted,
