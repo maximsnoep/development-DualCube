@@ -6,7 +6,6 @@ use super::{
 };
 use crate::SkeletonExtraction;
 use dualcube::prelude::*;
-use dualcube::skeleton::certify::spanning_tree;
 use dualcube::skeleton::geometry::SurfaceGeometry;
 use dualcube::skeleton::skeletonize::Extraction;
 use dualcube::skeleton::{
@@ -142,12 +141,11 @@ pub(super) fn patch_boundaries(model: &Model<'_>) -> Option<Vec<Item>> {
     plain_boundaries(model, current(model)?, |_| true, BOUNDARY_WIDTH)
 }
 
-// A minimal cut system of the optimized skeleton: the boundary loops off a spanning tree (the one certification
-// starts from, preferring long loops in the tree, so the g loops left are short).
+// A minimal cut system of the optimized skeleton, spread out (see `dualcube::skeleton::cut_system`).
 pub(super) fn cut_system(model: &Model<'_>) -> Option<Vec<Item>> {
     let skeleton = &model.skeleton.optimized.as_ref()?.labeled.skeleton;
-    let tree = spanning_tree(&model.solution.mesh_ref, skeleton, &[])?;
-    plain_boundaries(model, skeleton, |edge| !tree.contains(&edge), CUT_WIDTH)
+    let cuts = dualcube::skeleton::cut_system::run(&model.solution.mesh_ref, skeleton);
+    plain_boundaries(model, skeleton, |edge| cuts.contains(&edge), CUT_WIDTH)
 }
 
 // The boundaries it keeps of the skeleton's patches (this wide), on the input mesh in its plain color.

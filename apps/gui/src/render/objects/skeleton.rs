@@ -285,13 +285,10 @@ fn build(
             Ok(geometry) => {
                 let layers = (patches, boundaries);
                 add_surface(&mut object, &colors, &geometry, layers, scale, translation);
-                // A minimal cut system: the loops off the spanning tree certification starts from.
-                if patches == SkeletonLayer::OptimizedPatches
-                    && let Some(tree) =
-                        dualcube::skeleton::certify::spanning_tree(mesh, skeleton, &[])
-                {
-                    let cuts =
-                        boundary_lines(&geometry, |e| !tree.contains(&e), scale, translation);
+                // A minimal cut system, spread out.
+                if patches == SkeletonLayer::OptimizedPatches {
+                    let cuts = dualcube::skeleton::cut_system::run(mesh, skeleton);
+                    let cuts = boundary_lines(&geometry, |e| cuts.contains(&e), scale, translation);
                     // Few loops, so wider.
                     object.gizmo(cuts, 4.5, -0.001, SkeletonLayer::CutSystem.label());
                 }

@@ -43,8 +43,8 @@ pub enum Figure {
     SkeletonLoops,
     /// The patches after optimization.
     OptimizedPatches,
-    /// A minimal cut system: the g boundary loops of the optimized skeleton off a spanning tree, on the plain input
-    /// mesh. Cutting along their disks leaves a ball.
+    /// A minimal cut system: g boundary loops of the optimized skeleton off a spanning tree (spread out), on the plain
+    /// input mesh. Cutting along their disks leaves a ball.
     CutSystem,
     /// The patches (light) with the skeleton graph.
     Combined,
