@@ -54,6 +54,8 @@ pub enum ModelViewKind {
     Raw,
     Skeleton,
     Patches,
+    /// The patch boundaries (the skeleton's loops) on the plain input mesh.
+    SkeletonLoops,
     Optimized,
     Combined,
     /// The tree labeling, before cycle repairs.
@@ -72,12 +74,13 @@ pub enum ModelViewKind {
 }
 
 impl ModelViewKind {
-    const ALL: [Self; 16] = [
+    const ALL: [Self; 17] = [
         Self::Input,
         Self::Deflated,
         Self::Raw,
         Self::Skeleton,
         Self::Patches,
+        Self::SkeletonLoops,
         Self::Optimized,
         Self::Combined,
         Self::Tree,
@@ -107,6 +110,7 @@ impl ModelViewKind {
             Self::Raw => "Raw",
             Self::Skeleton => "Skeleton",
             Self::Patches => "Patches",
+            Self::SkeletonLoops => "Skeleton loops",
             Self::Optimized => "Optimized",
             Self::Combined => "Combined",
             Self::Tree => "Tree",
@@ -135,6 +139,7 @@ impl ModelViewKind {
                     ]
                 }
             }
+            Self::SkeletonLoops => const { &["lambert", SkeletonLayer::Boundaries.label()] },
             Self::Optimized => {
                 const {
                     &[
@@ -315,7 +320,8 @@ pub fn show(
                     ModelViewKind::Skeleton
                     | ModelViewKind::Raw
                     | ModelViewKind::Combined
-                    | ModelViewKind::Patches => skeleton.extraction().is_some(),
+                    | ModelViewKind::Patches
+                    | ModelViewKind::SkeletonLoops => skeleton.extraction().is_some(),
                     ModelViewKind::Deflated => skeleton.contracted_mesh().is_some(),
                     ModelViewKind::Cubes
                     | ModelViewKind::CubesPrimal

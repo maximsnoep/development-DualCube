@@ -20,8 +20,8 @@ Run from the repository root:
   --stop-after <stage>       Run through input, deflation, surgery, refinement, certification,
                              labeling, placement, optimization, or drawing
   --view <view>              input, deflated, raw, skeleton, tree, labeled, patches,
-                             optimized, combined, cubes, cubes-primal, cubes-dual,
-                             lifted
+                             skeleton-loops, optimized, combined, cubes, cubes-primal,
+                             cubes-dual, lifted
   --refinement               Enable embedding refinement (default off)
   --no-refinement            Skip embedding refinement
   --iterations <count>      Deflation iteration limit (default 50)
@@ -133,6 +133,7 @@ impl Launch {
                         "labeled" => ModelViewKind::Labeled,
                         "lifted" => ModelViewKind::Lifted,
                         "patches" => ModelViewKind::Patches,
+                        "skeleton-loops" => ModelViewKind::SkeletonLoops,
                         "optimized" => ModelViewKind::Optimized,
                         "combined" => ModelViewKind::Combined,
                         "cubes" => ModelViewKind::Cubes,

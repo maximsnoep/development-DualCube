@@ -119,6 +119,15 @@ pub(super) fn patches(model: &Model<'_>, optimized: bool) -> Option<Vec<Item>> {
     Some(surface(faces, &model.camera, Look::default(), &[], &lines))
 }
 
+// The patch boundaries of the skeleton on the input mesh in its plain color.
+pub(super) fn patch_boundaries(model: &Model<'_>) -> Option<Vec<Item>> {
+    let (mut faces, lines) = patch_surface(model, current(model)?, &HashMap::new())?;
+    for face in &mut faces {
+        face.color = Some(model.style.surface);
+    }
+    Some(surface(faces, &model.camera, Look::default(), &[], &lines))
+}
+
 pub(super) fn combined(model: &Model<'_>) -> Option<Vec<Item>> {
     let current = current(model)?;
     let (faces, _) = patch_surface(model, current, &palette(model))?;

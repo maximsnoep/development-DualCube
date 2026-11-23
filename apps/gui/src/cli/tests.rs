@@ -315,6 +315,25 @@ fn saves_may_open_in_any_skeleton_view() {
 }
 
 #[test]
+fn skeleton_loops_need_extraction() {
+    let launch = parse(&[
+        "--load=a.obj",
+        "--stop-after=surgery",
+        "--view=skeleton-loops",
+    ])
+    .unwrap();
+    assert_eq!(launch.view, Some(ModelViewKind::SkeletonLoops));
+    assert!(
+        parse(&[
+            "--load=a.obj",
+            "--stop-after=deflation",
+            "--view=skeleton-loops"
+        ])
+        .is_err()
+    );
+}
+
+#[test]
 fn cube_colorings_need_placement() {
     for (name, view) in [
         ("cubes-primal", ModelViewKind::CubesPrimal),
