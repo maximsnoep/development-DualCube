@@ -62,6 +62,8 @@ pub enum ModelViewKind {
     /// A minimal cut system of the optimized skeleton (a figure only; the pipeline does not use it).
     CutSystem,
     Combined,
+    /// The optimized patches with the optimized skeleton.
+    OptimizedCombined,
     /// The tree labeling, before cycle repairs.
     Tree,
     Labeled,
@@ -82,7 +84,7 @@ pub enum ModelViewKind {
 }
 
 impl ModelViewKind {
-    const ALL: [Self; 21] = [
+    const ALL: [Self; 22] = [
         Self::Input,
         Self::Deflated,
         Self::Raw,
@@ -93,6 +95,7 @@ impl ModelViewKind {
         Self::Optimized,
         Self::CutSystem,
         Self::Combined,
+        Self::OptimizedCombined,
         Self::Tree,
         Self::Labeled,
         Self::PlacedSkeleton,
@@ -127,6 +130,7 @@ impl ModelViewKind {
             Self::Optimized => "Optimized",
             Self::CutSystem => "Cut system",
             Self::Combined => "Combined",
+            Self::OptimizedCombined => "Optimized combined",
             Self::Tree => "Tree",
             Self::Labeled => "Labeled",
             Self::PlacedSkeleton => "Placed skeleton",
@@ -172,6 +176,15 @@ impl ModelViewKind {
                         "wireframe",
                         SkeletonLayer::TranslucentPatches.label(),
                         SkeletonLayer::Skeleton.label(),
+                    ]
+                }
+            }
+            Self::OptimizedCombined => {
+                const {
+                    &[
+                        "wireframe",
+                        SkeletonLayer::TranslucentOptimizedPatches.label(),
+                        SkeletonLayer::OptimizedSkeleton.label(),
                     ]
                 }
             }
@@ -357,9 +370,9 @@ pub fn show(
                     | ModelViewKind::Cubes
                     | ModelViewKind::CubesPrimal
                     | ModelViewKind::CubesDual => skeleton.progress.realized.is_some(),
-                    ModelViewKind::Optimized | ModelViewKind::CutSystem => {
-                        skeleton.progress.optimized.is_some()
-                    }
+                    ModelViewKind::Optimized
+                    | ModelViewKind::CutSystem
+                    | ModelViewKind::OptimizedCombined => skeleton.progress.optimized.is_some(),
                     ModelViewKind::Labeled => {
                         skeleton.progress.labeled.is_some() || skeleton.progress.labeling.is_some()
                     }

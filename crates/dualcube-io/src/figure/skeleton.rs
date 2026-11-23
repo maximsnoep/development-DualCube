@@ -168,15 +168,32 @@ fn plain_boundaries(
     Some(surface(faces, &model.camera, look, &[], &lines))
 }
 
-pub(super) fn combined(model: &Model<'_>) -> Option<Vec<Item>> {
+// The (optimized) patches, light, with the (optimized) skeleton graph; labeled when it is.
+pub(super) fn combined(model: &Model<'_>, optimized: bool) -> Option<Vec<Item>> {
     let current = current(model)?;
-    let (faces, _) = patch_surface(model, current, &palette(model), |_| true)?;
+    let optimized = match optimized {
+        true => Some(&model.skeleton.optimized.as_ref()?.labeled),
+        false => None,
+    };
+    let skeleton = optimized.map_or(current, |labeled| &labeled.skeleton);
+    let (faces, _) = patch_surface(model, skeleton, &palette(model), |_| true)?;
     let look = Look {
         lighten: LIGHT_PATCHES,
         ..Look::default()
     };
     let mut items = surface(faces, &model.camera, look, &[], &[]);
-    items.extend(labeled_graph(model).unwrap_or_else(|| plain_graph(model, current)));
+    let graph = match optimized {
+        Some(labeled) => Some(nodes_and_edges(
+            model,
+            &model.camera,
+            &labeled.skeleton,
+            |id| labeled_edge(model, labeled.labels.get(id), false),
+            |_| GRAY,
+            Layering::EdgesOnTop,
+        )),
+        None => labeled_graph(model),
+    };
+    items.extend(graph.unwrap_or_else(|| plain_graph(model, current)));
     Some(items)
 }
 
@@ -419,12 +436,7 @@ fn plain_graph(model: &Model<'_>, skeleton: &Skeleton) -> Vec<Item> {
 // The labeling (edges in their axis colors, non-tree edges thick), else the labeled skeleton.
 fn labeled_graph(model: &Model<'_>) -> Option<Vec<Item>> {
     let save = model.skeleton;
-    let edge = |label: Option<&EdgeLabel>, non_tree: bool| {
-        (
-            label.map_or(GRAY, |label| model.style.primal[axis(label.direction)]),
-            if non_tree { NON_TREE_WIDTH } else { EDGE_WIDTH },
-        )
-    };
+    let edge = |label, non_tree| labeled_edge(model, label, non_tree);
     if let Some(attempt) = &save.labeling {
         return Some(nodes_and_edges(
             model,
@@ -444,6 +456,14 @@ fn labeled_graph(model: &Model<'_>) -> Option<Vec<Item>> {
         |_| GRAY,
         Layering::EdgesOnTop,
     ))
+}
+
+// A labeled edge in its axis color (unlabeled gray), non-tree edges thick.
+fn labeled_edge(model: &Model<'_>, label: Option<&EdgeLabel>, non_tree: bool) -> (Rgb, f64) {
+    (
+        label.map_or(GRAY, |label| model.style.primal[axis(label.direction)]),
+        if non_tree { NON_TREE_WIDTH } else { EDGE_WIDTH },
+    )
 }
 
 // The tree labeling before cycle repairs: the edges it leaves unlabeled gray and thick.

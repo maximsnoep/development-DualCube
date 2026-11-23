@@ -264,4 +264,11 @@ fn optimized_patches_keep_original_colors() {
             .contains_key(SkeletonLayer::OptimizedBoundaries.label())
     );
     assert!(SkeletonLayer::OptimizedPatches.is_surface());
+    // The optimized combined view.
+    for layer in [
+        SkeletonLayer::TranslucentOptimizedPatches,
+        SkeletonLayer::OptimizedSkeleton,
+    ] {
+        assert!(object.features.contains_key(layer.label()), "{layer:?}");
+    }
 }

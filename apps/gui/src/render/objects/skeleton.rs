@@ -24,7 +24,9 @@ pub enum SkeletonLayer {
     TranslucentPatches,
     Boundaries,
     OptimizedPatches,
+    TranslucentOptimizedPatches,
     OptimizedBoundaries,
+    OptimizedSkeleton,
     CutSystem,
     Deflated,
     PlacedSkeleton,
@@ -38,7 +40,7 @@ pub enum SkeletonLayer {
 }
 
 impl SkeletonLayer {
-    pub const ALL: [Self; 20] = [
+    pub const ALL: [Self; 22] = [
         Self::Skeleton,
         Self::GraySkeleton,
         Self::Raw,
@@ -48,7 +50,9 @@ impl SkeletonLayer {
         Self::TranslucentPatches,
         Self::Boundaries,
         Self::OptimizedPatches,
+        Self::TranslucentOptimizedPatches,
         Self::OptimizedBoundaries,
+        Self::OptimizedSkeleton,
         Self::CutSystem,
         Self::Deflated,
         Self::PlacedSkeleton,
@@ -72,7 +76,9 @@ impl SkeletonLayer {
             Self::TranslucentPatches => "translucent patches",
             Self::Boundaries => "patch boundaries",
             Self::OptimizedPatches => "optimized patches",
+            Self::TranslucentOptimizedPatches => "translucent optimized patches",
             Self::OptimizedBoundaries => "optimized patch boundaries",
+            Self::OptimizedSkeleton => "optimized skeleton",
             Self::CutSystem => "cut system",
             Self::Deflated => "deflated",
             Self::PlacedSkeleton => "placed skeleton",
@@ -97,6 +103,7 @@ impl SkeletonLayer {
                 | Self::TranslucentPatches
                 | Self::Boundaries
                 | Self::OptimizedPatches
+                | Self::TranslucentOptimizedPatches
                 | Self::OptimizedBoundaries
                 | Self::CutSystem
                 | Self::LiftedLoops
@@ -240,6 +247,19 @@ fn build(
             )),
         );
     }
+    if let Some(optimized) = &state.progress.optimized {
+        let labeled = &optimized.labeled;
+        object.add(
+            SkeletonLayer::OptimizedSkeleton.label(),
+            RenderAsset::Mesh(graph(
+                &labeled.skeleton,
+                Some(labeled),
+                &colors,
+                scale,
+                translation,
+            )),
+        );
+    }
     if let Some(realized) = state
         .progress
         .optimized
@@ -269,21 +289,23 @@ fn build(
         (
             Some(current),
             SkeletonLayer::Patches,
+            SkeletonLayer::TranslucentPatches,
             SkeletonLayer::Boundaries,
         ),
         (
             optimized,
             SkeletonLayer::OptimizedPatches,
+            SkeletonLayer::TranslucentOptimizedPatches,
             SkeletonLayer::OptimizedBoundaries,
         ),
     ];
-    for (skeleton, patches, boundaries) in surfaces {
+    for (skeleton, patches, translucent, boundaries) in surfaces {
         let Some(skeleton) = skeleton else {
             continue;
         };
         match dualcube::skeleton::geometry::SurfaceGeometry::build(mesh, skeleton) {
             Ok(geometry) => {
-                let layers = (patches, boundaries);
+                let layers = (patches, translucent, boundaries);
                 add_surface(&mut object, &colors, &geometry, layers, scale, translation);
                 // A minimal cut system, spread out.
                 if patches == SkeletonLayer::OptimizedPatches {
@@ -303,7 +325,7 @@ fn add_surface(
     object: &mut RenderObject,
     colors: &HashMap<SkeletonNodeID, [f32; 3]>,
     geometry: &dualcube::skeleton::geometry::SurfaceGeometry,
-    (patch_layer, boundary_layer): (SkeletonLayer, SkeletonLayer),
+    (patch_layer, translucent_layer, boundary_layer): (SkeletonLayer, SkeletonLayer, SkeletonLayer),
     scale: f64,
     translation: Vector3D,
 ) {
@@ -320,20 +342,18 @@ fn add_surface(
     patches.normalize(scale, translation);
     let mut patches = patches.build();
     object.add(patch_layer.label(), RenderAsset::Mesh(patches.clone()));
-    // Only the original patches have a translucent variant, for the combined view.
-    if patch_layer == SkeletonLayer::Patches {
-        if let Some(VertexAttributeValues::Float32x4(colors)) =
-            patches.attribute_mut(BevyMesh::ATTRIBUTE_COLOR)
-        {
-            for color in colors {
-                color[3] = 0.3;
-            }
+    // The translucent variant, for the combined views.
+    if let Some(VertexAttributeValues::Float32x4(colors)) =
+        patches.attribute_mut(BevyMesh::ATTRIBUTE_COLOR)
+    {
+        for color in colors {
+            color[3] = 0.3;
         }
-        object.add(
-            SkeletonLayer::TranslucentPatches.label(),
-            RenderAsset::TranslucentMesh(patches),
-        );
     }
+    object.add(
+        translucent_layer.label(),
+        RenderAsset::TranslucentMesh(patches),
+    );
     let boundaries = boundary_lines(geometry, |_| true, scale, translation);
     object.gizmo(boundaries, 1.5, -0.001, boundary_layer.label());
 }
