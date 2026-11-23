@@ -94,12 +94,12 @@ pub fn control_system(
         ),
         InteractiveMode::SkeletonModification => {
             skeleton_modification_system(
+                &mouse,
                 &keyboard,
                 &mesh_resmut,
                 &skeleton,
                 cache,
                 gizmos,
-                jobs,
                 position,
             );
             Ok(())

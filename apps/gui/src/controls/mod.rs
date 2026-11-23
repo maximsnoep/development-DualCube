@@ -18,7 +18,11 @@ impl Plugin for ControlsPlugin {
     fn build(&self, app: &mut App) {
         app.init_resource::<CacheResource>().add_systems(
             Update,
-            control_system.run_if(not(crate::ui::menus::wants_pointer_input)),
+            (
+                control_system.run_if(not(crate::ui::menus::wants_pointer_input)),
+                // Also when the mode is left through the menu.
+                skeleton_modification::apply_selection_on_leave,
+            ),
         );
     }
 }

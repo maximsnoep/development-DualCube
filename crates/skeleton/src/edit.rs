@@ -46,6 +46,23 @@ pub fn dissolve(
     Ok(keep)
 }
 
+/// [`dissolve`] each boundary in turn, skipping those that are gone or no longer dissolvable after
+/// the earlier ones; the number dissolved.
+pub fn dissolve_all(
+    mesh: &Mesh<INPUT>,
+    skeleton: &mut Skeleton,
+    edges: &[SkeletonEdgeID],
+) -> SkeletonResult<usize> {
+    let mut dissolved = 0;
+    for &edge in edges {
+        if dissolvable(skeleton, edge) {
+            dissolve(mesh, skeleton, edge)?;
+            dissolved += 1;
+        }
+    }
+    Ok(dissolved)
+}
+
 /// Delete a boundary and merge its other patch into `keep`, without checks; returns that patch.
 pub(crate) fn merge(
     mesh: &Mesh<INPUT>,

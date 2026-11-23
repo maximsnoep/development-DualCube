@@ -21,12 +21,12 @@ fn dissolving_a_loop_merges_two_patches_and_reruns_through_the_stop() {
         .keys()
         .next()
         .expect("blub has several patches");
-    let job = Job::dissolve_skeleton_loop(
+    let job = Job::dissolve_skeleton_loops(
         mesh,
         extraction,
         skeleton.clone(),
         None,
-        edge,
+        vec![edge],
         Stage::Labeling,
     );
     let (sender, receiver) = mpsc::channel();

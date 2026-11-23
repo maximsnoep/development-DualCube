@@ -29,6 +29,8 @@ pub struct CacheResource {
     pub granulated_lookup: Option<((usize, usize, u64), std::sync::Arc<VertLocation<INPUT>>)>,
     // Crossing positions per boundary of the shown skeleton, with a hash of its boundaries.
     pub skeleton_boundaries: Option<(u64, std::sync::Arc<SkeletonBoundaries>)>,
+    // Boundaries of that skeleton to dissolve on leaving the skeleton mode, in selection order.
+    pub skeleton_selection: Vec<dualcube::skeleton::SkeletonEdgeID>,
 }
 
 pub type SkeletonBoundaries = Vec<(dualcube::skeleton::SkeletonEdgeID, Vec<Vector3D>)>;

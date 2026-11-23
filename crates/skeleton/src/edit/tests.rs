@@ -38,3 +38,21 @@ fn parallel_edges_are_subdivided_on_a_cycle() {
         assert!(pairs.insert(if a < b { [a, b] } else { [b, a] }));
     }
 }
+
+#[test]
+fn dissolve_all_skips_loops_an_earlier_dissolve_made_invalid() {
+    let (mesh, mut skeleton) = lenses(3);
+    let edges: Vec<_> = skeleton.edges.keys().collect();
+    assert_eq!(dissolve_all(&mesh, &mut skeleton, &edges).unwrap(), 3);
+    assert_eq!((skeleton.nodes.len(), skeleton.edges.len()), (1, 0));
+    skeleton.validate(&mesh).unwrap();
+
+    // On a 3-cycle the first dissolve leaves parallel edges, subdivided back into a 3-cycle; the
+    // second selected loop then still dissolves or is skipped, never fails.
+    let (mesh, mut skeleton) = bands(&[[3., 0., 0.], [-1.5, 2.6, 0.], [-1.5, -2.6, 0.]]);
+    let edges: Vec<_> = skeleton.edges.keys().take(2).collect();
+    let dissolved = dissolve_all(&mesh, &mut skeleton, &edges).unwrap();
+    assert!((1..=2).contains(&dissolved));
+    skeleton.validate(&mesh).unwrap();
+    assert_eq!(skeleton.edges.len(), skeleton.nodes.len());
+}

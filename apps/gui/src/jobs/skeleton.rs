@@ -98,25 +98,36 @@ impl Job {
         .preempting()
     }
 
-    /// Dissolve a boundary of the shown skeleton (see `SkeletonResource::current_skeleton`) and run the stages after
-    /// extraction again through `stop`; the view stays. The certificate carries over: patches stay contractible in the
-    /// volume under the merge (see `edit::dissolve`), as under the labeling's splits.
-    pub fn dissolve_skeleton_loop(
+    /// Dissolve boundaries of the shown skeleton (see `SkeletonResource::current_skeleton`, `edit::dissolve_all`) and
+    /// run the stages after extraction again through `stop`; the view stays. The certificate carries over: patches stay
+    /// contractible in the volume under the merge (see `edit::dissolve`), as under the labeling's splits.
+    pub fn dissolve_skeleton_loops(
         mesh: Arc<mehsh::prelude::Mesh<INPUT>>,
         extraction: skeletonize::Extraction,
         skeleton: Skeleton,
         certificate: Option<Certificate>,
-        edge: SkeletonEdgeID,
+        edges: Vec<SkeletonEdgeID>,
         stop: Stage,
     ) -> Self {
-        Self::with_updates("dissolving skeleton loop", move |updates| {
+        Self::with_updates("dissolving skeleton loops", move |updates| {
             let publish = |update| {
                 let _ = updates.send(update);
             };
             let mut skeleton = skeleton.clone();
-            if let Err(error) = edit::dissolve(&mesh, &mut skeleton, edge) {
-                warn!("Skeleton loop not dissolved: {error}");
-                return None;
+            match edit::dissolve_all(&mesh, &mut skeleton, &edges) {
+                Ok(0) => {
+                    warn!("No skeleton loop dissolved");
+                    return None;
+                }
+                Ok(dissolved) if dissolved < edges.len() => warn!(
+                    "Dissolved {dissolved} of {} skeleton loops; the others were no longer dissolvable",
+                    edges.len()
+                ),
+                Ok(dissolved) => info!("Dissolved {dissolved} skeleton loops"),
+                Err(error) => {
+                    warn!("Skeleton loops not dissolved: {error}");
+                    return None;
+                }
             }
             info!(
                 "Skeleton: {} nodes, {} edges",
