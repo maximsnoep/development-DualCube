@@ -51,7 +51,7 @@ impl Default for Options {
             shape_weight: 1.0,
             sampling_weight: 0.1,
             handle_bonus: 1.0e6,
-            flip_budget: 100_000,
+            flip_budget: 200_000_000,
             certify_each_step: false,
         }
     }

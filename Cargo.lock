@@ -6050,6 +6050,7 @@ dependencies = [
  "mehsh-tetgen",
  "nalgebra",
  "petgraph",
+ "rustc-hash 2.1.3",
  "serde",
  "skeleton-numerics",
  "slotmap",

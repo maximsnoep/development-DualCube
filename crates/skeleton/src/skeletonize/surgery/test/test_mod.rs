@@ -250,6 +250,37 @@ fn search_reports_an_exhausted_budget() {
     }
 }
 
+#[test]
+fn combinatorial_flips_update_the_fingerprint_and_undo() {
+    use super::flip::Rotation;
+    let recomputed = |r: &Rotation| {
+        Rotation::new(r.spokes.clone(), r.ends.clone(), r.classes.clone()).fingerprint
+    };
+    let mesh = tetrahedron();
+    let mut surgery = stuck(&mesh);
+    let (arcs, mut rotation) = surgery.rotation();
+    let start = rotation.clone();
+    let mut undos = vec![];
+    let mut seed = 12345_u64;
+    for _ in 0..200 {
+        seed = seed.wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407);
+        let e = (seed >> 33) as usize % arcs.len();
+        if let Some(undo) = rotation.flip(e) {
+            undos.push(undo);
+            assert_eq!(rotation.fingerprint, recomputed(&rotation));
+        }
+    }
+    assert!(undos.len() >= 50);
+    while let Some(undo) = undos.pop() {
+        rotation.undo(undo);
+        assert_eq!(rotation.fingerprint, recomputed(&rotation));
+    }
+    assert_eq!(rotation.spokes, start.spokes);
+    assert_eq!(rotation.ends, start.ends);
+    assert_eq!(rotation.classes, start.classes);
+    assert_eq!(rotation.fingerprint, start.fingerprint);
+}
+
 /// Merge an edge's endpoints and drop its boundary.
 fn contract(mesh: &Mesh<INPUT>, skeleton: &mut Skeleton, edge: crate::SkeletonEdgeID) {
     let removed = skeleton.edges.remove(edge).unwrap();

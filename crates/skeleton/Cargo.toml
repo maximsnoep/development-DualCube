@@ -15,6 +15,7 @@ mehsh.workspace = true
 mehsh-tetgen.workspace = true
 nalgebra.workspace = true
 petgraph.workspace = true
+rustc-hash = "2.1.1"
 serde = { workspace = true, features = ["derive"] }
 slotmap = { workspace = true, features = ["serde"] }
 tracing.workspace = true

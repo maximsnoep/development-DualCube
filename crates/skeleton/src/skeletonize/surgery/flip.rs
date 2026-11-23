@@ -13,35 +13,118 @@
 
 use super::*;
 use crate::surface::edit::parallel_crossings;
-use std::collections::HashSet;
+use rustc_hash::FxHashSet;
 use std::hash::{Hash, Hasher};
 
-type Spoke = (usize, usize);
+pub(super) type Spoke = (usize, usize);
 
-/// Junction spokes counterclockwise, starting with the smallest, and arc classes.
-#[derive(Clone, PartialEq, Eq, Hash)]
-struct Rotation {
-    spokes: Vec<[Spoke; 3]>,
-    ends: Vec<[usize; 2]>,
-    classes: Vec<Class>,
+/// Junction spokes counterclockwise, starting with the smallest, and arc classes, with a
+/// fingerprint that sums one hash per entry, so that a flip updates it in constant time.
+#[derive(Clone)]
+pub(super) struct Rotation {
+    pub(super) spokes: Vec<[Spoke; 3]>,
+    pub(super) ends: Vec<[usize; 2]>,
+    pub(super) classes: Vec<Class>,
+    pub(super) fingerprint: u64,
+}
+
+/// What a flip changed, to undo it.
+pub(super) struct Undo {
+    e: usize,
+    junctions: [(usize, [Spoke; 3]); 2],
+    ends: [(Spoke, usize); 2],
+    class: Class,
+    fingerprint: u64,
+}
+
+#[derive(Hash)]
+enum Entry<'a> {
+    Spokes(usize, &'a [Spoke; 3]),
+    Ends(usize, &'a [usize; 2]),
+    Class(usize, &'a Class),
+}
+
+fn entry_hash(entry: Entry<'_>) -> u64 {
+    let mut hasher = std::collections::hash_map::DefaultHasher::new();
+    entry.hash(&mut hasher);
+    hasher.finish()
 }
 
 impl Rotation {
-    /// `None` when both ends of the arc meet one junction.
-    fn flip(&self, e: usize) -> Option<Self> {
+    pub(super) fn new(spokes: Vec<[Spoke; 3]>, ends: Vec<[usize; 2]>, classes: Vec<Class>) -> Self {
+        let mut rotation = Self {
+            spokes,
+            ends,
+            classes,
+            fingerprint: 0,
+        };
+        rotation.fingerprint = (0..rotation.spokes.len())
+            .map(|j| rotation.spokes_hash(j))
+            .chain((0..rotation.ends.len()).map(|a| rotation.ends_hash(a)))
+            .chain((0..rotation.classes.len()).map(|a| rotation.class_hash(a)))
+            .fold(0, u64::wrapping_add);
+        rotation
+    }
+
+    fn spokes_hash(&self, j: usize) -> u64 {
+        entry_hash(Entry::Spokes(j, &self.spokes[j]))
+    }
+
+    fn ends_hash(&self, a: usize) -> u64 {
+        entry_hash(Entry::Ends(a, &self.ends[a]))
+    }
+
+    fn class_hash(&self, a: usize) -> u64 {
+        entry_hash(Entry::Class(a, &self.classes[a]))
+    }
+
+    /// The hash of the entries a flip changes.
+    fn touched_hash(&self, [j1, j2]: [usize; 2], b: Spoke, d: Spoke, e: usize) -> u64 {
+        let ends = if b.0 == d.0 {
+            self.ends_hash(b.0)
+        } else {
+            self.ends_hash(b.0).wrapping_add(self.ends_hash(d.0))
+        };
+        [self.spokes_hash(j1), self.spokes_hash(j2), ends, self.class_hash(e)]
+            .into_iter()
+            .fold(0, u64::wrapping_add)
+    }
+
+    /// Flip in place; `None` when both ends of the arc meet one junction.
+    pub(super) fn flip(&mut self, e: usize) -> Option<Undo> {
         let [j1, j2] = self.ends[e];
         if j1 == j2 {
             return None;
         }
         let [_, a, b] = rotate(self.spokes[j1], (e, 0));
         let [_, c, d] = rotate(self.spokes[j2], (e, 1));
-        let mut next = self.clone();
-        next.spokes[j1] = smallest_first([(e, 0), d, a]);
-        next.spokes[j2] = smallest_first([(e, 1), b, c]);
-        next.ends[b.0][b.1] = j2;
-        next.ends[d.0][d.1] = j1;
-        next.classes[e] = through(&self.classes, b, c);
-        Some(next)
+        let before = self.touched_hash([j1, j2], b, d, e);
+        let class = through(&self.classes, b, c);
+        let undo = Undo {
+            e,
+            junctions: [(j1, self.spokes[j1]), (j2, self.spokes[j2])],
+            ends: [(b, j1), (d, j2)],
+            class: std::mem::replace(&mut self.classes[e], class),
+            fingerprint: self.fingerprint,
+        };
+        self.spokes[j1] = smallest_first([(e, 0), d, a]);
+        self.spokes[j2] = smallest_first([(e, 1), b, c]);
+        self.ends[b.0][b.1] = j2;
+        self.ends[d.0][d.1] = j1;
+        let after = self.touched_hash([j1, j2], b, d, e);
+        self.fingerprint = self.fingerprint.wrapping_sub(before).wrapping_add(after);
+        Some(undo)
+    }
+
+    pub(super) fn undo(&mut self, undo: Undo) {
+        for (j, spokes) in undo.junctions {
+            self.spokes[j] = spokes;
+        }
+        for ((arc, end), junction) in undo.ends {
+            self.ends[arc][end] = junction;
+        }
+        self.classes[undo.e] = undo.class;
+        self.fingerprint = undo.fingerprint;
     }
 }
 
@@ -90,8 +173,8 @@ impl std::fmt::Display for Stuck {
 }
 
 impl Surgery<'_> {
-    /// Shortest flip sequence after which the last flipped arc's loop bounds.
-    pub(super) fn search(&mut self) -> Result<Vec<ArcID>, Stuck> {
+    /// The arcs between junctions, and the rotation system with their indices.
+    pub(super) fn rotation(&mut self) -> (Vec<ArcID>, Rotation) {
         let arcs: Vec<_> = self
             .arcs
             .iter()
@@ -107,8 +190,8 @@ impl Surgery<'_> {
         let junctions: Vec<_> = self.junctions.keys().collect();
         let junction_index: HashMap<_, _> =
             junctions.iter().enumerate().map(|(i, &j)| (j, i)).collect();
-        let start = Rotation {
-            spokes: junctions
+        let rotation = Rotation::new(
+            junctions
                 .iter()
                 .map(|&j| {
                     let spokes: Vec<_> = self
@@ -119,56 +202,86 @@ impl Surgery<'_> {
                     smallest_first(spokes.try_into().expect("junctions have degree three"))
                 })
                 .collect(),
-            ends: arcs
-                .iter()
+            arcs.iter()
                 .map(|&a| self.arcs[a].ends.unwrap().map(|j| junction_index[&j]))
                 .collect(),
-            classes: arcs
-                .iter()
+            arcs.iter()
                 .map(|&a| self.arcs[a].class.clone().unwrap())
                 .collect(),
-        };
-        debug_assert!(start.spokes.iter().all(|spokes| {
+        );
+        debug_assert!(rotation.spokes.iter().all(|spokes| {
             spokes
                 .iter()
                 .fold(Class::default(), |sum, &(arc, end)| {
-                    &sum + &signed(&start.classes[arc], end)
+                    &sum + &signed(&rotation.classes[arc], end)
                 })
                 .is_zero()
         }));
-        let fingerprint = |r: &Rotation| {
-            let mut hasher = std::collections::hash_map::DefaultHasher::new();
-            r.hash(&mut hasher);
-            hasher.finish()
-        };
-        let mut seen = HashSet::from([fingerprint(&start)]);
+        (arcs, rotation)
+    }
+
+    /// Shortest flip sequence after which the last flipped arc's loop bounds.
+    pub(super) fn search(&mut self) -> Result<Vec<ArcID>, Stuck> {
+        let (arcs, mut rotation) = self.rotation();
+        // Breadth-first, each state stored as its parent and the arc flipped from it; the
+        // rotation walks between states by undoing to their common ancestor and flipping down.
+        const ROOT: u32 = u32::MAX;
+        let mut seen = FxHashSet::from_iter([rotation.fingerprint]);
+        let mut nodes: Vec<(u32, u32)> = vec![(ROOT, 0)];
+        let mut current: Vec<(u32, Undo)> = vec![];
         let mut truncated = false;
-        let mut queue = VecDeque::from([(start, Vec::new())]);
-        while let Some((rotation, path)) = queue.pop_front() {
+        let mut path = vec![];
+        let mut node = 0;
+        while (node as usize) < nodes.len() {
+            // Ancestors from the root down to `node`.
+            path.clear();
+            let mut at = node;
+            while at != 0 {
+                path.push(at);
+                at = nodes[at as usize].0;
+            }
+            path.reverse();
+            let common = current
+                .iter()
+                .zip(&path)
+                .take_while(|((a, _), b)| a == *b)
+                .count();
+            while current.len() > common {
+                rotation.undo(current.pop().unwrap().1);
+            }
+            for &step in &path[common..] {
+                let undo = rotation.flip(nodes[step as usize].1 as usize).unwrap();
+                current.push((step, undo));
+            }
             for e in 0..arcs.len() {
-                let Some(next) = rotation.flip(e) else {
+                let Some(undo) = rotation.flip(e) else {
                     continue;
                 };
-                let mut sequence = path.clone();
-                sequence.push(e);
-                if next.classes[e].is_zero() {
+                if rotation.classes[e].is_zero() {
+                    let sequence: Vec<_> = path
+                        .iter()
+                        .map(|&step| arcs[nodes[step as usize].1 as usize])
+                        .chain([arcs[e]])
+                        .collect();
                     info!(
                         "Connectivity surgery: {} flips free a junction",
                         sequence.len()
                     );
-                    return Ok(sequence.into_iter().map(|i| arcs[i]).collect());
+                    return Ok(sequence);
                 }
-                let key = fingerprint(&next);
+                let key = rotation.fingerprint;
+                rotation.undo(undo);
                 if seen.contains(&key) {
                     continue;
                 }
                 if seen.len() < self.options.flip_budget {
                     seen.insert(key);
-                    queue.push_back((next, sequence));
+                    nodes.push((node, e as u32));
                 } else {
                     truncated = true;
                 }
             }
+            node += 1;
         }
         let states = seen.len();
         Err(if truncated {
