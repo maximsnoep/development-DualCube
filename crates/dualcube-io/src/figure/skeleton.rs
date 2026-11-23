@@ -41,6 +41,8 @@ pub(super) enum Graph {
     Gray,
     Tree,
     Labeled,
+    /// The labeled optimized skeleton.
+    Optimized,
 }
 
 fn extraction<'a>(model: &Model<'a>) -> Option<&'a Extraction> {
@@ -118,6 +120,7 @@ pub(super) fn graph(model: &Model<'_>, graph: Graph) -> Option<Vec<Item>> {
         ),
         Graph::Tree => tree_graph(model)?,
         Graph::Labeled => labeled_graph(model)?,
+        Graph::Optimized => optimized_graph(model)?,
     };
     let mut items = ghost(model);
     items.extend(edges);
@@ -183,14 +186,7 @@ pub(super) fn combined(model: &Model<'_>, optimized: bool) -> Option<Vec<Item>> 
     };
     let mut items = surface(faces, &model.camera, look, &[], &[]);
     let graph = match optimized {
-        Some(labeled) => Some(nodes_and_edges(
-            model,
-            &model.camera,
-            &labeled.skeleton,
-            |id| labeled_edge(model, labeled.labels.get(id), false),
-            |_| GRAY,
-            Layering::EdgesOnTop,
-        )),
+        Some(_) => optimized_graph(model),
         None => labeled_graph(model),
     };
     items.extend(graph.unwrap_or_else(|| plain_graph(model, current)));
@@ -453,6 +449,19 @@ fn labeled_graph(model: &Model<'_>) -> Option<Vec<Item>> {
         &model.camera,
         &labeled.skeleton,
         |id| edge(labeled.labels.get(id), false),
+        |_| GRAY,
+        Layering::EdgesOnTop,
+    ))
+}
+
+// The optimized skeleton, edges in their axis colors.
+fn optimized_graph(model: &Model<'_>) -> Option<Vec<Item>> {
+    let labeled = &model.skeleton.optimized.as_ref()?.labeled;
+    Some(nodes_and_edges(
+        model,
+        &model.camera,
+        &labeled.skeleton,
+        |id| labeled_edge(model, labeled.labels.get(id), false),
         |_| GRAY,
         Layering::EdgesOnTop,
     ))

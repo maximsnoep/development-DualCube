@@ -313,6 +313,13 @@ fn optimized_view_needs_complete_initialization() {
     ])
     .unwrap();
     assert_eq!(launch.view, Some(ModelViewKind::OptimizedCombined));
+    let launch = parse(&[
+        "--load=a.obj",
+        "--auto-start=skeleton",
+        "--view=optimized-skeleton",
+    ])
+    .unwrap();
+    assert_eq!(launch.view, Some(ModelViewKind::OptimizedSkeleton));
     assert!(
         parse(&[
             "--load=a.obj",

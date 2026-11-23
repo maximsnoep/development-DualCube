@@ -50,6 +50,8 @@ pub enum Figure {
     Combined,
     /// The optimized patches (light) with the optimized skeleton graph.
     OptimizedCombined,
+    /// The optimized skeleton graph with the axis labels of its edges.
+    OptimizedSkeleton,
     /// The tree labeling, before cycle repairs.
     TreeLabeled,
     /// The skeleton graph with the axis labels of its edges.
@@ -77,7 +79,7 @@ pub enum Figure {
 }
 
 impl Figure {
-    pub const ALL: [Self; 23] = [
+    pub const ALL: [Self; 24] = [
         Self::InputMesh,
         Self::Deflated,
         Self::RawSkeleton,
@@ -89,6 +91,7 @@ impl Figure {
         Self::CutSystem,
         Self::Combined,
         Self::OptimizedCombined,
+        Self::OptimizedSkeleton,
         Self::TreeLabeled,
         Self::Labeled,
         Self::PlacedSkeleton,
@@ -118,6 +121,7 @@ impl Figure {
             Self::CutSystem => "minimal cut system",
             Self::Combined => "patches and skeleton",
             Self::OptimizedCombined => "optimized patches and skeleton",
+            Self::OptimizedSkeleton => "optimized skeleton",
             Self::TreeLabeled => "tree labeled skeleton",
             Self::Labeled => "labeled skeleton",
             Self::PlacedSkeleton => "placed skeleton",
@@ -148,6 +152,7 @@ impl Figure {
             Self::CutSystem => "cut_system",
             Self::Combined => "combined",
             Self::OptimizedCombined => "optimized_combined",
+            Self::OptimizedSkeleton => "optimized_skeleton",
             Self::TreeLabeled => "tree",
             Self::Labeled => "labeled",
             Self::PlacedSkeleton => "placed_skeleton",
@@ -320,6 +325,7 @@ pub fn figure_svg(
         Figure::CutSystem => skeleton::cut_system(&model)?,
         Figure::Combined => skeleton::combined(&model, false)?,
         Figure::OptimizedCombined => skeleton::combined(&model, true)?,
+        Figure::OptimizedSkeleton => skeleton::graph(&model, skeleton::Graph::Optimized)?,
         Figure::TreeLabeled => skeleton::graph(&model, skeleton::Graph::Tree)?,
         Figure::Labeled => skeleton::graph(&model, skeleton::Graph::Labeled)?,
         Figure::PlacedSkeleton => skeleton::placed_skeleton(&model)?,

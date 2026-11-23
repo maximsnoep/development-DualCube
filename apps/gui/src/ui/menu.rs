@@ -64,6 +64,8 @@ pub enum ModelViewKind {
     Combined,
     /// The optimized patches with the optimized skeleton.
     OptimizedCombined,
+    /// The labeled optimized skeleton on the mesh.
+    OptimizedSkeleton,
     /// The tree labeling, before cycle repairs.
     Tree,
     Labeled,
@@ -84,7 +86,7 @@ pub enum ModelViewKind {
 }
 
 impl ModelViewKind {
-    const ALL: [Self; 22] = [
+    const ALL: [Self; 23] = [
         Self::Input,
         Self::Deflated,
         Self::Raw,
@@ -96,6 +98,7 @@ impl ModelViewKind {
         Self::CutSystem,
         Self::Combined,
         Self::OptimizedCombined,
+        Self::OptimizedSkeleton,
         Self::Tree,
         Self::Labeled,
         Self::PlacedSkeleton,
@@ -131,6 +134,7 @@ impl ModelViewKind {
             Self::CutSystem => "Cut system",
             Self::Combined => "Combined",
             Self::OptimizedCombined => "Optimized combined",
+            Self::OptimizedSkeleton => "Optimized skeleton",
             Self::Tree => "Tree",
             Self::Labeled => "Labeled",
             Self::PlacedSkeleton => "Placed skeleton",
@@ -160,6 +164,7 @@ impl ModelViewKind {
             Self::CutSystem => Figure::CutSystem,
             Self::Combined => Figure::Combined,
             Self::OptimizedCombined => Figure::OptimizedCombined,
+            Self::OptimizedSkeleton => Figure::OptimizedSkeleton,
             Self::Tree => Figure::TreeLabeled,
             Self::Labeled => Figure::Labeled,
             Self::PlacedSkeleton => Figure::PlacedSkeleton,
@@ -253,6 +258,9 @@ impl ModelViewKind {
             }
             Self::Tree => const { &[SkeletonLayer::TreeLabeled.label(), "wireframe"] },
             Self::Labeled => const { &[SkeletonLayer::Labeled.label(), "wireframe"] },
+            Self::OptimizedSkeleton => {
+                const { &[SkeletonLayer::OptimizedSkeleton.label(), "wireframe"] }
+            }
             Self::Lifted => const { &["black", SkeletonLayer::LiftedLoops.label()] },
             Self::Dual => &[
                 "black",
@@ -410,7 +418,8 @@ pub fn show(
                     | ModelViewKind::CubesDual => skeleton.progress.realized.is_some(),
                     ModelViewKind::Optimized
                     | ModelViewKind::CutSystem
-                    | ModelViewKind::OptimizedCombined => skeleton.progress.optimized.is_some(),
+                    | ModelViewKind::OptimizedCombined
+                    | ModelViewKind::OptimizedSkeleton => skeleton.progress.optimized.is_some(),
                     ModelViewKind::Labeled => {
                         skeleton.progress.labeled.is_some() || skeleton.progress.labeling.is_some()
                     }
