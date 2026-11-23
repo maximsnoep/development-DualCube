@@ -20,7 +20,8 @@ Run from the repository root:
   --stop-after <stage>       Run through input, deflation, surgery, refinement, certification,
                              labeling, placement, optimization, or drawing
   --view <view>              input, deflated, raw, skeleton, tree, labeled, patches,
-                             optimized, combined, cubes, lifted
+                             optimized, combined, cubes, cubes-primal, cubes-dual,
+                             lifted
   --refinement               Enable embedding refinement (default off)
   --no-refinement            Skip embedding refinement
   --iterations <count>      Deflation iteration limit (default 50)
@@ -135,6 +136,8 @@ impl Launch {
                         "optimized" => ModelViewKind::Optimized,
                         "combined" => ModelViewKind::Combined,
                         "cubes" => ModelViewKind::Cubes,
+                        "cubes-primal" => ModelViewKind::CubesPrimal,
+                        "cubes-dual" => ModelViewKind::CubesDual,
                         _ => return Err(format!("Unknown view: {value}")),
                     })
                 }
@@ -195,7 +198,9 @@ impl Launch {
                 ModelViewKind::Deflated => Some(Stage::Deflation),
                 ModelViewKind::Optimized => Some(Stage::Optimization),
                 ModelViewKind::Lifted => Some(Stage::LoopDrawing),
-                ModelViewKind::Cubes => Some(Stage::CubePlacement),
+                ModelViewKind::Cubes | ModelViewKind::CubesPrimal | ModelViewKind::CubesDual => {
+                    Some(Stage::CubePlacement)
+                }
                 ModelViewKind::Tree | ModelViewKind::Labeled => Some(Stage::Labeling),
                 _ => Some(Stage::Extraction),
             };

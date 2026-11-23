@@ -52,6 +52,10 @@ pub enum ModelViewKind {
     Tree,
     Labeled,
     Cubes,
+    /// The cubes with only the nodes colored.
+    CubesPrimal,
+    /// The cubes with only the edges colored.
+    CubesDual,
     /// The labeled patch boundaries, before the template's other loops are drawn.
     Lifted,
     Dual,
@@ -60,7 +64,7 @@ pub enum ModelViewKind {
 }
 
 impl ModelViewKind {
-    const ALL: [Self; 14] = [
+    const ALL: [Self; 16] = [
         Self::Input,
         Self::Deflated,
         Self::Raw,
@@ -71,6 +75,8 @@ impl ModelViewKind {
         Self::Tree,
         Self::Labeled,
         Self::Cubes,
+        Self::CubesPrimal,
+        Self::CubesDual,
         Self::Lifted,
         Self::Dual,
         Self::Primal,
@@ -89,6 +95,8 @@ impl ModelViewKind {
             Self::Tree => "Tree",
             Self::Labeled => "Labeled",
             Self::Cubes => "Cubes",
+            Self::CubesPrimal => "Cubes primal",
+            Self::CubesDual => "Cubes dual",
             Self::Lifted => "Lifted",
             Self::Dual => "Dual",
             Self::Primal => "Primal",
@@ -131,6 +139,22 @@ impl ModelViewKind {
                 const {
                     &[
                         SkeletonLayer::Cubes.label(),
+                        SkeletonLayer::CubeEdges.label(),
+                    ]
+                }
+            }
+            Self::CubesPrimal => {
+                const {
+                    &[
+                        SkeletonLayer::CubesPrimal.label(),
+                        SkeletonLayer::CubeEdges.label(),
+                    ]
+                }
+            }
+            Self::CubesDual => {
+                const {
+                    &[
+                        SkeletonLayer::CubesDual.label(),
                         SkeletonLayer::CubeEdges.label(),
                     ]
                 }
@@ -276,7 +300,9 @@ pub fn show(
                     | ModelViewKind::Combined
                     | ModelViewKind::Patches => skeleton.extraction().is_some(),
                     ModelViewKind::Deflated => skeleton.contracted_mesh().is_some(),
-                    ModelViewKind::Cubes => skeleton.progress.realized.is_some(),
+                    ModelViewKind::Cubes
+                    | ModelViewKind::CubesPrimal
+                    | ModelViewKind::CubesDual => skeleton.progress.realized.is_some(),
                     ModelViewKind::Optimized => skeleton.progress.optimized.is_some(),
                     ModelViewKind::Labeled => {
                         skeleton.progress.labeled.is_some() || skeleton.progress.labeling.is_some()

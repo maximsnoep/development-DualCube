@@ -1,8 +1,8 @@
 //! The figures of the skeleton stages and of the quad mesh (see the view presets of the GUI).
 
 use super::{
-    AxisFace, Camera, Face, Item, Look, Model, Rgb, SurfaceLine, axis, boxes, mesh_faces,
-    region_colors, surface,
+    AxisFace, Camera, CubeColoring, Face, Item, Look, Model, Rgb, SurfaceLine, axis, boxes,
+    mesh_faces, region_colors, surface,
 };
 use crate::SkeletonExtraction;
 use dualcube::prelude::*;
@@ -132,8 +132,8 @@ pub(super) fn combined(model: &Model<'_>) -> Option<Vec<Item>> {
 }
 
 // The cuboids of the (optimized) placement as boxes, with the faces where they connect hidden as in the GUI; the
-// bevels of the edge cuboids are left out.
-pub(super) fn cubes(model: &Model<'_>) -> Option<Vec<Item>> {
+// bevels of the edge cuboids are left out. Cuboids the coloring leaves out are gray.
+pub(super) fn cubes(model: &Model<'_>, coloring: CubeColoring) -> Option<Vec<Item>> {
     let save = model.skeleton;
     let realized = save.optimized.as_ref().or(save.realized.as_ref())?;
     let layout = realized.cuboids();
@@ -143,6 +143,8 @@ pub(super) fn cubes(model: &Model<'_>) -> Option<Vec<Item>> {
     let mut faces = vec![];
     for (id, cube) in &layout.cuboids {
         let fill = match cube.owner {
+            CuboidOwner::Node(_) if !coloring.colors_nodes() => GRAY,
+            CuboidOwner::Edge(_) if !coloring.colors_edges() => GRAY,
             CuboidOwner::Node(node) => palette.get(&node).copied().unwrap_or(GRAY),
             CuboidOwner::Edge(edge) => realized
                 .labeled

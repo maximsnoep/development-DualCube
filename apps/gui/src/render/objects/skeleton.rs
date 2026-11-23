@@ -26,12 +26,14 @@ pub enum SkeletonLayer {
     OptimizedBoundaries,
     Deflated,
     Cubes,
+    CubesPrimal,
+    CubesDual,
     CubeEdges,
     LiftedLoops,
 }
 
 impl SkeletonLayer {
-    pub const ALL: [Self; 13] = [
+    pub const ALL: [Self; 15] = [
         Self::Skeleton,
         Self::Raw,
         Self::TreeLabeled,
@@ -43,6 +45,8 @@ impl SkeletonLayer {
         Self::OptimizedBoundaries,
         Self::Deflated,
         Self::Cubes,
+        Self::CubesPrimal,
+        Self::CubesDual,
         Self::CubeEdges,
         Self::LiftedLoops,
     ];
@@ -60,6 +64,8 @@ impl SkeletonLayer {
             Self::OptimizedBoundaries => "optimized patch boundaries",
             Self::Deflated => "deflated",
             Self::Cubes => "placed cubes",
+            Self::CubesPrimal => "primal cubes",
+            Self::CubesDual => "dual cubes",
             Self::CubeEdges => "cube edges",
             Self::LiftedLoops => "lifted loops",
         }

@@ -1,5 +1,13 @@
 use super::*;
 use dualcube::skeleton::{CuboidOwner, RealizedSkeleton};
+use io::figure::CubeColoring;
+
+// One mesh per coloring (the cuboids it leaves out gray); the edges are shared.
+const COLORINGS: [(SkeletonLayer, CubeColoring); 3] = [
+    (SkeletonLayer::Cubes, CubeColoring::Combined),
+    (SkeletonLayer::CubesPrimal, CubeColoring::Primal),
+    (SkeletonLayer::CubesDual, CubeColoring::Dual),
+];
 
 pub(super) fn add(
     object: &mut RenderObject,
@@ -19,17 +27,19 @@ pub(super) fn add(
     let scale = 32. / (upper - lower).amax();
     let translation = -(lower + upper) * (scale / 2.);
     let hidden = layout.hidden_faces();
-    let mut builder = MeshBuilder::new();
+    let mut builders = COLORINGS.map(|_| MeshBuilder::new());
     let mut lines = GizmoAsset::new();
     for (id, cube) in &layout.cuboids {
-        let color = match cube.owner {
+        let fills = COLORINGS.map(|(_, coloring)| match cube.owner {
+            CuboidOwner::Node(_) if !coloring.colors_nodes() => colors::LIGHT_GRAY,
+            CuboidOwner::Edge(_) if !coloring.colors_edges() => colors::LIGHT_GRAY,
             CuboidOwner::Node(node) => palette.get(&node).copied().unwrap_or(colors::LIGHT_GRAY),
             CuboidOwner::Edge(edge) => colors::from_direction(
                 realized.labeled.labels[edge].direction,
                 Some(Perspective::Primal),
                 None,
             ),
-        };
+        });
         let edge_axis = match cube.owner {
             CuboidOwner::Node(_) => None,
             CuboidOwner::Edge(edge) => Some(match realized.labeled.labels[edge].direction {
@@ -48,7 +58,7 @@ pub(super) fn add(
                 }
             }
         }
-        let mut face = |mut corners: Vec<Vector3D>, normal: Vector3D, color| {
+        let mut face = |mut corners: Vec<Vector3D>, normal: Vector3D, fills: [colors::Kolor; 3]| {
             if (corners[1] - corners[0])
                 .cross(&(corners[2] - corners[0]))
                 .dot(&normal)
@@ -59,8 +69,14 @@ pub(super) fn add(
             for p in &mut corners {
                 *p += cube.center;
             }
-            for i in 1..corners.len() - 1 {
-                builder.add_triangle([corners[0], corners[i], corners[i + 1]], [normal; 3], color);
+            for (builder, color) in builders.iter_mut().zip(fills) {
+                for i in 1..corners.len() - 1 {
+                    builder.add_triangle(
+                        [corners[0], corners[i], corners[i + 1]],
+                        [normal; 3],
+                        color,
+                    );
+                }
             }
             for i in 0..corners.len() {
                 lines.line(
@@ -96,14 +112,14 @@ pub(super) fn add(
                         center - u + v,
                     ],
                     normal,
-                    color,
+                    fills,
                 );
             }
         }
         let Some(axis) = edge_axis else {
             continue;
         };
-        let bevel_color = color.map(|c| c * 0.8);
+        let bevel = fills.map(|color| color.map(|c| c * 0.8));
         // Bevel only the four longitudinal edges; endpoint joints stay flush.
         let u = (axis + 1) % 3;
         let v = (axis + 2) % 3;
@@ -123,14 +139,13 @@ pub(super) fn add(
                 let mut normal = Vector3D::zeros();
                 normal[u] = a;
                 normal[v] = b;
-                face(vec![p, q, r, s], normal.normalize(), bevel_color);
+                face(vec![p, q, r, s], normal.normalize(), bevel);
             }
         }
     }
-    builder.normalize(scale, translation);
-    object.add(
-        SkeletonLayer::Cubes.label(),
-        RenderAsset::Mesh(builder.build()),
-    );
+    for ((layer, _), mut builder) in COLORINGS.into_iter().zip(builders) {
+        builder.normalize(scale, translation);
+        object.add(layer.label(), RenderAsset::Mesh(builder.build()));
+    }
     object.gizmo(lines, 1., -0.00001, SkeletonLayer::CubeEdges.label());
 }

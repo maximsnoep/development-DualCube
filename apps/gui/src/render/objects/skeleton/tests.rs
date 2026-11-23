@@ -195,6 +195,13 @@ fn cube_view_distinguishes_stretched_edges_and_keeps_finite_geometry() {
         );
     }
     assert!(!SkeletonLayer::Cubes.is_surface());
+    for layer in [SkeletonLayer::CubesPrimal, SkeletonLayer::CubesDual] {
+        let RenderAsset::Mesh(other) = &object.features[layer.label()] else {
+            panic!("Missing {} mesh", layer.label());
+        };
+        assert_eq!(other.count_vertices(), mesh.count_vertices());
+        assert!(!layer.is_surface());
+    }
     assert!(
         object
             .features

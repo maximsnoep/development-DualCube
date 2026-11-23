@@ -47,6 +47,10 @@ pub enum Figure {
     Labeled,
     /// The cube placement, in a parallel projection.
     Cubes,
+    /// The cube placement with only the node cubes colored (by patch).
+    CubesPrimal,
+    /// The cube placement with only the edge cubes colored (by axis).
+    CubesDual,
     /// The labeled patch boundaries on the input mesh, before the template's other loops are drawn.
     LiftedLoops,
     /// The loops on the input mesh.
@@ -60,7 +64,7 @@ pub enum Figure {
 }
 
 impl Figure {
-    pub const ALL: [Self; 15] = [
+    pub const ALL: [Self; 17] = [
         Self::InputMesh,
         Self::Deflated,
         Self::RawSkeleton,
@@ -71,6 +75,8 @@ impl Figure {
         Self::TreeLabeled,
         Self::Labeled,
         Self::Cubes,
+        Self::CubesPrimal,
+        Self::CubesDual,
         Self::LiftedLoops,
         Self::LoopStructure,
         Self::Segmentation,
@@ -92,6 +98,8 @@ impl Figure {
             Self::TreeLabeled => "tree labeled skeleton",
             Self::Labeled => "labeled skeleton",
             Self::Cubes => "cube placement",
+            Self::CubesPrimal => "cube placement (primal)",
+            Self::CubesDual => "cube placement (dual)",
             Self::LiftedLoops => "lifted loops",
             Self::LoopStructure => "loop structure",
             Self::Segmentation => "polycube segmentation",
@@ -114,6 +122,8 @@ impl Figure {
             Self::TreeLabeled => "tree",
             Self::Labeled => "labeled",
             Self::Cubes => "cubes",
+            Self::CubesPrimal => "cubes_primal",
+            Self::CubesDual => "cubes_dual",
             Self::LiftedLoops => "lifted",
             Self::LoopStructure => "loops",
             Self::Segmentation => "segmentation",
@@ -124,7 +134,33 @@ impl Figure {
 
     // Drawn in perspective, fitted to the input mesh.
     const fn on_model(self) -> bool {
-        !matches!(self, Self::Cubes | Self::Polycube)
+        !matches!(
+            self,
+            Self::Cubes | Self::CubesPrimal | Self::CubesDual | Self::Polycube
+        )
+    }
+}
+
+/// Which cubes of the cube placement are colored; the others are gray.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum CubeColoring {
+    /// The node cubes by patch, the edge cubes by axis.
+    Combined,
+    /// Only the node cubes, by patch.
+    Primal,
+    /// Only the edge cubes, by axis.
+    Dual,
+}
+
+impl CubeColoring {
+    #[must_use]
+    pub const fn colors_nodes(self) -> bool {
+        !matches!(self, Self::Dual)
+    }
+
+    #[must_use]
+    pub const fn colors_edges(self) -> bool {
+        !matches!(self, Self::Primal)
     }
 }
 
@@ -242,7 +278,9 @@ pub fn figure_svg(
         Figure::Combined => skeleton::combined(&model)?,
         Figure::TreeLabeled => skeleton::graph(&model, skeleton::Graph::Tree)?,
         Figure::Labeled => skeleton::graph(&model, skeleton::Graph::Labeled)?,
-        Figure::Cubes => skeleton::cubes(&model)?,
+        Figure::Cubes => skeleton::cubes(&model, CubeColoring::Combined)?,
+        Figure::CubesPrimal => skeleton::cubes(&model, CubeColoring::Primal)?,
+        Figure::CubesDual => skeleton::cubes(&model, CubeColoring::Dual)?,
         Figure::LiftedLoops => lifted_loops(&model)?,
         Figure::LoopStructure => loop_structure(&model)?,
         Figure::Segmentation => segmentation(&model)?,

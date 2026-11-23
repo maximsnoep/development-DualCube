@@ -313,3 +313,16 @@ fn saves_may_open_in_any_skeleton_view() {
     assert_eq!(launch.view, Some(ModelViewKind::Cubes));
     assert!(parse(&["--load=a.obj", "--view=cubes"]).is_err());
 }
+
+#[test]
+fn cube_colorings_need_placement() {
+    for (name, view) in [
+        ("cubes-primal", ModelViewKind::CubesPrimal),
+        ("cubes-dual", ModelViewKind::CubesDual),
+    ] {
+        let flag = format!("--view={name}");
+        let launch = parse(&["--load=a.obj", "--stop-after=placement", flag.as_str()]).unwrap();
+        assert_eq!(launch.view, Some(view));
+        assert!(parse(&["--load=a.obj", "--stop-after=labeling", flag.as_str()]).is_err());
+    }
+}
