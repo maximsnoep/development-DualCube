@@ -4,7 +4,8 @@
 //! All figures share one view direction. The polycube and the cubes are drawn in a parallel (axonometric) projection,
 //! the rest in a perspective projection fitted to the input mesh, so that those line up exactly. Every figure is a
 //! square of the same size with the shape fitted inside it; optionally with a label below it (the input, the object,
-//! the score, and the date). Skeleton graphs are drawn over a light rendering of the input mesh, as if seen through it.
+//! the score, and the date). With a [`CameraZoom`], the figures on the model are instead seen from the given eye,
+//! framed as its window (so they show what the GUI's camera shows). Skeleton graphs are drawn over a light rendering of the input mesh, as if seen through it.
 //!
 //! Hidden surfaces are removed with the painter's algorithm: the faces that face the camera are drawn back to front,
 //! and every line on the surface is drawn right after the (last drawn) face it lies on, so the faces in front of it
@@ -279,6 +280,27 @@ pub struct FigureParams {
     pub loop_width: f64,
     pub path_width: f64,
     pub annotation: Option<Annotation>,
+    /// Frames the figures on the model as this camera does, instead of fitting the input mesh.
+    pub zoom: Option<CameraZoom>,
+}
+
+/// A perspective camera to frame the figures on the model with: its eye (in the coordinates of the mesh; it looks along
+/// the view of the [`FigureParams`]) and its window.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct CameraZoom {
+    pub eye: Vector3D,
+    /// The vertical field of view (radians).
+    pub fov: f64,
+    /// The width of the window over its height.
+    pub aspect: f64,
+}
+
+impl CameraZoom {
+    // Half the width and height of its window on the page (see `Camera::project`).
+    fn half_window(&self) -> [f64; 2] {
+        let half = (self.fov / 2.).tan();
+        [half * self.aspect, half]
+    }
 }
 
 impl Default for FigureParams {
@@ -291,6 +313,7 @@ impl Default for FigureParams {
             loop_width: 0.008,
             path_width: 0.004,
             annotation: None,
+            zoom: None,
         }
     }
 }
@@ -305,6 +328,8 @@ const FIELD_OF_VIEW: f64 = 30.;
 const SEAM: f64 = 0.25;
 // Pixels per point of a PNG.
 const PNG_SCALE: f32 = 4.;
+// The near plane of a zoomed camera, as a fraction of the diagonal of the bounding box of the mesh.
+const ZOOM_NEAR: f64 = 1e-3;
 
 /// The SVG of a figure of the solution (and of the skeleton stages, if given), or `None` if it does not have it yet
 /// (e.g., no skeleton, loops, layout, quad mesh or polycube).
@@ -354,16 +379,19 @@ pub fn figure_svg(
     if items.is_empty() {
         return None;
     }
-    let frame = if figure.on_model() {
-        let mesh = &*solution.mesh_ref;
-        mesh.vert_ids()
-            .into_iter()
-            .map(|v| model.camera.project(mesh.position(v)))
-            .collect()
-    } else if figure.on_placement() {
-        skeleton::placement_frame(&model)
-    } else {
-        vec![]
+    let fit = match params.zoom {
+        Some(zoom) if figure.on_model() => Fit::Window(zoom.half_window()),
+        _ if figure.on_model() => {
+            let mesh = &*solution.mesh_ref;
+            Fit::Content(
+                mesh.vert_ids()
+                    .into_iter()
+                    .map(|v| model.camera.project(mesh.position(v)))
+                    .collect(),
+            )
+        }
+        _ if figure.on_placement() => Fit::Content(skeleton::placement_frame(&model)),
+        _ => Fit::Content(vec![]),
     };
     let label = params.annotation.as_ref().map(|a| {
         let mut parts = vec![a.input.clone(), figure.name().to_owned()];
@@ -373,7 +401,7 @@ pub fn figure_svg(
         parts.push(a.date.clone());
         parts.join(" \u{b7} ")
     });
-    Some(to_svg(items, &frame, params.size, label.as_deref()))
+    Some(to_svg(items, &fit, params.size, label.as_deref()))
 }
 
 /// Saves a figure (an SVG, see [`figure_svg`]) in the format given by the extension of the path: SVG, PDF or PNG.
@@ -390,25 +418,34 @@ pub fn save_figure(svg: &str, path: &Path) -> anyhow::Result<()> {
             svg2pdf::PageOptions::default(),
         )
         .map_err(|e| anyhow!("PDF conversion failed: {e}"))?,
-        Some("png") => {
-            let tree = parse(svg)?;
-            let size = tree
-                .size()
-                .to_int_size()
-                .scale_by(PNG_SCALE)
-                .context("empty figure")?;
-            let mut pixmap = resvg::tiny_skia::Pixmap::new(size.width(), size.height())
-                .context("figure too large")?;
-            resvg::render(
-                &tree,
-                resvg::tiny_skia::Transform::from_scale(PNG_SCALE, PNG_SCALE),
-                &mut pixmap.as_mut(),
-            );
-            pixmap.encode_png()?
-        }
+        Some("png") => pixmap(svg, PNG_SCALE)?.encode_png()?,
         _ => bail!("Unknown figure format: {path:?} (use svg, pdf or png)"),
     };
     std::fs::write(path, bytes).with_context(|| format!("writing {path:?}"))
+}
+
+/// A figure (an SVG, see [`figure_svg`]) as pixels, this many per point: its width and height, and its pixels as
+/// premultiplied RGBA (on a transparent background).
+pub fn rasterize(svg: &str, scale: f32) -> anyhow::Result<([u32; 2], Vec<u8>)> {
+    let pixmap = pixmap(svg, scale)?;
+    Ok(([pixmap.width(), pixmap.height()], pixmap.take()))
+}
+
+fn pixmap(svg: &str, scale: f32) -> anyhow::Result<resvg::tiny_skia::Pixmap> {
+    let tree = parse(svg)?;
+    let size = tree
+        .size()
+        .to_int_size()
+        .scale_by(scale)
+        .context("empty figure")?;
+    let mut pixmap =
+        resvg::tiny_skia::Pixmap::new(size.width(), size.height()).context("figure too large")?;
+    resvg::render(
+        &tree,
+        resvg::tiny_skia::Transform::from_scale(scale, scale),
+        &mut pixmap.as_mut(),
+    );
+    Ok(pixmap)
 }
 
 /// Saves all figures the solution (with the skeleton stages, if given) has, as `<dir>/<stem>_<figure>.<extension>`;
@@ -500,6 +537,8 @@ struct Camera {
     up: Vector3D,
     forward: Vector3D,
     eye: Option<Vector3D>,
+    // In perspective, what is nearer along the view than this is not drawn.
+    near: f64,
 }
 
 impl Camera {
@@ -533,7 +572,23 @@ impl Camera {
             up,
             forward,
             eye,
+            near: 0.,
         }
+    }
+
+    // A perspective camera at `eye`, along the view of the parameters.
+    fn at(params: &FigureParams, eye: Vector3D, near: f64) -> Self {
+        Self {
+            eye: Some(eye),
+            near,
+            ..Self::new(params, None)
+        }
+    }
+
+    // Whether the point is in front of the camera (to be drawn).
+    fn in_front(&self, p: Vector3D) -> bool {
+        self.eye
+            .is_none_or(|eye| (p - eye).dot(&self.forward) > self.near)
     }
 
     // A point on the page (y up, before the figure is fitted).
@@ -858,6 +913,9 @@ fn surface(
                 normal,
                 color,
             } = face;
+            if !corners.iter().all(|&p| camera.in_front(p)) {
+                return None;
+            }
             let centroid = corners.iter().sum::<Vector3D>() / corners.len().max(1) as f64;
             let normal = if camera.faces(centroid, normal) {
                 normal
@@ -931,7 +989,11 @@ fn surface(
             ]
         };
         let visible = (0..segments)
-            .map(|i| shows(quad(i).iter().sum::<Vector3D>() / 4.))
+            .map(|i| {
+                let quad = quad(i);
+                quad.iter().all(|&p| camera.in_front(p))
+                    && shows(quad.iter().sum::<Vector3D>() / 4.)
+            })
             .collect::<Vec<_>>();
         // The stretches of consecutive segments that show; around a loop, starting after one that does not
         // (if any).
@@ -971,7 +1033,8 @@ fn surface(
     }
     for line in lines {
         for pair in line.points.windows(2) {
-            if shows((pair[0] + pair[1]) / 2.) {
+            let in_front = camera.in_front(pair[0]) && camera.in_front(pair[1]);
+            if in_front && shows((pair[0] + pair[1]) / 2.) {
                 let item = Item::Line {
                     from: camera.project(pair[0]),
                     to: camera.project(pair[1]),
@@ -987,7 +1050,7 @@ fn surface(
     items
 }
 
-// The perspective camera of all figures on the model: it sees the whole input mesh.
+// The perspective camera of all figures on the model: it sees the whole input mesh, or it is the zoom's.
 fn model_camera(solution: &Solution, params: &FigureParams) -> Camera {
     let mesh = &*solution.mesh_ref;
     let points = mesh
@@ -995,7 +1058,13 @@ fn model_camera(solution: &Solution, params: &FigureParams) -> Camera {
         .into_iter()
         .map(|v| mesh.position(v))
         .collect::<Vec<_>>();
-    Camera::new(params, Some(&points))
+    match params.zoom {
+        Some(zoom) => {
+            let (min, max) = bounds(&points);
+            Camera::at(params, zoom.eye, ZOOM_NEAR * (max - min).norm())
+        }
+        None => Camera::new(params, Some(&points)),
+    }
 }
 
 fn input_mesh(model: &Model<'_>) -> Vec<Item> {
@@ -1358,9 +1427,16 @@ fn escape(text: &str) -> String {
         .replace('"', "&quot;")
 }
 
-// The items, and the frame (projected points), fitted (centered) in a square of the given size, with the label below
-// it.
-fn to_svg(items: Vec<Item>, frame: &[[f64; 2]], size: f64, label: Option<&str>) -> String {
+// What a figure is fitted to.
+enum Fit {
+    // The items and these (projected) points, centered in a square with a margin.
+    Content(Vec<[f64; 2]>),
+    // A window of this half width and height around the center of the page, filling it (its longer side the size).
+    Window([f64; 2]),
+}
+
+// The corners of the bounding box of an item on the page (before it is fitted).
+fn item_bounds(item: &Item) -> ([f64; 2], [f64; 2]) {
     let (mut min, mut max) = ([f64::INFINITY; 2], [f64::NEG_INFINITY; 2]);
     let mut extend = |p: &[f64; 2]| {
         for k in 0..2 {
@@ -1368,39 +1444,77 @@ fn to_svg(items: Vec<Item>, frame: &[[f64; 2]], size: f64, label: Option<&str>) 
             max[k] = max[k].max(p[k]);
         }
     };
-    for item in &items {
-        match item {
-            Item::Polygon { points, .. } => points.iter().for_each(&mut extend),
-            Item::Line { from, to, .. } => {
-                extend(from);
-                extend(to);
-            }
-            Item::Disk { center, .. } => extend(center),
+    match item {
+        Item::Polygon { points, .. } => points.iter().for_each(&mut extend),
+        Item::Line { from, to, .. } => {
+            extend(from);
+            extend(to);
         }
+        Item::Disk { center, .. } => extend(center),
     }
-    frame.iter().for_each(&mut extend);
-    let span = (max[0] - min[0]).max(max[1] - min[1]).max(1e-12);
-    let scale = size * (1. - 2. * MARGIN) / span;
-    let center = [(min[0] + max[0]) / 2., (min[1] + max[1]) / 2.];
-    // On the page: y down.
-    let page = |p: &[f64; 2]| {
-        (
-            size / 2. + (p[0] - center[0]) * scale,
-            size / 2. - (p[1] - center[1]) * scale,
-        )
+    (min, max)
+}
+
+// The items fitted as `fit` says, with the label below them.
+fn to_svg(mut items: Vec<Item>, fit: &Fit, size: f64, label: Option<&str>) -> String {
+    // The window on the page (before it is fitted) and the size of the page.
+    let (min, max, width, height) = match fit {
+        Fit::Content(frame) => {
+            let (mut min, mut max) = ([f64::INFINITY; 2], [f64::NEG_INFINITY; 2]);
+            let bounds = items.iter().map(item_bounds);
+            let frame = frame.iter().map(|&p| (p, p));
+            for (lo, hi) in bounds.chain(frame) {
+                for k in 0..2 {
+                    min[k] = min[k].min(lo[k]);
+                    max[k] = max[k].max(hi[k]);
+                }
+            }
+            let span = (max[0] - min[0]).max(max[1] - min[1]).max(1e-12);
+            let center = [(min[0] + max[0]) / 2., (min[1] + max[1]) / 2.];
+            // With the margin, as a square.
+            let half = span / 2. / (1. - 2. * MARGIN);
+            let min = [center[0] - half, center[1] - half];
+            let max = [center[0] + half, center[1] + half];
+            (min, max, size, size)
+        }
+        Fit::Window([w, h]) => {
+            let (w, h) = (w.max(1e-12), h.max(1e-12));
+            let (width, height) = if w >= h {
+                (size, size * h / w)
+            } else {
+                (size * w / h, size)
+            };
+            // Leave out what lies outside of the window.
+            items.retain(|item| {
+                let (lo, hi) = item_bounds(item);
+                hi[0] >= -w && lo[0] <= w && hi[1] >= -h && lo[1] <= h
+            });
+            ([-w, -h], [w, h], width, height)
+        }
     };
+    let scale = width / (max[0] - min[0]).max(1e-12);
+    // On the page: y down.
+    let page = |p: &[f64; 2]| ((p[0] - min[0]) * scale, (max[1] - p[1]) * scale);
 
     let font = FONT_SIZE * size;
-    let height = if label.is_some() {
-        size + 2. * font
+    let total = if label.is_some() {
+        height + 2. * font
     } else {
-        size
+        height
     };
     let mut svg = String::new();
     let _ = writeln!(
         svg,
-        r#"<svg xmlns="http://www.w3.org/2000/svg" width="{size:.1}" height="{height:.1}" viewBox="0 0 {size:.1} {height:.1}">"#
+        r#"<svg xmlns="http://www.w3.org/2000/svg" width="{width:.1}" height="{total:.1}" viewBox="0 0 {width:.1} {total:.1}">"#
     );
+    // A window cuts off what lies outside of it.
+    let clip = matches!(fit, Fit::Window(_));
+    if clip {
+        let _ = writeln!(
+            svg,
+            r#"<clipPath id="figure"><rect width="{width:.2}" height="{height:.2}"/></clipPath><g clip-path="url(#figure)">"#
+        );
+    }
     for item in &items {
         match item {
             Item::Polygon { points, fill } => {
@@ -1447,12 +1561,15 @@ fn to_svg(items: Vec<Item>, frame: &[[f64; 2]], size: f64, label: Option<&str>) 
             }
         }
     }
+    if clip {
+        svg.push_str("</g>\n");
+    }
     if let Some(label) = label {
         let _ = writeln!(
             svg,
             r#"<text x="{:.2}" y="{:.2}" font-family="Helvetica, Arial, sans-serif" font-size="{font:.2}" fill="{}" text-anchor="middle">{}</text>"#,
-            size / 2.,
-            size + 1.4 * font,
+            width / 2.,
+            height + 1.4 * font,
             hex([0.2, 0.2, 0.2]),
             escape(label)
         );

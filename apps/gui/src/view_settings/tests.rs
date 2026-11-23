@@ -9,6 +9,9 @@ fn settings() -> ViewSettings {
         format: FigureFormat::Svg,
         label: true,
         smooth_paths: false,
+        zoom: true,
+        fov: 0.625,
+        aspect: 1.25,
     }
 }
 
@@ -21,6 +24,9 @@ fn other() -> ViewSettings {
         format: FigureFormat::Pdf,
         label: false,
         smooth_paths: true,
+        zoom: false,
+        fov: 0.75,
+        aspect: 1.5,
     }
 }
 
@@ -77,6 +83,9 @@ fn malformed_text_is_rejected() {
         "eye",
         "format=jpg",
         "label=maybe",
+        "fov=0",
+        "fov=4",
+        "aspect=-1",
         "eye=0,0,0 target=0,0,0",
         "up=0,0,0",
     ] {
@@ -90,4 +99,15 @@ fn figure_camera_looks_from_eye_to_target() {
     let expected = -Vector3D::new(1., 1., 1.).normalize();
     assert!((view - expected).norm() < 1e-6);
     assert_eq!(up, Vector3D::new(0., 1., 0.));
+}
+
+#[test]
+fn the_window_is_only_written_when_zoomed() {
+    let line = other().line();
+    assert!(
+        line.contains("zoom=false") && !line.contains("fov="),
+        "{line}"
+    );
+    let line = settings().line();
+    assert!(line.contains("zoom=true fov=0.625 aspect=1.25"), "{line}");
 }

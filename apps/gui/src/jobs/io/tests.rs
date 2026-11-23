@@ -20,6 +20,9 @@ fn exported_figures_come_with_a_save_and_a_view_text_that_restore_them() {
         format: FigureFormat::Svg,
         label: true,
         smooth_paths: false,
+        zoom: false,
+        fov: 0.75,
+        aspect: 1.,
     };
     let skeleton = io::SkeletonSave {
         failure: Some((
@@ -68,6 +71,9 @@ fn exported_figures_come_with_a_save_and_a_view_text_that_restore_them() {
         format: FigureFormat::Pdf,
         label: false,
         smooth_paths: true,
+        zoom: false,
+        fov: 0.75,
+        aspect: 1.,
     };
     assert_eq!(ViewSettings::parse(&text, other), Ok(view));
 
@@ -98,6 +104,9 @@ fn an_exported_view_is_one_figure_in_the_chosen_format() {
         format: FigureFormat::Png,
         label: true,
         smooth_paths: false,
+        zoom: false,
+        fov: 0.75,
+        aspect: 1.,
     };
     // The extension follows the format.
     let job = Job::export_figure(

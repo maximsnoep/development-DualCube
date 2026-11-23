@@ -34,6 +34,7 @@ use pipeline::Stage;
 use std::sync::{Arc, Mutex, mpsc};
 
 pub use evolution::EvolutionLive;
+pub use io::figure_as_seen;
 pub use skeleton::ContractionCache;
 
 pub struct JobPlugin;

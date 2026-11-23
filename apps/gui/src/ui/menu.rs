@@ -158,7 +158,7 @@ impl ModelViewKind {
     }
 
     // Its figure (see `io::figure`).
-    const fn figure(self) -> io::figure::Figure {
+    pub(crate) const fn figure(self) -> io::figure::Figure {
         use io::figure::Figure;
         match self {
             Self::Input => Figure::InputMesh,
@@ -355,16 +355,17 @@ pub fn show(
     main_camera: Query<
         '_,
         '_,
-        &bevy_orbit_camera::LookTransform,
+        (&bevy_orbit_camera::LookTransform, &Projection),
         With<bevy_orbit_camera::Controller>,
     >,
     mut apply_view: MessageWriter<'_, ApplyView>,
+    mut figure_preview: ResMut<'_, super::figure_preview::FigurePreview>,
 ) -> Result<(), BevyError> {
     // The figures are seen as the model is (the polycube window shares its rotation).
     let view = main_camera
         .single()
         .ok()
-        .map(|look| ViewSettings::current(look, &conf));
+        .map(|(look, projection)| ViewSettings::current(look, projection, &conf));
     let mut root = super::root_ui(egui_ctx.ctx_mut()?, "top bar root");
     Panel::top(super::TOP_BAR)
         .show_separator_line(true)
@@ -387,6 +388,7 @@ pub fn show(
                     &skeleton,
                     view,
                     view_preview.active,
+                    &mut figure_preview.open,
                 );
                 ui.separator();
                 pipeline_bar(
@@ -620,6 +622,7 @@ fn menu_bar(
     skeleton: &SkeletonResource,
     view: Option<ViewSettings>,
     selected: Option<ModelViewKind>,
+    preview: &mut bool,
 ) {
     menu_button(ui, "File", |ui| {
         if sleek_button(ui, "Load") {
@@ -671,7 +674,13 @@ fn menu_bar(
                 ui.radio_value(&mut conf.figure_format, format, text(format.extension()));
             }
         });
-        ui.checkbox(&mut conf.figure_label, text("label"));
+        ui.horizontal(|ui| {
+            ui.checkbox(&mut conf.figure_label, text("label"));
+            // Framed as the camera sees the model, instead of fitted to it.
+            ui.checkbox(&mut conf.figure_zoom, text("camera zoom"));
+        });
+        // A window with the figure of the chosen view, rendered only while it is open.
+        ui.checkbox(preview, text("preview"));
         // The figure of the view chosen in the top bar only.
         if let Some(selected) = selected
             && sleek_button(ui, "Export view")
@@ -784,6 +793,11 @@ pub struct ModelView {
 }
 
 impl ModelView {
+    /// The view chosen in the top bar.
+    pub fn active(&self) -> Option<ModelViewKind> {
+        self.active
+    }
+
     pub fn show_when_ready(&mut self, view: ModelViewKind) {
         self.pending = Some(view);
     }

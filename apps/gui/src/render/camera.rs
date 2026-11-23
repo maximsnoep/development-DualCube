@@ -180,6 +180,7 @@ pub fn apply_view(
     configuration.loop_width = view.loop_width;
     configuration.figure_format = view.format;
     configuration.figure_label = view.label;
+    configuration.figure_zoom = view.zoom;
     configuration.smooth_paths = view.smooth_paths;
     if redraw {
         jobs.write(crate::jobs::Job::refresh(

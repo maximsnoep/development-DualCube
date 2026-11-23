@@ -25,6 +25,8 @@ pub struct Configuration {
     /// The format of the exported figures, and whether they are labelled (see `Job::export_figures`).
     pub figure_format: FigureFormat,
     pub figure_label: bool,
+    /// Frame the figures on the model as the camera does (see `ViewSettings::zoom`).
+    pub figure_zoom: bool,
 
     /// The criterion used to compare solutions (initialization, evolution, corner optimization).
     pub quality: QualityParams,
@@ -71,6 +73,7 @@ impl Default for Configuration {
 
             figure_format: FigureFormat::Pdf,
             figure_label: false,
+            figure_zoom: false,
 
             quality: QualityParams::default(),
             // Starts with initialization (see `LoopPhase`).

@@ -1,5 +1,5 @@
 //! The egui user interface: the top menu bar, the footer, the main view, and the floating windows
-//! (polycube, evolution, contraction).
+//! (polycube, evolution, contraction, figure preview).
 //!
 //! Each panel is its own system (in its own module), run in order via
 //! [`UiPlugin`]; `theme` and `widgets` hold the shared styling and widgets.
@@ -7,6 +7,7 @@
 pub mod console;
 mod contraction;
 mod evolution;
+mod figure_preview;
 mod footer;
 mod menu;
 pub(crate) mod menus;
@@ -26,6 +27,7 @@ impl Plugin for UiPlugin {
     fn build(&self, app: &mut App) {
         app.init_resource::<viewport::ViewResource>()
             .init_resource::<ModelView>()
+            .init_resource::<figure_preview::FigurePreview>()
             .init_resource::<menus::MenuInput>()
             .add_plugins(bevy_egui::EguiPlugin::default())
             .add_observer(setup)
@@ -43,6 +45,7 @@ impl Plugin for UiPlugin {
                     viewport::show,
                     evolution::show,
                     contraction::show,
+                    figure_preview::show,
                 )
                     .chain(),
             );

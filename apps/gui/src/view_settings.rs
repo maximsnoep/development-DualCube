@@ -20,6 +20,12 @@ pub struct ViewSettings {
     pub format: FigureFormat,
     pub label: bool,
     pub smooth_paths: bool,
+    /// Frame the figures on the model as the camera does (its eye, field of view and window), instead of fitting the
+    /// model.
+    pub zoom: bool,
+    /// The camera's vertical field of view (radians) and the width over the height of its window.
+    pub fov: f32,
+    pub aspect: f32,
 }
 
 /// Asks to move the main camera and adopt the figure settings.
@@ -27,7 +33,11 @@ pub struct ViewSettings {
 pub struct ApplyView(pub ViewSettings);
 
 impl ViewSettings {
-    pub fn current(look: &LookTransform, conf: &Configuration) -> Self {
+    pub fn current(look: &LookTransform, projection: &Projection, conf: &Configuration) -> Self {
+        let perspective = match projection {
+            Projection::Perspective(perspective) => perspective.clone(),
+            _ => PerspectiveProjection::default(),
+        };
         Self {
             eye: look.eye,
             target: look.target,
@@ -36,6 +46,9 @@ impl ViewSettings {
             format: conf.figure_format,
             label: conf.figure_label,
             smooth_paths: conf.smooth_paths,
+            zoom: conf.figure_zoom,
+            fov: perspective.fov,
+            aspect: perspective.aspect_ratio,
         }
     }
 
@@ -46,8 +59,8 @@ impl ViewSettings {
     }
 
     pub fn line(&self) -> String {
-        format!(
-            "{PREFIX} eye={} target={} up={} loop_width={} format={} label={} smooth={}",
+        let mut line = format!(
+            "{PREFIX} eye={} target={} up={} loop_width={} format={} label={} smooth={} zoom={}",
             triple(self.eye),
             triple(self.target),
             triple(self.up),
@@ -55,7 +68,13 @@ impl ViewSettings {
             self.format.extension(),
             self.label,
             self.smooth_paths,
-        )
+            self.zoom,
+        );
+        // The window only matters when zoomed.
+        if self.zoom {
+            line.push_str(&format!(" fov={} aspect={}", self.fov, self.aspect));
+        }
+        line
     }
 
     /// The settings of `text` (a line, or a report containing one); keys it omits keep their value in `base`.
@@ -85,6 +104,9 @@ impl ViewSettings {
                 }
                 "label" => settings.label = parse_bool(value)?,
                 "smooth" => settings.smooth_paths = parse_bool(value)?,
+                "zoom" => settings.zoom = parse_bool(value)?,
+                "fov" => settings.fov = parse_number(value)?,
+                "aspect" => settings.aspect = parse_number(value)?,
                 _ => return Err(format!("unknown key `{key}`")),
             }
             any = true;
@@ -97,6 +119,12 @@ impl ViewSettings {
         }
         if settings.up.length_squared() == 0. {
             return Err("up is zero".to_owned());
+        }
+        if !(settings.fov > 0. && settings.fov < std::f32::consts::PI) {
+            return Err("fov must lie between 0 and pi".to_owned());
+        }
+        if !(settings.aspect > 0.) {
+            return Err("aspect must be positive".to_owned());
         }
         Ok(settings)
     }
@@ -149,6 +177,14 @@ impl ViewSettings {
             format!("format: {}", self.format.extension()),
             format!("label: {}", self.label),
             format!("smooth paths: {}", self.smooth_paths),
+            format!(
+                "camera zoom: {}",
+                if self.zoom {
+                    format!("on (fov {} rad, aspect {})", self.fov, self.aspect)
+                } else {
+                    "off (fitted to the model)".to_owned()
+                }
+            ),
             format!("initialization: {:?}", report.configuration.initialization),
             format!("skeleton options: {:?}", report.configuration.skeleton_options),
             String::new(),

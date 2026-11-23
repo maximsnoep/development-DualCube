@@ -527,6 +527,9 @@ fn nodes_and_edges(
     let mut disks = vec![];
     for id in skeleton.nodes.keys() {
         let p = position(id);
+        if !camera.in_front(p) {
+            continue;
+        }
         let disk = Item::Disk {
             center: camera.project(p),
             radius: NODE_RADIUS,
@@ -538,6 +541,9 @@ fn nodes_and_edges(
     let mut lines = vec![];
     for (id, e) in &skeleton.edges {
         let (a, b) = (position(e.nodes[0]), position(e.nodes[1]));
+        if !camera.in_front(a) || !camera.in_front(b) {
+            continue;
+        }
         let (color, width) = edge(id);
         let line = Item::Line {
             from: camera.project(a),

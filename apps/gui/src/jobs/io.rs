@@ -5,8 +5,9 @@ use crate::jobs::{Job, JobResult};
 use crate::render;
 use crate::resources::Configuration;
 use crate::view_settings::{Report, ViewSettings};
+use bevy::prelude::Vec3;
 use dualcube::prelude::*;
-use io::figure::{Annotation, Figure, FigureParams, FigureStyle};
+use io::figure::{Annotation, CameraZoom, Figure, FigureParams, FigureStyle};
 use std::path::{Path, PathBuf};
 
 impl Job {
@@ -129,11 +130,7 @@ impl Job {
     ) -> Self {
         Self::new("exporting figure", move || {
             let path = path.with_extension(view.format.extension());
-            let date = io::figure::today();
-            let (smoothed, params, style) = drawing(&solution, &name, &view, &date);
-            let solution = smoothed.as_ref().unwrap_or(&solution);
-            let Some(svg) =
-                io::figure::figure_svg(solution, skeleton.as_ref(), figure, &params, &style)
+            let Some(svg) = figure_as_seen(&solution, skeleton.as_ref(), figure, &name, &view)
             else {
                 warn!("Nothing to export: no {} figure", figure.name());
                 return None;
@@ -192,6 +189,20 @@ const OUTPUT_FIGURES: [Figure; 4] = [
 
 // The figures it has of `which`, seen in `view`, as `<dir>/<stem>_<figure>.<format>`, labeled with `input`; returns the
 // paths saved.
+/// The SVG of a figure of the solution as `Job::export_figure` saves it, or `None` if it does not have it yet.
+pub fn figure_as_seen(
+    solution: &Solution,
+    skeleton: Option<&io::SkeletonSave>,
+    figure: Figure,
+    name: &str,
+    view: &ViewSettings,
+) -> Option<String> {
+    let date = io::figure::today();
+    let (smoothed, params, style) = drawing(solution, name, view, &date);
+    let solution = smoothed.as_ref().unwrap_or(solution);
+    io::figure::figure_svg(solution, skeleton, figure, &params, &style)
+}
+
 fn figures(
     solution: &Solution,
     skeleton: Option<&io::SkeletonSave>,
@@ -238,6 +249,16 @@ fn drawing(
         None
     };
     let (direction, up) = view.figure_camera();
+    // The camera's eye, from the main view into the coordinates of the mesh.
+    let zoom = view.zoom.then(|| {
+        let (scale, translation) = solution.mesh_ref.scale_translation();
+        let eye = view.eye - Vec3::from(render::Objects::InputMesh);
+        CameraZoom {
+            eye: render::gizmos::view_to_world(eye, translation, scale),
+            fov: f64::from(view.fov),
+            aspect: f64::from(view.aspect),
+        }
+    });
     let params = FigureParams {
         view: direction,
         up,
@@ -249,6 +270,7 @@ fn drawing(
             score: smoothed.as_ref().unwrap_or(solution).get_quality(),
             date: date.to_owned(),
         }),
+        zoom,
         ..FigureParams::default()
     };
     let axes = DIRECTIONS;
