@@ -303,26 +303,55 @@ pub(super) fn cubes(model: &Model<'_>, coloring: CubeColoring) -> Option<Vec<Ite
 pub(super) fn cube_loops(model: &Model<'_>, lifted: bool) -> Option<Vec<Item>> {
     let realized = placement(model)?;
     let camera = Camera::new(model.params, None);
-    let (mut faces, mut segments) = (vec![], vec![]);
-    for solid in realized.template_solids() {
+    let solids = realized.template_solids();
+    let mut faces = vec![];
+    for solid in &solids {
         let bounds = (solid.lo, solid.hi);
         box_faces(&mut faces, &camera, bounds, GRAY, |n, positive| {
             solid.hidden[n][usize::from(positive)]
         });
-        for section in solid.sections() {
-            let toward = if section.positive { 1. } else { -1. };
-            if (lifted && !section.boundary) || toward * camera.forward[section.normal] >= 0. {
-                continue;
-            }
-            let [from, to] = section.ends;
-            segments.push(AxisSegment {
-                axis: 3 - section.normal - section.axis,
-                from,
-                to,
-                color: model.style.dual[section.axis],
-                width: CUBE_LOOP_WIDTH,
-            });
+    }
+    // A section is drawn only on the faces that show and that it lies on or continues onto: it stops flat at the
+    // outline, and joins round around a corner that shows.
+    let eps = 1e-9;
+    let on = |face: &AxisFace, p: Vector3D| {
+        let (a, b) = ((face.n + 1) % 3, (face.n + 2) % 3);
+        let [a0, a1, b0, b1] = face.rect;
+        (p[face.n] - face.c).abs() <= eps
+            && (a0 - eps..=a1 + eps).contains(&p[a])
+            && (b0 - eps..=b1 + eps).contains(&p[b])
+    };
+    let corners = |face: &AxisFace| {
+        let (a, b) = ((face.n + 1) % 3, (face.n + 2) % 3);
+        let [a0, a1, b0, b1] = face.rect;
+        [(a0, b0), (a1, b0), (a1, b1), (a0, b1)].map(|(x, y)| {
+            let mut p = Vector3D::zeros();
+            p[face.n] = face.c;
+            p[a] = x;
+            p[b] = y;
+            p
+        })
+    };
+    let mut segments = vec![];
+    for section in solids.iter().flat_map(|solid| solid.sections()) {
+        let toward = if section.positive { 1. } else { -1. };
+        if (lifted && !section.boundary) || toward * camera.forward[section.normal] >= 0. {
+            continue;
         }
+        let [from, to] = section.ends;
+        let clip = faces
+            .iter()
+            .filter(|face| on(face, from) || on(face, to))
+            .map(corners)
+            .collect();
+        segments.push(AxisSegment {
+            axis: 3 - section.normal - section.axis,
+            from,
+            to,
+            color: model.style.dual[section.axis],
+            width: CUBE_LOOP_WIDTH,
+            clip,
+        });
     }
     boxes(&faces, &segments, &camera, model.style)
 }
@@ -355,6 +384,7 @@ pub(super) fn node_cubes(model: &Model<'_>) -> Option<Vec<Item>> {
                     to,
                     color: model.style.primal[along],
                     width: EDGE_WIDTH,
+                    clip: vec![],
                 });
             }
         }

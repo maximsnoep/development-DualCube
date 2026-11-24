@@ -672,6 +672,19 @@ enum Item {
         color: Rgb,
         width: f64,
     },
+    // A line through the points, with flat ends (so that it stops where it does) and round bends; closed, it ends
+    // where it starts.
+    Polyline {
+        points: Vec<[f64; 2]>,
+        closed: bool,
+        color: Rgb,
+        width: f64,
+    },
+    // An item drawn only inside of the polygons.
+    Clipped {
+        clip: Vec<Vec<[f64; 2]>>,
+        item: Box<Item>,
+    },
     // A dot with a ring around it; radius and ring width as fractions of the figure's size.
     Disk {
         center: [f64; 2],
@@ -1045,18 +1058,55 @@ fn surface(
             shown.push((depth, item));
         }
     }
+    // The lines as the stretches of consecutive segments that show (so that they stop flat where they disappear, e.g.
+    // around the outline); a closed line that shows all around as one.
     for line in lines {
-        for pair in line.points.windows(2) {
-            let in_front = camera.in_front(pair[0]) && camera.in_front(pair[1]);
-            if in_front && shows((pair[0] + pair[1]) / 2.) {
-                let item = Item::Line {
-                    from: camera.project(pair[0]),
-                    to: camera.project(pair[1]),
-                    color: line.color,
-                    width: line.width,
-                };
-                shown.push((camera.depth((pair[0] + pair[1]) / 2.), item));
+        let points = &line.points;
+        let n = points.len().saturating_sub(1);
+        let visible = (0..n)
+            .map(|i| {
+                let (a, b) = (points[i], points[i + 1]);
+                camera.in_front(a) && camera.in_front(b) && shows((a + b) / 2.)
+            })
+            .collect::<Vec<_>>();
+        let closed = n > 1 && (points[0] - points[n]).norm() <= 1e-12 * (1. + points[0].norm());
+        // Around a closed line, start after a segment that does not show.
+        let start = if closed {
+            (0..n).find(|&i| !visible[i]).map_or(0, |i| i + 1)
+        } else {
+            0
+        };
+        let mut runs: Vec<Vec<usize>> = vec![];
+        let mut run = vec![];
+        for k in 0..n {
+            let i = (start + k) % n;
+            if visible[i] {
+                run.push(i);
+            } else if !run.is_empty() {
+                runs.push(std::mem::take(&mut run));
             }
+        }
+        if !run.is_empty() {
+            runs.push(run);
+        }
+        let all_around = closed && runs.len() == 1 && runs[0].len() == n;
+        for run in runs {
+            let mut ends = run.iter().map(|&i| points[i]).collect::<Vec<_>>();
+            if !all_around {
+                ends.push(points[run[run.len() - 1] + 1]);
+            }
+            let depth = run
+                .iter()
+                .map(|&i| camera.depth((points[i] + points[i + 1]) / 2.))
+                .sum::<f64>()
+                / run.len() as f64;
+            let item = Item::Polyline {
+                points: project(&ends),
+                closed: all_around,
+                color: line.color,
+                width: line.width,
+            };
+            shown.push((depth, item));
         }
     }
     shown.sort_by(|a, b| b.0.total_cmp(&a.0));
@@ -1253,6 +1303,8 @@ struct AxisSegment {
     to: Vector3D,
     color: Rgb,
     width: f64,
+    // Drawn only inside of these quads (if any), e.g., the faces it lies on and continues onto.
+    clip: Vec<[Vector3D; 4]>,
 }
 
 // Axis-aligned faces and segments in a parallel projection: cut on the lattice of all face coordinates, drawn back to
@@ -1386,11 +1438,23 @@ fn boxes(
         let (f, [a0, a1], [b0, b1]) = match cell.piece {
             Piece::Face { face, a, b } => (face, a, b),
             Piece::Segment { segment, from, to } => {
-                items.push(Item::Line {
+                let line = Item::Line {
                     from: camera.project(from),
                     to: camera.project(to),
                     color: segment.color,
                     width: segment.width,
+                };
+                items.push(if segment.clip.is_empty() {
+                    line
+                } else {
+                    Item::Clipped {
+                        clip: segment
+                            .clip
+                            .iter()
+                            .map(|quad| quad.iter().map(|&p| camera.project(p)).collect())
+                            .collect(),
+                        item: Box::new(line),
+                    }
                 });
                 continue;
             }
@@ -1460,14 +1524,101 @@ fn item_bounds(item: &Item) -> ([f64; 2], [f64; 2]) {
         }
     };
     match item {
-        Item::Polygon { points, .. } => points.iter().for_each(&mut extend),
+        Item::Polygon { points, .. } | Item::Polyline { points, .. } => {
+            points.iter().for_each(&mut extend);
+        }
         Item::Line { from, to, .. } => {
             extend(from);
             extend(to);
         }
         Item::Disk { center, .. } => extend(center),
+        Item::Clipped { item, .. } => return item_bounds(item),
     }
     (min, max)
+}
+
+// An item on the page (see `to_svg`); its lines as wide as these fractions of `size`. Clip paths are numbered on.
+fn write_item(
+    svg: &mut String,
+    item: &Item,
+    page: &impl Fn(&[f64; 2]) -> (f64, f64),
+    size: f64,
+    clips: &mut usize,
+) {
+    let path = |points: &[[f64; 2]]| {
+        let mut d = String::new();
+        for (i, p) in points.iter().enumerate() {
+            let (x, y) = page(p);
+            let _ = write!(d, "{}{x:.2} {y:.2}", if i == 0 { 'M' } else { 'L' });
+        }
+        d
+    };
+    match item {
+        Item::Polygon { points, fill } => {
+            let color = hex(*fill);
+            let _ = writeln!(
+                svg,
+                r#"<path d="{}Z" fill="{color}" stroke="{color}" stroke-width="{SEAM}" stroke-linejoin="round"/>"#,
+                path(points)
+            );
+        }
+        Item::Line {
+            from,
+            to,
+            color,
+            width,
+        } => {
+            let _ = writeln!(
+                svg,
+                r#"<path d="{}" fill="none" stroke="{}" stroke-width="{:.2}" stroke-linecap="round"/>"#,
+                path(&[*from, *to]),
+                hex(*color),
+                width * size
+            );
+        }
+        Item::Polyline {
+            points,
+            closed,
+            color,
+            width,
+        } => {
+            let _ = writeln!(
+                svg,
+                r#"<path d="{}{}" fill="none" stroke="{}" stroke-width="{:.2}" stroke-linecap="butt" stroke-linejoin="round"/>"#,
+                path(points),
+                if *closed { "Z" } else { "" },
+                hex(*color),
+                width * size
+            );
+        }
+        Item::Disk {
+            center,
+            radius,
+            fill,
+            ring,
+        } => {
+            let (x, y) = page(center);
+            let _ = writeln!(
+                svg,
+                r#"<circle cx="{x:.2}" cy="{y:.2}" r="{:.2}" fill="{}" stroke="{}" stroke-width="{:.2}"/>"#,
+                radius * size,
+                hex(*fill),
+                hex(*ring),
+                0.25 * radius * size
+            );
+        }
+        Item::Clipped { clip, item } => {
+            *clips += 1;
+            let id = format!("clip{clips}");
+            let _ = write!(svg, r#"<clipPath id="{id}">"#);
+            for polygon in clip {
+                let _ = write!(svg, r#"<path d="{}Z"/>"#, path(polygon));
+            }
+            let _ = writeln!(svg, r#"</clipPath><g clip-path="url(#{id})">"#);
+            write_item(svg, item, page, size, clips);
+            svg.push_str("</g>\n");
+        }
+    }
 }
 
 // The items fitted as `fit` says, with the label below them.
@@ -1530,51 +1681,9 @@ fn to_svg(mut items: Vec<Item>, fit: &Fit, size: f64, label: Option<&str>) -> St
             r#"<clipPath id="figure"><rect width="{width:.2}" height="{height:.2}"/></clipPath><g clip-path="url(#figure)">"#
         );
     }
+    let mut clips = 0;
     for item in &items {
-        match item {
-            Item::Polygon { points, fill } => {
-                let color = hex(*fill);
-                let _ = write!(svg, r#"<path d=""#);
-                for (i, p) in points.iter().enumerate() {
-                    let (x, y) = page(p);
-                    let _ = write!(svg, "{}{x:.2} {y:.2}", if i == 0 { 'M' } else { 'L' });
-                }
-                let _ = writeln!(
-                    svg,
-                    r#"Z" fill="{color}" stroke="{color}" stroke-width="{SEAM}" stroke-linejoin="round"/>"#
-                );
-            }
-            Item::Line {
-                from,
-                to,
-                color,
-                width,
-            } => {
-                let ((x0, y0), (x1, y1)) = (page(from), page(to));
-                let _ = writeln!(
-                    svg,
-                    r#"<path d="M{x0:.2} {y0:.2}L{x1:.2} {y1:.2}" fill="none" stroke="{}" stroke-width="{:.2}" stroke-linecap="round"/>"#,
-                    hex(*color),
-                    width * size
-                );
-            }
-            Item::Disk {
-                center,
-                radius,
-                fill,
-                ring,
-            } => {
-                let (x, y) = page(center);
-                let _ = writeln!(
-                    svg,
-                    r#"<circle cx="{x:.2}" cy="{y:.2}" r="{:.2}" fill="{}" stroke="{}" stroke-width="{:.2}"/>"#,
-                    radius * size,
-                    hex(*fill),
-                    hex(*ring),
-                    0.25 * radius * size
-                );
-            }
-        }
+        write_item(&mut svg, item, &page, size, &mut clips);
     }
     if clip {
         svg.push_str("</g>\n");
