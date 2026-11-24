@@ -24,7 +24,7 @@ Run from the repository root:
                              optimized-combined, optimized-skeleton,
                              optimized-skeleton-gray, optimized-skeleton-loops,
                              placed-skeleton, node-cubes, cubes, cubes-primal, cubes-dual,
-                             lifted
+                             cubes-loops, cubes-lifted, lifted
   --refinement               Enable embedding refinement (default off)
   --no-refinement            Skip embedding refinement
   --iterations <count>      Deflation iteration limit (default 50)
@@ -150,6 +150,8 @@ impl Launch {
                         "cubes" => ModelViewKind::Cubes,
                         "cubes-primal" => ModelViewKind::CubesPrimal,
                         "cubes-dual" => ModelViewKind::CubesDual,
+                        "cubes-loops" => ModelViewKind::CubesLoops,
+                        "cubes-lifted" => ModelViewKind::CubesLifted,
                         _ => return Err(format!("Unknown view: {value}")),
                     })
                 }
@@ -219,7 +221,9 @@ impl Launch {
                 | ModelViewKind::NodeCubes
                 | ModelViewKind::Cubes
                 | ModelViewKind::CubesPrimal
-                | ModelViewKind::CubesDual => Some(Stage::CubePlacement),
+                | ModelViewKind::CubesDual
+                | ModelViewKind::CubesLoops
+                | ModelViewKind::CubesLifted => Some(Stage::CubePlacement),
                 ModelViewKind::Tree | ModelViewKind::Labeled => Some(Stage::Labeling),
                 _ => Some(Stage::Extraction),
             };

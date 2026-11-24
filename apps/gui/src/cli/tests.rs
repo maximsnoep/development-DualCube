@@ -379,6 +379,8 @@ fn placement_views_need_placement() {
         ("node-cubes", ModelViewKind::NodeCubes),
         ("cubes-primal", ModelViewKind::CubesPrimal),
         ("cubes-dual", ModelViewKind::CubesDual),
+        ("cubes-loops", ModelViewKind::CubesLoops),
+        ("cubes-lifted", ModelViewKind::CubesLifted),
     ] {
         let flag = format!("--view={name}");
         let launch = parse(&["--load=a.obj", "--stop-after=placement", flag.as_str()]).unwrap();

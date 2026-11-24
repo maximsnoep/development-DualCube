@@ -82,6 +82,10 @@ pub enum ModelViewKind {
     CubesPrimal,
     /// The cubes with only the edges colored.
     CubesDual,
+    /// The template's cubes in gray with its loops.
+    CubesLoops,
+    /// The template's cubes in gray with its lifted loops (the patch boundaries).
+    CubesLifted,
     /// The labeled patch boundaries, before the template's other loops are drawn.
     Lifted,
     Dual,
@@ -90,7 +94,7 @@ pub enum ModelViewKind {
 }
 
 impl ModelViewKind {
-    const ALL: [Self; 25] = [
+    const ALL: [Self; 27] = [
         Self::Input,
         Self::Deflated,
         Self::Raw,
@@ -112,6 +116,8 @@ impl ModelViewKind {
         Self::Cubes,
         Self::CubesPrimal,
         Self::CubesDual,
+        Self::CubesLoops,
+        Self::CubesLifted,
         Self::Lifted,
         Self::Dual,
         Self::Primal,
@@ -150,6 +156,8 @@ impl ModelViewKind {
             Self::Cubes => "Cubes",
             Self::CubesPrimal => "Cubes primal",
             Self::CubesDual => "Cubes dual",
+            Self::CubesLoops => "Cubes loops",
+            Self::CubesLifted => "Cubes lifted",
             Self::Lifted => "Lifted",
             Self::Dual => "Dual",
             Self::Primal => "Primal",
@@ -182,6 +190,8 @@ impl ModelViewKind {
             Self::Cubes => Figure::Cubes,
             Self::CubesPrimal => Figure::CubesPrimal,
             Self::CubesDual => Figure::CubesDual,
+            Self::CubesLoops => Figure::CubesLoops,
+            Self::CubesLifted => Figure::CubesLifted,
             Self::Lifted => Figure::LiftedLoops,
             Self::Dual => Figure::LoopStructure,
             Self::Primal => Figure::Segmentation,
@@ -263,6 +273,24 @@ impl ModelViewKind {
                     &[
                         SkeletonLayer::CubesDual.label(),
                         SkeletonLayer::CubeEdges.label(),
+                    ]
+                }
+            }
+            Self::CubesLoops => {
+                const {
+                    &[
+                        SkeletonLayer::TemplateCubes.label(),
+                        SkeletonLayer::TemplateCubeEdges.label(),
+                        SkeletonLayer::CubeLoops.label(),
+                    ]
+                }
+            }
+            Self::CubesLifted => {
+                const {
+                    &[
+                        SkeletonLayer::TemplateCubes.label(),
+                        SkeletonLayer::TemplateCubeEdges.label(),
+                        SkeletonLayer::CubeLiftedLoops.label(),
                     ]
                 }
             }
@@ -433,7 +461,9 @@ pub fn show(
                     | ModelViewKind::NodeCubes
                     | ModelViewKind::Cubes
                     | ModelViewKind::CubesPrimal
-                    | ModelViewKind::CubesDual => skeleton.progress.realized.is_some(),
+                    | ModelViewKind::CubesDual
+                    | ModelViewKind::CubesLoops
+                    | ModelViewKind::CubesLifted => skeleton.progress.realized.is_some(),
                     ModelViewKind::Optimized
                     | ModelViewKind::CutSystem
                     | ModelViewKind::OptimizedCombined

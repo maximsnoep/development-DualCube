@@ -71,6 +71,10 @@ pub enum Figure {
     CubesPrimal,
     /// The cube placement with only the edge cubes colored (by axis).
     CubesDual,
+    /// The cube surface of the loop drawing's template in gray, with its loops: one crossing per face.
+    CubesLoops,
+    /// The same, with only the lifted loops (the patch boundaries, around the edge cuboids).
+    CubesLifted,
     /// The labeled patch boundaries on the input mesh, before the template's other loops are drawn.
     LiftedLoops,
     /// The loops on the input mesh.
@@ -84,7 +88,7 @@ pub enum Figure {
 }
 
 impl Figure {
-    pub const ALL: [Self; 26] = [
+    pub const ALL: [Self; 28] = [
         Self::InputMesh,
         Self::Deflated,
         Self::RawSkeleton,
@@ -106,6 +110,8 @@ impl Figure {
         Self::Cubes,
         Self::CubesPrimal,
         Self::CubesDual,
+        Self::CubesLoops,
+        Self::CubesLifted,
         Self::LiftedLoops,
         Self::LoopStructure,
         Self::Segmentation,
@@ -138,6 +144,8 @@ impl Figure {
             Self::Cubes => "cube placement",
             Self::CubesPrimal => "cube placement (primal)",
             Self::CubesDual => "cube placement (dual)",
+            Self::CubesLoops => "loops on the cubes",
+            Self::CubesLifted => "lifted loops on the cubes",
             Self::LiftedLoops => "lifted loops",
             Self::LoopStructure => "loop structure",
             Self::Segmentation => "polycube segmentation",
@@ -171,6 +179,8 @@ impl Figure {
             Self::Cubes => "cubes",
             Self::CubesPrimal => "cubes_primal",
             Self::CubesDual => "cubes_dual",
+            Self::CubesLoops => "cubes_loops",
+            Self::CubesLifted => "cubes_lifted",
             Self::LiftedLoops => "lifted",
             Self::LoopStructure => "loops",
             Self::Segmentation => "segmentation",
@@ -193,6 +203,8 @@ impl Figure {
                 | Self::Cubes
                 | Self::CubesPrimal
                 | Self::CubesDual
+                | Self::CubesLoops
+                | Self::CubesLifted
         )
     }
 }
@@ -370,6 +382,8 @@ pub fn figure_svg(
         Figure::Cubes => skeleton::cubes(&model, CubeColoring::Combined)?,
         Figure::CubesPrimal => skeleton::cubes(&model, CubeColoring::Primal)?,
         Figure::CubesDual => skeleton::cubes(&model, CubeColoring::Dual)?,
+        Figure::CubesLoops => skeleton::cube_loops(&model, false)?,
+        Figure::CubesLifted => skeleton::cube_loops(&model, true)?,
         Figure::LiftedLoops => lifted_loops(&model)?,
         Figure::LoopStructure => loop_structure(&model)?,
         Figure::Segmentation => segmentation(&model)?,
@@ -1243,7 +1257,7 @@ struct AxisSegment {
 
 // Axis-aligned faces and segments in a parallel projection: cut on the lattice of all face coordinates, drawn back to
 // front by their position in the lattice; every face cell with the sides of its face that it has. A segment piece
-// is drawn over a face cell at the same depth.
+// on a face is drawn over the face's cells.
 fn boxes(
     faces: &[AxisFace],
     segments: &[AxisSegment],
@@ -1330,11 +1344,12 @@ fn boxes(
             }
         }
     }
-    // The doubled lattice coordinate of a value: even on a level, odd between two.
+    // The doubled lattice coordinate of a value: odd between two levels; on a level, half a step toward the viewer, so
+    // that a segment on a face (or between two of its cells) is drawn over it.
     let doubled = |k: usize, x: f64| {
         let i = index(k, x);
         let on = levels[k].get(i).is_some_and(|&l| (l - x).abs() <= eps);
-        2. * i as f64 + if on { 0. } else { 1. }
+        2. * i as f64 + if on { -sign[k] } else { 1. }
     };
     for segment in segments {
         let k = segment.axis;
@@ -1363,7 +1378,7 @@ fn boxes(
             });
         }
     }
-    // Farthest first (stable: segments after the faces at the same depth).
+    // Farthest first.
     cells.sort_by(|x, y| y.key.total_cmp(&x.key));
 
     let mut items = vec![];

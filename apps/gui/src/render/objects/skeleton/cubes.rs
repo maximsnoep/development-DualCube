@@ -162,6 +162,7 @@ pub(super) fn add(
         -0.00001,
         SkeletonLayer::NodeCubeEdges.label(),
     );
+    template(object, realized, scale, translation);
     // The labeled skeleton at the centers of its node cubes.
     let mut placed = realized.labeled.skeleton.clone();
     for (id, node) in &mut placed.nodes {
@@ -177,4 +178,87 @@ pub(super) fn add(
             translation,
         )),
     );
+}
+
+// The cube surface of the loop drawing's template in gray, with its loops: all of them, and the lifted ones (the patch
+// boundaries) alone.
+fn template(
+    object: &mut RenderObject,
+    realized: &RealizedSkeleton,
+    scale: f64,
+    translation: Vector3D,
+) {
+    // Lifted off the faces, so that the lines are not hidden in them.
+    const LIFT: f64 = 0.02;
+    let view = |p| crate::render::gizmos::world_to_view(p, translation, scale);
+    let mut faces = MeshBuilder::new();
+    let mut outlines = GizmoAsset::new();
+    let mut loops = GizmoAsset::new();
+    let mut lifted = GizmoAsset::new();
+    let outline = colors::to_bevy(colors::DARK_GRAY);
+    for solid in realized.template_solids() {
+        for normal in 0..3 {
+            for positive in [false, true] {
+                if solid.hidden[normal][usize::from(positive)] {
+                    continue;
+                }
+                let (u, v) = ((normal + 1) % 3, (normal + 2) % 3);
+                let corner = |a: bool, b: bool| {
+                    let mut p = if positive { solid.hi } else { solid.lo };
+                    p[u] = if a { solid.hi[u] } else { solid.lo[u] };
+                    p[v] = if b { solid.hi[v] } else { solid.lo[v] };
+                    p
+                };
+                // Counterclockwise seen from outside.
+                let mut corners = [
+                    corner(false, false),
+                    corner(true, false),
+                    corner(true, true),
+                    corner(false, true),
+                ];
+                if !positive {
+                    corners.reverse();
+                }
+                let mut n = Vector3D::zeros();
+                n[normal] = if positive { 1. } else { -1. };
+                for i in 1..3 {
+                    faces.add_triangle(
+                        [corners[0], corners[i], corners[i + 1]],
+                        [n; 3],
+                        colors::LIGHT_GRAY,
+                    );
+                }
+                for i in 0..4 {
+                    outlines.line(view(corners[i]), view(corners[(i + 1) % 4]), outline);
+                }
+            }
+        }
+        for section in solid.sections() {
+            let mut lift = Vector3D::zeros();
+            lift[section.normal] = if section.positive { LIFT } else { -LIFT };
+            let [from, to] = section.ends.map(|p| view(p + lift));
+            let color = colors::to_bevy(colors::from_direction(
+                DIRECTIONS[section.axis],
+                Some(Perspective::Dual),
+                None,
+            ));
+            loops.line(from, to, color);
+            if section.boundary {
+                lifted.line(from, to, color);
+            }
+        }
+    }
+    faces.normalize(scale, translation);
+    object.add(
+        SkeletonLayer::TemplateCubes.label(),
+        RenderAsset::Mesh(faces.build()),
+    );
+    object.gizmo(
+        outlines,
+        1.,
+        -0.00001,
+        SkeletonLayer::TemplateCubeEdges.label(),
+    );
+    object.gizmo(loops, 4., -0.0001, SkeletonLayer::CubeLoops.label());
+    object.gizmo(lifted, 4., -0.0001, SkeletonLayer::CubeLiftedLoops.label());
 }

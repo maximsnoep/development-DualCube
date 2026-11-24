@@ -37,11 +37,15 @@ pub enum SkeletonLayer {
     CubesPrimal,
     CubesDual,
     CubeEdges,
+    TemplateCubes,
+    TemplateCubeEdges,
+    CubeLoops,
+    CubeLiftedLoops,
     LiftedLoops,
 }
 
 impl SkeletonLayer {
-    pub const ALL: [Self; 23] = [
+    pub const ALL: [Self; 27] = [
         Self::Skeleton,
         Self::GraySkeleton,
         Self::Raw,
@@ -64,6 +68,10 @@ impl SkeletonLayer {
         Self::CubesPrimal,
         Self::CubesDual,
         Self::CubeEdges,
+        Self::TemplateCubes,
+        Self::TemplateCubeEdges,
+        Self::CubeLoops,
+        Self::CubeLiftedLoops,
         Self::LiftedLoops,
     ];
 
@@ -91,6 +99,10 @@ impl SkeletonLayer {
             Self::CubesPrimal => "primal cubes",
             Self::CubesDual => "dual cubes",
             Self::CubeEdges => "cube edges",
+            Self::TemplateCubes => "template cubes",
+            Self::TemplateCubeEdges => "template cube edges",
+            Self::CubeLoops => "loops on the cubes",
+            Self::CubeLiftedLoops => "lifted loops on the cubes",
             Self::LiftedLoops => "lifted loops",
         }
     }

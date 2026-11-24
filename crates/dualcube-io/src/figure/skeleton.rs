@@ -25,6 +25,7 @@ const CUT_WIDTH: f64 = 0.012;
 const FLAT_SURFACE: f32 = 0.7;
 const QUAD_EDGE_WIDTH: f64 = 0.0012;
 const QUAD_PATH_WIDTH: f64 = 0.004;
+const CUBE_LOOP_WIDTH: f64 = 0.008;
 
 // Unlabeled edges, and the nodes of a labeled graph.
 const GRAY: Rgb = [0.45, 0.45, 0.45];
@@ -295,6 +296,35 @@ pub(super) fn cubes(model: &Model<'_>, coloring: CubeColoring) -> Option<Vec<Ite
         });
     }
     boxes(&faces, &[], &camera, model.style)
+}
+
+// The cube surface of the loop drawing's template in gray, with the sections of its loops (all of them, or only the
+// lifted patch boundaries) in their axis colors: one crossing per face.
+pub(super) fn cube_loops(model: &Model<'_>, lifted: bool) -> Option<Vec<Item>> {
+    let realized = placement(model)?;
+    let camera = Camera::new(model.params, None);
+    let (mut faces, mut segments) = (vec![], vec![]);
+    for solid in realized.template_solids() {
+        let bounds = (solid.lo, solid.hi);
+        box_faces(&mut faces, &camera, bounds, GRAY, |n, positive| {
+            solid.hidden[n][usize::from(positive)]
+        });
+        for section in solid.sections() {
+            let toward = if section.positive { 1. } else { -1. };
+            if (lifted && !section.boundary) || toward * camera.forward[section.normal] >= 0. {
+                continue;
+            }
+            let [from, to] = section.ends;
+            segments.push(AxisSegment {
+                axis: 3 - section.normal - section.axis,
+                from,
+                to,
+                color: model.style.dual[section.axis],
+                width: CUBE_LOOP_WIDTH,
+            });
+        }
+    }
+    boxes(&faces, &segments, &camera, model.style)
 }
 
 // The node cubes of the placement (in their colors), with the labeled edges between them as in the placed skeleton.

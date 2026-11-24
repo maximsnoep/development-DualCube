@@ -221,6 +221,24 @@ fn cube_view_distinguishes_stretched_edges_and_keeps_finite_geometry() {
             .features
             .contains_key(SkeletonLayer::CubeEdges.label())
     );
+    // The template's cubes: two triangles per free face; with their loops.
+    let free: usize = realized
+        .template_solids()
+        .iter()
+        .map(|s| s.hidden.iter().flatten().filter(|h| !**h).count())
+        .sum();
+    let RenderAsset::Mesh(template) = &object.features[SkeletonLayer::TemplateCubes.label()] else {
+        panic!("Missing template cube mesh");
+    };
+    assert_eq!(template.count_vertices(), 6 * free);
+    for layer in [
+        SkeletonLayer::TemplateCubeEdges,
+        SkeletonLayer::CubeLoops,
+        SkeletonLayer::CubeLiftedLoops,
+    ] {
+        assert!(object.features.contains_key(layer.label()), "{layer:?}");
+        assert!(!layer.is_surface());
+    }
 }
 
 #[test]

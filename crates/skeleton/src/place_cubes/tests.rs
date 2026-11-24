@@ -197,3 +197,37 @@ fn placement_handles_actual_surface_splits_and_repaired_cycles() {
     let labeled = crate::label::attempt(&mesh, &skeleton).unwrap().labeled();
     run(&mesh, &labeled).unwrap().validate(&mesh).unwrap();
 }
+
+#[test]
+fn template_solids_carry_closed_loops() {
+    use Port::*;
+    // A path of three nodes: the middle one a cube, the leaves' cubes in the edge cuboids.
+    let labeled = graph(3, &[(0, 1, PositiveX), (1, 2, PositiveY)]);
+    let realized = realize(&labeled).unwrap();
+    let solids = realized.template_solids();
+    assert_eq!(solids.len(), 3);
+    let free = |s: &TemplateSolid| s.hidden.iter().flatten().filter(|h| !**h).count();
+    assert_eq!(solids.iter().map(free).sum::<usize>(), 4 + 5 + 5);
+    // Every edge solid reaches over its leaf's cube.
+    let leaves =
+        [0, 2].map(|i| realized.node_positions[labeled.skeleton.nodes.keys().nth(i).unwrap()]);
+    for leaf in leaves {
+        let covers = |s: &TemplateSolid| {
+            (0..3).all(|k| s.lo[k] <= leaf[k] - 0.5 && leaf[k] + 0.5 <= s.hi[k])
+        };
+        assert_eq!(solids.iter().filter(|s| covers(s)).count(), 1);
+    }
+    // Two sections per free face; the patch boundaries go around the edge solids.
+    let sections: Vec<_> = solids.iter().flat_map(TemplateSolid::sections).collect();
+    assert_eq!(sections.len(), 2 * 14);
+    assert_eq!(sections.iter().filter(|s| s.boundary).count(), 2 * 4);
+    // Each end of a section meets exactly one other section of its loop axis: the loops close.
+    let key = |p: Vector3D| p.map(|x| (2. * x).round() as i64);
+    let mut ends: HashMap<_, usize> = HashMap::new();
+    for section in &sections {
+        for end in section.ends {
+            *ends.entry((section.axis, key(end))).or_default() += 1;
+        }
+    }
+    assert!(ends.values().all(|&count| count == 2), "{ends:?}");
+}
