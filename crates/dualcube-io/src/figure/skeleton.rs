@@ -15,6 +15,8 @@ use std::collections::{HashMap, HashSet};
 
 // Sizes as fractions of the figure's size.
 const NODE_RADIUS: f64 = 0.011;
+// Nodes of degree two or less (along a chain, or a leaf): smaller, still wider than an edge.
+const SMALL_NODE_RADIUS: f64 = 0.006;
 const EDGE_WIDTH: f64 = 0.009;
 // Edges outside the labeling's spanning tree (thicker, as in the GUI).
 const NON_TREE_WIDTH: f64 = 0.02;
@@ -265,7 +267,6 @@ pub(super) fn placed_skeleton(model: &Model<'_>) -> Option<Vec<Item>> {
             (color, EDGE_WIDTH)
         },
         |_| GRAY,
-        Layering::NodesOnTop,
     ))
 }
 
@@ -513,7 +514,6 @@ fn plain_graph(model: &Model<'_>, skeleton: &Skeleton) -> Vec<Item> {
         skeleton,
         |_| (model.style.line, EDGE_WIDTH),
         |node| palette.get(&node).copied().unwrap_or(GRAY),
-        Layering::EdgesOnTop,
     )
 }
 
@@ -528,7 +528,6 @@ fn labeled_graph(model: &Model<'_>) -> Option<Vec<Item>> {
             &attempt.skeleton,
             |id| edge(attempt.labels.get(id), attempt.outside_tree(id)),
             |_| GRAY,
-            Layering::EdgesOnTop,
         ));
     }
     let labeled = save.labeled.as_ref()?;
@@ -538,7 +537,6 @@ fn labeled_graph(model: &Model<'_>) -> Option<Vec<Item>> {
         &labeled.skeleton,
         |id| edge(labeled.labels.get(id), false),
         |_| GRAY,
-        Layering::EdgesOnTop,
     ))
 }
 
@@ -550,7 +548,6 @@ fn gray_graph(model: &Model<'_>, skeleton: &Skeleton) -> Vec<Item> {
         skeleton,
         |_| (model.style.line, EDGE_WIDTH),
         |_| GRAY,
-        Layering::EdgesOnTop,
     )
 }
 
@@ -563,7 +560,6 @@ fn optimized_graph(model: &Model<'_>) -> Option<Vec<Item>> {
         &labeled.skeleton,
         |id| labeled_edge(model, labeled.labels.get(id), false),
         |_| GRAY,
-        Layering::EdgesOnTop,
     ))
 }
 
@@ -588,27 +584,19 @@ fn tree_graph(model: &Model<'_>) -> Option<Vec<Item>> {
             None => (GRAY, NON_TREE_WIDTH),
         },
         |_| GRAY,
-        Layering::EdgesOnTop,
     ))
 }
 
-// Which of nodes and edges are drawn over the other.
-#[derive(Clone, Copy, PartialEq, Eq)]
-enum Layering {
-    EdgesOnTop,
-    NodesOnTop,
-}
-
-// The nodes as dots and the edges as lines, one layer over the other; each back to front.
+// The nodes as dots over the edges as lines (nodes of degree two or less smaller); each back to front.
 fn nodes_and_edges(
     model: &Model<'_>,
     camera: &Camera,
     skeleton: &Skeleton,
     edge: impl Fn(SkeletonEdgeID) -> (Rgb, f64),
     node: impl Fn(SkeletonNodeID) -> Rgb,
-    layering: Layering,
 ) -> Vec<Item> {
     let position = |id: SkeletonNodeID| skeleton.nodes[id].position;
+    let degrees = skeleton.degrees();
     let mut disks = vec![];
     for id in skeleton.nodes.keys() {
         let p = position(id);
@@ -617,7 +605,11 @@ fn nodes_and_edges(
         }
         let disk = Item::Disk {
             center: camera.project(p),
-            radius: NODE_RADIUS,
+            radius: if degrees[id] <= 2 {
+                SMALL_NODE_RADIUS
+            } else {
+                NODE_RADIUS
+            },
             fill: node(id),
             ring: model.style.line,
         };
@@ -638,12 +630,9 @@ fn nodes_and_edges(
         };
         lines.push((camera.depth((a + b) / 2.), line));
     }
-    let groups = match layering {
-        Layering::EdgesOnTop => [disks, lines],
-        Layering::NodesOnTop => [lines, disks],
-    };
+    // The nodes over the edges.
     let mut items = vec![];
-    for mut group in groups {
+    for mut group in [lines, disks] {
         // Farthest first.
         group.sort_by(|a, b| b.0.total_cmp(&a.0));
         items.extend(group.into_iter().map(|(_, item)| item));
