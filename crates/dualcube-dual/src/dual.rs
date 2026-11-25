@@ -814,92 +814,12 @@ impl Dual {
 
     pub fn assign_levels(&mut self) {
         for direction in DIRECTIONS {
-            let graph = &self.level_graphs.graphs[direction as usize];
-            let mut topo_sort = graph.topological_sort().unwrap();
-
-            debug!(
-                "assign_levels: {direction} topological order over {} zones: {topo_sort:?}",
-                topo_sort.len()
-            );
-            let mut levels = HashMap::new();
-            levels.insert(topo_sort.first().unwrap().to_owned(), 100_000usize);
-
-            for node in topo_sort.clone() {
-                debug!("assign_levels: forward pass visiting zone {node:?}");
-                if let Some(node_level) = levels.get(&node).cloned() {
-                    for neighbor in graph.neighbors_undirected(node) {
-                        match (
-                            graph.directed_edge_exists(node, neighbor),
-                            graph.directed_edge_exists(neighbor, node),
-                        ) {
-                            (true, false) => {
-                                if levels.contains_key(&neighbor) {
-                                    let cur = levels[&neighbor];
-                                    levels.insert(neighbor, cur.max(node_level + 1));
-                                } else {
-                                    levels.insert(neighbor, node_level + 1);
-                                }
-                            }
-                            (false, true) => {
-                                if levels.contains_key(&neighbor) {
-                                    let cur = levels[&neighbor];
-                                    levels.insert(neighbor, cur.min(node_level - 1));
-                                } else {
-                                    levels.insert(neighbor, node_level - 1);
-                                }
-                            }
-                            _ => {
-                                panic!();
-                            }
-                        }
-                    }
-                }
-            }
-
-            topo_sort.reverse();
-
-            for node in topo_sort {
-                debug!("assign_levels: backward pass visiting zone {node:?}");
-                if let Some(node_level) = levels.get(&node).cloned() {
-                    for neighbor in graph.neighbors_undirected(node) {
-                        match (
-                            graph.directed_edge_exists(node, neighbor),
-                            graph.directed_edge_exists(neighbor, node),
-                        ) {
-                            (true, false) => {
-                                if levels.contains_key(&neighbor) {
-                                    let cur = levels[&neighbor];
-                                    levels.insert(neighbor, cur.max(node_level + 1));
-                                } else {
-                                    levels.insert(neighbor, node_level + 1);
-                                }
-                            }
-                            (false, true) => {
-                                if levels.contains_key(&neighbor) {
-                                    let cur = levels[&neighbor];
-                                    levels.insert(neighbor, cur.min(node_level - 1));
-                                } else {
-                                    levels.insert(neighbor, node_level - 1);
-                                }
-                            }
-                            _ => {
-                                panic!();
-                            }
-                        }
-                    }
-                }
-            }
-
-            let mut level_to_zone = HashMap::new();
-            let minimum = *levels.values().min().unwrap();
+            let levels = zone_levels(&self.level_graphs.graphs[direction as usize]);
+            let mut zones = vec![HashSet::new(); levels.values().max().map_or(0, |&l| l + 1)];
             for (zone_id, level) in levels {
-                level_to_zone.insert(zone_id, level - minimum);
+                zones[level].insert(zone_id);
             }
-            self.level_graphs.levels[direction as usize] =
-                vec![HashSet::new(); *level_to_zone.values().max().unwrap() + 1];
-            for (zone_id, level) in level_to_zone {
-                self.level_graphs.levels[direction as usize][level].insert(zone_id);
-            }
+            self.level_graphs.levels[direction as usize] = zones;
         }
     }
 
@@ -1423,3 +1343,46 @@ impl Dual {
         Ok(())
     }
 }
+
+/// The level of every zone of a (connected, acyclic) level graph: every edge goes up at least one level, and the
+/// lowest level is 0. From the first zone, each leveled zone pushes the zones after it up and the zones before it down,
+/// swept in topological order and back until no level changes. Pushes up travel only forward along the edges and
+/// pushes down only backward, so neither restarts the other and the sweeps end, with every zone leveled.
+fn zone_levels(graph: &grapff::fixed::FixedGraph<ZoneID, LoopID>) -> HashMap<ZoneID, usize> {
+    let order = graph.topological_sort().expect("a level graph is acyclic");
+    let mut levels = HashMap::new();
+    if let Some(&first) = order.first() {
+        levels.insert(first, 0i64);
+    }
+    let mut changed = true;
+    while changed {
+        changed = false;
+        for &node in order.iter().chain(order.iter().rev()) {
+            let Some(&level) = levels.get(&node) else {
+                continue;
+            };
+            for neighbor in graph.neighbors_undirected(node) {
+                let (wanted, keep): (i64, fn(i64, i64) -> i64) = match (
+                    graph.directed_edge_exists(node, neighbor),
+                    graph.directed_edge_exists(neighbor, node),
+                ) {
+                    (true, false) => (level + 1, i64::max),
+                    (false, true) => (level - 1, i64::min),
+                    _ => panic!("zones {node:?} and {neighbor:?} are not ordered"),
+                };
+                let new = levels
+                    .get(&neighbor)
+                    .map_or(wanted, |&old| keep(old, wanted));
+                changed |= levels.insert(neighbor, new) != Some(new);
+            }
+        }
+    }
+    let minimum = levels.values().copied().min().unwrap_or(0);
+    levels
+        .into_iter()
+        .map(|(zone, level)| (zone, (level - minimum) as usize))
+        .collect()
+}
+
+#[cfg(test)]
+mod tests;
