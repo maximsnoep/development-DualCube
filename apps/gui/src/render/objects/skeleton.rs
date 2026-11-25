@@ -13,6 +13,10 @@ use mehsh_bevy::MeshBuilder;
 use std::f64::consts::{PI, TAU};
 use std::sync::Arc;
 
+// Width of the patch boundaries, and of the loops of a cut system (few, so wider).
+const BOUNDARY_WIDTH: f32 = 1.5;
+const CUT_WIDTH: f32 = 4.5;
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum SkeletonLayer {
     Skeleton,
@@ -29,6 +33,8 @@ pub enum SkeletonLayer {
     OptimizedSkeleton,
     OptimizedGraySkeleton,
     CutSystem,
+    /// The cut system's loops on the (unoptimized) skeleton's boundaries.
+    SkeletonCutSystem,
     Deflated,
     PlacedSkeleton,
     NodeCubes,
@@ -45,7 +51,7 @@ pub enum SkeletonLayer {
 }
 
 impl SkeletonLayer {
-    pub const ALL: [Self; 27] = [
+    pub const ALL: [Self; 28] = [
         Self::Skeleton,
         Self::GraySkeleton,
         Self::Raw,
@@ -60,6 +66,7 @@ impl SkeletonLayer {
         Self::OptimizedSkeleton,
         Self::OptimizedGraySkeleton,
         Self::CutSystem,
+        Self::SkeletonCutSystem,
         Self::Deflated,
         Self::PlacedSkeleton,
         Self::NodeCubes,
@@ -91,6 +98,7 @@ impl SkeletonLayer {
             Self::OptimizedSkeleton => "optimized skeleton",
             Self::OptimizedGraySkeleton => "optimized gray skeleton",
             Self::CutSystem => "cut system",
+            Self::SkeletonCutSystem => "skeleton cut system",
             Self::Deflated => "deflated",
             Self::PlacedSkeleton => "placed skeleton",
             Self::NodeCubes => "node cubes",
@@ -121,6 +129,7 @@ impl SkeletonLayer {
                 | Self::TranslucentOptimizedPatches
                 | Self::OptimizedBoundaries
                 | Self::CutSystem
+                | Self::SkeletonCutSystem
                 | Self::LiftedLoops
         )
     }
@@ -310,21 +319,28 @@ fn build(
             )),
         );
     }
+    // A minimal cut system of the optimized skeleton, spread out. Optimization keeps the IDs of the
+    // boundaries it keeps, so its loops are also those of the current skeleton.
+    let cuts: Vec<_> = optimized.map_or_else(Vec::new, |optimized| {
+        dualcube::skeleton::cut_system::run(mesh, optimized)
+    });
     let surfaces = [
         (
             Some(current),
             SkeletonLayer::Patches,
             SkeletonLayer::TranslucentPatches,
             SkeletonLayer::Boundaries,
+            SkeletonLayer::SkeletonCutSystem,
         ),
         (
             optimized,
             SkeletonLayer::OptimizedPatches,
             SkeletonLayer::TranslucentOptimizedPatches,
             SkeletonLayer::OptimizedBoundaries,
+            SkeletonLayer::CutSystem,
         ),
     ];
-    for (skeleton, patches, translucent, boundaries) in surfaces {
+    for (skeleton, patches, translucent, boundaries, cut_layer) in surfaces {
         let Some(skeleton) = skeleton else {
             continue;
         };
@@ -332,13 +348,9 @@ fn build(
             Ok(geometry) => {
                 let layers = (patches, translucent, boundaries);
                 add_surface(&mut object, &colors, &geometry, layers, scale, translation);
-                // A minimal cut system, spread out.
-                if patches == SkeletonLayer::OptimizedPatches {
-                    let cuts = dualcube::skeleton::cut_system::run(mesh, skeleton);
-                    let cuts = boundary_lines(&geometry, |e| cuts.contains(&e), scale, translation);
-                    // Few loops, so wider.
-                    object.gizmo(cuts, 4.5, -0.001, SkeletonLayer::CutSystem.label());
-                }
+                let lines = boundary_lines(&geometry, |e| cuts.contains(&e), scale, translation);
+                // Few loops, so wider.
+                object.gizmo(lines, CUT_WIDTH, -0.001, cut_layer.label());
             }
             Err(error) => warn!("Could not build {} geometry: {error}", patches.label()),
         }
@@ -380,7 +392,7 @@ fn add_surface(
         RenderAsset::TranslucentMesh(patches),
     );
     let boundaries = boundary_lines(geometry, |_| true, scale, translation);
-    object.gizmo(boundaries, 1.5, -0.001, boundary_layer.label());
+    object.gizmo(boundaries, BOUNDARY_WIDTH, -0.001, boundary_layer.label());
 }
 
 // The patch boundaries it keeps, as lines.

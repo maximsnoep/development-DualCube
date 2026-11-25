@@ -214,7 +214,15 @@ impl ModelViewKind {
                     ]
                 }
             }
-            Self::SkeletonLoops => const { &["lambert", SkeletonLayer::Boundaries.label()] },
+            Self::SkeletonLoops => {
+                const {
+                    &[
+                        "lambert",
+                        SkeletonLayer::Boundaries.label(),
+                        SkeletonLayer::SkeletonCutSystem.label(),
+                    ]
+                }
+            }
             Self::CutSystem => const { &["lambert", SkeletonLayer::CutSystem.label()] },
             Self::Optimized => {
                 const {
@@ -303,7 +311,13 @@ impl ModelViewKind {
                 const { &[SkeletonLayer::OptimizedGraySkeleton.label(), "wireframe"] }
             }
             Self::OptimizedSkeletonLoops => {
-                const { &["lambert", SkeletonLayer::OptimizedBoundaries.label()] }
+                const {
+                    &[
+                        "lambert",
+                        SkeletonLayer::OptimizedBoundaries.label(),
+                        SkeletonLayer::CutSystem.label(),
+                    ]
+                }
             }
             Self::Lifted => const { &["black", SkeletonLayer::LiftedLoops.label()] },
             Self::Dual => &[

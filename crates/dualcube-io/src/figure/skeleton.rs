@@ -133,40 +133,56 @@ pub(super) fn patches(model: &Model<'_>, optimized: bool) -> Option<Vec<Item>> {
     } else {
         current
     };
-    let (faces, lines) = patch_surface(model, skeleton, &palette(model), |_| true)?;
+    let (faces, lines) = patch_surface(model, skeleton, &palette(model), |_| Some(BOUNDARY_WIDTH))?;
     Some(surface(faces, &model.camera, Look::default(), &[], &lines))
 }
 
-// The patch boundaries of the (optimized) skeleton on the input mesh in its plain color.
+// The patch boundaries of the (optimized) skeleton on the input mesh in its plain color, those of
+// the cut system as wide as in its figure (optimization keeps the IDs of the boundaries it keeps).
 pub(super) fn patch_boundaries(model: &Model<'_>, optimized: bool) -> Option<Vec<Item>> {
     let skeleton = if optimized {
         &model.skeleton.optimized.as_ref()?.labeled.skeleton
     } else {
         current(model)?
     };
-    plain_boundaries(model, skeleton, |_| true, BOUNDARY_WIDTH)
+    let cuts = cuts(model);
+    plain_boundaries(model, skeleton, |edge| {
+        Some(match cuts.contains(&edge) {
+            true => CUT_WIDTH,
+            false => BOUNDARY_WIDTH,
+        })
+    })
 }
 
 // A minimal cut system of the optimized skeleton, spread out (see `dualcube::skeleton::cut_system`).
 pub(super) fn cut_system(model: &Model<'_>) -> Option<Vec<Item>> {
     let skeleton = &model.skeleton.optimized.as_ref()?.labeled.skeleton;
-    let cuts = dualcube::skeleton::cut_system::run(&model.solution.mesh_ref, skeleton);
-    plain_boundaries(model, skeleton, |edge| cuts.contains(&edge), CUT_WIDTH)
+    let cuts = cuts(model);
+    plain_boundaries(model, skeleton, |edge| {
+        cuts.contains(&edge).then_some(CUT_WIDTH)
+    })
 }
 
-// The boundaries it keeps of the skeleton's patches (this wide), on the input mesh in its plain color.
+// The loops of the cut system, if there is an optimized skeleton.
+fn cuts(model: &Model<'_>) -> HashSet<SkeletonEdgeID> {
+    let Some(optimized) = &model.skeleton.optimized else {
+        return HashSet::new();
+    };
+    let mesh = &model.solution.mesh_ref;
+    dualcube::skeleton::cut_system::run(mesh, &optimized.labeled.skeleton)
+        .into_iter()
+        .collect()
+}
+
+// The boundaries of the skeleton's patches it gives a width, on the input mesh in its plain color.
 fn plain_boundaries(
     model: &Model<'_>,
     skeleton: &Skeleton,
-    keep: impl Fn(SkeletonEdgeID) -> bool,
-    width: f64,
+    width: impl Fn(SkeletonEdgeID) -> Option<f64>,
 ) -> Option<Vec<Item>> {
-    let (mut faces, mut lines) = patch_surface(model, skeleton, &HashMap::new(), keep)?;
+    let (mut faces, lines) = patch_surface(model, skeleton, &HashMap::new(), width)?;
     for face in &mut faces {
         face.color = Some(model.style.surface);
-    }
-    for line in &mut lines {
-        line.width = width;
     }
     let look = Look {
         flatten: FLAT_SURFACE,
@@ -183,7 +199,7 @@ pub(super) fn combined(model: &Model<'_>, optimized: bool) -> Option<Vec<Item>> 
         false => None,
     };
     let skeleton = optimized.map_or(current, |labeled| &labeled.skeleton);
-    let (faces, _) = patch_surface(model, skeleton, &palette(model), |_| true)?;
+    let (faces, _) = patch_surface(model, skeleton, &palette(model), |_| None)?;
     let look = Look {
         lighten: LIGHT_PATCHES,
         ..Look::default()
@@ -448,7 +464,7 @@ fn patch_surface(
     model: &Model<'_>,
     skeleton: &Skeleton,
     colors: &HashMap<SkeletonNodeID, Rgb>,
-    keep: impl Fn(SkeletonEdgeID) -> bool,
+    width: impl Fn(SkeletonEdgeID) -> Option<f64>,
 ) -> Option<(Vec<Face>, Vec<SurfaceLine>)> {
     let geometry = SurfaceGeometry::build(&model.solution.mesh_ref, skeleton).ok()?;
     let faces = geometry
@@ -469,11 +485,12 @@ fn patch_surface(
     let lines = geometry
         .boundaries
         .into_iter()
-        .filter(|boundary| keep(boundary.edge))
-        .map(|boundary| SurfaceLine {
-            points: boundary.points,
-            color: model.style.line,
-            width: BOUNDARY_WIDTH,
+        .filter_map(|boundary| {
+            Some(SurfaceLine {
+                width: width(boundary.edge)?,
+                points: boundary.points,
+                color: model.style.line,
+            })
         })
         .collect();
     Some((faces, lines))
