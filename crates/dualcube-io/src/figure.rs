@@ -553,6 +553,8 @@ struct Camera {
     eye: Option<Vector3D>,
     // In perspective, what is nearer along the view than this is not drawn.
     near: f64,
+    // The width of the page in projected units, if fixed (a zoom); else the page fits what is drawn.
+    window: Option<f64>,
 }
 
 impl Camera {
@@ -587,6 +589,7 @@ impl Camera {
             forward,
             eye,
             near: 0.,
+            window: None,
         }
     }
 
@@ -830,6 +833,9 @@ struct SurfaceMark {
 // mark may lie behind the surface and still be drawn.
 const DEPTH_RESOLUTION: usize = 2048;
 const DEPTH_TOLERANCE: f64 = 0.01;
+// Where a line stops showing within a segment: first sampled, then bisected.
+const REACH_STEPS: usize = 8;
+const REACH_BISECTIONS: usize = 12;
 
 // The depth of the nearest face per pixel (of the projected faces).
 struct DepthBuffer {
@@ -912,14 +918,22 @@ impl DepthBuffer {
         }
     }
 
-    // Whether a point (projected, with its depth) is not behind the surface.
-    fn shows(&self, p: [f64; 2], depth: f64, tolerance: f64) -> bool {
-        let n = DEPTH_RESOLUTION;
-        let [x, y] = self.pixel(p);
-        if x < 0. || y < 0. || x >= n as f64 || y >= n as f64 {
-            return true;
-        }
-        depth <= f64::from(self.depth[y as usize * n + x as usize]) + tolerance
+    // Whether a point (projected, with its depth) is not behind the surface anywhere within `radius` (in pixels) of
+    // it on the page: a line this wide shows up to the edge of what hides it.
+    fn shows(&self, p: [f64; 2], depth: f64, tolerance: f64, radius: f64) -> bool {
+        let n = DEPTH_RESOLUTION as i64;
+        let [x, y] = self.pixel(p).map(f64::floor);
+        let r = radius.max(0.).ceil() as i64;
+        // The pixel of the point first: most points show there.
+        let around = (-r..=r)
+            .flat_map(|dy| (-r..=r).map(move |dx| (dx, dy)))
+            .filter(|&(dx, dy)| ((dx * dx + dy * dy) as f64) <= radius * radius);
+        std::iter::once((0, 0)).chain(around).any(|(dx, dy)| {
+            let (x, y) = (x as i64 + dx, y as i64 + dy);
+            !(0..n).contains(&x)
+                || !(0..n).contains(&y)
+                || depth <= f64::from(self.depth[(y * n + x) as usize]) + tolerance
+        })
     }
 }
 
@@ -988,7 +1002,15 @@ fn surface(
         .collect::<Vec<_>>();
     let (min, max) = bounds(&points);
     let tolerance = DEPTH_TOLERANCE * (max - min).norm();
-    let shows = |p: Vector3D| buffer.shows(camera.project(p), camera.depth(p), tolerance);
+    let shows_within = |p: Vector3D, radius: f64| {
+        buffer.shows(camera.project(p), camera.depth(p), tolerance, radius)
+    };
+    let shows = |p: Vector3D| shows_within(p, 0.);
+    // Half the width of a line (a fraction of the figure's size), in pixels of the depth buffer.
+    let page = camera
+        .window
+        .unwrap_or(buffer.cell * DEPTH_RESOLUTION as f64 / (1. - 2. * MARGIN));
+    let half_width = |width: f64| width * page / 2. / buffer.cell;
     let project = |points: &[Vector3D]| {
         points
             .iter()
@@ -1058,15 +1080,42 @@ fn surface(
             shown.push((depth, item));
         }
     }
-    // The lines as the stretches of consecutive segments that show (so that they stop flat where they disappear, e.g.
-    // around the outline); a closed line that shows all around as one.
+    // How far from `from` toward `to` a line this wide shows, if at all past `from` (where the surface starts to hide
+    // it).
+    let reach = |from: Vector3D, to: Vector3D, radius: f64| {
+        let at = |t: f64| from + (to - from) * t;
+        let show = |t: f64| {
+            let p = at(t);
+            camera.in_front(p) && shows_within(p, radius)
+        };
+        let step = 1. / REACH_STEPS as f64;
+        let Some(k) = (1..=REACH_STEPS).find(|&k| !show(k as f64 * step)) else {
+            return Some(to);
+        };
+        let (mut lo, mut hi) = ((k - 1) as f64 * step, k as f64 * step);
+        for _ in 0..REACH_BISECTIONS {
+            let mid = (lo + hi) / 2.;
+            if show(mid) {
+                lo = mid;
+            } else {
+                hi = mid;
+            }
+        }
+        (lo > 0.).then(|| at(lo))
+    };
+    // The lines as the stretches of consecutive segments that show, each continued into the segments next to it up
+    // to where the surface hides them (so that they stop flat where they disappear, e.g. at the outline, and not a
+    // segment short of it); a closed line that shows all around as one. A line shows up to half its width past the
+    // edge of what hides it: on a coarse mesh, a loop turns to the back side where the outline is still a bit further
+    // out, and would stop short of it.
     for line in lines {
         let points = &line.points;
+        let radius = half_width(line.width);
         let n = points.len().saturating_sub(1);
         let visible = (0..n)
             .map(|i| {
                 let (a, b) = (points[i], points[i + 1]);
-                camera.in_front(a) && camera.in_front(b) && shows((a + b) / 2.)
+                camera.in_front(a) && camera.in_front(b) && shows_within((a + b) / 2., radius)
             })
             .collect::<Vec<_>>();
         let closed = n > 1 && (points[0] - points[n]).norm() <= 1e-12 * (1. + points[0].norm());
@@ -1093,7 +1142,25 @@ fn surface(
         for run in runs {
             let mut ends = run.iter().map(|&i| points[i]).collect::<Vec<_>>();
             if !all_around {
-                ends.push(points[run[run.len() - 1] + 1]);
+                let (first, last) = (run[0], run[run.len() - 1] + 1);
+                ends.push(points[last]);
+                // The segments before and after the run, if the line goes on there.
+                let before = match first {
+                    0 if closed => Some(n - 1),
+                    0 => None,
+                    i => Some(i - 1),
+                };
+                let after = match last {
+                    i if i == n && closed => Some(0),
+                    i if i == n => None,
+                    i => Some(i),
+                };
+                if let Some(p) = before.and_then(|i| reach(points[first], points[i], radius)) {
+                    ends.insert(0, p);
+                }
+                if let Some(p) = after.and_then(|i| reach(points[last], points[i + 1], radius)) {
+                    ends.push(p);
+                }
             }
             let depth = run
                 .iter()
@@ -1125,7 +1192,11 @@ fn model_camera(solution: &Solution, params: &FigureParams) -> Camera {
     match params.zoom {
         Some(zoom) => {
             let (min, max) = bounds(&points);
-            Camera::at(params, zoom.eye, ZOOM_NEAR * (max - min).norm())
+            let [w, h] = zoom.half_window();
+            Camera {
+                window: Some(2. * w.max(h)),
+                ..Camera::at(params, zoom.eye, ZOOM_NEAR * (max - min).norm())
+            }
         }
         None => Camera::new(params, Some(&points)),
     }
