@@ -198,9 +198,13 @@ pub fn genus(mesh: &mehsh::prelude::Mesh<INPUT>) -> Option<usize> {
     (twice_genus >= 0 && twice_genus % 2 == 0).then_some((twice_genus / 2) as usize)
 }
 
+/// Positions before the first and after every contraction iteration, in `vert_ids` order.
+pub type ContractionStages = Arc<Vec<Vec<Vector3D>>>;
+
 #[derive(Resource, Default)]
 pub struct SkeletonResource {
-    pub contraction_cache: crate::jobs::ContractionCache,
+    /// The stages of the contraction of the current extraction.
+    pub contraction_stages: Option<ContractionStages>,
     /// Contraction stage shown in the deflated layer; `None` shows the result.
     pub contraction_stage: Option<usize>,
     pub state: Option<SkeletonState>,
@@ -234,7 +238,7 @@ impl SkeletonResource {
         })
     }
 
-    /// Takes the stages of a save (its output on `mesh`, the mesh it was saved with); the contraction cache and the
+    /// Takes the stages of a save (its output on `mesh`, the mesh it was saved with); the contraction stages and the
     /// shown contraction stage stay.
     pub fn restore(&mut self, save: io::SkeletonSave, mesh: &Arc<mehsh::prelude::Mesh<INPUT>>) {
         let skeleton = match &save.extraction {
@@ -242,7 +246,7 @@ impl SkeletonResource {
             _ => None,
         };
         *self = Self {
-            contraction_cache: self.contraction_cache.clone(),
+            contraction_stages: self.contraction_stages.take(),
             contraction_stage: self.contraction_stage,
             state: save.extraction,
             progress: dualcube::skeleton::pipeline::Progress {

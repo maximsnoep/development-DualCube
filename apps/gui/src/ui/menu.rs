@@ -1027,11 +1027,7 @@ fn pipeline_bar(
         if conf.initialization == Initialization::Minimal {
             view.show(ModelViewKind::Dual, render_setting_store);
         }
-        jobs.write(Job::initialize_loops(
-            current.clone(),
-            conf.clone(),
-            skeleton.contraction_cache.clone(),
-        ));
+        jobs.write(Job::initialize_loops(current.clone(), conf.clone()));
     }
     // The optimization (its settings, start, and progress) is in its window.
     if button(ui, "Evolve", current.mesh_ref.nr_verts() > 0) {

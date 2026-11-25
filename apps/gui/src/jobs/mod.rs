@@ -35,7 +35,6 @@ use std::sync::{Arc, Mutex, mpsc};
 
 pub use evolution::EvolutionLive;
 pub use io::figure_as_seen;
-pub use skeleton::ContractionCache;
 
 pub struct JobPlugin;
 
@@ -365,7 +364,6 @@ pub(crate) fn poll_jobs(
                             input_resource.mesh.clone(),
                             configuration.skeleton_options,
                             stop,
-                            skeleton.contraction_cache.clone(),
                         )
                         .for_startup(),
                     );

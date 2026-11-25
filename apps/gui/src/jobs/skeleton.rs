@@ -1,8 +1,5 @@
-mod cache;
-pub use cache::ContractionCache;
-
 use super::{Job, JobResult};
-use crate::resources::{SkeletonResource, SkeletonState};
+use crate::resources::{ContractionStages, SkeletonResource, SkeletonState};
 use crate::ui::ModelViewKind;
 use bevy::prelude::*;
 use dualcube::prelude::*;
@@ -13,6 +10,8 @@ use dualcube::skeleton::{Skeleton, SkeletonEdgeID, edit};
 use std::sync::Arc;
 
 pub(super) enum Update {
+    /// A new contraction, with its stages: starts a new extraction.
+    Deflated(SkeletonState, ContractionStages),
     State(SkeletonState),
     Progress(Progress),
 }
@@ -20,10 +19,17 @@ pub(super) enum Update {
 impl Update {
     pub(super) fn apply(self, resource: &mut SkeletonResource) {
         match self {
-            Self::State(state) => {
-                // A new extraction invalidates the previous initialization's downstream results.
+            // A new extraction invalidates the previous initialization's downstream results.
+            Self::Deflated(state, stages) => {
                 *resource = SkeletonResource {
-                    contraction_cache: resource.contraction_cache.clone(),
+                    contraction_stages: Some(stages),
+                    state: Some(state),
+                    ..Default::default()
+                };
+            }
+            Self::State(state) => {
+                *resource = SkeletonResource {
+                    contraction_stages: resource.contraction_stages.take(),
                     state: Some(state),
                     ..Default::default()
                 };
@@ -47,25 +53,20 @@ fn view(stop: Stage, reached: Stage, refined: bool) -> ModelViewKind {
 }
 
 impl Job {
-    pub fn extract_skeleton(
-        mesh: Arc<mehsh::prelude::Mesh<INPUT>>,
-        options: Options,
-        cache: ContractionCache,
-    ) -> Self {
-        Self::extract_skeleton_until(mesh, options, Stage::LoopDrawing, cache)
+    pub fn extract_skeleton(mesh: Arc<mehsh::prelude::Mesh<INPUT>>, options: Options) -> Self {
+        Self::extract_skeleton_until(mesh, options, Stage::LoopDrawing)
     }
 
     pub fn extract_skeleton_until(
         mesh: Arc<mehsh::prelude::Mesh<INPUT>>,
         options: Options,
         stop: Stage,
-        cache: ContractionCache,
     ) -> Self {
         Self::with_updates("extracting skeleton", move |updates| {
             let publish = |update| {
                 let _ = updates.send(update);
             };
-            match extract_until_with_updates(&mesh, options, stop, &cache, &publish) {
+            match extract_until_with_updates(&mesh, options, stop, &publish) {
                 Ok(state) => {
                     let mut progress = Progress::default();
                     let mut failure = None;
@@ -176,34 +177,32 @@ fn extract_until(
     mesh: &Arc<mehsh::prelude::Mesh<INPUT>>,
     options: Options,
     stop: Stage,
-    cache: &ContractionCache,
 ) -> dualcube::skeleton::SkeletonResult<SkeletonState> {
-    extract_until_with_updates(mesh, options, stop, cache, &|_| {})
+    extract_until_with_updates(mesh, options, stop, &|_| {})
 }
 
 fn extract_until_with_updates(
     mesh: &Arc<mehsh::prelude::Mesh<INPUT>>,
     mut options: Options,
     stop: Stage,
-    cache: &ContractionCache,
     publish: &impl Fn(Update),
 ) -> dualcube::skeleton::SkeletonResult<SkeletonState> {
     options.surgery.validate()?;
-    let contracted = cache.get_or_compute(
-        mesh.clone(),
+    let (contracted, stages) = skeletonize::deflate::run_with_stages(
+        mesh,
         options.max_iterations,
         options.contraction_step,
     )?;
-    publish(Update::State(SkeletonState::Deflated(
-        (*contracted).clone(),
-    )));
+    publish(Update::Deflated(
+        SkeletonState::Deflated(contracted.clone()),
+        Arc::new(stages),
+    ));
     if stop == Stage::Deflation {
-        return Ok(SkeletonState::Deflated((*contracted).clone()));
+        return Ok(SkeletonState::Deflated(contracted));
     }
     let refine_embedding = options.refine_embedding;
     options.refine_embedding = false;
-    let mut extraction =
-        skeletonize::extract_from_contracted(mesh, (*contracted).clone(), options)?;
+    let mut extraction = skeletonize::extract_from_contracted(mesh, contracted, options)?;
     publish(Update::State(SkeletonState::Extracted(extraction.clone())));
     if refine_embedding {
         skeletonize::refinement::run(mesh, &mut extraction.skeleton)?;

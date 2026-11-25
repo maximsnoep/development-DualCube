@@ -7,22 +7,12 @@ fn stop_stages_retain_only_computed_states() {
     let solution = io::import_solution(&path).unwrap();
     let mesh = &solution.mesh_ref;
     assert!(matches!(
-        extract_until(
-            mesh,
-            Options::default(),
-            Stage::Deflation,
-            &ContractionCache::default()
-        )
-        .unwrap(),
+        extract_until(mesh, Options::default(), Stage::Deflation).unwrap(),
         SkeletonState::Deflated(_)
     ));
-    let SkeletonState::Extracted(raw) = extract_until(
-        mesh,
-        Options::default(),
-        Stage::Extraction,
-        &ContractionCache::default(),
-    )
-    .unwrap() else {
+    let SkeletonState::Extracted(raw) =
+        extract_until(mesh, Options::default(), Stage::Extraction).unwrap()
+    else {
         panic!("Missing surgery result");
     };
     for (id, node) in &raw.raw.nodes {
@@ -35,7 +25,6 @@ fn stop_stages_retain_only_computed_states() {
             ..Options::default()
         },
         Stage::Extraction,
-        &ContractionCache::default(),
     )
     .unwrap() else {
         panic!("Missing refinement result");
@@ -51,63 +40,27 @@ fn stop_stages_retain_only_computed_states() {
 }
 
 #[test]
-fn cache_reuses_contraction_for_downstream_settings_and_invalidates_on_inputs() {
+fn deflation_publishes_its_stages_and_starts_a_new_extraction() {
     let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
         .join("../../crates/mehsh/assets/tetrahedron.obj");
     let mesh = io::import_solution(&path).unwrap().mesh_ref;
-    let cache = ContractionCache::default();
-    let first = cache
-        .get_or_compute(mesh.clone(), 50, skeletonize::deflate::DEFAULT_STEP)
-        .unwrap();
-    let mut options = Options::default();
-    options.surgery.shape_weight = 2.;
-    options.surgery.sampling_weight = 0.2;
-    options.surgery.handle_bonus = 0.;
-    for refine in [false, true] {
-        options.refine_embedding = refine;
-        extract_until(&mesh, options, Stage::Extraction, &cache).unwrap();
-        assert!(Arc::ptr_eq(
-            &first,
-            &cache
-                .get_or_compute(mesh.clone(), 50, skeletonize::deflate::DEFAULT_STEP)
-                .unwrap()
-        ));
+    let updates = std::sync::Mutex::new(vec![]);
+    extract_until_with_updates(&mesh, Options::default(), Stage::Extraction, &|u| {
+        updates.lock().unwrap().push(u);
+    })
+    .unwrap();
+    let mut resource = SkeletonResource {
+        contraction_stage: Some(1),
+        ..Default::default()
+    };
+    for update in updates.into_inner().unwrap() {
+        update.apply(&mut resource);
     }
-    options.surgery.shape_weight = f64::NAN;
-    assert!(extract_until(&mesh, options, Stage::Extraction, &cache).is_err());
-    assert!(Arc::ptr_eq(
-        &first,
-        &cache
-            .get_or_compute(mesh.clone(), 50, skeletonize::deflate::DEFAULT_STEP)
-            .unwrap()
-    ));
-
-    let stages = cache.stages().unwrap();
+    let stages = resource.contraction_stages.unwrap();
     assert!(stages.len() >= 2);
     assert_eq!(stages[0].len(), mesh.nr_verts());
-
-    let finer = cache.get_or_compute(mesh.clone(), 50, 2.).unwrap();
-    assert!(!Arc::ptr_eq(&first, &finer));
-    let fewer = cache
-        .get_or_compute(mesh.clone(), 1, skeletonize::deflate::DEFAULT_STEP)
-        .unwrap();
-    assert!(!Arc::ptr_eq(&first, &fewer));
-    assert!(cache.stages().unwrap().len() <= 2);
-    let mut other_input = mesh.clone();
-    let v = other_input.vert_ids()[0];
-    let position = other_input.position(v) + Vector3D::new(0.01, 0., 0.);
-    Arc::make_mut(&mut other_input).set_position(v, position);
-    let other = cache
-        .get_or_compute(other_input, 1, skeletonize::deflate::DEFAULT_STEP)
-        .unwrap();
-    assert!(!Arc::ptr_eq(&fewer, &other));
-    let fresh_cache = ContractionCache::default();
-    assert!(!Arc::ptr_eq(
-        &other,
-        &fresh_cache
-            .get_or_compute(mesh, 1, skeletonize::deflate::DEFAULT_STEP)
-            .unwrap()
-    ));
+    assert_eq!(resource.contraction_stage, None);
+    assert!(matches!(resource.state, Some(SkeletonState::Extracted(_))));
 }
 
 mod dissolve;

@@ -158,7 +158,7 @@ fn renders_snapshots_while_worker_is_running_and_discards_preempted_updates() {
 
 #[test]
 fn complete_initialization_publishes_each_completed_stage() {
-    let job = Job::extract_skeleton(mesh(), Options::default(), ContractionCache::default());
+    let job = Job::extract_skeleton(mesh(), Options::default());
     let (sender, receiver) = mpsc::channel();
     let Some(JobResult::SkeletonReady {
         failure, progress, ..
@@ -171,7 +171,7 @@ fn complete_initialization_publishes_each_completed_stage() {
     let mut updates = receiver.try_iter();
     assert!(matches!(
         updates.next(),
-        Some(Update::State(SkeletonState::Deflated(_)))
+        Some(Update::Deflated(SkeletonState::Deflated(_), _))
     ));
     assert!(matches!(
         updates.next(),

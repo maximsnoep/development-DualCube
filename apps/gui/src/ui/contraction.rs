@@ -24,7 +24,7 @@ pub fn show(
     if !visible || skeleton.contracted_mesh().is_none() {
         return Ok(());
     }
-    let Some(stages) = skeleton.contraction_cache.stages() else {
+    let Some(stages) = skeleton.contraction_stages.clone() else {
         return Ok(());
     };
     let last = stages.len().saturating_sub(1);

@@ -176,10 +176,9 @@ fn build(
     };
     let (scale, translation) = mesh.scale_translation();
     // A chosen contraction stage replaces the final positions.
-    let stages = state.contraction_cache.stages();
+    let stages = state.contraction_stages.as_ref();
     let stage = state.contraction_stage.and_then(|i| {
         stages
-            .as_ref()
             .and_then(|s| s.get(i))
             .filter(|p| p.len() == contracted.nr_verts())
     });

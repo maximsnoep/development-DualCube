@@ -6,13 +6,9 @@ fn dissolving_a_loop_merges_two_patches_and_reruns_through_the_stop() {
     let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
         .join("../../crates/mehsh/assets/blub001k.obj");
     let mesh = io::import_solution(&path).unwrap().mesh_ref;
-    let SkeletonState::Extracted(extraction) = extract_until(
-        &mesh,
-        Options::default(),
-        Stage::Extraction,
-        &ContractionCache::default(),
-    )
-    .unwrap() else {
+    let SkeletonState::Extracted(extraction) =
+        extract_until(&mesh, Options::default(), Stage::Extraction).unwrap()
+    else {
         panic!("Missing surgery result");
     };
     let skeleton = extraction.skeleton.clone();

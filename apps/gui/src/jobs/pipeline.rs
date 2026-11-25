@@ -96,17 +96,9 @@ impl Job {
                 && crate::resources::genus(&solution.mesh_ref) == Some(0))
     }
 
-    pub fn initialize_loops(
-        solution: Solution,
-        configuration: Configuration,
-        cache: super::ContractionCache,
-    ) -> Self {
+    pub fn initialize_loops(solution: Solution, configuration: Configuration) -> Self {
         if configuration.initialization == crate::resources::Initialization::Skeleton {
-            return Self::extract_skeleton(
-                solution.mesh_ref,
-                configuration.skeleton_options,
-                cache,
-            );
+            return Self::extract_skeleton(solution.mesh_ref, configuration.skeleton_options);
         }
         Self::new("initializing loops", move || {
             completed(
