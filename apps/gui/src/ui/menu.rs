@@ -58,6 +58,8 @@ pub enum ModelViewKind {
     Patches,
     /// The patch boundaries (the skeleton's loops) on the plain input mesh.
     SkeletonLoops,
+    /// The skeleton loops with those of the cut system wider.
+    SkeletonLoopsCuts,
     Optimized,
     /// A minimal cut system of the optimized skeleton (a figure only; the pipeline does not use it).
     CutSystem,
@@ -94,7 +96,7 @@ pub enum ModelViewKind {
 }
 
 impl ModelViewKind {
-    const ALL: [Self; 27] = [
+    const ALL: [Self; 28] = [
         Self::Input,
         Self::Deflated,
         Self::Raw,
@@ -102,6 +104,7 @@ impl ModelViewKind {
         Self::GraySkeleton,
         Self::Patches,
         Self::SkeletonLoops,
+        Self::SkeletonLoopsCuts,
         Self::Optimized,
         Self::CutSystem,
         Self::Combined,
@@ -142,6 +145,7 @@ impl ModelViewKind {
             Self::GraySkeleton => "Skeleton gray",
             Self::Patches => "Patches",
             Self::SkeletonLoops => "Skeleton loops",
+            Self::SkeletonLoopsCuts => "Skeleton loops (cuts)",
             Self::Optimized => "Optimized",
             Self::CutSystem => "Cut system",
             Self::Combined => "Combined",
@@ -176,6 +180,7 @@ impl ModelViewKind {
             Self::GraySkeleton => Figure::GraySkeleton,
             Self::Patches => Figure::Patches,
             Self::SkeletonLoops => Figure::SkeletonLoops,
+            Self::SkeletonLoopsCuts => Figure::SkeletonLoopsCuts,
             Self::Optimized => Figure::OptimizedPatches,
             Self::CutSystem => Figure::CutSystem,
             Self::Combined => Figure::Combined,
@@ -214,7 +219,8 @@ impl ModelViewKind {
                     ]
                 }
             }
-            Self::SkeletonLoops => {
+            Self::SkeletonLoops => const { &["lambert", SkeletonLayer::Boundaries.label()] },
+            Self::SkeletonLoopsCuts => {
                 const {
                     &[
                         "lambert",
@@ -480,6 +486,7 @@ pub fn show(
                     | ModelViewKind::CubesLifted => skeleton.progress.realized.is_some(),
                     ModelViewKind::Optimized
                     | ModelViewKind::CutSystem
+                    | ModelViewKind::SkeletonLoopsCuts
                     | ModelViewKind::OptimizedCombined
                     | ModelViewKind::OptimizedSkeleton
                     | ModelViewKind::OptimizedGraySkeleton

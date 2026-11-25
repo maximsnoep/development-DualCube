@@ -43,6 +43,8 @@ pub enum Figure {
     Patches,
     /// The boundaries of the skeleton's patches (its loops) on the plain input mesh.
     SkeletonLoops,
+    /// The skeleton loops with those of the cut system as wide as in its figure.
+    SkeletonLoopsCuts,
     /// The patches after optimization.
     OptimizedPatches,
     /// A minimal cut system: g boundary loops of the optimized skeleton off a spanning tree (spread out), on the plain
@@ -89,7 +91,7 @@ pub enum Figure {
 }
 
 impl Figure {
-    pub const ALL: [Self; 28] = [
+    pub const ALL: [Self; 29] = [
         Self::InputMesh,
         Self::Deflated,
         Self::RawSkeleton,
@@ -97,6 +99,7 @@ impl Figure {
         Self::GraySkeleton,
         Self::Patches,
         Self::SkeletonLoops,
+        Self::SkeletonLoopsCuts,
         Self::OptimizedPatches,
         Self::CutSystem,
         Self::Combined,
@@ -131,6 +134,7 @@ impl Figure {
             Self::GraySkeleton => "gray skeleton",
             Self::Patches => "skeleton patches",
             Self::SkeletonLoops => "skeleton loops",
+            Self::SkeletonLoopsCuts => "skeleton loops (cuts)",
             Self::OptimizedPatches => "optimized patches",
             Self::CutSystem => "minimal cut system",
             Self::Combined => "patches and skeleton",
@@ -166,6 +170,7 @@ impl Figure {
             Self::GraySkeleton => "skeleton_gray",
             Self::Patches => "patches",
             Self::SkeletonLoops => "skeleton_loops",
+            Self::SkeletonLoopsCuts => "skeleton_loops_cuts",
             Self::OptimizedPatches => "optimized",
             Self::CutSystem => "cut_system",
             Self::Combined => "combined",
@@ -368,14 +373,15 @@ pub fn figure_svg(
         Figure::Skeleton => skeleton::graph(&model, skeleton::Graph::Current)?,
         Figure::GraySkeleton => skeleton::graph(&model, skeleton::Graph::Gray)?,
         Figure::Patches => skeleton::patches(&model, false)?,
-        Figure::SkeletonLoops => skeleton::patch_boundaries(&model, false)?,
+        Figure::SkeletonLoops => skeleton::patch_boundaries(&model, false, false)?,
+        Figure::SkeletonLoopsCuts => skeleton::patch_boundaries(&model, false, true)?,
         Figure::OptimizedPatches => skeleton::patches(&model, true)?,
         Figure::CutSystem => skeleton::cut_system(&model)?,
         Figure::Combined => skeleton::combined(&model, false)?,
         Figure::OptimizedCombined => skeleton::combined(&model, true)?,
         Figure::OptimizedSkeleton => skeleton::graph(&model, skeleton::Graph::Optimized)?,
         Figure::OptimizedGraySkeleton => skeleton::graph(&model, skeleton::Graph::OptimizedGray)?,
-        Figure::OptimizedSkeletonLoops => skeleton::patch_boundaries(&model, true)?,
+        Figure::OptimizedSkeletonLoops => skeleton::patch_boundaries(&model, true, true)?,
         Figure::TreeLabeled => skeleton::graph(&model, skeleton::Graph::Tree)?,
         Figure::Labeled => skeleton::graph(&model, skeleton::Graph::Labeled)?,
         Figure::PlacedSkeleton => skeleton::placed_skeleton(&model)?,

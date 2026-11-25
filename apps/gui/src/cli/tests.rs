@@ -312,6 +312,13 @@ fn optimized_view_needs_complete_initialization() {
     let launch = parse(&[
         "--load=a.obj",
         "--auto-start=skeleton",
+        "--view=skeleton-loops-cuts",
+    ])
+    .unwrap();
+    assert_eq!(launch.view, Some(ModelViewKind::SkeletonLoopsCuts));
+    let launch = parse(&[
+        "--load=a.obj",
+        "--auto-start=skeleton",
         "--view=optimized-combined",
     ])
     .unwrap();

@@ -137,15 +137,23 @@ pub(super) fn patches(model: &Model<'_>, optimized: bool) -> Option<Vec<Item>> {
     Some(surface(faces, &model.camera, Look::default(), &[], &lines))
 }
 
-// The patch boundaries of the (optimized) skeleton on the input mesh in its plain color, those of
-// the cut system as wide as in its figure (optimization keeps the IDs of the boundaries it keeps).
-pub(super) fn patch_boundaries(model: &Model<'_>, optimized: bool) -> Option<Vec<Item>> {
+// The patch boundaries of the (optimized) skeleton on the input mesh in its plain color; with `cuts`,
+// those of the cut system as wide as in its figure (optimization keeps the IDs of the boundaries it
+// keeps).
+pub(super) fn patch_boundaries(
+    model: &Model<'_>,
+    optimized: bool,
+    cuts: bool,
+) -> Option<Vec<Item>> {
     let skeleton = if optimized {
         &model.skeleton.optimized.as_ref()?.labeled.skeleton
     } else {
         current(model)?
     };
-    let cuts = cuts(model);
+    let cuts = match cuts {
+        true => self::cuts(model),
+        false => HashSet::new(),
+    };
     plain_boundaries(model, skeleton, |edge| {
         Some(match cuts.contains(&edge) {
             true => CUT_WIDTH,

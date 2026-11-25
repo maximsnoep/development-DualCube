@@ -20,8 +20,8 @@ Run from the repository root:
   --stop-after <stage>       Run through input, deflation, surgery, refinement, certification,
                              labeling, placement, optimization, or drawing
   --view <view>              input, deflated, raw, skeleton, skeleton-gray, tree, labeled,
-                             patches, skeleton-loops, optimized, cut-system, combined,
-                             optimized-combined, optimized-skeleton,
+                             patches, skeleton-loops, skeleton-loops-cuts, optimized,
+                             cut-system, combined, optimized-combined, optimized-skeleton,
                              optimized-skeleton-gray, optimized-skeleton-loops,
                              placed-skeleton, node-cubes, cubes, cubes-primal, cubes-dual,
                              cubes-loops, cubes-lifted, lifted
@@ -143,6 +143,7 @@ impl Launch {
                         "lifted" => ModelViewKind::Lifted,
                         "patches" => ModelViewKind::Patches,
                         "skeleton-loops" => ModelViewKind::SkeletonLoops,
+                        "skeleton-loops-cuts" => ModelViewKind::SkeletonLoopsCuts,
                         "optimized" => ModelViewKind::Optimized,
                         "cut-system" => ModelViewKind::CutSystem,
                         "combined" => ModelViewKind::Combined,
@@ -217,6 +218,7 @@ impl Launch {
                 ModelViewKind::Deflated => Some(Stage::Deflation),
                 ModelViewKind::Optimized
                 | ModelViewKind::CutSystem
+                | ModelViewKind::SkeletonLoopsCuts
                 | ModelViewKind::OptimizedCombined
                 | ModelViewKind::OptimizedSkeleton
                 | ModelViewKind::OptimizedGraySkeleton
