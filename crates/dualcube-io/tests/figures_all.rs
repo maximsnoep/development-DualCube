@@ -59,15 +59,25 @@ fn every_view_preset_has_a_figure() {
         assert_eq!(names, expected);
     }
 
-    // Lines stop flat where they disappear: those on the cubes are clipped to the faces they lie on, those on the mesh
-    // are drawn as polylines with flat ends.
+    // Lines stop where they disappear: those on the cubes are clipped to the faces they lie on; those on the mesh are
+    // drawn with flat ends where they show wholly, and with round ends only through a mask of the faces around them,
+    // which cuts them off where the mesh hides them or ends.
     let svg = |figure: Figure| {
         std::fs::read_to_string(dir.join(format!("blub_{}.svg", figure.slug()))).unwrap()
     };
     assert!(svg(Figure::CubesLoops).contains("<clipPath"));
     let loops = svg(Figure::SkeletonLoops);
     assert!(loops.contains(r#"stroke-linecap="butt""#));
-    assert!(!loops.contains(r#"stroke-linecap="round""#));
+    assert!(loops.contains("<mask"));
+    let lines = loops.lines().collect::<Vec<_>>();
+    for (i, line) in lines.iter().enumerate() {
+        if line.contains(r#"stroke-linecap="round""#) {
+            assert!(
+                i > 0 && lines[i - 1].contains(r#"<g mask="url(#"#),
+                "{line}"
+            );
+        }
+    }
 
     // Without the skeleton stages, only the figures of the solution remain.
     let saved = export_figures(&solution, None, &dir, "solution", "svg", &params, &style).unwrap();

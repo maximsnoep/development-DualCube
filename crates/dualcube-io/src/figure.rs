@@ -17,6 +17,7 @@
 use crate::SkeletonSave;
 use anyhow::{Context, anyhow, bail};
 use dualcube::prelude::*;
+use occlusion::Cover;
 use std::collections::HashMap;
 use std::fmt::Write as _;
 use std::path::{Path, PathBuf};
@@ -628,6 +629,29 @@ impl Camera {
         }
     }
 
+    // The depth where the ray through a point of the page meets the plane through `point` with this normal, if it does.
+    fn depth_on_plane(&self, s: [f64; 2], point: Vector3D, normal: Vector3D) -> Option<f64> {
+        match self.eye {
+            Some(eye) => {
+                let d = self.forward + self.right * s[0] + self.up * s[1];
+                let denominator = normal.dot(&d);
+                if denominator.abs() <= 1e-12 * normal.norm() * d.norm() {
+                    return None;
+                }
+                let t = normal.dot(&(point - eye)) / denominator;
+                (t > 0.).then(|| (d * t).norm())
+            }
+            None => {
+                let base = self.right * s[0] + self.up * s[1];
+                let denominator = normal.dot(&self.forward);
+                if denominator.abs() <= 1e-12 * normal.norm() {
+                    return None;
+                }
+                Some(normal.dot(&(point - base)) / denominator)
+            }
+        }
+    }
+
     // Whether a face at `p` with this normal faces the camera.
     fn faces(&self, p: Vector3D, normal: Vector3D) -> bool {
         match self.eye {
@@ -675,17 +699,22 @@ enum Item {
         color: Rgb,
         width: f64,
     },
-    // A line through the points, with flat ends (so that it stops where it does) and round bends; closed, it ends
-    // where it starts.
+    // A line through the points, with round bends; closed, it ends where it starts.
     Polyline {
         points: Vec<[f64; 2]>,
         closed: bool,
+        caps: Caps,
         color: Rgb,
         width: f64,
     },
     // An item drawn only inside of the polygons.
     Clipped {
         clip: Vec<Vec<[f64; 2]>>,
+        item: Box<Item>,
+    },
+    // An item drawn only where the topmost of the polygons (drawn in order) lets it show.
+    Masked {
+        mask: Vec<(Vec<[f64; 2]>, bool)>,
         item: Box<Item>,
     },
     // A dot with a ring around it; radius and ring width as fractions of the figure's size.
@@ -695,6 +724,13 @@ enum Item {
         fill: Rgb,
         ring: Rgb,
     },
+}
+
+// The ends of a line: flat (it stops where it does), or round.
+#[derive(Clone, Copy)]
+enum Caps {
+    Flat,
+    Round,
 }
 
 // What a figure is drawn from: the solution, the skeleton stages, and the perspective camera of the input mesh.
@@ -833,9 +869,9 @@ struct SurfaceMark {
 // mark may lie behind the surface and still be drawn.
 const DEPTH_RESOLUTION: usize = 2048;
 const DEPTH_TOLERANCE: f64 = 0.01;
-// Where a line stops showing within a segment: first sampled, then bisected.
-const REACH_STEPS: usize = 8;
-const REACH_BISECTIONS: usize = 12;
+// How far a face must lie in front of a line to hide it (a fraction of the diagonal of the surface's box; the GPU's
+// depth bias plays this part in the GUI).
+const LINE_DEPTH_TOLERANCE: f64 = 0.002;
 
 // The depth of the nearest face per pixel (of the projected faces).
 struct DepthBuffer {
@@ -918,21 +954,29 @@ impl DepthBuffer {
         }
     }
 
-    // Whether a point (projected, with its depth) is not behind the surface anywhere within `radius` (in pixels) of
-    // it on the page: a line this wide shows up to the edge of what hides it.
-    fn shows(&self, p: [f64; 2], depth: f64, tolerance: f64, radius: f64) -> bool {
+    // Whether a point (projected, with its depth) is not behind the surface.
+    fn shows(&self, p: [f64; 2], depth: f64, tolerance: f64) -> bool {
+        let n = DEPTH_RESOLUTION;
+        let [x, y] = self.pixel(p);
+        if x < 0. || y < 0. || x >= n as f64 || y >= n as f64 {
+            return true;
+        }
+        depth <= f64::from(self.depth[y as usize * n + x as usize]) + tolerance
+    }
+
+    // Whether the page has no surface somewhere within `radius` (in pixels) of a point.
+    fn void_near(&self, p: [f64; 2], radius: f64) -> bool {
         let n = DEPTH_RESOLUTION as i64;
         let [x, y] = self.pixel(p).map(f64::floor);
         let r = radius.max(0.).ceil() as i64;
-        // The pixel of the point first: most points show there.
-        let around = (-r..=r)
-            .flat_map(|dy| (-r..=r).map(move |dx| (dx, dy)))
-            .filter(|&(dx, dy)| ((dx * dx + dy * dy) as f64) <= radius * radius);
-        std::iter::once((0, 0)).chain(around).any(|(dx, dy)| {
-            let (x, y) = (x as i64 + dx, y as i64 + dy);
-            !(0..n).contains(&x)
-                || !(0..n).contains(&y)
-                || depth <= f64::from(self.depth[(y * n + x) as usize]) + tolerance
+        (-r..=r).any(|dy| {
+            (-r..=r).any(|dx| {
+                let (x, y) = (x as i64 + dx, y as i64 + dy);
+                ((dx * dx + dy * dy) as f64) <= (radius + 1.).powi(2)
+                    && (!(0..n).contains(&x)
+                        || !(0..n).contains(&y)
+                        || self.depth[(y * n + x) as usize].is_infinite())
+            })
         })
     }
 }
@@ -1002,15 +1046,11 @@ fn surface(
         .collect::<Vec<_>>();
     let (min, max) = bounds(&points);
     let tolerance = DEPTH_TOLERANCE * (max - min).norm();
-    let shows_within = |p: Vector3D, radius: f64| {
-        buffer.shows(camera.project(p), camera.depth(p), tolerance, radius)
-    };
-    let shows = |p: Vector3D| shows_within(p, 0.);
-    // Half the width of a line (a fraction of the figure's size), in pixels of the depth buffer.
+    let shows = |p: Vector3D| buffer.shows(camera.project(p), camera.depth(p), tolerance);
+    // The width of the page in projected units, to measure lines (as fractions of the figure's size) with.
     let page = camera
         .window
         .unwrap_or(buffer.cell * DEPTH_RESOLUTION as f64 / (1. - 2. * MARGIN));
-    let half_width = |width: f64| width * page / 2. / buffer.cell;
     let project = |points: &[Vector3D]| {
         points
             .iter()
@@ -1080,101 +1120,104 @@ fn surface(
             shown.push((depth, item));
         }
     }
-    // How far from `from` toward `to` a line this wide shows, if at all past `from` (where the surface starts to hide
-    // it).
-    let reach = |from: Vector3D, to: Vector3D, radius: f64| {
-        let at = |t: f64| from + (to - from) * t;
-        let show = |t: f64| {
-            let p = at(t);
-            camera.in_front(p) && shows_within(p, radius)
-        };
-        let step = 1. / REACH_STEPS as f64;
-        let Some(k) = (1..=REACH_STEPS).find(|&k| !show(k as f64 * step)) else {
-            return Some(to);
-        };
-        let (mut lo, mut hi) = ((k - 1) as f64 * step, k as f64 * step);
-        for _ in 0..REACH_BISECTIONS {
-            let mid = (lo + hi) / 2.;
-            if show(mid) {
-                lo = mid;
-            } else {
-                hi = mid;
-            }
-        }
-        (lo > 0.).then(|| at(lo))
-    };
-    // The lines as the stretches of consecutive segments that show, each continued into the segments next to it up
-    // to where the surface hides them (so that they stop flat where they disappear, e.g. at the outline, and not a
-    // segment short of it); a closed line that shows all around as one. A line shows up to half its width past the
-    // edge of what hides it: on a coarse mesh, a loop turns to the back side where the outline is still a bit further
-    // out, and would stop short of it.
+    // The lines, occluded as the GPU does it (see `occlusion`): stretches of segments that show wholly as one line
+    // with flat ends, stretches of the other segments that show each through one mask of the faces around them, with
+    // round ends (there, the mask cuts them off); a closed line that shows wholly all around as one.
+    let mut occluders = occlusion::Occluders::new(
+        faces
+            .iter()
+            .map(|(_, _, corners, normal)| (corners.as_slice(), *normal)),
+        camera,
+    );
+    let line_tolerance = LINE_DEPTH_TOLERANCE * (max - min).norm();
     for line in lines {
         let points = &line.points;
-        let radius = half_width(line.width);
+        let radius = line.width * page / 2.;
         let n = points.len().saturating_sub(1);
-        let visible = (0..n)
+        let mut covers = (0..n)
             .map(|i| {
-                let (a, b) = (points[i], points[i + 1]);
-                camera.in_front(a) && camera.in_front(b) && shows_within((a + b) / 2., radius)
+                let segment = [points[i], points[i + 1]];
+                occluders.cover(camera, &buffer, segment, radius, line_tolerance)
             })
             .collect::<Vec<_>>();
+        let plain = |cover: &Cover| matches!(cover, Cover::Plain);
         let closed = n > 1 && (points[0] - points[n]).norm() <= 1e-12 * (1. + points[0].norm());
-        // Around a closed line, start after a segment that does not show.
+        // Around a closed line, start after a segment that does not show wholly.
         let start = if closed {
-            (0..n).find(|&i| !visible[i]).map_or(0, |i| i + 1)
+            (0..n).find(|&i| !plain(&covers[i])).map_or(0, |i| i + 1)
         } else {
             0
         };
-        let mut runs: Vec<Vec<usize>> = vec![];
-        let mut run = vec![];
-        for k in 0..n {
-            let i = (start + k) % n;
-            if visible[i] {
-                run.push(i);
-            } else if !run.is_empty() {
-                runs.push(std::mem::take(&mut run));
+        let all_around = closed && covers.iter().all(plain);
+        // A stretch of segments (and, if masked, the faces of the mask and whether each lets it show) as a line.
+        let flush = |run: &mut Vec<usize>,
+                     mask: &mut HashMap<usize, bool>,
+                     shown: &mut Vec<(f64, Item)>| {
+            if run.is_empty() {
+                return;
             }
-        }
-        if !run.is_empty() {
-            runs.push(run);
-        }
-        let all_around = closed && runs.len() == 1 && runs[0].len() == n;
-        for run in runs {
             let mut ends = run.iter().map(|&i| points[i]).collect::<Vec<_>>();
             if !all_around {
-                let (first, last) = (run[0], run[run.len() - 1] + 1);
-                ends.push(points[last]);
-                // The segments before and after the run, if the line goes on there.
-                let before = match first {
-                    0 if closed => Some(n - 1),
-                    0 => None,
-                    i => Some(i - 1),
-                };
-                let after = match last {
-                    i if i == n && closed => Some(0),
-                    i if i == n => None,
-                    i => Some(i),
-                };
-                if let Some(p) = before.and_then(|i| reach(points[first], points[i], radius)) {
-                    ends.insert(0, p);
-                }
-                if let Some(p) = after.and_then(|i| reach(points[last], points[i + 1], radius)) {
-                    ends.push(p);
-                }
+                ends.push(points[run[run.len() - 1] + 1]);
             }
             let depth = run
                 .iter()
                 .map(|&i| camera.depth((points[i] + points[i + 1]) / 2.))
                 .sum::<f64>()
                 / run.len() as f64;
-            let item = Item::Polyline {
+            let mut item = Item::Polyline {
                 points: project(&ends),
                 closed: all_around,
+                caps: if mask.is_empty() {
+                    Caps::Flat
+                } else {
+                    Caps::Round
+                },
                 color: line.color,
                 width: line.width,
             };
+            if !mask.is_empty() {
+                let mut faces = mask.drain().collect::<Vec<_>>();
+                faces.sort_unstable();
+                item = Item::Masked {
+                    mask: faces
+                        .into_iter()
+                        .map(|(i, shows)| (occluders.polygon(i).to_vec(), shows))
+                        .collect(),
+                    item: Box::new(item),
+                };
+            }
             shown.push((depth, item));
+            run.clear();
+        };
+        let (mut run, mut masked, mut mask) = (vec![], vec![], HashMap::new());
+        for k in 0..n {
+            let i = (start + k) % n;
+            match std::mem::replace(&mut covers[i], Cover::Hidden) {
+                Cover::Plain => {
+                    flush(&mut masked, &mut mask, &mut shown);
+                    run.push(i);
+                }
+                Cover::Hidden => {
+                    flush(&mut run, &mut HashMap::new(), &mut shown);
+                    flush(&mut masked, &mut mask, &mut shown);
+                }
+                Cover::Masked(faces) => {
+                    flush(&mut run, &mut HashMap::new(), &mut shown);
+                    // One mask as long as no face lets one segment show but hides another.
+                    if faces
+                        .iter()
+                        .any(|(f, shows)| mask.get(f).is_some_and(|s| s != shows))
+                    {
+                        flush(&mut masked, &mut mask, &mut shown);
+                    }
+                    mask.extend(faces);
+                    masked.push(i);
+                }
+            }
         }
+        flush(&mut run, &mut HashMap::new(), &mut shown);
+        flush(&mut masked, &mut mask, &mut shown);
     }
     shown.sort_by(|a, b| b.0.total_cmp(&a.0));
     items.extend(shown.into_iter().map(|(_, item)| item));
@@ -1603,7 +1646,7 @@ fn item_bounds(item: &Item) -> ([f64; 2], [f64; 2]) {
             extend(to);
         }
         Item::Disk { center, .. } => extend(center),
-        Item::Clipped { item, .. } => return item_bounds(item),
+        Item::Clipped { item, .. } | Item::Masked { item, .. } => return item_bounds(item),
     }
     (min, max)
 }
@@ -1650,12 +1693,17 @@ fn write_item(
         Item::Polyline {
             points,
             closed,
+            caps,
             color,
             width,
         } => {
+            let caps = match caps {
+                Caps::Flat => "butt",
+                Caps::Round => "round",
+            };
             let _ = writeln!(
                 svg,
-                r#"<path d="{}{}" fill="none" stroke="{}" stroke-width="{:.2}" stroke-linecap="butt" stroke-linejoin="round"/>"#,
+                r#"<path d="{}{}" fill="none" stroke="{}" stroke-width="{:.2}" stroke-linecap="{caps}" stroke-linejoin="round"/>"#,
                 path(points),
                 if *closed { "Z" } else { "" },
                 hex(*color),
@@ -1686,6 +1734,31 @@ fn write_item(
                 let _ = write!(svg, r#"<path d="{}Z"/>"#, path(polygon));
             }
             let _ = writeln!(svg, r#"</clipPath><g clip-path="url(#{id})">"#);
+            write_item(svg, item, page, size, clips);
+            svg.push_str("</g>\n");
+        }
+        Item::Masked { mask, item } => {
+            *clips += 1;
+            let id = format!("mask{clips}");
+            // On the whole page (the default region is the item's box, empty for a straight line).
+            let _ = write!(
+                svg,
+                r#"<mask id="{id}" maskUnits="userSpaceOnUse" x="{:.2}" y="{:.2}" width="{:.2}" height="{:.2}">"#,
+                -size,
+                -size,
+                3. * size,
+                3. * size
+            );
+            // Consecutive polygons of a color as one path (faces that face the camera turn the same way on the page).
+            for run in mask.chunk_by(|a, b| a.1 == b.1) {
+                let color = if run[0].1 { "#fff" } else { "#000" };
+                let d: String = run.iter().map(|(p, _)| format!("{}Z", path(p))).collect();
+                let _ = write!(
+                    svg,
+                    r#"<path d="{d}" fill="{color}" stroke="{color}" stroke-width="{SEAM}" stroke-linejoin="round"/>"#
+                );
+            }
+            let _ = writeln!(svg, r#"</mask><g mask="url(#{id})">"#);
             write_item(svg, item, page, size, clips);
             svg.push_str("</g>\n");
         }
@@ -1773,6 +1846,7 @@ fn to_svg(mut items: Vec<Item>, fit: &Fit, size: f64, label: Option<&str>) -> St
     svg
 }
 
+mod occlusion;
 mod skeleton;
 
 #[cfg(test)]
