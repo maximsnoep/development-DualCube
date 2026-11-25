@@ -7,6 +7,7 @@ use dualcube::skeleton::{
 };
 use serde::{Deserialize, Serialize};
 use slotmap::SlotMap;
+use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
@@ -45,9 +46,19 @@ struct DcSolutionV1 {
 struct DcFileV2<'a> {
     format: String,
     version: u32,
-    solution: SolutionPersistence,
+    solution: SolutionRef<'a>,
     skeleton: Option<&'a SkeletonSave>,
     source: Option<PathBuf>,
+}
+
+// A solution serialized as its `SolutionPersistence`, without copying it.
+#[derive(Serialize)]
+struct SolutionRef<'a> {
+    mesh_ref: &'a Arc<Mesh<INPUT>>,
+    loops: &'a SlotMap<LoopID, Loop>,
+    dual: &'a Result<Dual, PropertyViolationError>,
+    polycube: &'a Option<Polycube>,
+    layout: &'a Option<Layout>,
 }
 
 #[derive(Deserialize)]
@@ -161,31 +172,31 @@ pub fn write(
     let dc_file = DcFileV2 {
         format: DC_FORMAT.to_string(),
         version: DC_VERSION,
-        solution: solution.to_persistence(),
+        solution: SolutionRef {
+            mesh_ref: &solution.mesh_ref,
+            loops: &solution.loops,
+            dual: &solution.dual,
+            polycube: &solution.polycube,
+            layout: &solution.layout,
+        },
         skeleton,
         source: source.map(Path::to_path_buf),
     };
 
-    let mut serialized = Vec::new();
-
-    dc_file
-        .serialize(&mut rmp_serde::Serializer::new(&mut serialized).with_struct_map())
-        .context("serializing Dc file with rmp-serde")?;
-
-    info!("Serialized Dc size: {} bytes", serialized.len());
-
-    let compressed = zstd::stream::encode_all(std::io::Cursor::new(&serialized), 3)
-        .context("compressing Dc file with zstd")?;
-
-    info!("Compressed Dc size: {} bytes", compressed.len());
-
-    // Write to a temporary file first and rename it over the target, so a failed
-    // write never destroys an existing save.
+    // Streamed through zstd into a temporary file (nothing held in memory), renamed over the target afterwards, so a
+    // failed write never destroys an existing save.
     let path_tmp = path_save.with_extension("dc.tmp");
-    let mut bytes = Vec::with_capacity(DC_MAGIC.len() + compressed.len());
-    bytes.extend_from_slice(DC_MAGIC);
-    bytes.extend_from_slice(&compressed);
-    std::fs::write(&path_tmp, &bytes).with_context(|| format!("writing {}", path_tmp.display()))?;
+    let write = || -> anyhow::Result<()> {
+        let mut file = std::io::BufWriter::new(std::fs::File::create(&path_tmp)?);
+        file.write_all(DC_MAGIC)?;
+        let mut encoder = zstd::stream::Encoder::new(file, 3)?;
+        dc_file
+            .serialize(&mut rmp_serde::Serializer::new(&mut encoder).with_struct_map())
+            .context("serializing Dc file with rmp-serde")?;
+        encoder.finish()?.flush()?;
+        Ok(())
+    };
+    write().with_context(|| format!("writing {}", path_tmp.display()))?;
     std::fs::rename(&path_tmp, &path_save)
         .with_context(|| format!("moving {} to {}", path_tmp.display(), path_save.display()))?;
 
