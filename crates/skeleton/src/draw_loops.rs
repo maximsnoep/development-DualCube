@@ -8,7 +8,7 @@
 use crate::{DualLoops, RealizedSkeleton, SkeletonResult};
 use dualcube_dual::{
     Loop, LoopID, LoopSampler, LoopState,
-    insertion::{DrawError, Plan},
+    insertion::{DrawError, Plan, Winding},
     loop_map::LoopMap,
 };
 use dualcube_types::prelude::*;
@@ -16,6 +16,7 @@ use dualcube_types::prelude::*;
 mod lift;
 mod route;
 mod template;
+mod winding;
 
 /// Each of these reports a bug: valid input always has a drawing.
 #[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
@@ -87,6 +88,7 @@ pub fn attempt(mesh: &Mesh<INPUT>, realized: &RealizedSkeleton) -> SkeletonResul
         return Ok(result);
     }
     let flows = route::Flows::new(mesh, drawn.is_empty());
+    let longitudes = winding::Longitudes::new(mesh, realized, &template);
     let partners: HashMap<_, _> = template
         .loops
         .keys()
@@ -116,7 +118,12 @@ pub fn attempt(mesh: &Mesh<INPUT>, realized: &RealizedSkeleton) -> SkeletonResul
                 .map(|map| (map, vec![]))
                 .ok_or(DrawError::NoStart)
         } else {
-            plan.draw(&map, &known, flows.cost(axis))
+            plan.draw(
+                &map,
+                &known,
+                flows.cost(axis),
+                longitudes.as_ref().map(|l| l as &dyn Winding),
+            )
         };
         match next {
             Ok((next, crossings)) => {

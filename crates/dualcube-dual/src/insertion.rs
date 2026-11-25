@@ -8,6 +8,11 @@
 //! parities with cuts put every other boundary of the region on the template's side. Any such
 //! arc keeps the drawing equivalent to the template, and one always exists, so nothing is
 //! searched or retried. Everything here is combinatorial; positions only score routes.
+//!
+//! Equivalence is up to homeomorphism: a Dehn twist around a drawn curve keeps every region,
+//! so a loop may wind around a handle without any check noticing. A [`Winding`] counts signed
+//! crossings with reference curves, one per handle, and makes every loop cross them as its
+//! template loop does.
 
 use crate::LoopID;
 use crate::loop_map::{LoopMap, Piece, Point};
@@ -277,6 +282,18 @@ impl Template {
         &self.map
     }
 
+    /// The crossing vertex of quad `q` of a map from [`LoopMap::from_quads`], which adds one
+    /// crossing per quad, in order, after all other points.
+    pub fn quad_crossing(&self, q: usize) -> usize {
+        let quads = self
+            .map
+            .points
+            .iter()
+            .filter(|&&p| p == Point::Crossing)
+            .count();
+        self.map.points.len() - quads + q
+    }
+
     /// The loops crossed by loop `id`, in order along it.
     pub fn partners(&self, id: LoopID) -> Vec<LoopID> {
         let chain = self.chains.get(&id).map_or(&[][..], Vec::as_slice);
@@ -323,6 +340,53 @@ impl Template {
         template.partition(&self.map, &self.chains, &none)
             == drawing.partition(map, &map.chains(), &none)
     }
+}
+
+/// Most reference curves a [`Winding`] may have.
+pub const MAX_HANDLES: usize = 16;
+
+/// Signed crossings with every reference curve of a [`Winding`].
+pub type Turns = [i8; MAX_HANDLES];
+
+/// Most net crossings of one arc with one reference curve.
+const MAX_TURNS: i8 = 3;
+
+/// Reference curves on the drawing's surface, one per handle, with the template's crossings of
+/// its own reference curves. Counts are signed: crossing a curve from its left to its right is
+/// positive, seen from outside.
+pub trait Winding {
+    /// Crossings of a move across the segment from `from` to `to`, which lies on an edge of
+    /// input triangle `face`, from the segment's left to its right.
+    fn step(&self, from: Vector3D, to: Vector3D, face: FaceID) -> Turns;
+    /// The template loop's crossings from its crossing vertex `vertex` to the next one.
+    fn template(&self, id: LoopID, vertex: usize) -> Turns;
+    /// Cost of ending an arc one crossing away from the template's count so far.
+    fn penalty(&self) -> f64;
+}
+
+fn add(a: Turns, b: Turns) -> Turns {
+    std::array::from_fn(|i| a[i] + b[i])
+}
+
+fn sub(a: Turns, b: Turns) -> Turns {
+    std::array::from_fn(|i| a[i] - b[i])
+}
+
+// Crossings an arc should end with, counted from the loop's start.
+#[derive(Clone, Copy)]
+enum Expected {
+    // The template's count at the next crossing; missing it costs the penalty per crossing.
+    Near(Turns),
+    // The closed loop's count, required exactly.
+    Exactly(Turns),
+}
+
+// Winding bookkeeping of one arc.
+struct ArcWinding<'a> {
+    winding: &'a dyn Winding,
+    // Crossings of the loop before this arc.
+    before: Turns,
+    expected: Expected,
 }
 
 /// A template loop to insert into a drawing of some of the template's other loops.
@@ -485,14 +549,42 @@ impl<'a> Plan<'a> {
     /// Draw the loop arc by arc into a copy of `map`, a drawing of the plan's drawn loops whose
     /// crossing vertices have the template vertices `known`. Returns the new map and the template
     /// vertex of every new crossing vertex. `cost` scores moves by input triangle, displacement,
-    /// and arc.
+    /// and arc. With `winding`, the loop crosses its reference curves as the template loop does,
+    /// unless no closing arc can, which leaves the closing arc free (and is logged).
     pub fn draw(
         &self,
         map: &LoopMap,
         known: &HashMap<usize, usize>,
         cost: impl Fn(FaceID, Vector3D, usize) -> f64,
+        winding: Option<&dyn Winding>,
     ) -> Result<(LoopMap, Vec<(usize, usize)>), DrawError> {
         let k = self.len();
+        // The template's crossings with its reference curves before every crossing vertex of the
+        // loop, from the chain's start, and in all.
+        let mut counted = HashMap::new();
+        let mut total = [0; MAX_HANDLES];
+        if let Some(winding) = winding {
+            let map = &self.template.map;
+            for &h in self
+                .template
+                .chains
+                .get(&self.id)
+                .map_or(&[][..], Vec::as_slice)
+            {
+                let v = map.halves[h].origin;
+                if map.points[v] == Point::Crossing {
+                    counted.insert(v, (counted.len(), total));
+                    total = add(total, winding.template(self.id, v));
+                }
+            }
+        }
+        // From this plan's start crossing to crossing `j`, along the loop.
+        let since_start = |j: usize, start: usize| -> Turns {
+            let (at, count) = counted[&self.crossings[j]];
+            let (from, before) = counted[&self.crossings[start]];
+            let wrapped = if at < from { total } else { [0; MAX_HANDLES] };
+            add(sub(count, before), wrapped)
+        };
         let mut labels = Labels {
             id: self.id,
             old: known.clone(),
@@ -506,6 +598,8 @@ impl<'a> Plan<'a> {
         // The loop closes into the start from the anchor's side, along the anchor's piece.
         let closing = drawing.map.halves[anchor].piece;
         let mut tip = (x0, drawing.map.halves[after].face);
+        // Crossings with the reference curves so far.
+        let mut so_far = [0; MAX_HANDLES];
         let mut spread = Spread::new(&drawing.map, self.id);
         let mut last = None;
         for step in 0..k {
@@ -558,7 +652,28 @@ impl<'a> Plan<'a> {
                 self.arriving(&expected, &next, arc),
                 &next,
             );
-            let path = drawing.route(tip.1, &goal, sides.as_ref(), &spread, arc, &cost)?;
+            let arc_winding = winding.map(|winding| ArcWinding {
+                winding,
+                before: so_far,
+                expected: match goal {
+                    Goal::Close(_) => Expected::Exactly(total),
+                    Goal::Cross(_) => Expected::Near(since_start(target, start)),
+                },
+            });
+            let route = |w: Option<&ArcWinding<'_>>| {
+                drawing.route(tip.1, &goal, sides.as_ref(), &spread, arc, &cost, w)
+            };
+            let (path, turns) = match route(arc_winding.as_ref()) {
+                Err(DrawError::NoRoute(_)) if arc_winding.is_some() => {
+                    warn!(
+                        "Loop {:?} cannot close with the template's winding; closing it freely",
+                        self.id
+                    );
+                    route(None)?
+                }
+                routed => routed?,
+            };
+            so_far = add(so_far, turns);
             let triangle = |f: usize| drawing.map.faces[f].triangle;
             spread.own.insert(triangle(tip.1));
             for &h in &path {
@@ -911,7 +1026,9 @@ impl Drawing {
         (self.map.positions[half.origin] + self.map.positions[self.map.target(h)]) / 2.
     }
 
-    // Faces crossed by a shortest admissible route from `start`, as the half-edges crossed.
+    // Faces crossed by a shortest admissible route from `start`, as the half-edges crossed, and
+    // the route's crossings with the reference curves of `winding`.
+    #[allow(clippy::too_many_arguments)]
     fn route(
         &self,
         start: usize,
@@ -920,7 +1037,8 @@ impl Drawing {
         spread: &Spread,
         arc: usize,
         cost: &impl Fn(FaceID, Vector3D, usize) -> f64,
-    ) -> Result<Vec<usize>, DrawError> {
+        winding: Option<&ArcWinding<'_>>,
+    ) -> Result<(Vec<usize>, Turns), DrawError> {
         let map = &self.map;
         // Crossing the next partner ends the arc: such states carry `EXITED` instead of bits.
         const EXITED: u32 = u32::MAX;
@@ -929,20 +1047,47 @@ impl Drawing {
             Goal::Cross(_) => None,
         };
         let accepts = |v: usize, bits: u32| sides.is_none_or(|s| s.accepts(v, bits));
+        // Whether the loop may close with these crossings.
+        let closes = |turns: Turns| match winding {
+            Some(w) => match w.expected {
+                Expected::Exactly(total) => add(w.before, turns) == total,
+                Expected::Near(_) => true,
+            },
+            None => true,
+        };
+        // Cost of crossing the next partner with these crossings.
+        let off = |turns: Turns| match winding {
+            Some(w) => match w.expected {
+                Expected::Near(expected) => {
+                    let off = sub(add(w.before, turns), expected);
+                    w.winding.penalty()
+                        * off
+                            .iter()
+                            .map(|&t| f64::from(t.unsigned_abs()))
+                            .sum::<f64>()
+                }
+                Expected::Exactly(_) => 0.,
+            },
+            None => 0.,
+        };
+        type State = (usize, u32, Turns);
+        let none = [0; MAX_HANDLES];
         let mut centers = HashMap::new();
         let mut center = |f: usize| *centers.entry(f).or_insert_with(|| self.center(f));
         let mut heap = BinaryHeap::new();
         let mut best = HashMap::new();
-        let mut previous = HashMap::<(usize, u32), ((usize, u32), usize)>::new();
-        best.insert((start, 0u32), 0.);
-        heap.push((std::cmp::Reverse(OrderedFloat(0.)), (start, 0u32)));
+        let mut previous = HashMap::<State, (State, usize)>::new();
+        best.insert((start, 0u32, none), 0.);
+        heap.push((std::cmp::Reverse(OrderedFloat(0.)), (start, 0u32, none)));
         let mut done = None;
         while let Some((std::cmp::Reverse(distance), state)) = heap.pop() {
             if distance.0 > best[&state] {
                 continue;
             }
-            let (face, bits) = state;
-            if bits == EXITED || closing.is_some_and(|(f, v)| f == face && accepts(v, bits)) {
+            let (face, bits, turns) = state;
+            if bits == EXITED
+                || closing.is_some_and(|(f, v)| f == face && accepts(v, bits) && closes(turns))
+            {
                 done = Some(state);
                 break;
             }
@@ -961,6 +1106,7 @@ impl Drawing {
                     0.
                 };
                 let mut next_bits = bits;
+                let mut next_turns = turns;
                 let mut ending = 0.;
                 let (here_t, next_t) = (map.faces[face].triangle, map.faces[next].triangle);
                 match half.piece {
@@ -968,13 +1114,13 @@ impl Drawing {
                         let Goal::Cross(pieces) = goal else {
                             continue;
                         };
-                        let Some(off) = pieces.get(&h) else {
+                        let Some(off_middle) = pieces.get(&h) else {
                             continue;
                         };
                         if sides.is_some_and(|s| !s.accepts_crossing(h, half.origin, bits)) {
                             continue;
                         }
-                        ending = MIDDLE * off;
+                        ending = MIDDLE * off_middle + off(turns);
                         if spread.crowded.contains(&here_t) {
                             ending += CROWDED * spread.size(here_t);
                         }
@@ -989,26 +1135,38 @@ impl Drawing {
                                 next_bits ^= 1 << c;
                             }
                         }
+                        if let Some(w) = winding {
+                            let step = w.winding.step(
+                                map.positions[half.origin],
+                                map.positions[map.target(h)],
+                                here_t,
+                            );
+                            next_turns = add(turns, step);
+                            if next_turns.iter().any(|t| t.abs() > MAX_TURNS) {
+                                continue;
+                            }
+                        }
                     }
                 }
                 let d = distance.0 + step_cost + ending;
-                let state = (next, next_bits);
+                let state = (next, next_bits, next_turns);
                 if best.get(&state).is_none_or(|&old| d < old) {
                     best.insert(state, d);
-                    previous.insert(state, ((face, bits), h));
+                    previous.insert(state, ((face, bits, turns), h));
                     heap.push((std::cmp::Reverse(OrderedFloat(d)), state));
                 }
             }
         }
-        let mut state = done.ok_or(DrawError::NoRoute(arc))?;
+        let end = done.ok_or(DrawError::NoRoute(arc))?;
+        let mut state = end;
         let mut path = vec![];
-        while state != (start, 0) {
+        while state != (start, 0, none) {
             let (before, h) = previous[&state];
             path.push(h);
             state = before;
         }
         path.reverse();
-        Ok(path)
+        Ok((path, end.2))
     }
 
     // Add the arc from the tip (vertex, face beyond it) across the half-edges of `path`, as a

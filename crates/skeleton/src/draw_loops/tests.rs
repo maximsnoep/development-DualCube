@@ -426,3 +426,95 @@ fn templates_agree_with_the_plane_sections_of_the_cuboid_surface() {
         }
     }
 }
+
+/// Draw on the template's own surface, rotated, and require every loop to cross the mesh's
+/// longitudes as the template loop crosses the template's.
+fn assert_untwisted(
+    realized: RealizedSkeleton,
+    handles: usize,
+    rotation: nalgebra::Rotation3<f64>,
+) {
+    let (mut surface, realized) = on_template(realized);
+    assert_eq!(
+        winding::cut_edges(&realized.labeled.skeleton).len(),
+        handles
+    );
+    for v in surface.mesh.vert_ids() {
+        let p = rotation * surface.mesh.position(v);
+        surface.mesh.set_position(v, p);
+    }
+    let result = attempt(&surface.mesh, &realized).unwrap();
+    assert!(result.failure.is_none(), "{:?}", result.failure);
+    let template = template::Template::build(&realized.labeled).unwrap();
+    let longitudes = winding::Longitudes::new(&surface.mesh, &realized, &template).unwrap();
+    for (id, curve) in &result.loops {
+        assert_eq!(
+            longitudes.crossings(&surface.mesh, curve),
+            longitudes.template_total(id),
+            "loop {id:?}, rotation {rotation:?}"
+        );
+    }
+}
+
+#[test]
+fn draws_a_ring_without_twisting_its_loops() {
+    use crate::label::Port::*;
+    let ring = || {
+        graph_realized(
+            4,
+            &[
+                (0, 1, PositiveX),
+                (1, 2, PositiveY),
+                (2, 3, NegativeX),
+                (3, 0, NegativeY),
+            ],
+        )
+    };
+    assert_untwisted(ring(), 1, nalgebra::Rotation3::identity());
+}
+
+#[test]
+fn draws_two_rings_on_one_junction_without_twisting_their_loops() {
+    use crate::label::Port::*;
+    // Genus two: one ring in the XY plane on the positive X side, one in the XZ plane on the
+    // negative X side, both through node 0. Rotated, the surface no longer matches the labels,
+    // and loops drawn without longitudes wind around a ring in some of these rotations.
+    let rings = || {
+        graph_realized(
+            7,
+            &[
+                (0, 1, PositiveX),
+                (1, 2, PositiveY),
+                (2, 3, NegativeX),
+                (3, 0, NegativeY),
+                (0, 4, NegativeX),
+                (4, 5, NegativeZ),
+                (5, 6, PositiveX),
+                (6, 0, PositiveZ),
+            ],
+        )
+    };
+    for axis in [
+        Vector3D::new(1., 2., 3.),
+        Vector3D::new(-2., 1., 0.5),
+        Vector3D::new(0.3, -1., 2.),
+        Vector3D::new(1., 1., -1.),
+        Vector3D::new(-1., 3., 1.),
+        Vector3D::new(2., -1., -2.),
+    ] {
+        for angle in [0., 0.4, 0.9, 1.3, 2.] {
+            let axis = nalgebra::Unit::new_normalize(axis);
+            assert_untwisted(
+                rings(),
+                2,
+                nalgebra::Rotation3::from_axis_angle(&axis, angle),
+            );
+        }
+    }
+}
+
+#[test]
+fn a_tree_has_no_cut_edges() {
+    let realized = star_realized(&crate::label::Port::ALL);
+    assert!(winding::cut_edges(&realized.labeled.skeleton).is_empty());
+}

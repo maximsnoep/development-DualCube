@@ -19,6 +19,36 @@ pub(super) struct Template {
     /// The loop around every edge cuboid: its patch boundary.
     pub boundaries: HashMap<SkeletonEdgeID, LoopID>,
     pub target: insertion::Template,
+    /// The free faces, in the order of the template's crossings.
+    pub quads: Vec<Quad>,
+}
+
+/// A free face of the template's cube surface.
+pub(super) struct Quad {
+    /// Its solid, in the order of [`crate::RealizedSkeleton::template_solids`].
+    pub solid: usize,
+    /// Corners, counterclockwise seen from outside: glued across solids, and as corner codes
+    /// of the solid.
+    pub corners: [usize; 4],
+    pub codes: [usize; 4],
+    /// The loop joining sides 0 and 2, running from 0 to 2, and the loop joining sides 1 and 3,
+    /// with whether it runs from 1 to 3.
+    pub loops: [(LoopID, bool); 2],
+}
+
+impl Quad {
+    /// The side (from corner `i` to corner `i + 1`) through which loop `k` leaves.
+    pub fn exit(&self, k: usize) -> usize {
+        match (k, self.loops[1].1) {
+            (0, _) => 2,
+            (_, true) => 3,
+            (_, false) => 1,
+        }
+    }
+
+    pub fn side(&self, i: usize) -> (usize, usize) {
+        (self.corners[i], self.corners[(i + 1) % 4])
+    }
 }
 
 /// Corner `c` of a solid has bit `d` set on its positive side of axis `d`.
@@ -66,6 +96,7 @@ impl Template {
         // joining sides 0 and 2, of the loop joining sides 1 and 3, and whether that one runs
         // from side 1 to side 3 (the first always runs from side 0 to side 2).
         let mut quads = Vec::new();
+        let mut codes_of = Vec::new();
         let mut sections = Vec::new();
         for solid in 0..solids {
             for axis in 0..3 {
@@ -79,6 +110,7 @@ impl Template {
                     if !positive {
                         codes.reverse();
                     }
+                    codes_of.push(codes);
                     quads.push(codes.map(|c| corners.find(CORNERS * solid + c)));
                     sections.push((solid, [u, v], positive));
                 }
@@ -130,10 +162,19 @@ impl Template {
         }
         let map = LoopMap::from_quads(numbering.len(), &quads, &chords)
             .map_err(|_| "Cube surface is not a manifold quad mesh")?;
+        let quads = (0..quads.len())
+            .map(|q| Quad {
+                solid: sections[q].0,
+                corners: quads[q],
+                codes: codes_of[q],
+                loops: chords[q],
+            })
+            .collect();
         Ok(Self {
             loops,
             boundaries,
             target: insertion::Template::new(map),
+            quads,
         })
     }
 }
