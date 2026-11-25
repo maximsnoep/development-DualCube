@@ -52,6 +52,7 @@ fn unreadable_mesh_fails_at_the_first_stage_with_full_row() {
         Path::new("does/not/exist.obj"),
         Stage::Reconstruction,
         false,
+        None,
     );
     assert_eq!(row.status(), "failed at deflation");
     assert!(row.seconds.iter().all(Option::is_none));

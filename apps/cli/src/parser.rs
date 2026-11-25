@@ -50,6 +50,7 @@ pub enum Command {
         last: dualcube::skeleton::pipeline::Stage,
         report: Option<PathBuf>,
         certify_each_step: bool,
+        save: Option<PathBuf>,
     },
 }
 
@@ -248,6 +249,7 @@ impl Args {
                 let mut last = dualcube::skeleton::pipeline::Stage::Reconstruction;
                 let mut report = None;
                 let mut certify_each_step = false;
+                let mut save = None;
 
                 parse_kv_flags(it.collect(), |flag, value| {
                     match flag {
@@ -259,6 +261,7 @@ impl Args {
                             last = crate::stages::parse_stage(require_value(flag, value)?)?;
                         }
                         "--report" => report = Some(PathBuf::from(require_value(flag, value)?)),
+                        "--save" => save = Some(PathBuf::from(require_value(flag, value)?)),
                         other => anyhow::bail!("unknown flag for stages: {other}"),
                     }
                     Ok(())
@@ -272,6 +275,7 @@ impl Args {
                     last,
                     report,
                     certify_each_step,
+                    save,
                 }
             }
             other => anyhow::bail!("unknown command: {other}"),
@@ -337,6 +341,7 @@ where
                 | "--csv"
                 | "--stop-after"
                 | "--report"
+                | "--save"
         );
 
         let value = if takes_value {

@@ -124,7 +124,14 @@ pub fn run(args: anyhow::Result<Args>) -> anyhow::Result<()> {
             last,
             report,
             certify_each_step,
-        } => crate::stages::run(&inputs, last, report.as_deref(), certify_each_step)?,
+            save,
+        } => crate::stages::run(
+            &inputs,
+            last,
+            report.as_deref(),
+            certify_each_step,
+            save.as_deref(),
+        )?,
     }
 
     Ok(())
@@ -287,7 +294,7 @@ Commands:
       Export a solution in the requested format.
 
   stages --input <path> [--input <path> ...] [--stop-after <stage>] [--report <csv>]
-         [--certify-each-step]
+         [--certify-each-step] [--save <folder>]
       Run the skeleton pipeline on every mesh up to a stage and report one row per mesh: status,
       typed error (or panic), seconds per stage, and stage statistics.
       --input: a mesh, a folder of meshes (.obj/.stl), or a .txt set of mesh paths relative to it
@@ -295,6 +302,8 @@ Commands:
       --stop-after: deflation, extraction, certification, labeling, placement, optimization,
       drawing, or reconstruction (default).
       --report: CSV file, rewritten after every mesh.
+      --save: for every full run, write <stem>.dc (loadable in the GUI), and <stem>.flag, one
+      label (0..5: +X, -X, +Y, -Y, +Z, -Z) per triangle of <stem>.obj, the refined surface.
       --certify-each-step: surgery dissolves a self-arc only when DiskScissors finds a disk for
       its loop, not on homology alone. This certifies every patch, so certification is skipped.
       Positive genus needs TETGEN_EXECUTABLE and DiskScissors (DISKSCISSORS_EXECUTABLE).

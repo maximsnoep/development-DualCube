@@ -179,8 +179,9 @@ impl Row {
     }
 }
 
-/// Run one mesh through every stage up to `last`, stopping at the first failure or panic.
-pub fn run_mesh(input: &Path, last: Stage, certify_each_step: bool) -> Row {
+/// Run one mesh through every stage up to `last`, stopping at the first failure or panic. With
+/// `save`, a full run is saved into that folder (see [`save`]); failing to save fails the run.
+pub fn run_mesh(input: &Path, last: Stage, certify_each_step: bool, save: Option<&Path>) -> Row {
     let mut row = Row {
         input: input.to_owned(),
         ..Row::default()
@@ -200,6 +201,8 @@ pub fn run_mesh(input: &Path, last: Stage, certify_each_step: bool) -> Row {
     row.genus = validate::input_genus(&mesh).ok();
     let mut progress = Progress::default();
     let mut contracted = None;
+    // Kept only to be saved.
+    let mut extraction = save.map(|_| None);
     let skipped = |s: Stage| certify_each_step && s == Stage::Certification;
     for stage in Stage::ALL.into_iter().filter(|&s| s <= last && !skipped(s)) {
         // Names the running stage in the log, for runs killed from outside (timeout, out of memory).
@@ -210,6 +213,7 @@ pub fn run_mesh(input: &Path, last: Stage, certify_each_step: bool) -> Row {
                 stage,
                 &mesh,
                 &mut contracted,
+                extraction.as_mut(),
                 &mut progress,
                 &mut solution,
                 certify_each_step,
@@ -226,13 +230,76 @@ pub fn run_mesh(input: &Path, last: Stage, certify_each_step: bool) -> Row {
         row.failure = Some((stage, error));
         break;
     }
+    if let Some(folder) = save
+        && row.failure.is_none()
+        && last == Stage::Reconstruction
+        && let Err(error) = self::save(folder, input, &solution, extraction.flatten(), progress)
+    {
+        row.failure = Some((Stage::Reconstruction, format!("save: {error}")));
+    }
     row
+}
+
+/// Saves a full run of `input` into `folder` as `<stem>.dc` (with the skeleton stages, loadable in
+/// the GUI; without a separate output, as the solution is that), and its labeling as `<stem>.flag`: one label (0..5 for +X, -X, +Y, -Y, +Z, -Z) per
+/// triangle of `<stem>.obj`, the refined surface of the layout.
+fn save(
+    folder: &Path,
+    input: &Path,
+    solution: &Solution,
+    extraction: Option<skeletonize::Extraction>,
+    progress: Progress,
+) -> anyhow::Result<()> {
+    let layout = solution
+        .layout
+        .as_ref()
+        .ok_or_else(|| anyhow::anyhow!("no layout"))?;
+    let stem = input
+        .file_stem()
+        .ok_or_else(|| anyhow::anyhow!("no file name"))?
+        .to_string_lossy();
+    std::fs::create_dir_all(folder)?;
+    let skeleton = io::SkeletonSave {
+        extraction: extraction.map(io::SkeletonExtraction::Extracted),
+        labeling: progress.labeling,
+        labeled: progress.labeled,
+        realized: progress.realized,
+        optimized: progress.optimized,
+        drawing: progress.drawing,
+        loops: progress.loops,
+        failure: None,
+        // The solution itself: nothing evolved it (a copy would double the memory and the file).
+        output: None,
+    };
+    let path = |extension: &str| folder.join(format!("{stem}.{extension}"));
+    io::formats::dc::write(solution, Some(&skeleton), Some(input), &path("dc"))?;
+    <io::Flag as io::Export>::export(solution, &path("flag"))?;
+    write_obj(&layout.granulated_mesh, &path("obj"))
+}
+
+/// A triangle mesh as OBJ, positions in full precision, triangles in the order `Flag` labels them.
+fn write_obj(mesh: &Mesh<INPUT>, path: &Path) -> anyhow::Result<()> {
+    use std::io::Write;
+    let mut file = std::io::BufWriter::new(std::fs::File::create(path)?);
+    let mut index = HashMap::new();
+    for (i, vert) in mesh.vert_ids().into_iter().enumerate() {
+        let p = mesh.position(vert);
+        writeln!(file, "v {} {} {}", p.x, p.y, p.z)?;
+        index.insert(vert, i + 1);
+    }
+    for face in mesh.face_ids() {
+        let corners: Vec<_> = mesh.vertices(face).map(|v| index[&v].to_string()).collect();
+        writeln!(file, "f {}", corners.join(" "))?;
+    }
+    file.flush()?;
+    Ok(())
 }
 
 fn step(
     stage: Stage,
     mesh: &Mesh<INPUT>,
     contracted: &mut Option<Mesh<deflate::CONTRACTION>>,
+    extraction: Option<&mut Option<skeletonize::Extraction>>,
     progress: &mut Progress,
     solution: &mut Solution,
     certify_each_step: bool,
@@ -248,10 +315,12 @@ fn step(
         }
         Stage::Extraction => {
             let deflated = contracted.take().expect("deflation runs first");
-            let skeleton = skeletonize::extract_from_contracted(mesh, deflated, options)
-                .map_err(|e| anyhow::anyhow!("{e}"))?
-                .skeleton;
-            *progress = Progress::from_skeleton(skeleton);
+            let extracted = skeletonize::extract_from_contracted(mesh, deflated, options)
+                .map_err(|e| anyhow::anyhow!("{e}"))?;
+            *progress = Progress::from_skeleton(extracted.skeleton.clone());
+            if let Some(kept) = extraction {
+                *kept = Some(extracted);
+            }
             if certify_each_step {
                 // Every patch is contractible by construction; nothing left to certify.
                 progress.certificate = Some(Default::default());
@@ -322,6 +391,7 @@ pub fn run(
     last: Stage,
     report: Option<&Path>,
     certify_each_step: bool,
+    save: Option<&Path>,
 ) -> anyhow::Result<()> {
     let mut paths = Vec::new();
     for input in inputs {
@@ -332,7 +402,7 @@ pub fn run(
     }
     let mut rows = Vec::new();
     for (i, path) in paths.iter().enumerate() {
-        let row = run_mesh(path, last, certify_each_step);
+        let row = run_mesh(path, last, certify_each_step, save);
         let seconds: f64 = row.seconds.iter().flatten().sum();
         println!(
             "[{}/{}] {}: {} ({seconds:.1}s){}",

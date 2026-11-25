@@ -174,3 +174,37 @@ fn stages_reports_a_full_run_of_the_test_model() {
     assert_eq!(column("loops_drawn"), column("loops_planned"));
     assert!(!column("s_reconstruction").is_empty());
 }
+
+#[test]
+fn stages_saves_a_loadable_solution_and_its_labeling() {
+    let input = example_model(TEST_MODEL);
+    let dir = test_output_dir("stages-save");
+    run_cli(&[
+        "stages",
+        "--input",
+        &input.display().to_string(),
+        "--save",
+        &dir.display().to_string(),
+    ]);
+    let stem = input.file_stem().unwrap().to_str().unwrap();
+    let save = io::import_save(&dir.join(format!("{stem}.dc"))).unwrap();
+    assert!(save.solution.layout.is_some());
+    assert!(
+        save.skeleton
+            .is_some_and(|s| s.drawing.is_some() && s.output.is_none())
+    );
+    assert_eq!(save.source.as_deref(), Some(input.as_path()));
+    let obj = fs::read_to_string(dir.join(format!("{stem}.obj"))).unwrap();
+    let triangles = obj.lines().filter(|l| l.starts_with("f ")).count();
+    let flag = fs::read_to_string(dir.join(format!("{stem}.flag"))).unwrap();
+    let labels: Vec<u8> = flag
+        .split_whitespace()
+        .map(|l| l.parse().unwrap())
+        .collect();
+    assert_eq!(labels.len(), triangles);
+    assert!(labels.iter().all(|&l| l <= 5));
+    assert_eq!(
+        save.solution.layout.unwrap().granulated_mesh.nr_faces(),
+        triangles
+    );
+}
