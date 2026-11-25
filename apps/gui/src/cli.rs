@@ -27,6 +27,7 @@ Run from the repository root:
                              cubes-loops, cubes-lifted, lifted
   --refinement               Enable embedding refinement (default off)
   --no-refinement            Skip embedding refinement
+  --smooth-boundaries        Smooth the patch boundaries after surgery (default off)
   --iterations <count>      Deflation iteration limit (default 50)
   --contraction-step <f>    Growth of the contraction weight per iteration (default 4)
   --shape-weight <number>   Surgery shape weight (default 1)
@@ -82,6 +83,10 @@ impl Launch {
             }
             if matches!(flag, "--refinement" | "--no-refinement") && inline.is_none() {
                 refinement = Some(flag == "--refinement");
+                continue;
+            }
+            if flag == "--smooth-boundaries" && inline.is_none() {
+                launch.options.smooth_boundaries = true;
                 continue;
             }
             if !matches!(

@@ -991,6 +991,10 @@ fn pipeline_bar(
                 &mut conf.skeleton_options.refine_embedding,
                 "embedding refinement",
             );
+            ui.checkbox(
+                &mut conf.skeleton_options.smooth_boundaries,
+                "smooth boundaries",
+            );
             sep(ui);
             label(ui, "Contraction", TEXT_COLOR);
             ui.add(

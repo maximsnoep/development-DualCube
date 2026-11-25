@@ -1,10 +1,11 @@
-//! Deflation, connectivity surgery, and embedding refinement.
+//! Deflation, connectivity surgery, boundary smoothing, and embedding refinement.
 //!
 //! `run` returns the final skeleton; `extract` also retains the deflated mesh
 //! and the skeleton before refinement. Each submodule can be called separately.
 
 pub mod deflate;
 pub mod refinement;
+pub mod smoothing;
 pub mod surgery;
 
 use crate::{Skeleton, SkeletonResult};
@@ -17,6 +18,8 @@ pub struct Options {
     /// Growth factor of the contraction weight per iteration (see [`deflate::DEFAULT_STEP`]).
     pub contraction_step: f64,
     pub refine_embedding: bool,
+    /// Smooth the boundaries geometrically after surgery (see [`smoothing`]), for nicer pictures.
+    pub smooth_boundaries: bool,
     pub surgery: surgery::Options,
 }
 
@@ -26,6 +29,7 @@ impl Default for Options {
             max_iterations: 50,
             contraction_step: deflate::DEFAULT_STEP,
             refine_embedding: false,
+            smooth_boundaries: false,
             surgery: surgery::Options::default(),
         }
     }
@@ -51,7 +55,8 @@ pub fn extract(mesh: &Mesh<INPUT>, options: Options) -> SkeletonResult<Extractio
     extract_from_contracted(mesh, contracted_mesh, options)
 }
 
-/// Continue from a contracted mesh with matching topology. Only surgery and refinement options apply.
+/// Continue from a contracted mesh with matching topology. Only surgery, smoothing, and refinement
+/// options apply.
 pub fn extract_from_contracted(
     mesh: &Mesh<INPUT>,
     contracted_mesh: Mesh<deflate::CONTRACTION>,
@@ -61,6 +66,9 @@ pub fn extract_from_contracted(
     let raw = surgery::run(&contracted_mesh, mesh, options.surgery)?;
     let genus = raw.edges.len() + 1 - raw.nodes.len();
     let mut skeleton = raw.clone();
+    if options.smooth_boundaries {
+        smoothing::run(mesh, &mut skeleton);
+    }
     if options.refine_embedding {
         refinement::run(mesh, &mut skeleton)?;
         skeleton.validate(mesh)?;

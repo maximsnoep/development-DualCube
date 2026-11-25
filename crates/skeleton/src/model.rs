@@ -95,6 +95,10 @@ pub struct BoundarySurface {
     /// Each occurrence belongs to one loop and appears exactly once in these orders.
     // Geometry uses uniform offsets initially; topology depends only on this order.
     pub edge_order: HashMap<EdgeID, Vec<BoundaryCrossingID>>,
+    /// Optional root-to-tip parameters of occurrences on their edges (geometry only, see
+    /// `skeletonize::smoothing`). Missing ones are spaced evenly between their neighbors.
+    #[serde(default)]
+    pub offsets: HashMap<BoundaryCrossingID, f64>,
 }
 
 /// Signed principal axis from `SkeletonEdge::nodes[0]` to `nodes[1]` in the

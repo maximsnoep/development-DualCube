@@ -78,6 +78,7 @@ impl BoundarySurface {
 
     pub(crate) fn remove(&mut self, mesh: &Mesh<INPUT>, id: BoundaryCrossingID) {
         let edge = canonical(mesh, self.crossings.remove(id).unwrap().exit);
+        self.offsets.remove(&id);
         self.unorder(edge, id);
     }
 
@@ -90,10 +91,40 @@ impl BoundarySurface {
         }
     }
 
-    /// Uniformly spaced point of an occurrence on its edge.
+    /// The parameters (root to tip) of an edge's occurrences: their offsets when these increase
+    /// strictly within (0, 1), missing ones spaced evenly between their neighbors; else uniform.
+    pub(crate) fn parameters(&self, order: &[BoundaryCrossingID]) -> Vec<f64> {
+        let n = order.len();
+        let uniform = || (0..n).map(|i| (i + 1) as f64 / (n + 1) as f64).collect();
+        if self.offsets.is_empty() {
+            return uniform();
+        }
+        let known: Vec<_> = order.iter().map(|c| self.offsets.get(c).copied()).collect();
+        // The fixed ends and the known offsets, in order.
+        let anchors: Vec<(isize, f64)> = std::iter::once((-1, 0.))
+            .chain((0..n).filter_map(|i| known[i].map(|t| (i as isize, t))))
+            .chain(std::iter::once((n as isize, 1.)))
+            .collect();
+        if anchors.windows(2).any(|w| !(w[0].1 < w[1].1)) {
+            return uniform();
+        }
+        let mut t = vec![0.; n];
+        for w in anchors.windows(2) {
+            let ((i, a), (j, b)) = (w[0], w[1]);
+            for k in i + 1..j {
+                t[k as usize] = a + (b - a) * (k - i) as f64 / (j - i) as f64;
+            }
+            if j < n as isize {
+                t[j as usize] = b;
+            }
+        }
+        t
+    }
+
+    /// Point of an occurrence on its edge (see [`Self::parameters`]).
     pub(crate) fn position(&self, mesh: &Mesh<INPUT>, id: BoundaryCrossingID) -> Vector3D {
         let (edge, rank) = self.rank(mesh, id);
-        let t = (rank + 1) as f64 / (self.edge_order[&edge].len() + 1) as f64;
+        let t = self.parameters(&self.edge_order[&edge])[rank];
         mesh.position(mesh.root(edge)) * (1. - t) + mesh.position(mesh.toor(edge)) * t
     }
 
@@ -105,8 +136,7 @@ impl BoundarySurface {
                 mesh.position(mesh.root(edge)),
                 mesh.position(mesh.toor(edge)),
             );
-            for (rank, &id) in order.iter().enumerate() {
-                let t = (rank + 1) as f64 / (order.len() + 1) as f64;
+            for (&id, t) in order.iter().zip(self.parameters(order)) {
                 positions.insert(id, a * (1. - t) + b * t);
             }
         }

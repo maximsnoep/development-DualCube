@@ -24,6 +24,7 @@ fn startup_defaults_and_options() {
     assert_eq!(launch.path.unwrap(), PathBuf::from("models/a model.obj"));
     assert_eq!(launch.stop, Some(Stage::LoopDrawing));
     assert!(!launch.options.refine_embedding);
+    assert!(!launch.options.smooth_boundaries);
     assert_eq!(launch.view, Some(ModelViewKind::Combined));
     assert!(!launch.quit);
     let launch = parse(&[
@@ -31,6 +32,7 @@ fn startup_defaults_and_options() {
         "--auto-start",
         "skeleton",
         "--no-refinement",
+        "--smooth-boundaries",
         "--shape-weight=2",
         "--sampling-weight=0",
         "--handle-bonus=12",
@@ -44,6 +46,7 @@ fn startup_defaults_and_options() {
     assert_eq!(launch.options.surgery.shape_weight, 2.);
     assert_eq!(launch.options.surgery.sampling_weight, 0.);
     assert_eq!(launch.options.surgery.handle_bonus, 12.);
+    assert!(launch.options.smooth_boundaries);
 }
 
 #[test]
