@@ -6,8 +6,10 @@
 //! A chain from a junction to a leaf may drop all of them. This repeats until no chain improves.
 //! Alignment is a mean over the boundary length, so the DP maximizes its linearization at the
 //! current mean (Dinkelbach), and a move is applied only when the score itself improves.
+//! Then one more boundary may be added: through the middle of the largest patch with two or
+//! more boundaries, farthest from them, if that scores better after reducing again.
 
-use crate::label::{self, Port, constraints, path};
+use crate::label::{self, Port, constraints, path, subdivide};
 use crate::quality::{self, Alignment, BETA, Visibility};
 use crate::{
     LabeledSkeleton, RealizedSkeleton, Skeleton, SkeletonEdgeID, SkeletonNodeID, SkeletonResult,
@@ -25,12 +27,41 @@ pub fn run(mesh: &Mesh<INPUT>, placed: &RealizedSkeleton) -> SkeletonResult<Real
     place_cubes::run(mesh, &reduced)
 }
 
-/// Reduce every chain until none improves; the result is validated.
+/// Reduce every chain until none improves, then try one more boundary; the result is
+/// validated.
 pub fn reduce(mesh: &Mesh<INPUT>, labeled: &LabeledSkeleton) -> SkeletonResult<LabeledSkeleton> {
     let start = std::time::Instant::now();
+    let patches = labeled.skeleton.nodes.len();
+    let (mut labeled, before, mut score) = reduce_chains(mesh, labeled)?;
+    let mut added = false;
+    for candidate in additions(mesh, &labeled)? {
+        let (next, _, value) = reduce_chains(mesh, &candidate)?;
+        if value > score + 1e-12 {
+            (labeled, score, added) = (next, value, true);
+        }
+    }
+    labeled.validate(mesh)?;
+    tracing::info!(
+        "Optimization: {patches} → {} patches{}, score {before:.4} → {score:.4}, {:.2}s",
+        labeled.skeleton.nodes.len(),
+        if added {
+            " after one added boundary"
+        } else {
+            ""
+        },
+        start.elapsed().as_secs_f64()
+    );
+    Ok(labeled)
+}
+
+/// Every chain reduced until none improves; with the score before and after.
+fn reduce_chains(
+    mesh: &Mesh<INPUT>,
+    labeled: &LabeledSkeleton,
+) -> SkeletonResult<(LabeledSkeleton, f64, f64)> {
     let mut labeled = labeled.clone();
     let mut state = State::new(mesh, &labeled)?;
-    let (patches, before) = (labeled.skeleton.nodes.len(), state.score());
+    let before = state.score();
     // Every move raises the score; the bound is a guard.
     'improve: for _ in 0..10 * (labeled.skeleton.edges.len() + 10) {
         for chain in chains(&labeled.skeleton) {
@@ -41,14 +72,36 @@ pub fn reduce(mesh: &Mesh<INPUT>, labeled: &LabeledSkeleton) -> SkeletonResult<L
         }
         break;
     }
-    labeled.validate(mesh)?;
-    tracing::info!(
-        "Optimization: {patches} → {} patches, score {before:.4} → {:.4}, {:.2}s",
-        labeled.skeleton.nodes.len(),
-        state.score(),
-        start.elapsed().as_secs_f64()
-    );
-    Ok(labeled)
+    Ok((labeled, before, state.score()))
+}
+
+/// One more boundary in the largest patch with two or more boundaries, through its middle
+/// beside each of them in turn ([`subdivide::split`]), labelled like the boundary beside it.
+pub(crate) fn additions(
+    mesh: &Mesh<INPUT>,
+    labeled: &LabeledSkeleton,
+) -> SkeletonResult<Vec<LabeledSkeleton>> {
+    let skeleton = &labeled.skeleton;
+    let degree = skeleton.degrees();
+    let areas = crate::geometry::SurfaceGeometry::build(mesh, skeleton)?.areas();
+    let Some(node) = skeleton
+        .nodes
+        .keys()
+        .filter(|&n| degree[n] >= 2)
+        .max_by(|&a, &b| areas[a].total_cmp(&areas[b]))
+    else {
+        return Ok(Vec::new());
+    };
+    Ok(skeleton
+        .incident(node)
+        .filter_map(|(edge, _)| {
+            let (skeleton, added) = subdivide::split(mesh, skeleton, edge, node)?;
+            let mut labels = labeled.labels.clone();
+            labels.insert(added, labeled.labels[edge]);
+            let candidate = LabeledSkeleton { skeleton, labels };
+            candidate.validate_labels().is_ok().then_some(candidate)
+        })
+        .collect())
 }
 
 /// The score's sums, kept up to date with the moves.
