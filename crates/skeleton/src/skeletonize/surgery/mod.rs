@@ -41,7 +41,7 @@ pub struct Options {
     pub sampling_weight: f64,
     /// Subtracted once per volume cocycle that is nonzero on the dissolved arc. Not from Au et al.
     pub handle_bonus: f64,
-    /// Rotation systems tried when surgery is stuck, before it fails (about 24 bytes each).
+    /// Rotation systems tried when surgery is stuck, before it fails (about 80 bytes each at peak).
     pub flip_budget: u32,
     /// Require a DiskScissors disk for every self-arc loop before dissolving it.
     pub certify_each_step: bool,
