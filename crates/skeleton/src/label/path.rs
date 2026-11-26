@@ -138,74 +138,65 @@ pub struct Ends<'a> {
     pub patch: &'a dyn Fn(usize, usize) -> f64,
 }
 
-/// Keep at least `min_kept` of the boundaries of a path and give them ports, for the least
-/// cost: `costs[i][q]` per boundary `i` kept with port `q`, plus the patches of `ends`. The
-/// patch between two kept boundaries cannot use one port twice, so the path never reverses.
-/// Infinite costs forbid. Complexity: O(n² · min_kept · 384 · 6).
-pub fn select(
-    costs: &[[f64; 6]],
-    constraints: &Constraints,
-    ends: &Ends<'_>,
-    min_kept: usize,
-) -> Option<Selection> {
+/// Keep at least one of the boundaries of a path and give them ports, for the least cost:
+/// `costs[i][q]` per boundary `i` kept with port `q`, plus the patches of `ends`. The patch
+/// between two kept boundaries cannot use one port twice, so the path never reverses. Infinite
+/// costs forbid. Complexity: O(n² · 384 · 6).
+pub fn select(costs: &[[f64; 6]], constraints: &Constraints, ends: &Ends<'_>) -> Option<Selection> {
     let n = costs.len();
-    let k = min_kept.max(1);
-    if n < k || costs.iter().flatten().any(|c| c.is_nan()) {
+    if n == 0 || costs.iter().flatten().any(|c| c.is_nan()) {
         return None;
     }
-    // Indexed by boundary, kept count (capped at `k`) minus one, and port * 64 + mask.
-    let mut value = vec![vec![[f64::INFINITY; 384]; k]; n];
-    let mut back = vec![vec![[(usize::MAX, 0, 0); 384]; k]; n];
+    // Indexed by the last kept boundary and its port * 64 + the mask of kept ports.
+    let mut value = vec![[f64::INFINITY; 384]; n];
+    let mut back = vec![[(usize::MAX, 0); 384]; n];
     for i in 0..n {
         for q in 0..6 {
             if constraints.start_ports & (1 << q) != 0 {
-                value[i][0][q * 64 + (1 << q)] = (ends.first)(i, q) + costs[i][q];
+                value[i][q * 64 + (1 << q)] = (ends.first)(i, q) + costs[i][q];
             }
         }
         for j in 0..i {
             let shape = (ends.patch)(j, i);
-            for c in 0..k {
-                let next_c = (c + 1).min(k - 1);
-                for state in 0..384 {
-                    let current = value[j][c][state];
-                    if !current.is_finite() {
+            for state in 0..384 {
+                let current = value[j][state];
+                if !current.is_finite() {
+                    continue;
+                }
+                let (p, mask) = (state / 64, state % 64);
+                for q in 0..6 {
+                    if q == p ^ 1 {
                         continue;
                     }
-                    let (p, mask) = (state / 64, state % 64);
-                    for q in 0..6 {
-                        if q == p ^ 1 {
-                            continue;
-                        }
-                        let next = current + shape + costs[i][q];
-                        let target = q * 64 + (mask | (1 << q));
-                        if next < value[i][next_c][target] {
-                            value[i][next_c][target] = next;
-                            back[i][next_c][target] = (j, c, state);
-                        }
+                    let next = current + shape + costs[i][q];
+                    let target = q * 64 + (mask | (1 << q));
+                    if next < value[i][target] {
+                        value[i][target] = next;
+                        back[i][target] = (j, state);
                     }
                 }
             }
         }
     }
-    let (mut i, mut c, mut state, cost) = (0..n)
+    let (mut i, mut state, cost) = (0..n)
         .flat_map(|i| (0..384).map(move |s| (i, s)))
         .filter(|&(i, s)| {
-            value[i][k - 1][s].is_finite()
+            value[i][s].is_finite()
                 && constraints.end_ports & (1 << ((s / 64) ^ 1)) != 0
                 && constraints.masks[s % 64]
         })
-        .map(|(i, s)| (i, k - 1, s, value[i][k - 1][s] + (ends.last)(i, s / 64)))
-        .filter(|s| s.3.is_finite())
-        .min_by(|a, b| a.3.total_cmp(&b.3))?;
+        .map(|(i, s)| (i, s, value[i][s] + (ends.last)(i, s / 64)))
+        .filter(|s| s.2.is_finite())
+        .min_by(|a, b| a.2.total_cmp(&b.2))?;
     let (mut kept, mut ports) = (Vec::new(), Vec::new());
     loop {
         kept.push(i);
         ports.push(Port::ALL[state / 64]);
-        let (j, previous_c, previous) = back[i][c][state];
+        let (j, previous) = back[i][state];
         if j == usize::MAX {
             break;
         }
-        (i, c, state) = (j, previous_c, previous);
+        (i, state) = (j, previous);
     }
     kept.reverse();
     ports.reverse();

@@ -10,7 +10,7 @@
 //! more boundaries, farthest from them, if that scores better after reducing again.
 
 use crate::label::{self, Port, constraints, path, subdivide};
-use crate::quality::{self, Alignment, BETA, Visibility};
+use crate::quality::{self, Alignment, BETA, VISIBILITY, Visibility};
 use crate::{
     LabeledSkeleton, RealizedSkeleton, Skeleton, SkeletonEdgeID, SkeletonNodeID, SkeletonResult,
     place_cubes,
@@ -358,60 +358,56 @@ fn choose(
     let masks: [bool; 64] = std::array::from_fn(|mask| {
         constraints::feasible(skeleton, &others, Some(([start, end], mask as u8)))
     });
-    // Ends joined outside the chain would get parallel edges from a single kept boundary.
-    let joined = skeleton.edges.iter().any(|(e, data)| {
-        !chain.edges.contains(&e) && data.nodes.contains(&start) && data.nodes.contains(&end)
-    });
-    let half = 0.5 / state.visibility.area;
-    let patch = |j: usize, i: usize| -half * seen(run(j + 1, i));
-    // The choices maximizing the score linearized at alignment `lambda` over boundary length
-    // `total`, at least `min_kept` boundaries.
-    let select = |lambda: f64, total: f64, min_kept: usize| -> Option<Choice> {
+    let visible = VISIBILITY / state.visibility.area;
+    let patch = |j: usize, i: usize| -visible * seen(run(j + 1, i));
+    // The choice maximizing the score linearized at alignment `lambda` over boundary length
+    // `total`. Orders alone rule out what would make parallel edges or self-loops: a single
+    // boundary between ends joined elsewhere, or a ring of fewer than four.
+    let select = |lambda: f64, total: f64| -> Option<Choice> {
         let costs: Vec<[f64; 6]> = (0..n)
             .map(|i| {
                 std::array::from_fn(|q| {
-                    let gain = 0.5 * length(i) * (fit(i, Port::ALL[q]) - lambda) / total;
+                    let gain =
+                        (1. - VISIBILITY) * length(i) * (fit(i, Port::ALL[q]) - lambda) / total;
                     BETA - gain
                 })
             })
             .collect();
         let solve = |first: &dyn Fn(usize, usize) -> f64,
                      last: &dyn Fn(usize, usize) -> f64,
-                     limits: path::Constraints,
-                     min_kept: usize| {
+                     limits: path::Constraints| {
             let ends = path::Ends {
                 first,
                 last,
                 patch: &patch,
             };
-            path::select(&costs, &limits, &ends, min_kept)
+            path::select(&costs, &limits, &ends)
         };
         let selection = if !ring {
-            let first = |i: usize, _: usize| -half * seen(run(0, i));
-            let last = |i: usize, _: usize| -half * seen(run(i + 1, n));
+            let first = |i: usize, _: usize| -visible * seen(run(0, i));
+            let last = |i: usize, _: usize| -visible * seen(run(i + 1, n));
             let limits = path::Constraints {
                 start_ports: 63 & !used[start],
                 end_ports: 63 & !used[end],
                 masks,
             };
-            solve(&first, &last, limits, min_kept)
+            solve(&first, &last, limits)
         } else {
-            // A ring leaves and enters its node through two different ports; one or two kept
-            // boundaries close a self-loop or parallel edges. Its first kept boundary is fixed
-            // per solve, as the patch through the node depends on it.
+            // A ring leaves and enters its node through two different ports. Its first kept
+            // boundary is fixed per solve, as the patch through the node depends on it.
             let mut best: Option<path::Selection> = None;
             for p in Port::ALL.into_iter().filter(|p| used[start] & p.bit() == 0) {
                 for kept_first in 0..n {
                     let first = |i: usize, _: usize| {
                         if i == kept_first { 0. } else { f64::INFINITY }
                     };
-                    let last = |i: usize, _: usize| -half * seen(wrap(i, kept_first));
+                    let last = |i: usize, _: usize| -visible * seen(wrap(i, kept_first));
                     let limits = path::Constraints {
                         start_ports: p.bit(),
                         end_ports: 63 & !used[start] & !p.bit(),
                         masks,
                     };
-                    if let Some(s) = solve(&first, &last, limits, min_kept.max(3))
+                    if let Some(s) = solve(&first, &last, limits)
                         && best.as_ref().is_none_or(|b| s.cost < b.cost)
                     {
                         best = Some(s);
@@ -434,17 +430,13 @@ fn choose(
     );
     for _ in 0..ROUNDS {
         let mut moved = false;
-        let found: Vec<Choice> = [1 + usize::from(joined), 2, 3]
-            .into_iter()
-            .filter_map(|k| select(at.0, at.1, k))
-            .collect();
-        for choice in found {
+        if let Some(choice) = select(at.0, at.1) {
             let (value, aligned, total, _) = score(&choice);
             let new = candidates
                 .iter()
                 .all(|(_, c)| c.kept != choice.kept || c.ports != choice.ports);
             if value <= now + 1e-12 || !new {
-                continue;
+                break;
             }
             if candidates.iter().all(|(v, _)| value > *v) && total > 0. {
                 at = (aligned / total, total);

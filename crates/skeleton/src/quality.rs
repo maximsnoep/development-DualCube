@@ -1,6 +1,6 @@
 //! The quality of a labeled skeleton, to be maximized; labeling and optimization use its terms.
 //!
-//! score = (alignment + visibility) / 2 − BETA · #boundaries
+//! score = (1 − VISIBILITY) · alignment + VISIBILITY · visibility − BETA · #boundaries
 //!
 //! - Alignment: DualCube's alignment of dual loops, on the boundaries. A segment with direction
 //!   d in a triangle with normal n runs along its label's axis a when d × n is parallel to a. The
@@ -24,9 +24,11 @@ use std::collections::HashMap;
 
 /// Penalty per boundary (a loop pair of the polycube).
 pub const BETA: f64 = 0.005;
+/// Weight of visibility; alignment has the rest.
+pub const VISIBILITY: f64 = 0.8;
 
 pub fn score(alignment: f64, visibility: f64, boundaries: usize) -> f64 {
-    (alignment + visibility) / 2. - BETA * boundaries as f64
+    (1. - VISIBILITY) * alignment + VISIBILITY * visibility - BETA * boundaries as f64
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq)]

@@ -467,7 +467,7 @@ fn boundaries_added_to_close_a_cycle_run_through_the_middle_of_a_patch() {
     }
 }
 
-fn select(costs: &[[f64; 6]], patch: f64, min_kept: usize) -> path::Selection {
+fn select(costs: &[[f64; 6]], patch: f64) -> path::Selection {
     let zero = |_: usize, _: usize| 0.;
     let patch = |_: usize, _: usize| patch;
     let ends = path::Ends {
@@ -475,23 +475,22 @@ fn select(costs: &[[f64; 6]], patch: f64, min_kept: usize) -> path::Selection {
         last: &zero,
         patch: &patch,
     };
-    path::select(costs, &path::Constraints::default(), &ends, min_kept).unwrap()
+    path::select(costs, &path::Constraints::default(), &ends).unwrap()
 }
 
 #[test]
 fn select_keeps_only_boundaries_that_pay_for_themselves() {
     let mut costs = [[1.; 6]; 5];
-    assert_eq!(select(&costs, 0., 1).kept.len(), 1);
-    assert_eq!(select(&costs, 0., 3).kept.len(), 3);
+    assert_eq!(select(&costs, 0.).kept.len(), 1);
     // Two boundaries gain on +Y; splitting the patch costs nothing.
     costs[1][Port::PositiveY as usize] = -1.;
     costs[3][Port::PositiveY as usize] = -1.;
-    let selection = select(&costs, 0., 1);
+    let selection = select(&costs, 0.);
     assert_eq!(selection.kept, vec![1, 3]);
     assert_eq!(selection.ports, vec![Port::PositiveY; 2]);
     assert_eq!(selection.cost, -2.);
     // Unless every extra patch costs more than they gain.
-    assert_eq!(select(&costs, 1.5, 1).kept.len(), 1);
+    assert_eq!(select(&costs, 1.5).kept.len(), 1);
 }
 
 #[test]
@@ -499,12 +498,33 @@ fn select_never_reverses_between_kept_boundaries() {
     let mut costs = [[0.; 6]; 2];
     costs[0][Port::NegativeX as usize] = -5.;
     costs[1][Port::PositiveX as usize] = -5.;
-    let selection = select(&costs, 0., 2);
-    assert_eq!(selection.kept, vec![0, 1]);
-    assert_ne!(
-        selection.ports,
-        vec![Port::NegativeX, Port::PositiveX],
-        "the patch between would use one port twice"
-    );
+    // Keeping both on their best ports would reverse: only one of them gains.
+    let selection = select(&costs, 0.);
     assert_eq!(selection.cost, -5.);
+    for pair in selection.ports.windows(2) {
+        assert_ne!(pair[1], pair[0].opposite());
+    }
+}
+
+#[test]
+fn orders_alone_reject_too_short_rings_and_parallel_boundaries() {
+    // A ring through one node: every axis it uses needs both signs, so at least four kept.
+    let mut closed = [false; 64];
+    for (mask, ok) in closed.iter_mut().enumerate() {
+        *ok = (0..3).all(|axis| matches!((mask >> (axis * 2)) & 3, 0 | 3));
+    }
+    let limits = path::Constraints {
+        start_ports: Port::PositiveX.bit(),
+        end_ports: 63 & !Port::PositiveX.bit(),
+        masks: closed,
+    };
+    let zero = |_: usize, _: usize| 0.;
+    let ends = path::Ends {
+        first: &zero,
+        last: &zero,
+        patch: &zero,
+    };
+    assert!(path::select(&[[-1.; 6]; 3], &limits, &ends).is_none());
+    let ring = path::select(&[[1.; 6]; 6], &limits, &ends).unwrap();
+    assert_eq!(ring.kept.len(), 4);
 }
