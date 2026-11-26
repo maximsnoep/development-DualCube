@@ -40,8 +40,8 @@ pub(crate) fn collar(
 /// boundaries: a minimum cut that is cheap far from every boundary.
 pub(crate) struct Middle {
     path: Vec<(crate::surface::Gap, dualcube_types::prelude::EdgeID)>,
-    /// Normal of the loop's plane, pointing from `edge` towards the rest of the patch.
-    pub normal: Vector3D,
+    /// Oriented from `edge` towards the rest of the patch.
+    pub alignment: quality::Alignment,
 }
 
 /// Surface cells and positions shared by every [`middle`] of one skeleton.
@@ -165,16 +165,15 @@ pub(crate) fn middle(
         Vertex::Crossing(c) => pinned.get(&c).copied().unwrap_or(false),
     };
     let path = cut::trace(mesh, &ground.regions, node, &side)?;
-    // The loop's plane, with its normal along the steps from the edge's side to the other.
-    let points: Vec<Vector3D> = path
+    // Crossings at their edges' midpoints, as the loop has no place in the edge orders yet.
+    let points: Vec<_> = path
         .iter()
-        .map(|&(_, exit)| (mesh.position(mesh.root(exit)) + mesh.position(mesh.toor(exit))) / 2.)
+        .map(|&(_, exit)| {
+            let midpoint = (mesh.position(mesh.root(exit)) + mesh.position(mesh.toor(exit))) / 2.;
+            (midpoint, mesh.face(mesh.twin(exit)))
+        })
         .collect();
-    let centre: Vector3D = points.iter().sum::<Vector3D>() / points.len() as f64;
-    let mut normal = Vector3D::zeros();
-    for i in 0..points.len() {
-        normal += (points[i] - centre).cross(&(points[(i + 1) % points.len()] - centre));
-    }
+    let mut alignment = quality::alignment(mesh, &points);
     let cut: std::collections::HashSet<_> = path.iter().map(|&(gap, _)| gap).collect();
     let mut across = Vector3D::zeros();
     for (cell, _) in ground
@@ -195,10 +194,11 @@ pub(crate) fn middle(
             }
         }
     }
-    if normal.dot(&across) < 0. {
-        normal = -normal;
+    // Along the steps from the edge's side to the other.
+    if alignment.direction.dot(&across) < 0. {
+        alignment = alignment.reversed();
     }
-    Some(Middle { path, normal })
+    Some(Middle { path, alignment })
 }
 
 /// Split `node`'s patch along the middle loop: a new patch between `edge` and the loop, joined

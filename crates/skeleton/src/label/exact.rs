@@ -1,44 +1,19 @@
-//! Exact labeling: the valid labels with the least summed penalty, by branch and bound.
+//! Exact labeling: the valid labels with the least summed cost, by branch and bound.
 
-use super::{Port, angle_costs, boundary_normal, constraints};
+use super::{Port, constraints};
 use crate::{EdgeLabel, Skeleton, SkeletonEdgeID, SkeletonNodeID};
-use dualcube_types::prelude::*;
 use slotmap::SecondaryMap;
 use std::collections::VecDeque;
 
 /// Search nodes of the labeling stage's exact labeling.
 pub(crate) const BUDGET: usize = 200_000;
 
-/// Angle of `vector` to every label beyond the best label's, per 20°.
-pub(crate) fn excess(vector: Vector3D) -> [f64; 6] {
-    let angle = angle_costs(vector);
-    let best = angle.iter().copied().fold(f64::INFINITY, f64::min);
-    angle.map(|a| (a - best) / 20f64.to_radians())
-}
-
-/// Excess, growing twenty times as steeply beyond 20° (mislabelling).
-pub(crate) fn penalty(excess: f64) -> f64 {
-    excess + 20. * (excess - 1.).max(0.)
-}
-
-/// [`penalty`] of the boundary's plane normal against every label.
-pub(crate) fn plane_penalties(
-    mesh: &Mesh<INPUT>,
-    skeleton: &Skeleton,
-) -> SecondaryMap<SkeletonEdgeID, [f64; 6]> {
-    skeleton
-        .edges
-        .keys()
-        .map(|e| (e, excess(boundary_normal(mesh, skeleton, e)).map(penalty)))
-        .collect()
-}
-
-/// The valid labeling with the least summed penalty, by branch and bound from `current`
-/// (valid); after `budget` search nodes, the best found.
+/// The valid labeling with the least summed cost, by branch and bound from `current` (valid);
+/// after `budget` search nodes, the best found.
 pub(crate) fn search(
     skeleton: &Skeleton,
     current: &SecondaryMap<SkeletonEdgeID, EdgeLabel>,
-    penalties: &SecondaryMap<SkeletonEdgeID, [f64; 6]>,
+    costs: &SecondaryMap<SkeletonEdgeID, [f64; 6]>,
     budget: usize,
 ) -> SecondaryMap<SkeletonEdgeID, EdgeLabel> {
     // Edges in breadth-first order, so that cycles close early.
@@ -63,14 +38,14 @@ pub(crate) fn search(
     let cost = |labels: &SecondaryMap<SkeletonEdgeID, EdgeLabel>| -> f64 {
         labels
             .iter()
-            .map(|(e, &l)| penalties[e][Port::from_label(l) as usize])
+            .map(|(e, &l)| costs[e][Port::from_label(l) as usize])
             .sum()
     };
     struct Search<'a> {
         skeleton: &'a Skeleton,
         order: Vec<SkeletonEdgeID>,
         rows: Vec<[f64; 6]>,
-        /// Least penalty of the edges from `i` on.
+        /// Least cost of the edges from `i` on.
         rest: Vec<f64>,
         labels: SecondaryMap<SkeletonEdgeID, EdgeLabel>,
         used: SecondaryMap<SkeletonNodeID, u8>,
@@ -110,7 +85,7 @@ pub(crate) fn search(
             }
         }
     }
-    let rows: Vec<[f64; 6]> = order.iter().map(|&e| penalties[e]).collect();
+    let rows: Vec<[f64; 6]> = order.iter().map(|&e| costs[e]).collect();
     let mut rest = vec![0.; order.len() + 1];
     for i in (0..order.len()).rev() {
         rest[i] = rest[i + 1] + rows[i].iter().copied().fold(f64::INFINITY, f64::min);

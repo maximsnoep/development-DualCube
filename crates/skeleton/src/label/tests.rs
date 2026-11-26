@@ -379,11 +379,10 @@ fn cycle_repair_uses_real_annuli_and_relabels_the_whole_chain() {
         // The whole ring is relabelled: a ring of four needs no collar and no second choice.
         if positions.len() == 4 {
             assert_eq!(path.len(), 1);
+            let alignments = quality::alignments(&mesh, &result.skeleton);
             for (edge, &label) in &result.labels {
-                let normal = boundary_normal(&mesh, &result.skeleton, edge);
-                let port = Port::from_label(label);
-                let along = normal[port.axis()] * if port.is_positive() { 1. } else { -1. };
-                assert!(along >= normal.amax() - 1e-9);
+                let direction = alignments[edge].direction;
+                assert!(alignments[edge].with(Port::from_label(label)) >= direction.amax() - 1e-9);
             }
         }
         result.labeled().validate(&mesh).unwrap();
@@ -399,7 +398,7 @@ fn cycle_repair_uses_real_annuli_and_relabels_the_whole_chain() {
 }
 
 #[test]
-fn labels_follow_the_boundary_planes_not_the_patch_centres() {
+fn labels_follow_the_boundary_alignment_not_the_patch_centres() {
     let positions: Vec<_> = (0..4)
         .map(|i| {
             let angle = std::f64::consts::TAU * (2. * i as f64 + 0.5) / 8.;
@@ -419,11 +418,13 @@ fn labels_follow_the_boundary_planes_not_the_patch_centres() {
                 Port::from_label(result.labels[edge]),
                 Port::from_label(expected.labels[edge])
             );
-            let normal = boundary_normal(&mesh, &result.skeleton, edge);
+            let alignment = quality::alignments(&mesh, &result.skeleton)[edge];
             let port = Port::from_label(result.labels[edge]);
-            let along = normal[port.axis()] * if port.is_positive() { 1. } else { -1. };
-            // The label is the axis nearest to the boundary's normal, with its sign.
-            assert!(along >= normal.amax() - 1e-9, "{normal:?} labelled {port:?}");
+            // The label is the axis the boundary is best aligned with, with its sign.
+            assert!(
+                alignment.with(port) >= alignment.direction.amax() - 1e-9,
+                "{alignment:?} labelled {port:?}"
+            );
         }
     }
 }
@@ -466,48 +467,44 @@ fn boundaries_added_to_close_a_cycle_run_through_the_middle_of_a_patch() {
     }
 }
 
-// Costs for +X, −X, +Y, −Y, +Z, −Z: cheap only on the given ports.
-fn cheap(ports: &[Port]) -> [f64; 6] {
-    std::array::from_fn(|p| {
-        if ports.iter().any(|&q| q as usize == p) {
-            0.
-        } else {
-            75.
-        }
-    })
-}
-
-// Items outside the kept boundaries count against the end ports.
-fn select_free(items: &[[f64; 6]]) -> path::Selection {
-    let n = items.len() / 2;
-    let first = |i: usize, q: usize| (1..=2 * i).map(|m| items[m][q]).sum();
-    let last = |i: usize, q: usize| (2 * i + 2..2 * n).map(|m| items[m][q]).sum();
+fn select(costs: &[[f64; 6]], patch: f64, min_kept: usize) -> path::Selection {
     let zero = |_: usize, _: usize| 0.;
+    let patch = |_: usize, _: usize| patch;
     let ends = path::Ends {
-        first: &first,
-        last: &last,
-        patch: &zero,
+        first: &zero,
+        last: &zero,
+        patch: &patch,
     };
-    path::select(items, &path::Constraints::default(), 0.5, &ends, 1).unwrap()
+    path::select(costs, &path::Constraints::default(), &ends, min_kept).unwrap()
 }
 
 #[test]
-fn select_keeps_a_genuine_staircase() {
-    // Boundaries alternately facing X and Y; one bend cannot explain them in order.
-    let (x, y) = (cheap(&[Port::PositiveX]), cheap(&[Port::PositiveY]));
-    let free = [0.; 6];
-    let items = [free, x, free, y, free, x, free, y, free];
-    let selection = select_free(&items);
-    assert_eq!(selection.kept, vec![0, 1, 2, 3]);
-    use Port::{PositiveX as X, PositiveY as Y};
-    assert_eq!(selection.ports, vec![X, Y, X, Y]);
+fn select_keeps_only_boundaries_that_pay_for_themselves() {
+    let mut costs = [[1.; 6]; 5];
+    assert_eq!(select(&costs, 0., 1).kept.len(), 1);
+    assert_eq!(select(&costs, 0., 3).kept.len(), 3);
+    // Two boundaries gain on +Y; splitting the patch costs nothing.
+    costs[1][Port::PositiveY as usize] = -1.;
+    costs[3][Port::PositiveY as usize] = -1.;
+    let selection = select(&costs, 0., 1);
+    assert_eq!(selection.kept, vec![1, 3]);
+    assert_eq!(selection.ports, vec![Port::PositiveY; 2]);
+    assert_eq!(selection.cost, -2.);
+    // Unless every extra patch costs more than they gain.
+    assert_eq!(select(&costs, 1.5, 1).kept.len(), 1);
 }
 
 #[test]
-fn select_merges_a_diagonal_into_one_patch() {
-    // Every boundary as good on X as on Y: one kept boundary explains all of them.
-    let both = cheap(&[Port::PositiveX, Port::PositiveY]);
-    let free = [0.; 6];
-    let items = [free, both, free, both, free, both, free, both, free];
-    assert_eq!(select_free(&items).kept.len(), 1);
+fn select_never_reverses_between_kept_boundaries() {
+    let mut costs = [[0.; 6]; 2];
+    costs[0][Port::NegativeX as usize] = -5.;
+    costs[1][Port::PositiveX as usize] = -5.;
+    let selection = select(&costs, 0., 2);
+    assert_eq!(selection.kept, vec![0, 1]);
+    assert_ne!(
+        selection.ports,
+        vec![Port::NegativeX, Port::PositiveX],
+        "the patch between would use one port twice"
+    );
+    assert_eq!(selection.cost, -5.);
 }

@@ -10,6 +10,7 @@ pub mod model;
 pub mod optimize;
 pub mod pipeline;
 pub mod place_cubes;
+pub mod quality;
 pub mod skeletonize;
 pub(crate) mod surface;
 pub mod validate;

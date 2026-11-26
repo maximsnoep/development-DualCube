@@ -1,4 +1,5 @@
-//! Angle-based tree labeling, surface-preserving cycle repair, then exact relabeling.
+//! Tree labeling, surface-preserving cycle repair, then exact relabeling, all by boundary
+//! alignment ([`crate::quality`]).
 
 pub(crate) mod constraints;
 pub(crate) mod exact;
@@ -7,7 +8,9 @@ pub mod path;
 pub(crate) mod subdivide;
 mod tree;
 
-use crate::{EdgeLabel, LabeledSkeleton, Skeleton, SkeletonEdgeID, SkeletonNodeID, SkeletonResult};
+use crate::{
+    EdgeLabel, LabeledSkeleton, Skeleton, SkeletonEdgeID, SkeletonNodeID, SkeletonResult, quality,
+};
 use dualcube_types::prelude::{Direction, HasPosition, INPUT, Mesh, Sign, Vector3D};
 use serde::{Deserialize, Serialize};
 use slotmap::SecondaryMap;
@@ -185,14 +188,7 @@ pub fn attempt(mesh: &Mesh<INPUT>, skeleton: &Skeleton) -> SkeletonResult<Attemp
         junction_splits: Vec::new(),
     };
     junction::reduce(mesh, &mut result)?;
-    let mut cost_cache = HashMap::new();
-    let table = result
-        .skeleton
-        .edges
-        .keys()
-        .map(|e| (e, cached_cost(mesh, &result.skeleton, e, &mut cost_cache)))
-        .collect();
-    let (tree_edges, labels) = tree::solve(&result.skeleton, &table)?;
+    let (tree_edges, labels) = tree::solve(&result.skeleton, &costs(mesh, &result.skeleton))?;
     let remaining: Vec<_> = result
         .skeleton
         .edges
@@ -204,13 +200,7 @@ pub fn attempt(mesh: &Mesh<INPUT>, skeleton: &Skeleton) -> SkeletonResult<Attemp
     result.tree_skeleton = Some(result.skeleton.clone());
     result.labels = labels;
     for edge in remaining {
-        let (skeleton, added, labels) = repair(
-            mesh,
-            &result.skeleton,
-            &result.labels,
-            edge,
-            &mut cost_cache,
-        )?;
+        let (skeleton, added, labels) = repair(mesh, &result.skeleton, &result.labels, edge)?;
         result.skeleton = skeleton;
         result.labels.extend(labels);
         let mut path = vec![edge];
@@ -222,8 +212,8 @@ pub fn attempt(mesh: &Mesh<INPUT>, skeleton: &Skeleton) -> SkeletonResult<Attemp
     }
     // The tree and the repairs fix labels greedily; cycles they close often force mislabels
     // that a labeling of all edges at once avoids.
-    let penalties = exact::plane_penalties(mesh, &result.skeleton);
-    result.labels = exact::search(&result.skeleton, &result.labels, &penalties, exact::BUDGET);
+    let costs = costs(mesh, &result.skeleton);
+    result.labels = exact::search(&result.skeleton, &result.labels, &costs, exact::BUDGET);
     result.labeled().validate(mesh)?;
     tracing::info!(
         "Labeling: {} edges labeled, {} junction splits, {} cycle repairs, {:.2}s",
@@ -235,42 +225,12 @@ pub fn attempt(mesh: &Mesh<INPUT>, skeleton: &Skeleton) -> SkeletonResult<Attemp
     Ok(result)
 }
 
-/// Direction of an edge: the normal of its boundary's plane, scaled by the enclosed area, from
-/// its first patch to its second (the boundary runs counterclockwise around the first, seen
-/// from outside). The loop is drawn with the label's axis, so its own plane decides; the
-/// direction between patch centres can differ from it by any angle.
-pub(crate) fn boundary_normal(
-    mesh: &Mesh<INPUT>,
-    skeleton: &Skeleton,
-    edge: SkeletonEdgeID,
-) -> Vector3D {
-    let points: Vec<Vector3D> = skeleton.edges[edge]
-        .boundary
-        .crossings
-        .iter()
-        .map(|&c| {
-            let e = skeleton.surface.crossings[c].exit;
-            (mesh.position(mesh.root(e)) + mesh.position(mesh.toor(e))) / 2.
-        })
-        .collect();
-    let centre: Vector3D = points.iter().sum::<Vector3D>() / points.len() as f64;
-    let mut normal = Vector3D::zeros();
-    for i in 0..points.len() {
-        normal -= (points[i] - centre).cross(&(points[(i + 1) % points.len()] - centre));
-    }
-    normal
-}
-
-fn cached_cost(
-    mesh: &Mesh<INPUT>,
-    skeleton: &Skeleton,
-    edge: SkeletonEdgeID,
-    cache: &mut HashMap<[u64; 3], [f64; 6]>,
-) -> [f64; 6] {
-    let vector = boundary_normal(mesh, skeleton, edge);
-    // TODO: Include surface candidate identity and labels when caching richer patch costs.
-    let key = [vector.x.to_bits(), vector.y.to_bits(), vector.z.to_bits()];
-    *cache.entry(key).or_insert_with(|| angle_costs(vector))
+/// Labeling costs of every edge: its boundary's lost alignment ([`quality::Alignment::costs`]).
+fn costs(mesh: &Mesh<INPUT>, skeleton: &Skeleton) -> SecondaryMap<SkeletonEdgeID, [f64; 6]> {
+    quality::alignments(mesh, skeleton)
+        .into_iter()
+        .map(|(e, a)| (e, a.costs()))
+        .collect()
 }
 
 /// The chain through `edge`: the maximal path whose interior nodes have degree two, as steps
@@ -315,13 +275,18 @@ fn along(
     mesh: &Mesh<INPUT>,
     skeleton: &Skeleton,
     steps: &[(SkeletonEdgeID, bool)],
-    cache: &mut HashMap<[u64; 3], [f64; 6]>,
 ) -> Vec<[f64; 6]> {
+    let positions = skeleton.surface.positions(mesh);
     steps
         .iter()
         .map(|&(e, forward)| {
-            let cost = cached_cost(mesh, skeleton, e, cache);
-            std::array::from_fn(|p| cost[if forward { p } else { p ^ 1 }])
+            let alignment = quality::boundary_alignment(mesh, skeleton, &positions, e);
+            if forward {
+                alignment
+            } else {
+                alignment.reversed()
+            }
+            .costs()
         })
         .collect()
 }
@@ -431,7 +396,6 @@ fn repair(
     skeleton: &Skeleton,
     labels: &SecondaryMap<SkeletonEdgeID, EdgeLabel>,
     edge: SkeletonEdgeID,
-    cache: &mut HashMap<[u64; 3], [f64; 6]>,
 ) -> SkeletonResult<(
     Skeleton,
     Vec<SkeletonEdgeID>,
@@ -452,25 +416,26 @@ fn repair(
         others.remove(e);
     }
     let used = constraints::used_ports(skeleton, &others)?;
-    let costs = along(mesh, skeleton, &cycle, cache);
+    let costs = along(mesh, skeleton, &cycle);
     // The node before every step, and the first again.
     let mut nodes = vec![start];
     for &(e, _) in &cycle {
         nodes.push(skeleton.edges[e].other(*nodes.last().unwrap()));
     }
-    // What a new boundary in every slot would cost: its own plane decides, as for any edge.
+    // What a new boundary in every slot would cost: its own alignment, as for any edge.
     let ground = subdivide::Ground::build(mesh, skeleton)?;
     let mut slot_costs = Vec::new();
     for (i, &(e, _)) in cycle.iter().enumerate() {
         for (k, node) in [nodes[i], nodes[i + 1]].into_iter().enumerate() {
             slot_costs.push(match subdivide::middle(mesh, skeleton, &ground, e, node) {
-                // Along the path the normal points into the patch after the step, and out
+                // Along the path the alignment points into the patch after the step, and out
                 // of the patch before it.
-                Some(middle) => angle_costs(if k == 1 {
-                    middle.normal
+                Some(middle) => if k == 1 {
+                    middle.alignment
                 } else {
-                    -middle.normal
-                }),
+                    middle.alignment.reversed()
+                }
+                .costs(),
                 None => costs[i],
             });
         }

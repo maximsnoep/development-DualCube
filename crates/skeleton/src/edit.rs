@@ -29,7 +29,7 @@ pub fn dissolve(
         return Err("Only a boundary between two patches that share no other one dissolves".into());
     }
     let [a, b] = skeleton.edges[edge].nodes;
-    let (areas, _) = crate::optimize::patch_measures(mesh, skeleton)?;
+    let areas = crate::geometry::SurfaceGeometry::build(mesh, skeleton)?.areas();
     let (keep, other) = if areas[a] >= areas[b] { (a, b) } else { (b, a) };
     let total = areas[keep] + areas[other];
     let position = if total > 0. {

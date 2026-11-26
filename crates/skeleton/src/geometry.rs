@@ -192,6 +192,17 @@ impl SurfaceGeometry {
         Ok(result)
     }
 
+    /// Surface area of every region.
+    pub fn areas(&self) -> SecondaryMap<SkeletonNodeID, f64> {
+        let mut areas = SecondaryMap::new();
+        for triangle in &self.triangles {
+            let [a, b, c] = triangle.points;
+            *areas.entry(triangle.node).unwrap().or_insert(0.) +=
+                0.5 * (b - a).cross(&(c - a)).norm();
+        }
+        areas
+    }
+
     /// Area-weighted surface centroids, not projected back onto the surface.
     pub fn centroids(&self) -> SkeletonResult<SecondaryMap<SkeletonNodeID, Vector3D>> {
         let mut sums = HashMap::new();

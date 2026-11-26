@@ -10,6 +10,7 @@ skeleton-numerics = { path = "../skeleton-numerics" }
 dualcube-dual = { path = "../dualcube-dual" }
 dualcube-flow = { path = "../dualcube-flow" }
 dualcube-types = { path = "../dualcube-types" }
+bvh = "0.12.0"
 faer.workspace = true
 mehsh.workspace = true
 mehsh-tetgen.workspace = true

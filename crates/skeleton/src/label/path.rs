@@ -130,37 +130,28 @@ pub struct Selection {
 
 /// End and patch costs of [`select`].
 pub struct Ends<'a> {
-    /// Everything before the first kept boundary `i` with port `q`: `first(i, q)`.
+    /// The patch before the first kept boundary `i` with port `q`: `first(i, q)`.
     pub first: &'a dyn Fn(usize, usize) -> f64,
-    /// Everything after the last kept boundary: `last(i, q)`.
+    /// The patch after the last kept boundary: `last(i, q)`.
     pub last: &'a dyn Fn(usize, usize) -> f64,
     /// The merged patch between kept boundaries `j < i`: `patch(j, i)`.
     pub patch: &'a dyn Fn(usize, usize) -> f64,
 }
 
-/// Keep at least `min_kept` of the `n` boundaries of a path and label them. `items` alternate
-/// patches and boundaries: item `2i + 1` is boundary `i`, item `2i` the patch before it (items
-/// `0` and `2n`, the end patches, are left to `ends`). A kept boundary costs its item plus
-/// `boundary`. The items between two kept boundaries with ports `p` and `q` are split once in
-/// order: those before the split cost their `p` entry, the rest their `q` entry (so alternating
-/// items are not explained by one bend). Merged patches never run straight on.
-/// Complexity: O(n² · min_kept · 384 · 6).
+/// Keep at least `min_kept` of the boundaries of a path and give them ports, for the least
+/// cost: `costs[i][q]` per boundary `i` kept with port `q`, plus the patches of `ends`. The
+/// patch between two kept boundaries cannot use one port twice, so the path never reverses.
+/// Infinite costs forbid. Complexity: O(n² · min_kept · 384 · 6).
 pub fn select(
-    items: &[[f64; 6]],
+    costs: &[[f64; 6]],
     constraints: &Constraints,
-    boundary: f64,
     ends: &Ends<'_>,
     min_kept: usize,
 ) -> Option<Selection> {
-    let n = items.len() / 2;
+    let n = costs.len();
     let k = min_kept.max(1);
-    if items.len() != 2 * n + 1 || n < k || items.iter().flatten().any(|c| !c.is_finite()) {
+    if n < k || costs.iter().flatten().any(|c| c.is_nan()) {
         return None;
-    }
-    // `prefix[m][p]`: cost of items `0..m` against `p`.
-    let mut prefix = vec![[0.; 6]; items.len() + 1];
-    for (m, cost) in items.iter().enumerate() {
-        prefix[m + 1] = std::array::from_fn(|p| prefix[m][p] + cost[p]);
     }
     // Indexed by boundary, kept count (capped at `k`) minus one, and port * 64 + mask.
     let mut value = vec![vec![[f64::INFINITY; 384]; k]; n];
@@ -168,27 +159,10 @@ pub fn select(
     for i in 0..n {
         for q in 0..6 {
             if constraints.start_ports & (1 << q) != 0 {
-                value[i][0][q * 64 + (1 << q)] =
-                    (ends.first)(i, q) + items[2 * i + 1][q] + boundary;
+                value[i][0][q * 64 + (1 << q)] = (ends.first)(i, q) + costs[i][q];
             }
         }
-        // Between kept `j` and `i` lie items `a..b`, a = 2j + 2, b = 2i + 1. They cost
-        // prefix_q[b] − prefix_p[a] plus the least prefix_p[s] − prefix_q[s] over splits s in
-        // a..=b, a minimum that only grows as `a` decreases.
-        let b = 2 * i + 1;
-        let mut split: [[f64; 6]; 6] =
-            std::array::from_fn(|p| std::array::from_fn(|q| prefix[b][p] - prefix[b][q]));
-        for j in (0..i).rev() {
-            let a = 2 * j + 2;
-            let mut between = [[0.; 6]; 6];
-            for p in 0..6 {
-                for q in 0..6 {
-                    for s in [a, a + 1] {
-                        split[p][q] = split[p][q].min(prefix[s][p] - prefix[s][q]);
-                    }
-                    between[p][q] = prefix[b][q] - prefix[a][p] + split[p][q];
-                }
-            }
+        for j in 0..i {
             let shape = (ends.patch)(j, i);
             for c in 0..k {
                 let next_c = (c + 1).min(k - 1);
@@ -199,10 +173,10 @@ pub fn select(
                     }
                     let (p, mask) = (state / 64, state % 64);
                     for q in 0..6 {
-                        if q == p || q == p ^ 1 {
+                        if q == p ^ 1 {
                             continue;
                         }
-                        let next = current + shape + between[p][q] + items[b][q] + boundary;
+                        let next = current + shape + costs[i][q];
                         let target = q * 64 + (mask | (1 << q));
                         if next < value[i][next_c][target] {
                             value[i][next_c][target] = next;
@@ -221,6 +195,7 @@ pub fn select(
                 && constraints.masks[s % 64]
         })
         .map(|(i, s)| (i, k - 1, s, value[i][k - 1][s] + (ends.last)(i, s / 64)))
+        .filter(|s| s.3.is_finite())
         .min_by(|a, b| a.3.total_cmp(&b.3))?;
     let (mut kept, mut ports) = (Vec::new(), Vec::new());
     loop {
