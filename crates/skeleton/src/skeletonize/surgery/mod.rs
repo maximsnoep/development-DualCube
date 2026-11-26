@@ -53,7 +53,7 @@ impl Default for Options {
             shape_weight: 1.0,
             sampling_weight: 0.1,
             handle_bonus: 1.0e6,
-            flip_budget: 20_000_000_000, // A lot to get a TLE instead of a failure.
+            flip_budget: 200_000_000,
             certify_each_step: false,
         }
     }
