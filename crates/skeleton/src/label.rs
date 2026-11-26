@@ -70,20 +70,6 @@ impl Port {
     }
 }
 
-/// Unweighted angles in radians. Coincident embedded endpoints have no preference.
-pub fn angle_costs(vector: Vector3D) -> [f64; 6] {
-    // TODO: Evaluate surface patch deformation and label fit beyond edge-axis angle.
-    let scale = vector.amax();
-    if scale == 0. {
-        return [std::f64::consts::FRAC_PI_2; 6];
-    }
-    let unit = (vector / scale).normalize();
-    std::array::from_fn(|i| {
-        let component = unit[i / 2] * if i % 2 == 0 { 1. } else { -1. };
-        component.clamp(-1., 1.).acos()
-    })
-}
-
 /// Distinct ports for `items` items at a node, none in `occupied`, with the least value:
 /// `step(i, port, value)` adds item `i` on `port` to the value of the items before it. The
 /// value and the ports in item order; no ports when no assignment is finite.

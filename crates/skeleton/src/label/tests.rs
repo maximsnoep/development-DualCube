@@ -2,6 +2,18 @@ use super::*;
 use crate::{PatchBoundary, SkeletonEdge, SkeletonNode};
 use dualcube_types::prelude::HasPosition;
 
+/// Angles in radians of `vector` to every label; none preferred for a zero vector.
+fn angle_costs(vector: Vector3D) -> [f64; 6] {
+    if vector.norm() == 0. {
+        return [std::f64::consts::FRAC_PI_2; 6];
+    }
+    let unit = vector.normalize();
+    std::array::from_fn(|i| {
+        let component = unit[i / 2] * if i % 2 == 0 { 1. } else { -1. };
+        component.clamp(-1., 1.).acos()
+    })
+}
+
 fn costs(skeleton: &Skeleton) -> SecondaryMap<SkeletonEdgeID, [f64; 6]> {
     skeleton
         .edges
@@ -218,17 +230,6 @@ fn validation_allows_global_overlap_but_rejects_coordinate_cycles() {
         .collect();
     assert!(constraints::used_ports(&skeleton, &labels).is_ok());
     assert!(!constraints::feasible(&skeleton, &labels, None));
-}
-
-#[test]
-fn coincident_embedding_has_finite_unbiased_costs() {
-    assert_eq!(
-        angle_costs(Vector3D::zeros()),
-        [std::f64::consts::FRAC_PI_2; 6]
-    );
-    let costs = angle_costs(Vector3D::new(1., 0., 0.));
-    assert_eq!(costs[0], 0.);
-    assert_eq!(costs[1], std::f64::consts::PI);
 }
 
 #[test]

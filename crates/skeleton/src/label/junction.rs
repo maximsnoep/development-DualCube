@@ -3,7 +3,8 @@
 use super::*;
 use crate::surface::{Regions, edit};
 
-/// Compare every pair and a small set of connector alternatives using local port costs.
+/// Compare every pair and a small set of connector alternatives by the alignment of the
+/// boundaries at the split.
 /// Every candidate is a valid split; only the chosen one is validated.
 pub(super) fn reduce(mesh: &Mesh<INPUT>, result: &mut Attempt) -> SkeletonResult<()> {
     // TODO: Search alternative split sequences instead of committing greedily.
@@ -43,7 +44,7 @@ pub(super) fn reduce(mesh: &Mesh<INPUT>, result: &mut Attempt) -> SkeletonResult
                 for route in routes {
                     let (candidate, added, boundary) =
                         edit::band(mesh, &result.skeleton, &regions, node, pair, &route)?;
-                    let cost = score(&candidate, boundary);
+                    let cost = score(mesh, &candidate, boundary);
                     if best.as_ref().is_some_and(|(old, length, ..)| {
                         cost > *old || (cost == *old && route.steps.len() >= *length)
                     }) {
@@ -89,21 +90,27 @@ fn star(costs: &[[f64; 6]], reserved: usize) -> f64 {
     .0
 }
 
-fn score(skeleton: &Skeleton, connector: SkeletonEdgeID) -> f64 {
+/// The least alignment cost of the two patches the connector joins, as in labeling: ports
+/// assigned per patch, the connector's in common.
+fn score(mesh: &Mesh<INPUT>, skeleton: &Skeleton, connector: SkeletonEdgeID) -> f64 {
+    let positions = skeleton.surface.positions(mesh);
+    let alignment = |e| quality::boundary_alignment(mesh, skeleton, &positions, e);
     let endpoints = skeleton.edges[connector].nodes;
     let mut costs = [Vec::new(), Vec::new()];
     for (side, node) in endpoints.into_iter().enumerate() {
         for (id, edge) in skeleton.incident(node) {
             if id != connector {
-                costs[side].push(angle_costs(
-                    skeleton.nodes[edge.other(node)].position - skeleton.nodes[node].position,
-                ));
+                let outward = if edge.nodes[0] == node {
+                    alignment(id)
+                } else {
+                    alignment(id).reversed()
+                };
+                costs[side].push(outward.costs());
             }
         }
     }
-    let connector =
-        angle_costs(skeleton.nodes[endpoints[1]].position - skeleton.nodes[endpoints[0]].position);
+    let own = alignment(connector).costs();
     (0..6)
-        .map(|d| connector[d] + star(&costs[0], d) + star(&costs[1], d ^ 1))
+        .map(|d| own[d] + star(&costs[0], d) + star(&costs[1], d ^ 1))
         .fold(f64::INFINITY, f64::min)
 }
