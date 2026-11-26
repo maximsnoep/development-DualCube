@@ -126,6 +126,72 @@ impl Rotation {
         self.classes[undo.e] = undo.class;
         self.fingerprint = undo.fingerprint;
     }
+
+    /// Shortest sequence of arc indices after which the last flipped arc's class is zero,
+    /// trying at most `budget` distinct rotation systems; nodes are u32 indices.
+    pub(super) fn search(&mut self, budget: u32) -> Result<Vec<usize>, Stuck> {
+        // Breadth-first, each state stored as its parent and the arc flipped from it; the
+        // rotation walks between states by undoing to their common ancestor and flipping down.
+        const ROOT: u32 = u32::MAX;
+        let mut seen = FxHashSet::from_iter([self.fingerprint]);
+        let mut nodes: Vec<(u32, u32)> = vec![(ROOT, 0)];
+        let mut current: Vec<(u32, Undo)> = vec![];
+        let mut truncated = false;
+        let mut path = vec![];
+        let mut node = 0_usize;
+        while node < nodes.len() {
+            // Ancestors from the root down to `node`.
+            path.clear();
+            let mut at = node as u32;
+            while at != 0 {
+                path.push(at);
+                at = nodes[at as usize].0;
+            }
+            path.reverse();
+            let common = current
+                .iter()
+                .zip(&path)
+                .take_while(|((a, _), b)| a == *b)
+                .count();
+            while current.len() > common {
+                self.undo(current.pop().unwrap().1);
+            }
+            for &step in &path[common..] {
+                let undo = self.flip(nodes[step as usize].1 as usize).unwrap();
+                current.push((step, undo));
+            }
+            for e in 0..self.ends.len() {
+                let Some(undo) = self.flip(e) else {
+                    continue;
+                };
+                if self.classes[e].is_zero() {
+                    return Ok(path
+                        .iter()
+                        .map(|&step| nodes[step as usize].1 as usize)
+                        .chain([e])
+                        .collect());
+                }
+                let key = self.fingerprint;
+                self.undo(undo);
+                if seen.contains(&key) {
+                    continue;
+                }
+                if seen.len() < budget as usize {
+                    seen.insert(key);
+                    nodes.push((node as u32, e as u32));
+                } else {
+                    truncated = true;
+                }
+            }
+            node += 1;
+        }
+        let states = seen.len();
+        Err(if truncated {
+            Stuck::Budget { states }
+        } else {
+            Stuck::Exhausted { states }
+        })
+    }
 }
 
 /// Sign of an arc's class in the relation around a junction: a small loop around it crosses
@@ -223,72 +289,12 @@ impl Surgery<'_> {
     /// Shortest flip sequence after which the last flipped arc's loop bounds.
     pub(super) fn search(&mut self) -> Result<Vec<ArcID>, Stuck> {
         let (arcs, mut rotation) = self.rotation();
-        // Breadth-first, each state stored as its parent and the arc flipped from it; the
-        // rotation walks between states by undoing to their common ancestor and flipping down.
-        const ROOT: u32 = u32::MAX;
-        let mut seen = FxHashSet::from_iter([rotation.fingerprint]);
-        let mut nodes: Vec<(u32, u32)> = vec![(ROOT, 0)];
-        let mut current: Vec<(u32, Undo)> = vec![];
-        let mut truncated = false;
-        let mut path = vec![];
-        let mut node = 0;
-        while (node as usize) < nodes.len() {
-            // Ancestors from the root down to `node`.
-            path.clear();
-            let mut at = node;
-            while at != 0 {
-                path.push(at);
-                at = nodes[at as usize].0;
-            }
-            path.reverse();
-            let common = current
-                .iter()
-                .zip(&path)
-                .take_while(|((a, _), b)| a == *b)
-                .count();
-            while current.len() > common {
-                rotation.undo(current.pop().unwrap().1);
-            }
-            for &step in &path[common..] {
-                let undo = rotation.flip(nodes[step as usize].1 as usize).unwrap();
-                current.push((step, undo));
-            }
-            for e in 0..arcs.len() {
-                let Some(undo) = rotation.flip(e) else {
-                    continue;
-                };
-                if rotation.classes[e].is_zero() {
-                    let sequence: Vec<_> = path
-                        .iter()
-                        .map(|&step| arcs[nodes[step as usize].1 as usize])
-                        .chain([arcs[e]])
-                        .collect();
-                    info!(
-                        "Connectivity surgery: {} flips free a junction",
-                        sequence.len()
-                    );
-                    return Ok(sequence);
-                }
-                let key = rotation.fingerprint;
-                rotation.undo(undo);
-                if seen.contains(&key) {
-                    continue;
-                }
-                if seen.len() < self.options.flip_budget {
-                    seen.insert(key);
-                    nodes.push((node, e as u32));
-                } else {
-                    truncated = true;
-                }
-            }
-            node += 1;
-        }
-        let states = seen.len();
-        Err(if truncated {
-            Stuck::Budget { states }
-        } else {
-            Stuck::Exhausted { states }
-        })
+        let sequence = rotation.search(self.options.flip_budget)?;
+        info!(
+            "Connectivity surgery: {} flips free a junction",
+            sequence.len()
+        );
+        Ok(sequence.into_iter().map(|e| arcs[e]).collect())
     }
 
     /// Flip an arc between two distinct junctions on the surface: b continues along e, d

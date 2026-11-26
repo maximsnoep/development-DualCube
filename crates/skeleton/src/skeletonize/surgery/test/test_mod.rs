@@ -281,6 +281,58 @@ fn combinatorial_flips_update_the_fingerprint_and_undo() {
     assert_eq!(rotation.fingerprint, start.fingerprint);
 }
 
+fn class([a, b]: [i64; 2]) -> Class {
+    let unit = |i, n: i64| {
+        let step = if n < 0 { -&Class::unit(i) } else { Class::unit(i) };
+        (0..n.abs()).fold(Class::default(), |sum, _| &sum + &step)
+    };
+    &unit(0, a) + &unit(1, b)
+}
+
+/// Theta graphs, each with arcs of classes x, y and -x-y from one junction to another.
+/// With the same counterclockwise order at both junctions a theta has one face, so it
+/// thickens to a one-holed torus; otherwise to a pair of pants.
+fn thetas(parts: &[([i64; 2], [i64; 2], bool)]) -> super::flip::Rotation {
+    let (mut spokes, mut ends, mut classes) = (vec![], vec![], vec![]);
+    for (k, &(x, y, torus)) in parts.iter().enumerate() {
+        let (a, j) = (3 * k, 2 * k);
+        spokes.push([(a, 0), (a + 1, 0), (a + 2, 0)]);
+        spokes.push(if torus {
+            [(a, 1), (a + 1, 1), (a + 2, 1)]
+        } else {
+            [(a, 1), (a + 2, 1), (a + 1, 1)]
+        });
+        ends.extend([[j, j + 1]; 3]);
+        let (x, y) = (class(x), class(y));
+        let z = -&(&x + &y);
+        classes.extend([x, y, z]);
+    }
+    super::flip::Rotation::new(spokes, ends, classes)
+}
+
+/// Fewest junctions no flips can free, in genus 2: one annulus patch around a separating curve,
+/// the one-holed torus on each side holding a theta whose classes span H1(V). A flip keeps the
+/// thickened surface F and sends the classes through a fixed map from H1(F, dF) to H1(V); on a
+/// one-holed torus every arc is primitive in H1(F, dF) = Z^2 and that map is injective.
+#[test]
+fn two_spanning_one_holed_tori_never_free_a_junction() {
+    // Meridians a1 + a2 and b1 - b2: a1, b1 give e1, e2 and a2, b2 give -e1, e2.
+    let mut rotation = thetas(&[([1, 0], [0, 1], true), ([-1, 0], [0, 1], true)]);
+    // Two thetas have 80^2 rotation systems; more states means the classes keep changing.
+    let stuck = rotation.search(100_000).unwrap_err();
+    assert!(matches!(stuck, super::flip::Stuck::Budget { .. }), "{stuck}");
+}
+
+#[test]
+fn a_pair_of_pants_or_a_torus_with_a_kernel_frees_a_junction() {
+    // The same classes on a planar theta: one flip makes a bridge.
+    let mut pants = thetas(&[([1, 0], [0, 1], false), ([-1, 0], [0, 1], true)]);
+    assert_eq!(pants.search(100_000).unwrap().len(), 1);
+    // Genus 1: H1(V) = Z, so x - y vanishes on a one-holed torus.
+    let mut torus = thetas(&[([1, 0], [1, 0], true)]);
+    assert!(torus.search(100_000).is_ok());
+}
+
 /// Merge an edge's endpoints and drop its boundary.
 fn contract(mesh: &Mesh<INPUT>, skeleton: &mut Skeleton, edge: crate::SkeletonEdgeID) {
     let removed = skeleton.edges.remove(edge).unwrap();
