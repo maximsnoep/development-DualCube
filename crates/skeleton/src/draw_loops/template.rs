@@ -21,6 +21,8 @@ pub(super) struct Template {
     pub target: insertion::Template,
     /// The free faces, in the order of the template's crossings.
     pub quads: Vec<Quad>,
+    /// The outward normal of every quad, in the order given to the loop map.
+    pub quad_normals: Vec<Vector3D>,
 }
 
 /// A free face of the template's cube surface.
@@ -162,6 +164,14 @@ impl Template {
         }
         let map = LoopMap::from_quads(numbering.len(), &quads, &chords)
             .map_err(|_| "Cube surface is not a manifold quad mesh")?;
+        let quad_normals = sections
+            .iter()
+            .map(|&(_, [u, v], positive)| {
+                let mut n = Vector3D::zeros();
+                n[3 - u - v] = if positive { 1. } else { -1. };
+                n
+            })
+            .collect();
         let quads = (0..quads.len())
             .map(|q| Quad {
                 solid: sections[q].0,
@@ -175,6 +185,7 @@ impl Template {
             boundaries,
             target: insertion::Template::new(map),
             quads,
+            quad_normals,
         })
     }
 }

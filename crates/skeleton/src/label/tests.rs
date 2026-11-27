@@ -2,18 +2,6 @@ use super::*;
 use crate::{PatchBoundary, SkeletonEdge, SkeletonNode};
 use dualcube_types::prelude::HasPosition;
 
-/// Angles in radians of `vector` to every label; none preferred for a zero vector.
-fn angle_costs(vector: Vector3D) -> [f64; 6] {
-    if vector.norm() == 0. {
-        return [std::f64::consts::FRAC_PI_2; 6];
-    }
-    let unit = vector.normalize();
-    std::array::from_fn(|i| {
-        let component = unit[i / 2] * if i % 2 == 0 { 1. } else { -1. };
-        component.clamp(-1., 1.).acos()
-    })
-}
-
 fn costs(skeleton: &Skeleton) -> SecondaryMap<SkeletonEdgeID, [f64; 6]> {
     skeleton
         .edges
@@ -233,6 +221,17 @@ fn validation_allows_global_overlap_but_rejects_coordinate_cycles() {
 }
 
 #[test]
+fn coincident_embedding_has_finite_unbiased_costs() {
+    assert_eq!(
+        angle_costs(Vector3D::zeros()),
+        [std::f64::consts::FRAC_PI_2; 6]
+    );
+    let costs = angle_costs(Vector3D::new(1., 0., 0.));
+    assert_eq!(costs[0], 0.);
+    assert_eq!(costs[1], std::f64::consts::PI);
+}
+
+#[test]
 fn six_way_junction_uses_every_port_once() {
     let skeleton = graph(
         &[[0.; 3]; 7],
@@ -380,10 +379,11 @@ fn cycle_repair_uses_real_annuli_and_relabels_the_whole_chain() {
         // The whole ring is relabelled: a ring of four needs no collar and no second choice.
         if positions.len() == 4 {
             assert_eq!(path.len(), 1);
-            let alignments = quality::alignments(&mesh, &result.skeleton);
             for (edge, &label) in &result.labels {
-                let direction = alignments[edge].direction;
-                assert!(alignments[edge].with(Port::from_label(label)) >= direction.amax() - 1e-9);
+                let normal = boundary_normal(&mesh, &result.skeleton, edge);
+                let port = Port::from_label(label);
+                let along = normal[port.axis()] * if port.is_positive() { 1. } else { -1. };
+                assert!(along >= normal.amax() - 1e-9);
             }
         }
         result.labeled().validate(&mesh).unwrap();
@@ -399,7 +399,7 @@ fn cycle_repair_uses_real_annuli_and_relabels_the_whole_chain() {
 }
 
 #[test]
-fn labels_follow_the_boundary_alignment_not_the_patch_centres() {
+fn labels_follow_the_boundary_planes_not_the_patch_centres() {
     let positions: Vec<_> = (0..4)
         .map(|i| {
             let angle = std::f64::consts::TAU * (2. * i as f64 + 0.5) / 8.;
@@ -419,12 +419,13 @@ fn labels_follow_the_boundary_alignment_not_the_patch_centres() {
                 Port::from_label(result.labels[edge]),
                 Port::from_label(expected.labels[edge])
             );
-            let alignment = quality::alignments(&mesh, &result.skeleton)[edge];
+            let normal = boundary_normal(&mesh, &result.skeleton, edge);
             let port = Port::from_label(result.labels[edge]);
-            // The label is the axis the boundary is best aligned with, with its sign.
+            let along = normal[port.axis()] * if port.is_positive() { 1. } else { -1. };
+            // The label is the axis nearest to the boundary's normal, with its sign.
             assert!(
-                alignment.with(port) >= alignment.direction.amax() - 1e-9,
-                "{alignment:?} labelled {port:?}"
+                along >= normal.amax() - 1e-9,
+                "{normal:?} labelled {port:?}"
             );
         }
     }
@@ -459,7 +460,11 @@ fn boundaries_added_to_close_a_cycle_run_through_the_middle_of_a_patch() {
             .map(|&c| crate::surface::canonical(&mesh, s.surface.crossings[c].exit))
             .collect()
     };
-    let original: Vec<_> = skeleton.edges.keys().map(|e| crossed(&skeleton, e)).collect();
+    let original: Vec<_> = skeleton
+        .edges
+        .keys()
+        .map(|e| crossed(&skeleton, e))
+        .collect();
     let added = &result.repairs[0].path[1..];
     assert!(!added.is_empty());
     for &edge in added {
@@ -468,64 +473,62 @@ fn boundaries_added_to_close_a_cycle_run_through_the_middle_of_a_patch() {
     }
 }
 
-fn select(costs: &[[f64; 6]], patch: f64) -> path::Selection {
-    let zero = |_: usize, _: usize| 0.;
-    let patch = |_: usize, _: usize| patch;
-    let ends = path::Ends {
-        first: &zero,
-        last: &zero,
-        patch: &patch,
-    };
-    path::select(costs, &path::Constraints::default(), &ends).unwrap()
+// Costs for +X, −X, +Y, −Y, +Z, −Z: cheap only on the given ports.
+fn cheap(ports: &[Port]) -> [f64; 6] {
+    std::array::from_fn(|p| {
+        if ports.iter().any(|&q| q as usize == p) {
+            0.
+        } else {
+            75.
+        }
+    })
 }
 
-#[test]
-fn select_keeps_only_boundaries_that_pay_for_themselves() {
-    let mut costs = [[1.; 6]; 5];
-    assert_eq!(select(&costs, 0.).kept.len(), 1);
-    // Two boundaries gain on +Y; splitting the patch costs nothing.
-    costs[1][Port::PositiveY as usize] = -1.;
-    costs[3][Port::PositiveY as usize] = -1.;
-    let selection = select(&costs, 0.);
-    assert_eq!(selection.kept, vec![1, 3]);
-    assert_eq!(selection.ports, vec![Port::PositiveY; 2]);
-    assert_eq!(selection.cost, -2.);
-    // Unless every extra patch costs more than they gain.
-    assert_eq!(select(&costs, 1.5).kept.len(), 1);
-}
-
-#[test]
-fn select_never_reverses_between_kept_boundaries() {
-    let mut costs = [[0.; 6]; 2];
-    costs[0][Port::NegativeX as usize] = -5.;
-    costs[1][Port::PositiveX as usize] = -5.;
-    // Keeping both on their best ports would reverse: only one of them gains.
-    let selection = select(&costs, 0.);
-    assert_eq!(selection.cost, -5.);
-    for pair in selection.ports.windows(2) {
-        assert_ne!(pair[1], pair[0].opposite());
-    }
-}
-
-#[test]
-fn orders_alone_reject_too_short_rings_and_parallel_boundaries() {
-    // A ring through one node: every axis it uses needs both signs, so at least four kept.
-    let mut closed = [false; 64];
-    for (mask, ok) in closed.iter_mut().enumerate() {
-        *ok = (0..3).all(|axis| matches!((mask >> (axis * 2)) & 3, 0 | 3));
-    }
-    let limits = path::Constraints {
-        start_ports: Port::PositiveX.bit(),
-        end_ports: 63 & !Port::PositiveX.bit(),
-        masks: closed,
-    };
+// Items outside the kept boundaries count against the end ports.
+fn select_free(items: &[[f64; 6]]) -> path::Selection {
+    let n = items.len() / 2;
+    let first = |i: usize, q: usize| (1..=2 * i).map(|m| items[m][q]).sum();
+    let last = |i: usize, q: usize| (2 * i + 2..2 * n).map(|m| items[m][q]).sum();
     let zero = |_: usize, _: usize| 0.;
     let ends = path::Ends {
-        first: &zero,
-        last: &zero,
+        first: &first,
+        last: &last,
         patch: &zero,
     };
-    assert!(path::select(&[[-1.; 6]; 3], &limits, &ends).is_none());
-    let ring = path::select(&[[1.; 6]; 6], &limits, &ends).unwrap();
-    assert_eq!(ring.kept.len(), 4);
+    path::select(items, &path::Constraints::default(), 0.5, &ends, 1).unwrap()
+}
+
+#[test]
+fn select_keeps_a_genuine_staircase() {
+    // Boundaries alternately facing X and Y; one bend cannot explain them in order.
+    let (x, y) = (cheap(&[Port::PositiveX]), cheap(&[Port::PositiveY]));
+    let free = [0.; 6];
+    let items = [free, x, free, y, free, x, free, y, free];
+    let selection = select_free(&items);
+    assert_eq!(selection.kept, vec![0, 1, 2, 3]);
+    use Port::{PositiveX as X, PositiveY as Y};
+    assert_eq!(selection.ports, vec![X, Y, X, Y]);
+}
+
+#[test]
+fn select_merges_a_diagonal_into_one_patch() {
+    // Every boundary as good on X as on Y: one kept boundary explains all of them.
+    let both = cheap(&[Port::PositiveX, Port::PositiveY]);
+    let free = [0.; 6];
+    let items = [free, both, free, both, free, both, free, both, free];
+    assert_eq!(select_free(&items).kept.len(), 1);
+}
+
+/// Unweighted angles in radians. Coincident embedded endpoints have no preference.
+fn angle_costs(vector: Vector3D) -> [f64; 6] {
+    // TODO: Evaluate surface patch deformation and label fit beyond edge-axis angle.
+    let scale = vector.amax();
+    if scale == 0. {
+        return [std::f64::consts::FRAC_PI_2; 6];
+    }
+    let unit = (vector / scale).normalize();
+    std::array::from_fn(|i| {
+        let component = unit[i / 2] * if i % 2 == 0 { 1. } else { -1. };
+        component.clamp(-1., 1.).acos()
+    })
 }

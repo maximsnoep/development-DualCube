@@ -1,17 +1,13 @@
-//! Tree labeling, surface-preserving cycle repair, then exact relabeling, all by boundary
-//! alignment ([`crate::quality`]).
+//! Angle-based tree labeling, then surface-preserving cycle repair.
 
 pub(crate) mod constraints;
-pub(crate) mod exact;
 mod junction;
 pub mod path;
 pub(crate) mod subdivide;
 mod tree;
 
-use crate::{
-    EdgeLabel, LabeledSkeleton, Skeleton, SkeletonEdgeID, SkeletonNodeID, SkeletonResult, quality,
-};
-use dualcube_types::prelude::{Direction, HasPosition, INPUT, Mesh, Sign, Vector3D};
+use crate::{EdgeLabel, LabeledSkeleton, Skeleton, SkeletonEdgeID, SkeletonNodeID, SkeletonResult};
+use dualcube_types::prelude::{Direction, EdgeID, HasPosition, INPUT, Mesh, Sign, Vector3D};
 use serde::{Deserialize, Serialize};
 use slotmap::SecondaryMap;
 use std::collections::HashMap;
@@ -68,6 +64,18 @@ impl Port {
         };
         Self::ALL[axis * 2 + usize::from(label.sign == Sign::Negative)]
     }
+}
+
+/// The cost of every label (+X, -X, +Y, -Y, +Z, -Z) for a direction along the skeleton (no loop):
+/// `1 - cos` of their angle, in units of a label 20° off, as [`alignment_costs`] of a loop whose
+/// moves all point along `vector`. A zero vector has no preference.
+pub fn label_costs(vector: Vector3D) -> [f64; 6] {
+    let unit = vector.try_normalize(0.).unwrap_or_else(Vector3D::zeros);
+    let scale = 1. - 20f64.to_radians().cos();
+    std::array::from_fn(|i| {
+        let component = unit[i / 2] * if i % 2 == 0 { 1. } else { -1. };
+        (1. - component) / scale
+    })
 }
 
 /// Distinct ports for `items` items at a node, none in `occupied`, with the least value:
@@ -174,7 +182,14 @@ pub fn attempt(mesh: &Mesh<INPUT>, skeleton: &Skeleton) -> SkeletonResult<Attemp
         junction_splits: Vec::new(),
     };
     junction::reduce(mesh, &mut result)?;
-    let (tree_edges, labels) = tree::solve(&result.skeleton, &costs(mesh, &result.skeleton))?;
+    let mut cost_cache = HashMap::new();
+    let table = result
+        .skeleton
+        .edges
+        .keys()
+        .map(|e| (e, cached_cost(mesh, &result.skeleton, e, &mut cost_cache)))
+        .collect();
+    let (tree_edges, labels) = tree::solve(&result.skeleton, &table)?;
     let remaining: Vec<_> = result
         .skeleton
         .edges
@@ -186,7 +201,13 @@ pub fn attempt(mesh: &Mesh<INPUT>, skeleton: &Skeleton) -> SkeletonResult<Attemp
     result.tree_skeleton = Some(result.skeleton.clone());
     result.labels = labels;
     for edge in remaining {
-        let (skeleton, added, labels) = repair(mesh, &result.skeleton, &result.labels, edge)?;
+        let (skeleton, added, labels) = repair(
+            mesh,
+            &result.skeleton,
+            &result.labels,
+            edge,
+            &mut cost_cache,
+        )?;
         result.skeleton = skeleton;
         result.labels.extend(labels);
         let mut path = vec![edge];
@@ -196,10 +217,6 @@ pub fn attempt(mesh: &Mesh<INPUT>, skeleton: &Skeleton) -> SkeletonResult<Attemp
             path,
         });
     }
-    // The tree and the repairs fix labels greedily; cycles they close often force mislabels
-    // that a labeling of all edges at once avoids.
-    let costs = costs(mesh, &result.skeleton);
-    result.labels = exact::search(&result.skeleton, &result.labels, &costs, exact::BUDGET);
     result.labeled().validate(mesh)?;
     tracing::info!(
         "Labeling: {} edges labeled, {} junction splits, {} cycle repairs, {:.2}s",
@@ -211,12 +228,97 @@ pub fn attempt(mesh: &Mesh<INPUT>, skeleton: &Skeleton) -> SkeletonResult<Attemp
     Ok(result)
 }
 
-/// Labeling costs of every edge: its boundary's lost alignment ([`quality::Alignment::costs`]).
-fn costs(mesh: &Mesh<INPUT>, skeleton: &Skeleton) -> SecondaryMap<SkeletonEdgeID, [f64; 6]> {
-    quality::alignments(mesh, skeleton)
-        .into_iter()
-        .map(|(e, a)| (e, a.costs()))
+/// DualCube's alignment of a loop that leaves a triangle through each of `exits` in turn: the
+/// length-weighted mean of the unit `d × n` of its moves (`d` between the midpoints of the crossed
+/// edges, as in DualCube's edge graph, in a triangle of normal `n`). Its component along an axis
+/// is the mean cosine of the moves with that axis.
+pub(crate) fn moves_alignment(mesh: &Mesh<INPUT>, exits: &[EdgeID]) -> Vector3D {
+    let points: Vec<_> = exits
+        .iter()
+        .map(|&exit| {
+            let middle = (mesh.position(mesh.root(exit)) + mesh.position(mesh.toor(exit))) / 2.;
+            (middle, mesh.face(mesh.twin(exit)))
+        })
+        .collect();
+    crate::quality::alignment(mesh, &points).direction
+}
+
+/// The cost of every label for a loop of [`moves_alignment`] `mean`: `1 - cos`, the mean cosine
+/// lost against the label's axis, in units of a label 20° off.
+pub(crate) fn alignment_costs(mean: Vector3D) -> [f64; 6] {
+    let scale = 1. - 20f64.to_radians().cos();
+    std::array::from_fn(|i| {
+        let component = mean[i / 2] * if i % 2 == 0 { 1. } else { -1. };
+        (1. - component) / scale
+    })
+}
+
+/// The label costs of a boundary's loop, from its first patch to its second: its
+/// [`alignment_costs`].
+pub(crate) fn loop_costs(
+    mesh: &Mesh<INPUT>,
+    skeleton: &Skeleton,
+    edge: SkeletonEdgeID,
+) -> [f64; 6] {
+    let surface = &skeleton.surface;
+    let crossings = &skeleton.edges[edge].boundary.crossings;
+    let exits: Vec<_> = crossings
+        .iter()
+        .map(|&c| surface.crossings[c].exit)
+        .collect();
+    alignment_costs(moves_alignment(mesh, &exits))
+}
+
+/// [`loop_costs`] of every boundary.
+pub(crate) fn boundary_costs(
+    mesh: &Mesh<INPUT>,
+    skeleton: &Skeleton,
+) -> SecondaryMap<SkeletonEdgeID, [f64; 6]> {
+    skeleton
+        .edges
+        .keys()
+        .map(|e| (e, loop_costs(mesh, skeleton, e)))
         .collect()
+}
+
+/// Direction of an edge: the normal of its boundary's plane, scaled by the enclosed area, from
+/// its first patch to its second (the boundary runs counterclockwise around the first, seen
+/// from outside). The loop is drawn with the label's axis, so its own plane decides; the
+/// direction between patch centres can differ from it by any angle.
+pub(crate) fn boundary_normal(
+    mesh: &Mesh<INPUT>,
+    skeleton: &Skeleton,
+    edge: SkeletonEdgeID,
+) -> Vector3D {
+    let points: Vec<Vector3D> = skeleton.edges[edge]
+        .boundary
+        .crossings
+        .iter()
+        .map(|&c| {
+            let e = skeleton.surface.crossings[c].exit;
+            (mesh.position(mesh.root(e)) + mesh.position(mesh.toor(e))) / 2.
+        })
+        .collect();
+    let centre: Vector3D = points.iter().sum::<Vector3D>() / points.len() as f64;
+    let mut normal = Vector3D::zeros();
+    for i in 0..points.len() {
+        normal -= (points[i] - centre).cross(&(points[(i + 1) % points.len()] - centre));
+    }
+    normal
+}
+
+fn cached_cost(
+    mesh: &Mesh<INPUT>,
+    skeleton: &Skeleton,
+    edge: SkeletonEdgeID,
+    cache: &mut HashMap<[u64; 3], [f64; 6]>,
+) -> [f64; 6] {
+    // (The loop's normal identifies it: boundaries keep their crossings while labeling runs.)
+    let vector = boundary_normal(mesh, skeleton, edge);
+    let key = [vector.x.to_bits(), vector.y.to_bits(), vector.z.to_bits()];
+    *cache
+        .entry(key)
+        .or_insert_with(|| loop_costs(mesh, skeleton, edge))
 }
 
 /// The chain through `edge`: the maximal path whose interior nodes have degree two, as steps
@@ -261,18 +363,13 @@ fn along(
     mesh: &Mesh<INPUT>,
     skeleton: &Skeleton,
     steps: &[(SkeletonEdgeID, bool)],
+    cache: &mut HashMap<[u64; 3], [f64; 6]>,
 ) -> Vec<[f64; 6]> {
-    let positions = skeleton.surface.positions(mesh);
     steps
         .iter()
         .map(|&(e, forward)| {
-            let alignment = quality::boundary_alignment(mesh, skeleton, &positions, e);
-            if forward {
-                alignment
-            } else {
-                alignment.reversed()
-            }
-            .costs()
+            let cost = cached_cost(mesh, skeleton, e, cache);
+            std::array::from_fn(|p| cost[if forward { p } else { p ^ 1 }])
         })
         .collect()
 }
@@ -319,42 +416,8 @@ fn chain_solver(
     })
 }
 
-/// Steps along labelled edges from `from` to `to`, fewest first.
-fn route(
-    skeleton: &Skeleton,
-    labels: &SecondaryMap<SkeletonEdgeID, EdgeLabel>,
-    from: SkeletonNodeID,
-    to: SkeletonNodeID,
-) -> Option<Vec<(SkeletonEdgeID, bool)>> {
-    let mut reached: HashMap<SkeletonNodeID, Option<(SkeletonEdgeID, bool)>> =
-        HashMap::from([(from, None)]);
-    let mut queue = std::collections::VecDeque::from([from]);
-    while let Some(node) = queue.pop_front() {
-        if node == to {
-            break;
-        }
-        for (id, edge) in &skeleton.edges {
-            if labels.contains_key(id) && edge.nodes.contains(&node) {
-                let next = edge.other(node);
-                if !reached.contains_key(&next) {
-                    reached.insert(next, Some((id, edge.nodes[0] == node)));
-                    queue.push_back(next);
-                }
-            }
-        }
-    }
-    let mut steps = Vec::new();
-    let mut node = to;
-    while let Some((id, forward)) = *reached.get(&node)? {
-        steps.push((id, forward));
-        node = skeleton.edges[id].other(node);
-    }
-    steps.reverse();
-    Some(steps)
-}
-
-/// One way to close a cycle: steps, the slots that get a new boundary, and a port per
-/// boundary of the resulting sequence.
+/// One way to close a cycle: the chain's steps, the slots that get a new boundary, and a port
+/// per boundary of the resulting sequence.
 struct Closing {
     steps: Vec<(SkeletonEdgeID, bool)>,
     slots: Vec<usize>,
@@ -371,17 +434,17 @@ fn additions(steps: usize, slots: &[usize]) -> Vec<[usize; 2]> {
     counts
 }
 
-/// Close the cycle of an unlabeled edge with the fewest new boundaries that admit a valid
-/// labeling, and among those the cheapest. A new boundary runs through the middle of a patch
-/// beside one of the cycle's boundaries (a parallel collar where the patch has no middle). The whole cycle is relabelled when that is valid:
-/// the edge's chain and the labelled route between its ends, junctions included. Otherwise
-/// only the chain is, which always works. Returns the skeleton, the added collars, and the
-/// new labels.
+/// Close the cycle of an unlabeled edge: relabel the edge's chain, all other labels fixed, with
+/// the fewest new boundaries that admit a valid labeling, and among those the cheapest. A new
+/// boundary runs through the middle of a patch beside one of the chain's boundaries (a parallel
+/// collar where the patch has no middle); at most four always suffice. Returns the skeleton, the
+/// added collars, and the new labels.
 fn repair(
     mesh: &Mesh<INPUT>,
     skeleton: &Skeleton,
     labels: &SecondaryMap<SkeletonEdgeID, EdgeLabel>,
     edge: SkeletonEdgeID,
+    cache: &mut HashMap<[u64; 3], [f64; 6]>,
 ) -> SkeletonResult<(
     Skeleton,
     Vec<SkeletonEdgeID>,
@@ -389,39 +452,31 @@ fn repair(
 )> {
     let (chain, [start, end]) = chain(skeleton, edge);
     let solve = chain_solver(skeleton, labels, &chain, [start, end])?;
-    // The cycle: the chain, then back along labelled edges outside it.
+    // Every other label stays: the chain is relabeled with its new boundaries.
     let mut others = labels.clone();
     for &(e, _) in &chain {
         others.remove(e);
     }
-    let mut cycle = chain.clone();
-    if start != end {
-        cycle.extend(route(skeleton, &others, end, start).ok_or("Cycle edge closes no cycle")?);
-    }
-    for &(e, _) in &cycle {
-        others.remove(e);
-    }
     let used = constraints::used_ports(skeleton, &others)?;
-    let costs = along(mesh, skeleton, &cycle);
+    let costs = along(mesh, skeleton, &chain, cache);
     // The node before every step, and the first again.
     let mut nodes = vec![start];
-    for &(e, _) in &cycle {
+    for &(e, _) in &chain {
         nodes.push(skeleton.edges[e].other(*nodes.last().unwrap()));
     }
-    // What a new boundary in every slot would cost: its own alignment, as for any edge.
+    // What a new boundary in every slot would cost: its own plane decides, as for any edge.
     let ground = subdivide::Ground::build(mesh, skeleton)?;
     let mut slot_costs = Vec::new();
-    for (i, &(e, _)) in cycle.iter().enumerate() {
+    for (i, &(e, _)) in chain.iter().enumerate() {
         for (k, node) in [nodes[i], nodes[i + 1]].into_iter().enumerate() {
             slot_costs.push(match subdivide::middle(mesh, skeleton, &ground, e, node) {
-                // Along the path the alignment points into the patch after the step, and out
+                // Along the path the normal points into the patch after the step, and out
                 // of the patch before it.
-                Some(middle) => if k == 1 {
-                    middle.alignment
+                Some(middle) => alignment_costs(if k == 1 {
+                    middle.alignment(mesh)
                 } else {
-                    middle.alignment.reversed()
-                }
-                .costs(),
+                    -middle.alignment(mesh)
+                }),
                 None => costs[i],
             });
         }
@@ -440,73 +495,21 @@ fn repair(
         }
         (sequence, taken)
     };
-    // A closed path is order-feasible alone when every axis has both signs or neither.
-    let mut closed = [false; 64];
-    for (mask, ok) in closed.iter_mut().enumerate() {
-        *ok = (0..3).all(|axis| matches!((mask >> (axis * 2)) & 3, 0 | 3));
-    }
-    let around = |slots: &[usize]| -> Option<(f64, Vec<Port>)> {
-        let (sequence, taken) = sequence(cycle.len(), slots);
-        // The cycle leaves and enters its first node through two different free ports.
-        let best = Port::ALL
-            .into_iter()
-            .filter(|p| used[start] & p.bit() == 0)
-            .filter_map(|p| {
-                let limits = path::Constraints {
-                    start_ports: p.bit(),
-                    end_ports: 63 & !used[start] & !p.bit(),
-                    masks: closed,
-                };
-                path::optimize_through(&sequence, &limits, &taken)
-            })
-            .min_by(|a, b| a.cost.total_cmp(&b.cost))?;
-        // Other cycles through these nodes can still contradict it: check all orders.
-        let mut runs = Vec::new();
-        let mut at = 0;
-        for (i, [before, after]) in additions(cycle.len(), slots).into_iter().enumerate() {
-            let count = before + 1 + after;
-            let mask = best.ports[at..at + count]
-                .iter()
-                .fold(0, |m, p| m | p.bit());
-            runs.push(([nodes[i], nodes[i + 1]], mask));
-            at += count;
-        }
-        constraints::feasible_with(skeleton, &others, &runs).then_some((best.cost, best.ports))
-    };
     for added in 0..=4 {
         let mut best: Option<(f64, Closing)> = None;
-        if cycle.len() > chain.len() {
-            for slots in copies(2 * cycle.len(), added) {
-                if let Some((cost, ports)) = around(&slots)
-                    && best.as_ref().is_none_or(|(old, _)| cost < *old)
-                {
-                    let steps = cycle.clone();
-                    best = Some((
-                        cost,
-                        Closing {
-                            steps,
-                            slots,
-                            ports,
-                        },
-                    ));
-                }
-            }
-        }
-        if best.is_none() {
-            for slots in copies(2 * chain.len(), added) {
-                if let Some(solution) = solve(&sequence(chain.len(), &slots).0)
-                    && best.as_ref().is_none_or(|(old, _)| solution.cost < *old)
-                {
-                    let (steps, ports) = (chain.clone(), solution.ports);
-                    best = Some((
-                        solution.cost,
-                        Closing {
-                            steps,
-                            slots,
-                            ports,
-                        },
-                    ));
-                }
+        for slots in copies(2 * chain.len(), added) {
+            if let Some(solution) = solve(&sequence(chain.len(), &slots).0)
+                && best.as_ref().is_none_or(|(old, _)| solution.cost < *old)
+            {
+                let (steps, ports) = (chain.clone(), solution.ports);
+                best = Some((
+                    solution.cost,
+                    Closing {
+                        steps,
+                        slots,
+                        ports,
+                    },
+                ));
             }
         }
         let Some((_, closing)) = best else {

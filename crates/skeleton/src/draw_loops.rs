@@ -18,6 +18,14 @@ mod route;
 mod template;
 mod winding;
 
+/// The cost of ending an arc on a face that turns away from its crossing's quad, relative to
+/// the square root of the surface area (see `insertion::Template::set_crossing_normals`).
+const CROSSING_WEIGHT: f64 = 10.;
+
+/// Whether loops must cross the handles' longitudes as their template loops do (`winding`). Off:
+/// with the crossing normals, it hardly changes bob and fertility and lowers dtorus.
+const WINDING: bool = false;
+
 /// Each of these reports a bug: valid input always has a drawing.
 #[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
 pub enum Failure {
@@ -60,7 +68,19 @@ pub fn attempt(mesh: &Mesh<INPUT>, realized: &RealizedSkeleton) -> SkeletonResul
     let timer = std::time::Instant::now();
     realized.validate_geometry()?;
     realized.labeled.skeleton.debug_validate(mesh);
-    let template = template::Template::build(&realized.labeled)?;
+    let mut template = template::Template::build(&realized.labeled)?;
+    // Crossings where the surface faces like their quad of the cube surface; the weight is a
+    // length, as is the cost of the routes.
+    let faces = mesh.face_ids();
+    let area: f64 = faces.iter().map(|&f| mesh.size(f)).sum();
+    let normals = faces
+        .iter()
+        .map(|&f| (f, mesh.normal(f).normalize()))
+        .collect();
+    let quads = template.quad_normals.clone();
+    template
+        .target
+        .set_crossing_normals(&quads, normals, CROSSING_WEIGHT * area.sqrt());
     let target = &template.target;
     let mut drawn: HashSet<_> = template.boundaries.values().copied().collect();
     let mut result = Attempt {
@@ -88,7 +108,7 @@ pub fn attempt(mesh: &Mesh<INPUT>, realized: &RealizedSkeleton) -> SkeletonResul
         return Ok(result);
     }
     let flows = route::Flows::new(mesh, drawn.is_empty());
-    let longitudes = winding::Longitudes::new(mesh, realized, &template);
+    let longitudes = winding::Longitudes::new(mesh, realized, &template).filter(|_| WINDING);
     let partners: HashMap<_, _> = template
         .loops
         .keys()

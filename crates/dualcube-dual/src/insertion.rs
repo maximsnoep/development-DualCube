@@ -253,6 +253,11 @@ pub struct Template {
     chains: HashMap<LoopID, Vec<usize>>,
     // The two loops of every crossing vertex.
     crossings: HashMap<usize, [LoopID; 2]>,
+    // The outward normal of every crossing's quad, the normal of every input face, and the
+    // weight of crossing where they differ (see `set_crossing_normals`).
+    crossing_normals: HashMap<usize, Vector3D>,
+    face_normals: HashMap<FaceID, Vector3D>,
+    crossing_weight: f64,
 }
 
 impl Template {
@@ -275,7 +280,31 @@ impl Template {
             map,
             chains,
             crossings,
+            crossing_normals: HashMap::new(),
+            face_normals: HashMap::new(),
+            crossing_weight: 0.,
         }
+    }
+
+    /// Prefer crossings where the surface faces like their quad of the template: ending an arc
+    /// on a piece costs `weight * (1 - n·q)` more, for the normal n of its input face and the
+    /// normal q of the crossing's quad. `quads` lists the normal of every quad given to
+    /// `LoopMap::from_quads`, whose crossing vertices follow the quads.
+    ///
+    /// Without it, a crossing lies in the middle of its interval along the partner, which on a
+    /// loop no crossing splits yet starts anywhere: each patch boundary gets a rotation of its
+    /// own, and the arcs between the boundaries along a tube twist around it to join them.
+    pub fn set_crossing_normals(
+        &mut self,
+        quads: &[Vector3D],
+        faces: HashMap<FaceID, Vector3D>,
+        weight: f64,
+    ) {
+        let vertices =
+            (0..self.map.points.len()).filter(|&v| self.map.points[v] == Point::Crossing);
+        self.crossing_normals = vertices.zip(quads.iter().copied()).collect();
+        self.face_normals = faces;
+        self.crossing_weight = weight;
     }
 
     pub fn map(&self) -> &LoopMap {
@@ -440,6 +469,22 @@ impl<'a> Plan<'a> {
         }
     }
 
+    // The cost of ending on each piece for crossing `j`, in units of `MIDDLE`: its distance from
+    // the middle (`off_middle`) and how far its face turns from the crossing's quad.
+    fn ends(&self, map: &LoopMap, mut ends: HashMap<usize, f64>, j: usize) -> HashMap<usize, f64> {
+        let t = self.template;
+        if t.crossing_weight > 0.
+            && let Some(want) = t.crossing_normals.get(&self.crossings[j])
+        {
+            for (&h, end) in &mut ends {
+                if let Some(n) = t.face_normals.get(&map.faces[map.halves[h].face].triangle) {
+                    *end += t.crossing_weight * (1. - n.dot(want)) / MIDDLE;
+                }
+            }
+        }
+        ends
+    }
+
     /// The number of crossings with drawn loops.
     pub fn len(&self) -> usize {
         self.crossings.len()
@@ -537,7 +582,8 @@ impl<'a> Plan<'a> {
                     .into_iter()
                     .filter(|&h| map.halves[h].piece == side)
                     .collect();
-                let middle = off_middle(map, &anchors, &[])
+                let middle = self
+                    .ends(map, off_middle(map, &anchors, &[]), j)
                     .into_iter()
                     .min_by_key(|&(h, d)| (OrderedFloat(d), h))?;
                 Some((anchors.len(), j, middle.0))
@@ -642,7 +688,8 @@ impl<'a> Plan<'a> {
                 let window = Window::after(start, step, k);
                 let mut pieces = self.crossable(&drawing.map, &labels, target, &window);
                 pieces.retain(|&h| drawing.map.halves[h].piece == side);
-                Goal::Cross(off_middle(&drawing.map, &pieces, &[tip.0, x0]))
+                let off = off_middle(&drawing.map, &pieces, &[tip.0, x0]);
+                Goal::Cross(self.ends(&drawing.map, off, target))
             };
             let sides = drawing.sides(
                 &labels,

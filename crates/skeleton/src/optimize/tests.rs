@@ -72,35 +72,3 @@ fn reduces_an_entire_straight_chain() {
     assert_eq!(result.labeled.skeleton.nodes.len(), 2);
     assert_eq!(result.labeled.skeleton.surface.crossings.len(), 2);
 }
-
-#[test]
-fn one_more_boundary_splits_the_largest_patch_beside_each_of_its_boundaries() {
-    let positions = [[0., 0., 0.], [2., 0., 0.], [2., 2., 0.], [0., 2., 0.]];
-    let (mesh, skeleton) = crate::surface::tests::bands(&positions);
-    let labeled = label::attempt(&mesh, &skeleton).unwrap().labeled();
-    let areas = crate::geometry::SurfaceGeometry::build(&mesh, &labeled.skeleton)
-        .unwrap()
-        .areas();
-    let largest = labeled
-        .skeleton
-        .nodes
-        .keys()
-        .max_by(|&a, &b| areas[a].total_cmp(&areas[b]))
-        .unwrap();
-    let candidates = additions(&mesh, &labeled).unwrap();
-    assert_eq!(candidates.len(), 2);
-    for candidate in &candidates {
-        candidate.validate(&mesh).unwrap();
-        assert_eq!(
-            candidate.skeleton.edges.len(),
-            labeled.skeleton.edges.len() + 1
-        );
-        // The largest patch keeps its boundaries' count, and loses area to the new patch.
-        let after = crate::geometry::SurfaceGeometry::build(&mesh, &candidate.skeleton)
-            .unwrap()
-            .areas();
-        assert!(after[largest] < areas[largest]);
-        assert_eq!(candidate.skeleton.degrees()[largest], 2);
-    }
-    reduce(&mesh, &labeled).unwrap().validate(&mesh).unwrap();
-}

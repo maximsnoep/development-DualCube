@@ -4,28 +4,19 @@ use super::*;
 use dualcube_dual::FlowGraph;
 
 pub(super) struct Flows {
-    vectors: [HashMap<FaceID, Vector3D>; 3],
+    normals: HashMap<FaceID, Vector3D>,
     graphs: Option<[FlowGraph; 3]>,
 }
 
 impl Flows {
     pub(super) fn new(mesh: &Mesh<INPUT>, needs_seed: bool) -> Self {
-        let fields = dualcube_flow::Fields::new(mesh);
-        let vectors = [&fields.field_x, &fields.field_y, &fields.field_z].map(|field| {
-            mesh.face_ids()
-                .into_iter()
-                .map(|f| {
-                    (
-                        f,
-                        mesh.vertices(f)
-                            .filter_map(|v| field.vector_at(v))
-                            .sum::<Vector3D>()
-                            / 3.,
-                    )
-                })
-                .collect()
-        });
+        let normals = mesh
+            .face_ids()
+            .into_iter()
+            .map(|f| (f, mesh.normal(f).normalize()))
+            .collect();
         let graphs = needs_seed.then(|| {
+            let fields = dualcube_flow::Fields::new(mesh);
             dualcube_flow::build_flow_graphs(
                 mesh,
                 &fields,
@@ -35,29 +26,27 @@ impl Flows {
                 },
             )
         });
-        Self { vectors, graphs }
+        Self { normals, graphs }
     }
 }
 
+/// The strictness factor alpha of the alignment of moves of DualCube (Snoep et al. 2025).
+const STRICTNESS: i32 = 10;
+
 impl Flows {
-    /// Cost of moving by `delta` in a triangle for a loop of `axis`: length, more when it
-    /// leaves the flow field's direction.
+    /// Cost of moving by `delta` in a triangle for a loop of `axis`: its length, plus its length
+    /// times DualCube's weight of a move, `angle(delta × n, axis)^alpha` (Snoep et al. 2025, Sec.
+    /// 4.1), which is 0 for a move around the axis and grows steeply as it turns away.
     pub(super) fn cost(&self, axis: Direction) -> impl Fn(FaceID, Vector3D, usize) -> f64 + '_ {
-        let flow = &self.vectors[match axis {
-            Direction::X => 0,
-            Direction::Y => 1,
-            Direction::Z => 2,
-        }];
+        let target = Vector3D::from(axis);
         move |face, delta, _| {
-            let length = delta.norm();
-            let f = flow[&face];
-            let confidence = f.norm().min(1.);
-            let alignment = if length > 0. && confidence > 1e-12 {
-                (delta.dot(&f) / (length * f.norm())).clamp(-1., 1.)
+            let side = delta.cross(&self.normals[&face]);
+            let angle = if side.norm() > 1e-12 {
+                side.angle(&target)
             } else {
-                1.
+                std::f64::consts::FRAC_PI_2
             };
-            length * (1. + 5. * confidence * (1. - alignment))
+            delta.norm() * (1. + angle.powi(STRICTNESS))
         }
     }
 }

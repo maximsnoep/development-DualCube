@@ -1,25 +1,36 @@
-//! Simplify a labeled skeleton chain by chain for the [`quality`] score, then recompute target
-//! placement.
+//! Simplify a labeled skeleton chain by chain, then recompute target placement.
 //!
 //! On every chain (a maximal path through degree-two patches) a DP keeps the boundaries and
-//! labels with the best score, all other labels fixed; dropped boundaries merge their patches.
+//! labels with the least cost, all other labels fixed; dropped boundaries merge their patches.
 //! A chain from a junction to a leaf may drop all of them. This repeats until no chain improves.
-//! Alignment is a mean over the boundary length, so the DP maximizes its linearization at the
-//! current mean (Dinkelbach), and a move is applied only when the score itself improves.
-//! Then one more boundary may be added: through the middle of the largest patch with two or
-//! more boundaries, farthest from them, if that scores better after reducing again.
+//! The search over other moves (ALNS against the primalized quality) lives on the branch
+//! `skeleton-experiments`.
 
-use crate::label::{self, Port, constraints, path, subdivide};
-use crate::quality::{self, Alignment, BETA, VISIBILITY, Visibility};
+use crate::label::{self, Port, constraints, path};
 use crate::{
     LabeledSkeleton, RealizedSkeleton, Skeleton, SkeletonEdgeID, SkeletonNodeID, SkeletonResult,
     place_cubes,
 };
 use dualcube_types::prelude::*;
 use slotmap::SecondaryMap;
+use std::f64::consts::PI;
 
-/// Linearizations tried per chain.
-const ROUNDS: usize = 4;
+/// Cost of every kept boundary (a loop pair of the polycube).
+const BOUNDARY: f64 = 0.5;
+/// A merged patch (the junction patches at the chain ends included) pays up to this as its width
+/// falls below `THIN_RATIO` times its loops' mean diameter.
+const THIN: f64 = 1.;
+const THIN_RATIO: f64 = 0.5;
+/// A junction patch pays this per length of chain it absorbs, over the kept boundary's diameter:
+/// loops sit at the root of an arm, not at its tip.
+const ABSORB: f64 = 0.05;
+/// Weight of a leaf cap's direction against its port, times how far the cap protrudes.
+const CAP: f64 = 1.;
+/// Toward a leaf, a dropped item counts less as what lies beyond its boundary protrudes less than
+/// twice this times the boundary's diameter, and not at all below once.
+const FADE: f64 = 0.2;
+/// Weight of a patch's direction along the chain, per its length over its loops' diameter.
+const DIRECTION: f64 = 0.5;
 
 pub fn run(mesh: &Mesh<INPUT>, placed: &RealizedSkeleton) -> SkeletonResult<RealizedSkeleton> {
     placed.labeled.skeleton.debug_validate(mesh);
@@ -27,157 +38,37 @@ pub fn run(mesh: &Mesh<INPUT>, placed: &RealizedSkeleton) -> SkeletonResult<Real
     place_cubes::run(mesh, &reduced)
 }
 
-/// Reduce every chain until none improves, then try one more boundary; the result is
-/// validated.
+/// Reduce every chain until none improves; the result is validated. Labels should be the
+/// labeling's.
 pub fn reduce(mesh: &Mesh<INPUT>, labeled: &LabeledSkeleton) -> SkeletonResult<LabeledSkeleton> {
     let start = std::time::Instant::now();
-    let patches = labeled.skeleton.nodes.len();
-    let (mut labeled, before, mut score) = reduce_chains(mesh, labeled)?;
-    let mut added = false;
-    for candidate in additions(mesh, &labeled)? {
-        let (next, _, value) = reduce_chains(mesh, &candidate)?;
-        if value > score + 1e-12 {
-            (labeled, score, added) = (next, value, true);
-        }
-    }
-    labeled.validate(mesh)?;
-    tracing::info!(
-        "Optimization: {patches} → {} patches{}, score {before:.4} → {score:.4}, {:.2}s",
-        labeled.skeleton.nodes.len(),
-        if added {
-            " after one added boundary"
-        } else {
-            ""
-        },
-        start.elapsed().as_secs_f64()
-    );
-    Ok(labeled)
-}
-
-/// Every chain reduced until none improves; with the score before and after.
-fn reduce_chains(
-    mesh: &Mesh<INPUT>,
-    labeled: &LabeledSkeleton,
-) -> SkeletonResult<(LabeledSkeleton, f64, f64)> {
     let mut labeled = labeled.clone();
-    let mut state = State::new(mesh, &labeled)?;
-    let before = state.score();
-    // Every move raises the score; the bound is a guard.
-    'improve: for _ in 0..10 * (labeled.skeleton.edges.len() + 10) {
+    let skeleton = &labeled.skeleton;
+    let mut tables = Tables {
+        penalties: label::boundary_costs(mesh, skeleton),
+        boundaries: boundary_measures(mesh, skeleton),
+        patches: patch_measures(mesh, skeleton)?,
+    };
+    let (patches, mut branches) = (skeleton.nodes.len(), 0);
+    // Every move lowers its chain's cost; the bound only guards against relabels cycling
+    // between chains.
+    'improve: for _ in 0..10 * (skeleton.edges.len() + 10) {
         for chain in chains(&labeled.skeleton) {
-            if let Some(next) = reduce_chain(mesh, &labeled, &chain, &mut state) {
+            if let Some((next, branch)) = reduce_chain(mesh, &labeled, &chain, &mut tables) {
                 labeled = next;
+                branches += usize::from(branch);
                 continue 'improve;
             }
         }
         break;
     }
-    Ok((labeled, before, state.score()))
-}
-
-/// One more boundary in the largest patch with two or more boundaries, through its middle
-/// beside each of them in turn ([`subdivide::split`]), labelled like the boundary beside it.
-pub(crate) fn additions(
-    mesh: &Mesh<INPUT>,
-    labeled: &LabeledSkeleton,
-) -> SkeletonResult<Vec<LabeledSkeleton>> {
-    let skeleton = &labeled.skeleton;
-    let degree = skeleton.degrees();
-    let areas = crate::geometry::SurfaceGeometry::build(mesh, skeleton)?.areas();
-    let Some(node) = skeleton
-        .nodes
-        .keys()
-        .filter(|&n| degree[n] >= 2)
-        .max_by(|&a, &b| areas[a].total_cmp(&areas[b]))
-    else {
-        return Ok(Vec::new());
-    };
-    Ok(skeleton
-        .incident(node)
-        .filter_map(|(edge, _)| {
-            let (skeleton, added) = subdivide::split(mesh, skeleton, edge, node)?;
-            let mut labels = labeled.labels.clone();
-            labels.insert(added, labeled.labels[edge]);
-            let candidate = LabeledSkeleton { skeleton, labels };
-            candidate.validate_labels().is_ok().then_some(candidate)
-        })
-        .collect())
-}
-
-/// The score's sums, kept up to date with the moves.
-struct State {
-    /// Of the boundaries as extracted; a kept boundary keeps its loop.
-    alignments: SecondaryMap<SkeletonEdgeID, Alignment>,
-    visibility: Visibility,
-    /// The patches of the input skeleton merged into every patch, sorted.
-    members: SecondaryMap<SkeletonNodeID, Vec<SkeletonNodeID>>,
-    /// Visible area of unions of input patches.
-    seen: HashMap<Vec<SkeletonNodeID>, f64>,
-    /// Over the boundaries: Σ length · alignment with the label, and Σ length.
-    aligned: f64,
-    length: f64,
-    /// Σ visible area over the patches.
-    visible: f64,
-    boundaries: usize,
-}
-
-impl State {
-    fn new(mesh: &Mesh<INPUT>, labeled: &LabeledSkeleton) -> SkeletonResult<Self> {
-        let skeleton = &labeled.skeleton;
-        let alignments = quality::alignments(mesh, skeleton);
-        let (mut aligned, mut length) = (0., 0.);
-        for (e, a) in &alignments {
-            aligned += a.length * a.with(Port::from_label(labeled.labels[e]));
-            length += a.length;
-        }
-        let mut state = Self {
-            alignments,
-            visibility: Visibility::build(mesh, skeleton)?,
-            members: skeleton.nodes.keys().map(|n| (n, vec![n])).collect(),
-            seen: HashMap::new(),
-            aligned,
-            length,
-            visible: 0.,
-            boundaries: skeleton.edges.len(),
-        };
-        let unions: Vec<_> = skeleton.nodes.keys().map(|n| vec![n]).collect();
-        state.compute(unions.clone());
-        state.visible = unions.iter().map(|u| state.seen[u]).sum();
-        Ok(state)
-    }
-
-    fn score(&self) -> f64 {
-        let alignment = if self.length > 0. {
-            self.aligned / self.length
-        } else {
-            1.
-        };
-        quality::score(
-            alignment,
-            self.visible / self.visibility.area,
-            self.boundaries,
-        )
-    }
-
-    /// The input patches of a union of patches.
-    fn union(&self, nodes: impl IntoIterator<Item = SkeletonNodeID>) -> Vec<SkeletonNodeID> {
-        let mut union: Vec<_> = nodes
-            .into_iter()
-            .flat_map(|n| self.members[n].iter().copied())
-            .collect();
-        union.sort();
-        union.dedup();
-        union
-    }
-
-    /// Fill `seen` for the unions it lacks.
-    fn compute(&mut self, mut unions: Vec<Vec<SkeletonNodeID>>) {
-        unions.retain(|u| !self.seen.contains_key(u));
-        unions.sort();
-        unions.dedup();
-        let values = self.visibility.visible_all(&unions);
-        self.seen.extend(unions.into_iter().zip(values));
-    }
+    labeled.validate(mesh)?;
+    tracing::info!(
+        "Optimization: {patches} → {} patches, {branches} branches dropped, {:.2}s",
+        labeled.skeleton.nodes.len(),
+        start.elapsed().as_secs_f64()
+    );
+    Ok(labeled)
 }
 
 /// A maximal path whose interior nodes have degree two, from `nodes[0]` to its last node; a
@@ -211,144 +102,245 @@ fn chains(skeleton: &Skeleton) -> Vec<Chain> {
     result
 }
 
-/// Kept boundaries (chain indices) with their ports in chain direction.
-struct Choice {
-    kept: Vec<usize>,
-    ports: Vec<Port>,
+struct Boundary {
+    length: f64,
+    /// Norm of the vector area: the area of the disk the loop spans, robust to zigzags.
+    span: f64,
+    centre: Vector3D,
 }
 
-/// Chain nodes `a..=b` as input patches.
-fn nodes(state: &State, chain: &Chain, a: usize, b: usize) -> Vec<SkeletonNodeID> {
-    state.union(chain.nodes[a..=b].iter().copied())
+impl Boundary {
+    /// Of the disk the loop spans; from the length if it spans none.
+    fn diameter(&self) -> f64 {
+        if self.span > 0. {
+            2. * (self.span / PI).sqrt()
+        } else {
+            self.length / PI
+        }
+    }
+
+    /// Height of a patch of area `area` beyond the loop (its excess over the spanned disk, per
+    /// the disk's perimeter), over the loop's diameter; infinite for a degenerate loop.
+    fn rise(&self, area: f64) -> f64 {
+        let d = self.diameter();
+        if d > 0. {
+            (area - PI * d * d / 4.).max(0.) / (PI * d * d)
+        } else {
+            f64::INFINITY
+        }
+    }
 }
 
-/// For a ring, the patch through its node: after kept `last`, up to kept `first`.
-fn wrap(state: &State, chain: &Chain, last: usize, first: usize) -> Vec<SkeletonNodeID> {
-    let n = chain.edges.len();
-    state.union(
-        chain.nodes[last + 1..n]
-            .iter()
-            .chain(&chain.nodes[..=first])
-            .copied(),
-    )
+/// Areas and area-weighted position sums of the patches; merged with them.
+type Patches = (
+    SecondaryMap<SkeletonNodeID, f64>,
+    SecondaryMap<SkeletonNodeID, Vector3D>,
+);
+
+struct Tables {
+    penalties: SecondaryMap<SkeletonEdgeID, [f64; 6]>,
+    boundaries: SecondaryMap<SkeletonEdgeID, Boundary>,
+    patches: Patches,
 }
 
-/// The chain relabelled and reduced if that raises the score and stays valid.
+/// Measures of every boundary, with crossings spaced evenly along their mesh edges.
+fn boundary_measures(
+    mesh: &Mesh<INPUT>,
+    skeleton: &Skeleton,
+) -> SecondaryMap<SkeletonEdgeID, Boundary> {
+    let mut positions = HashMap::new();
+    for (&edge, order) in &skeleton.surface.edge_order {
+        let (a, b) = (
+            mesh.position(mesh.root(edge)),
+            mesh.position(mesh.toor(edge)),
+        );
+        for (rank, &id) in order.iter().enumerate() {
+            let t = (rank + 1) as f64 / (order.len() + 1) as f64;
+            positions.insert(id, a * (1. - t) + b * t);
+        }
+    }
+    skeleton
+        .edges
+        .iter()
+        .map(|(id, edge)| {
+            let c = &edge.boundary.crossings;
+            let p = |i: usize| positions[&c[i % c.len()]];
+            let vector: Vector3D = (0..c.len()).map(|i| p(i).cross(&p(i + 1))).sum();
+            let boundary = Boundary {
+                length: (0..c.len()).map(|i| (p(i + 1) - p(i)).norm()).sum(),
+                span: vector.norm() / 2.,
+                centre: (0..c.len()).map(p).sum::<Vector3D>() / c.len() as f64,
+            };
+            (id, boundary)
+        })
+        .collect()
+}
+
+pub(crate) fn patch_measures(mesh: &Mesh<INPUT>, skeleton: &Skeleton) -> SkeletonResult<Patches> {
+    let geometry = crate::geometry::SurfaceGeometry::build(mesh, skeleton)?;
+    let mut areas: SecondaryMap<_, f64> = skeleton.nodes.keys().map(|n| (n, 0.)).collect();
+    let mut moments: SecondaryMap<_, Vector3D> = skeleton
+        .nodes
+        .keys()
+        .map(|n| (n, Vector3D::zeros()))
+        .collect();
+    for t in &geometry.triangles {
+        let [a, b, c] = t.points;
+        let area = 0.5 * (b - a).cross(&(c - a)).norm();
+        areas[t.node] += area;
+        moments[t.node] += area * (a + b + c) / 3.;
+    }
+    Ok((areas, moments))
+}
+
+/// The chain relabelled and reduced if that lowers its cost and stays valid; whether the whole
+/// branch was dropped.
 fn reduce_chain(
     mesh: &Mesh<INPUT>,
     labeled: &LabeledSkeleton,
     chain: &Chain,
-    state: &mut State,
-) -> Option<LabeledSkeleton> {
-    let n = chain.edges.len();
-    let ring = chain.nodes[0] == chain.nodes[n];
-    let mut unions = Vec::new();
-    for i in 0..n {
-        for j in 0..i {
-            unions.push(nodes(state, chain, j + 1, i));
-        }
-        if ring {
-            unions.extend((0..n).map(|first| wrap(state, chain, i, first)));
-        } else {
-            unions.push(nodes(state, chain, 0, i));
-            unions.push(nodes(state, chain, i + 1, n));
-        }
-    }
-    unions.push(nodes(state, chain, 0, n));
-    unions.extend(chain.nodes.iter().map(|&v| state.union([v])));
-    state.compute(unions);
-    let (next, update) = choose(mesh, labeled, chain, state)?;
-    state.aligned = update.aligned;
-    state.length = update.length;
-    state.visible = update.visible;
-    state.boundaries = update.boundaries;
-    state.members = update.members;
-    Some(next)
-}
-
-/// The sums of [`State`] after a move.
-struct Update {
-    aligned: f64,
-    length: f64,
-    visible: f64,
-    boundaries: usize,
-    members: SecondaryMap<SkeletonNodeID, Vec<SkeletonNodeID>>,
-}
-
-/// The best valid improving choice on the chain, applied; `seen` covers its unions.
-fn choose(
-    mesh: &Mesh<INPUT>,
-    labeled: &LabeledSkeleton,
-    chain: &Chain,
-    state: &State,
-) -> Option<(LabeledSkeleton, Update)> {
+    tables: &mut Tables,
+) -> Option<(LabeledSkeleton, bool)> {
     let skeleton = &labeled.skeleton;
     let degree = skeleton.degrees();
     let n = chain.edges.len();
     let (start, end) = (chain.nodes[0], chain.nodes[n]);
-    let ring = start == end;
-    let run = |a: usize, b: usize| nodes(state, chain, a, b);
-    let wrap = |last: usize, first: usize| wrap(state, chain, last, first);
-    let seen = |union: Vec<SkeletonNodeID>| state.seen[&union];
-
-    // Port `q` in chain direction as stored, and the alignment of edge `i` with it.
-    let stored = |i: usize, q: Port| if chain.forward[i] { q } else { q.opposite() };
-    let fit = |i: usize, q: Port| state.alignments[chain.edges[i]].with(stored(i, q));
-    let length = |i: usize| state.alignments[chain.edges[i]].length;
-    let current: Vec<Port> = (0..n)
-        .map(|i| stored(i, Port::from_label(labeled.labels[chain.edges[i]])))
-        .collect();
-    let chain_aligned: f64 = (0..n).map(|i| length(i) * fit(i, current[i])).sum();
-    let chain_length: f64 = (0..n).map(length).sum();
-    let mut chain_visible: f64 = chain.nodes[..n]
-        .iter()
-        .map(|&v| seen(state.union([v])))
-        .sum();
-    if !ring {
-        chain_visible += seen(state.union([end]));
-    }
-
-    // The score after a choice; keeping nothing merges the whole chain.
-    let score = |choice: &Choice| {
-        let kept = &choice.kept;
-        let (mut aligned, mut total) = (state.aligned - chain_aligned, state.length - chain_length);
-        for (&i, &q) in kept.iter().zip(&choice.ports) {
-            aligned += length(i) * fit(i, q);
-            total += length(i);
-        }
-        let mut visible = state.visible - chain_visible;
-        if kept.is_empty() {
-            visible += seen(run(0, n));
+    let (areas, moments) = &tables.patches;
+    let area = |nodes: &[SkeletonNodeID]| nodes.iter().map(|&v| areas[v]).sum::<f64>();
+    let measure = |i: usize| &tables.boundaries[chain.edges[i]];
+    // Costs and ports in chain direction: a boundary stored against it swaps the signs.
+    let along = |i: usize, p: usize| {
+        tables.penalties[chain.edges[i]][if chain.forward[i] { p } else { p ^ 1 }]
+    };
+    let travel = |i: usize| {
+        let port = Port::from_label(labeled.labels[chain.edges[i]]);
+        (if chain.forward[i] {
+            port
         } else {
-            for pair in kept.windows(2) {
-                visible += seen(run(pair[0] + 1, pair[1]));
-            }
-            let (first, last) = (kept[0], kept[kept.len() - 1]);
-            visible += if ring {
-                seen(wrap(last, first))
-            } else {
-                seen(run(0, first)) + seen(run(last + 1, n))
-            };
+            port.opposite()
+        }) as usize
+    };
+    let leaf_start = degree[start] == 1 && start != end;
+    let leaf_end = degree[end] == 1 && start != end;
+
+    // Items: patch `m` (between boundaries `m - 1` and `m`) at `2m`, boundary `m` at `2m + 1`.
+    // A patch is judged by its direction along the chain.
+    let mut items = vec![[0.; 6]; 2 * n + 1];
+    for m in 0..n {
+        items[2 * m + 1] = std::array::from_fn(|p| along(m, p));
+    }
+    for m in 1..n {
+        let (a, b) = (measure(m - 1), measure(m));
+        let d = b.centre - a.centre;
+        let loops = (a.diameter() + b.diameter()) / 2.;
+        if loops > 0. {
+            let w = DIRECTION * d.norm() / loops;
+            items[2 * m] = label::label_costs(d).map(|c| w * c);
         }
-        let alignment = if total > 0. { aligned / total } else { 1. };
-        let boundaries = state.boundaries - n + kept.len();
-        (
-            quality::score(alignment, visible / state.visibility.area, boundaries),
-            aligned,
-            total,
-            visible,
+    }
+    // Toward a leaf, how much a boundary counts by what lies beyond it; a patch counts like the
+    // boundary on its far side from the leaf.
+    let fade = |beyond: &[SkeletonNodeID], i: usize| {
+        ((measure(i).rise(area(beyond)) - FADE) / FADE).clamp(0., 1.)
+    };
+    let fade_start: Vec<f64> = (0..n).map(|i| fade(&chain.nodes[..=i], i)).collect();
+    let fade_end: Vec<f64> = (0..n).map(|i| fade(&chain.nodes[i + 1..], i)).collect();
+    let item_fade_start = |m: usize| fade_start[m / 2];
+    let item_fade_end = |m: usize| fade_end[(m - 1) / 2];
+
+    // Width over the mean loop diameter, penalized below `THIN_RATIO`.
+    let thinness = |area: f64, loops: f64, degree: usize| {
+        if loops <= 0. {
+            return 0.;
+        }
+        let ratio = (2. * area / loops) / (loops / (degree as f64 * PI));
+        THIN * (1. - ratio / THIN_RATIO).max(0.)
+    };
+    let patch = |j: usize, i: usize| {
+        thinness(
+            area(&chain.nodes[j + 1..=i]),
+            measure(j).length + measure(i).length,
+            2,
         )
     };
-    let now = score(&Choice {
-        kept: (0..n).collect(),
-        ports: current.clone(),
-    })
-    .0;
-    debug_assert!(
-        (now - state.score()).abs() < 1e-9,
-        "{now} vs {}",
-        state.score()
-    );
+    // End patch: `node` with its boundaries off the chain, merged with the chain's `nodes` up to
+    // kept `i`; `near` is the chain boundary at `node`.
+    let end_patch = |node: SkeletonNodeID, nodes: &[SkeletonNodeID], near: usize, i: usize| {
+        if degree[node] < 2 || start == end {
+            return 0.;
+        }
+        let off: f64 = skeleton
+            .incident(node)
+            .filter(|(e, _)| !chain.edges.contains(e))
+            .map(|(e, _)| tables.boundaries[e].length)
+            .sum();
+        let thin = thinness(
+            areas[node] + area(nodes),
+            off + measure(i).length,
+            degree[node],
+        );
+        // The absorbed piece of chain as a tube: its length is its area over its mean perimeter.
+        let perimeter = (measure(near).length + measure(i).length) / 2.;
+        let d = measure(i).diameter();
+        let absorbed = if perimeter > 0. && d > 0. {
+            ABSORB * area(nodes) / perimeter / d
+        } else {
+            0.
+        };
+        thin + absorbed
+    };
+    // A leaf cap beyond kept `i` should lie in direction `port` from the boundary, as far as it
+    // protrudes.
+    let cap = |nodes: &[SkeletonNodeID], i: usize, port: usize| {
+        let a = area(nodes);
+        if a <= 0. {
+            return 0.;
+        }
+        let moment: Vector3D = nodes.iter().map(|&v| moments[v]).sum();
+        let prominence = measure(i).rise(a).min(1.);
+        CAP * prominence * label::label_costs(moment / a - measure(i).centre)[port]
+    };
+    let first = |i: usize, q: usize| {
+        if leaf_start {
+            let dropped: f64 = (1..=2 * i).map(|m| items[m][q] * item_fade_start(m)).sum();
+            dropped + cap(&chain.nodes[..=i], i, q ^ 1)
+        } else {
+            let dropped: f64 = (1..=2 * i).map(|m| items[m][q]).sum();
+            dropped + end_patch(start, &chain.nodes[1..=i], 0, i)
+        }
+    };
+    let last = |i: usize, q: usize| {
+        if leaf_end {
+            let dropped: f64 = (2 * i + 2..2 * n)
+                .map(|m| items[m][q] * item_fade_end(m))
+                .sum();
+            dropped + cap(&chain.nodes[i + 1..], i, q)
+        } else {
+            let dropped: f64 = (2 * i + 2..2 * n).map(|m| items[m][q]).sum();
+            dropped + end_patch(end, &chain.nodes[i + 1..n], n - 1, i)
+        }
+    };
+    let current: f64 = (0..n)
+        .map(|i| {
+            let before = if i > 0 {
+                patch(i - 1, i) + items[2 * i][travel(i - 1)].min(items[2 * i][travel(i)])
+            } else {
+                first(0, travel(0))
+            };
+            let after = if i == n - 1 { last(i, travel(i)) } else { 0. };
+            items[2 * i + 1][travel(i)] + BOUNDARY + before + after
+        })
+        .sum();
+
+    // No boundary kept: the branch merges into the junction, each boundary counting as fully
+    // misaligned (90°) as far as it does not fade.
+    let misaligned = label::label_costs(Vector3D::x())[2];
+    let none = match (leaf_start, leaf_end) {
+        (true, false) if degree[end] >= 3 => Some((end, fade_start.iter().sum::<f64>())),
+        (false, true) if degree[start] >= 3 => Some((start, fade_end.iter().sum::<f64>())),
+        _ => None,
+    }
+    .map(|(into, fades)| (into, fades * misaligned));
 
     let mut others = labeled.labels.clone();
     for &e in &chain.edges {
@@ -358,180 +350,117 @@ fn choose(
     let masks: [bool; 64] = std::array::from_fn(|mask| {
         constraints::feasible(skeleton, &others, Some(([start, end], mask as u8)))
     });
-    let visible = VISIBILITY / state.visibility.area;
-    let patch = |j: usize, i: usize| -visible * seen(run(j + 1, i));
-    // The choice maximizing the score linearized at alignment `lambda` over boundary length
-    // `total`. Orders alone rule out what would make parallel edges or self-loops: a single
-    // boundary between ends joined elsewhere, or a ring of fewer than four.
-    let select = |lambda: f64, total: f64| -> Option<Choice> {
-        let costs: Vec<[f64; 6]> = (0..n)
-            .map(|i| {
-                std::array::from_fn(|q| {
-                    let gain =
-                        (1. - VISIBILITY) * length(i) * (fit(i, Port::ALL[q]) - lambda) / total;
-                    BETA - gain
-                })
-            })
-            .collect();
-        let solve = |first: &dyn Fn(usize, usize) -> f64,
-                     last: &dyn Fn(usize, usize) -> f64,
-                     limits: path::Constraints| {
-            let ends = path::Ends {
-                first,
-                last,
-                patch: &patch,
-            };
-            path::select(&costs, &limits, &ends)
-        };
-        let selection = if !ring {
-            let first = |i: usize, _: usize| -visible * seen(run(0, i));
-            let last = |i: usize, _: usize| -visible * seen(run(i + 1, n));
+    // Ends joined outside the chain would get parallel edges from a single kept boundary.
+    let joined = skeleton.edges.iter().any(|(e, data)| {
+        !chain.edges.contains(&e) && data.nodes.contains(&start) && data.nodes.contains(&end)
+    });
+    let ends = path::Ends {
+        first: &first,
+        last: &last,
+        patch: &patch,
+    };
+    let select = |min_kept: usize| {
+        if start != end {
             let limits = path::Constraints {
                 start_ports: 63 & !used[start],
                 end_ports: 63 & !used[end],
                 masks,
             };
-            solve(&first, &last, limits)
+            path::select(&items, &limits, BOUNDARY, &ends, min_kept)
         } else {
-            // A ring leaves and enters its node through two different ports. Its first kept
-            // boundary is fixed per solve, as the patch through the node depends on it.
-            let mut best: Option<path::Selection> = None;
-            for p in Port::ALL.into_iter().filter(|p| used[start] & p.bit() == 0) {
-                for kept_first in 0..n {
-                    let first = |i: usize, _: usize| {
-                        if i == kept_first { 0. } else { f64::INFINITY }
+            // A ring leaves and enters one node through two different ports; through a patch of
+            // degree two, not straight on. One or two kept boundaries close a self-loop or
+            // parallel edges.
+            Port::ALL
+                .into_iter()
+                .filter(|p| used[start] & p.bit() == 0)
+                .filter_map(|p| {
+                    let straight = if degree[start] == 2 {
+                        p.opposite().bit()
+                    } else {
+                        0
                     };
-                    let last = |i: usize, _: usize| -visible * seen(wrap(i, kept_first));
                     let limits = path::Constraints {
                         start_ports: p.bit(),
-                        end_ports: 63 & !used[start] & !p.bit(),
+                        end_ports: 63 & !used[start] & !p.bit() & !straight,
                         masks,
                     };
-                    if let Some(s) = solve(&first, &last, limits)
-                        && best.as_ref().is_none_or(|b| s.cost < b.cost)
-                    {
-                        best = Some(s);
-                    }
-                }
-            }
-            best
+                    path::select(&items, &limits, BOUNDARY, &ends, min_kept.max(3))
+                })
+                .min_by(|a, b| a.cost.total_cmp(&b.cost))
+        }
+    };
+    let apply = |kept: &[usize], ports: &[Port], into: Option<SkeletonNodeID>| {
+        let mut next = labeled.clone();
+        let mut patches = tables.patches.clone();
+        for (&i, &port) in kept.iter().zip(ports) {
+            let port = if chain.forward[i] {
+                port
+            } else {
+                port.opposite()
+            };
+            next.labels[chain.edges[i]] = port.label();
+        }
+        // A whole branch merges outward from the junction, one neighbour at a time.
+        let order: Vec<usize> = if into == Some(end) {
+            (0..n).rev().collect()
+        } else {
+            (0..n).collect()
         };
-        selection.map(|s| Choice {
-            kept: s.kept,
-            ports: s.ports,
-        })
+        for i in order.into_iter().filter(|i| !kept.contains(i)) {
+            let edge = chain.edges[i];
+            let nodes = next.skeleton.edges[edge].nodes;
+            let keep = into.unwrap_or_else(|| {
+                nodes
+                    .into_iter()
+                    .find(|v| *v == start || *v == end)
+                    .unwrap_or(nodes[0])
+            });
+            merge(mesh, &mut next, edge, keep, &mut patches).ok()?;
+        }
+        (next.skeleton.validate(mesh).is_ok() && next.validate_labels().is_ok())
+            .then_some((next, patches))
     };
 
-    // Candidates by improving score; Dinkelbach rounds move the linearization to the best so far.
-    let mut candidates: Vec<(f64, Choice)> = Vec::new();
-    let mut at = (
-        state.aligned / state.length.max(f64::MIN_POSITIVE),
-        state.length,
-    );
-    for _ in 0..ROUNDS {
-        let mut moved = false;
-        if let Some(choice) = select(at.0, at.1) {
-            let (value, aligned, total, _) = score(&choice);
-            let new = candidates
-                .iter()
-                .all(|(_, c)| c.kept != choice.kept || c.ports != choice.ports);
-            if value <= now + 1e-12 || !new {
-                break;
+    let threshold = current - 1e-9;
+    let selections: Vec<_> = [1 + usize::from(joined), 2, 3]
+        .into_iter()
+        .filter_map(select)
+        .collect();
+    if let Some((into, cost)) = none {
+        let best = selections.first().map_or(f64::INFINITY, |s| s.cost);
+        if cost < threshold && cost < best {
+            if let Some((next, patches)) = apply(&[], &[], Some(into)) {
+                tables.patches = patches;
+                return Some((next, true));
             }
-            if candidates.iter().all(|(v, _)| value > *v) && total > 0. {
-                at = (aligned / total, total);
-                moved = true;
-            }
-            candidates.push((value, choice));
-        }
-        if !moved {
-            break;
         }
     }
-    // No boundary kept: a branch merges into its junction.
-    let into = match (degree[start] == 1, degree[end] == 1) {
-        _ if ring => None,
-        (true, false) if degree[end] >= 3 => Some(end),
-        (false, true) if degree[start] >= 3 => Some(start),
-        _ => None,
-    };
-    if into.is_some() {
-        let choice = Choice {
-            kept: Vec::new(),
-            ports: Vec::new(),
-        };
-        let value = score(&choice).0;
-        if value > now + 1e-12 {
-            candidates.push((value, choice));
+    // A selection that fails validation (parallel edges) is retried with more kept boundaries.
+    for s in selections.into_iter().take_while(|s| s.cost < threshold) {
+        if let Some((next, patches)) = apply(&s.kept, &s.ports, None) {
+            tables.patches = patches;
+            return Some((next, false));
         }
     }
-    candidates.sort_by(|a, b| b.0.total_cmp(&a.0));
-
-    // A choice that fails validation (parallel edges) gives way to the next best.
-    candidates.iter().find_map(|(_, choice)| {
-        let into = if choice.kept.is_empty() { into } else { None };
-        let (next, members) = apply(mesh, labeled, chain, choice, into, &state.members)?;
-        let (_, aligned, length, visible) = score(choice);
-        let update = Update {
-            aligned,
-            length,
-            visible,
-            boundaries: state.boundaries - n + choice.kept.len(),
-            members,
-        };
-        Some((next, update))
-    })
+    None
 }
 
-/// The chain with `choice` applied: kept boundaries relabelled, the others dissolved (into
-/// `into` for a whole branch); `None` unless valid.
-fn apply(
+/// [`dissolve`], merging the patch measures.
+fn merge(
     mesh: &Mesh<INPUT>,
-    labeled: &LabeledSkeleton,
-    chain: &Chain,
-    choice: &Choice,
-    into: Option<SkeletonNodeID>,
-    members: &SecondaryMap<SkeletonNodeID, Vec<SkeletonNodeID>>,
-) -> Option<(
-    LabeledSkeleton,
-    SecondaryMap<SkeletonNodeID, Vec<SkeletonNodeID>>,
-)> {
-    let n = chain.edges.len();
-    let (start, end) = (chain.nodes[0], chain.nodes[n]);
-    let mut next = labeled.clone();
-    let mut members = members.clone();
-    for (&i, &port) in choice.kept.iter().zip(&choice.ports) {
-        let port = if chain.forward[i] {
-            port
-        } else {
-            port.opposite()
-        };
-        next.labels[chain.edges[i]] = port.label();
-    }
-    // A whole branch merges outward from the junction, one neighbour at a time.
-    let order: Vec<usize> = if into == Some(end) {
-        (0..n).rev().collect()
-    } else {
-        (0..n).collect()
-    };
-    for i in order.into_iter().filter(|i| !choice.kept.contains(i)) {
-        let edge = chain.edges[i];
-        let nodes = next.skeleton.edges[edge].nodes;
-        let keep = into.unwrap_or_else(|| {
-            nodes
-                .into_iter()
-                .find(|v| *v == start || *v == end)
-                .unwrap_or(nodes[0])
-        });
-        let other = next.skeleton.edges[edge].other(keep);
-        dissolve(mesh, &mut next, edge, keep).ok()?;
-        let mut merged = members.remove(other).unwrap_or_default();
-        merged.extend(members[keep].iter().copied());
-        merged.sort();
-        members[keep] = merged;
-    }
-    (next.skeleton.validate(mesh).is_ok() && next.validate_labels().is_ok())
-        .then_some((next, members))
+    labeled: &mut LabeledSkeleton,
+    edge: SkeletonEdgeID,
+    keep: SkeletonNodeID,
+    (areas, moments): &mut Patches,
+) -> SkeletonResult<()> {
+    let other = labeled.skeleton.edges[edge].other(keep);
+    dissolve(mesh, labeled, edge, keep)?;
+    let area = areas.remove(other).unwrap_or(0.);
+    areas[keep] += area;
+    let moment = moments.remove(other).unwrap_or_else(Vector3D::zeros);
+    moments[keep] += moment;
+    Ok(())
 }
 
 /// Delete a boundary and merge its other patch into `keep` (merge lemma). Fails when the

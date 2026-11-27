@@ -1,6 +1,7 @@
 use super::*;
 use petgraph::unionfind::UnionFind;
-use std::collections::{HashMap, VecDeque};
+use std::collections::HashMap;
+use std::collections::VecDeque;
 
 /// A path's internal degree-two nodes can be eliminated exactly using its mask.
 /// Neither sign means equality, one means strict order, both mean no constraint.
@@ -10,15 +11,6 @@ pub(crate) fn feasible(
     extra: Option<([SkeletonNodeID; 2], u8)>,
 ) -> bool {
     coordinate_levels(skeleton, labels, extra.as_slice(), false).is_some()
-}
-
-/// Feasibility with several eliminated paths at once.
-pub(crate) fn feasible_with(
-    skeleton: &Skeleton,
-    labels: &SecondaryMap<SkeletonEdgeID, EdgeLabel>,
-    extra: &[([SkeletonNodeID; 2], u8)],
-) -> bool {
-    coordinate_levels(skeleton, labels, extra, false).is_some()
 }
 
 /// The same equalities/order DAG used for feasibility, with optional slack compaction.

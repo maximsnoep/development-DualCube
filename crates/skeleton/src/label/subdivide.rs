@@ -39,9 +39,22 @@ pub(crate) fn collar(
 /// A new loop through the middle of `node`'s patch, between `edge` and the patch's other
 /// boundaries: a minimum cut that is cheap far from every boundary.
 pub(crate) struct Middle {
-    path: Vec<(crate::surface::Gap, dualcube_types::prelude::EdgeID)>,
-    /// Oriented from `edge` towards the rest of the patch.
-    pub alignment: quality::Alignment,
+    path: Vec<(crate::surface::Gap, EdgeID)>,
+    /// Normal of the loop's plane, pointing from `edge` towards the rest of the patch.
+    pub normal: Vector3D,
+}
+
+impl Middle {
+    /// The loop's [`moves_alignment`], oriented as [`Self::normal`].
+    pub(crate) fn alignment(&self, mesh: &Mesh<INPUT>) -> Vector3D {
+        let exits: Vec<_> = self.path.iter().map(|&(_, exit)| exit).collect();
+        let mean = moves_alignment(mesh, &exits);
+        if mean.dot(&self.normal) < 0. {
+            -mean
+        } else {
+            mean
+        }
+    }
 }
 
 /// Surface cells and positions shared by every [`middle`] of one skeleton.
@@ -58,7 +71,6 @@ impl Ground {
         })
     }
 }
-
 
 /// Vertex sides in `owner`'s patch by a minimum cut between the crossings pinned `true` and
 /// those pinned `false`, where cutting is cheap far from every boundary of the patch.
@@ -107,7 +119,10 @@ fn clearance_cut(
             .map(|&(_, length)| length)
             .fold(f64::INFINITY, f64::min);
         if clearance[i].is_finite() {
-            heap.push((std::cmp::Reverse(dualcube_types::prelude::OrderedFloat(clearance[i])), i));
+            heap.push((
+                std::cmp::Reverse(dualcube_types::prelude::OrderedFloat(clearance[i])),
+                i,
+            ));
         }
     }
     while let Some((std::cmp::Reverse(distance), i)) = heap.pop() {
@@ -119,12 +134,19 @@ fn clearance_cut(
                 let (j, next) = (number[&other], distance.0 + length);
                 if next < clearance[j] {
                     clearance[j] = next;
-                    heap.push((std::cmp::Reverse(dualcube_types::prelude::OrderedFloat(next)), j));
+                    heap.push((
+                        std::cmp::Reverse(dualcube_types::prelude::OrderedFloat(next)),
+                        j,
+                    ));
                 }
             }
         }
     }
-    let widest = clearance.iter().copied().filter(|d| d.is_finite()).fold(0., f64::max);
+    let widest = clearance
+        .iter()
+        .copied()
+        .filter(|d| d.is_finite())
+        .fold(0., f64::max);
     let clear = |v: Vertex| match v {
         Vertex::Input(v) => number.get(&v).map_or(0., |&i| clearance[i].min(widest)),
         Vertex::Crossing(_) => 0.,
@@ -134,7 +156,14 @@ fn clearance_cut(
         let distance = (clear(ends[0]) + clear(ends[1])) / 2. + 0.01 * widest;
         area / (distance * distance)
     };
-    cut::cut_sides(mesh, &ground.regions, &ground.positions, node, pinned, &cutting)
+    cut::cut_sides(
+        mesh,
+        &ground.regions,
+        &ground.positions,
+        node,
+        pinned,
+        &cutting,
+    )
 }
 
 /// `None` when the patch has no other boundary, or no vertices to put the loop between.
@@ -165,15 +194,16 @@ pub(crate) fn middle(
         Vertex::Crossing(c) => pinned.get(&c).copied().unwrap_or(false),
     };
     let path = cut::trace(mesh, &ground.regions, node, &side)?;
-    // Crossings at their edges' midpoints, as the loop has no place in the edge orders yet.
-    let points: Vec<_> = path
+    // The loop's plane, with its normal along the steps from the edge's side to the other.
+    let points: Vec<Vector3D> = path
         .iter()
-        .map(|&(_, exit)| {
-            let midpoint = (mesh.position(mesh.root(exit)) + mesh.position(mesh.toor(exit))) / 2.;
-            (midpoint, mesh.face(mesh.twin(exit)))
-        })
+        .map(|&(_, exit)| (mesh.position(mesh.root(exit)) + mesh.position(mesh.toor(exit))) / 2.)
         .collect();
-    let mut alignment = quality::alignment(mesh, &points);
+    let centre: Vector3D = points.iter().sum::<Vector3D>() / points.len() as f64;
+    let mut normal = Vector3D::zeros();
+    for i in 0..points.len() {
+        normal += (points[i] - centre).cross(&(points[(i + 1) % points.len()] - centre));
+    }
     let cut: std::collections::HashSet<_> = path.iter().map(|&(gap, _)| gap).collect();
     let mut across = Vector3D::zeros();
     for (cell, _) in ground
@@ -194,11 +224,10 @@ pub(crate) fn middle(
             }
         }
     }
-    // Along the steps from the edge's side to the other.
-    if alignment.direction.dot(&across) < 0. {
-        alignment = alignment.reversed();
+    if normal.dot(&across) < 0. {
+        normal = -normal;
     }
-    Some(Middle { path, alignment })
+    Some(Middle { path, normal })
 }
 
 /// Split `node`'s patch along the middle loop: a new patch between `edge` and the loop, joined
