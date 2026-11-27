@@ -20,7 +20,7 @@ mod winding;
 
 /// The cost of ending an arc on a face that turns away from its crossing's quad, relative to
 /// the square root of the surface area (see `insertion::Template::set_crossing_normals`).
-const CROSSING_WEIGHT: f64 = 10.;
+const CROSSING_WEIGHT: f64 = 1.;
 
 /// Whether loops must cross the handles' longitudes as their template loops do (`winding`). Off:
 /// with the crossing normals, it hardly changes bob and fertility and lowers dtorus.

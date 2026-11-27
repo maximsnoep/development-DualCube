@@ -30,13 +30,14 @@ impl Flows {
     }
 }
 
-/// The strictness factor alpha of the alignment of moves of DualCube (Snoep et al. 2025).
-const STRICTNESS: i32 = 10;
+/// The strictness alpha of the weight of a move: 4, not DualCube's 10 (Snoep et al. 2025), at which
+/// a move a little off the axis costs almost nothing, so loops drift along a tube and spiral.
+const STRICTNESS: i32 = 4;
 
 impl Flows {
     /// Cost of moving by `delta` in a triangle for a loop of `axis`: its length, plus its length
     /// times DualCube's weight of a move, `angle(delta × n, axis)^alpha` (Snoep et al. 2025, Sec.
-    /// 4.1), which is 0 for a move around the axis and grows steeply as it turns away.
+    /// 4.1), which is 0 for a move around the axis and grows as it turns away.
     pub(super) fn cost(&self, axis: Direction) -> impl Fn(FaceID, Vector3D, usize) -> f64 + '_ {
         let target = Vector3D::from(axis);
         move |face, delta, _| {

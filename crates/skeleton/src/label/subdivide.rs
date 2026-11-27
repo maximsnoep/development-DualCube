@@ -44,19 +44,6 @@ pub(crate) struct Middle {
     pub normal: Vector3D,
 }
 
-impl Middle {
-    /// The loop's [`moves_alignment`], oriented as [`Self::normal`].
-    pub(crate) fn alignment(&self, mesh: &Mesh<INPUT>) -> Vector3D {
-        let exits: Vec<_> = self.path.iter().map(|&(_, exit)| exit).collect();
-        let mean = moves_alignment(mesh, &exits);
-        if mean.dot(&self.normal) < 0. {
-            -mean
-        } else {
-            mean
-        }
-    }
-}
-
 /// Surface cells and positions shared by every [`middle`] of one skeleton.
 pub(crate) struct Ground {
     regions: crate::surface::Regions,

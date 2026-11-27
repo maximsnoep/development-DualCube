@@ -67,8 +67,7 @@ impl Port {
 }
 
 /// The cost of every label (+X, -X, +Y, -Y, +Z, -Z) for a direction along the skeleton (no loop):
-/// `1 - cos` of their angle, in units of a label 20° off, as [`alignment_costs`] of a loop whose
-/// moves all point along `vector`. A zero vector has no preference.
+/// `1 - cos` of their angle, in units of a label 20° off. A zero vector has no preference.
 pub fn label_costs(vector: Vector3D) -> [f64; 6] {
     let unit = vector.try_normalize(0.).unwrap_or_else(Vector3D::zeros);
     let scale = 1. - 20f64.to_radians().cos();
@@ -228,45 +227,15 @@ pub fn attempt(mesh: &Mesh<INPUT>, skeleton: &Skeleton) -> SkeletonResult<Attemp
     Ok(result)
 }
 
-/// DualCube's alignment of a loop that leaves a triangle through each of `exits` in turn: the
-/// length-weighted mean of the unit `d × n` of its moves (`d` between the midpoints of the crossed
-/// edges, as in DualCube's edge graph, in a triangle of normal `n`). Its component along an axis
-/// is the mean cosine of the moves with that axis.
-pub(crate) fn moves_alignment(mesh: &Mesh<INPUT>, exits: &[EdgeID]) -> Vector3D {
-    let points: Vec<_> = exits
-        .iter()
-        .map(|&exit| {
-            let middle = (mesh.position(mesh.root(exit)) + mesh.position(mesh.toor(exit))) / 2.;
-            (middle, mesh.face(mesh.twin(exit)))
-        })
-        .collect();
-    crate::quality::alignment(mesh, &points).direction
-}
-
-/// The cost of every label for a loop of [`moves_alignment`] `mean`: `1 - cos`, the mean cosine
-/// lost against the label's axis, in units of a label 20° off.
-pub(crate) fn alignment_costs(mean: Vector3D) -> [f64; 6] {
-    let scale = 1. - 20f64.to_radians().cos();
-    std::array::from_fn(|i| {
-        let component = mean[i / 2] * if i % 2 == 0 { 1. } else { -1. };
-        (1. - component) / scale
-    })
-}
-
-/// The label costs of a boundary's loop, from its first patch to its second: its
-/// [`alignment_costs`].
+/// The label costs of a boundary's loop, from its first patch to its second: [`label_costs`] of
+/// its plane normal ([`boundary_normal`]). (DualCube's alignment of the loop's moves points the
+/// same way, but its loops spiral more: 56 against 47 loops of more than 1.6 turns on 25 models.)
 pub(crate) fn loop_costs(
     mesh: &Mesh<INPUT>,
     skeleton: &Skeleton,
     edge: SkeletonEdgeID,
 ) -> [f64; 6] {
-    let surface = &skeleton.surface;
-    let crossings = &skeleton.edges[edge].boundary.crossings;
-    let exits: Vec<_> = crossings
-        .iter()
-        .map(|&c| surface.crossings[c].exit)
-        .collect();
-    alignment_costs(moves_alignment(mesh, &exits))
+    label_costs(boundary_normal(mesh, skeleton, edge))
 }
 
 /// [`loop_costs`] of every boundary.
@@ -472,10 +441,10 @@ fn repair(
             slot_costs.push(match subdivide::middle(mesh, skeleton, &ground, e, node) {
                 // Along the path the normal points into the patch after the step, and out
                 // of the patch before it.
-                Some(middle) => alignment_costs(if k == 1 {
-                    middle.alignment(mesh)
+                Some(middle) => label_costs(if k == 1 {
+                    middle.normal
                 } else {
-                    -middle.alignment(mesh)
+                    -middle.normal
                 }),
                 None => costs[i],
             });
